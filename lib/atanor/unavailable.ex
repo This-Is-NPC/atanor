@@ -6,8 +6,6 @@ defmodule Atanor.Unavailable do
 
   require Logger
 
-  alias Atanor.{Cell, Config}
-
   @reasons [
     :no_quorum,
     :owner_unreachable,
@@ -53,27 +51,6 @@ defmodule Atanor.Unavailable do
   def reason({:cell_down, reason}), do: reason(reason) || :owner_unreachable
   def reason({:wake_failed, _}), do: :owner_unreachable
   def reason(_), do: nil
-
-  @doc """
-  The `Retry-After` of a 503, in seconds. `held_elsewhere` (a node outside the cluster holds the lease of the
-  routed `cell`, so it is no member) waits for the lease: one `http.retry_after_s` when it is released or no longer held, else the
-  time to its expiry plus the skew margin, at most `http.retry_after_max_s`. Any other reason, or a lease that
-  cannot be read, gets `http.retry_after_s`.
-  """
-  @spec retry_after_s(Config.t(), term, Cell.address() | nil) :: pos_integer
-  def retry_after_s(%Config{http: http} = config, :held_elsewhere, {_ns, _key} = cell) do
-    with {:ok, id} <- Cell.id(cell),
-         {:ok, %{owner: nil, released: false, expires_at_ms: expires}} when is_integer(expires) <-
-           Alambique.lease(config.alambique, id) do
-      left_ms = expires + Config.skew_margin_ms(config) - Config.now_ms(config)
-      left_s = ceil(left_ms / 1_000)
-      left_s |> max(http.retry_after_s) |> min(max(http.retry_after_max_s, http.retry_after_s))
-    else
-      _ -> http.retry_after_s
-    end
-  end
-
-  def retry_after_s(%Config{http: http}, _reason, _cell), do: http.retry_after_s
 
   @doc """
   The error a routing failure becomes. A `{:foreign_store, node}` is a

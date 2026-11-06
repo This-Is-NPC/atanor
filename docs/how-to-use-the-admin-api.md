@@ -457,8 +457,7 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     lists cells that stayed with their leases until these expire (`cell` and
     `reason`; `:drain` with `:deadline` when the whole drain ran out of
     time), and the node then stops with status 1. A cell that another node
-    still holds is 503 `held_elsewhere` on the node that asks, with a
-    `Retry-After` that follows the lease. `GET /drain` reads `idle`,
+    still holds is 503 `held_elsewhere` on the node that asks. `GET /drain` reads `idle`,
     `draining` or `drained`. The options are `stop: [drain_timeout_ms,
     drain_concurrency, shutdown_ms, exit]`
     ([configuration](configuration.md), design

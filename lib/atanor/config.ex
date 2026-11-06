@@ -86,7 +86,6 @@ defmodule Atanor.Config do
   # the next bytes of the request (header or body), and the last two bound the work of matching a route.
   @http %{
     retry_after_s: 1,
-    retry_after_max_s: 30,
     max_connections: 16_384,
     acceptors: 10,
     read_timeout_ms: 10_000,

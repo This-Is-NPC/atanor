@@ -245,8 +245,8 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
 - **Clients get 503 `held_elsewhere` for about 32 s.** The drain timed out or A
   was killed: the cells it did not hand back keep their leases until the TTL
   (`lease_ttl_ms`, 30 s) expires. B waits for the TTL plus the skew margin (2
-  s) and `Retry-After` follows the lease (at most `http.retry_after_max_s`,
-  30). A that exits with status 1 lists the cells in `errors`. Raise
+  s); `Retry-After` stays `http.retry_after_s` (1 s), so clients poll until the
+  lease ends. A that exits with status 1 lists the cells in `errors`. Raise
   `drain_timeout_ms` or `shutdown_ms` if cells are slow to upload, then repeat.
 - **Two nodes write the same cell.** Their `node_id` is the same. Give each
   node its own name or id before they share a store; there is no check at

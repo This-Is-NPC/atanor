@@ -11,14 +11,14 @@ defmodule Atanor.HTTP do
   Failures never leak internals: no route is a 404, an oversized body a 413,
   a worker that crashes or returns something else a 500, all with a JSON body.
   Expected unavailability is a 503 with the reason and `Retry-After`
-  (`:http`'s `:retry_after_s`, or the lease's time left for `held_elsewhere`, design §8.4); a worker that mapped the error to
+  (`:http`'s `:retry_after_s`, design §8.4); a worker that mapped the error to
   5xx still gets the 503.
   """
   @behaviour Plug
 
   import Plug.Conn
 
-  alias Atanor.{Auth, Dispatch, Env, Registry, Request, Response, Route, Telemetry, Unavailable, Workers}
+  alias Atanor.{Auth, Dispatch, Env, Registry, Request, Response, Route, Telemetry, Workers}
   alias Atanor.Diagnostics.Breadcrumb
   alias Atanor.HTTP.Socket
 
@@ -110,11 +110,11 @@ defmodule Atanor.HTTP do
           {:ok, cell, consistency} ->
             case Dispatch.execute(%{env | consistency: consistency}, cell, {:http, request}) do
               {:ok, response} -> write(conn, response)
-              {:error, reason} -> failure(conn, reason, config, cell)
+              {:error, reason} -> failure(conn, reason, config)
             end
 
           {:error, reason} ->
-            failure(conn, reason, config, nil)
+            failure(conn, reason, config)
         end
 
       {:more, _, conn} ->
@@ -125,27 +125,24 @@ defmodule Atanor.HTTP do
     end
   end
 
-  # `cell` is the cell the request routed to, whose lease a `held_elsewhere` 503 waits for.
-  defp failure(conn, :invalid_key, _config, _cell), do: json(conn, 400, "invalid_key")
+  defp failure(conn, :invalid_key, _config), do: json(conn, 400, "invalid_key")
 
-  defp failure(conn, :overloaded, config, _cell),
+  defp failure(conn, :overloaded, config),
     do: unavailable(conn, "overloaded", "overloaded", config.http.retry_after_s)
 
-  defp failure(conn, {:unavailable, reason}, config, cell) do
-    retry_after = Unavailable.retry_after_s(config, reason, cell)
-    unavailable(conn, "unavailable", reason_name(reason), retry_after)
-  end
+  defp failure(conn, {:unavailable, reason}, config),
+    do: unavailable(conn, "unavailable", reason_name(reason), config.http.retry_after_s)
 
   # A configuration error, not unavailability: no `Retry-After`, a repeat fails the same way (design §8.4).
-  defp failure(conn, {:foreign_store, _node}, _config, _cell),
+  defp failure(conn, {:foreign_store, _node}, _config),
     do: json(conn, 500, %{error: "foreign_store", reason: "foreign_store"})
 
-  defp failure(conn, :unknown_outcome, config, _cell),
+  defp failure(conn, :unknown_outcome, config),
     do: unavailable(conn, "unknown_outcome", "unknown_outcome", config.http.retry_after_s)
 
-  defp failure(conn, {:limit, :timeout}, _config, _cell), do: json(conn, 504, "timeout")
-  defp failure(conn, {:limit, _}, _config, _cell), do: json(conn, 500, "limit_exceeded")
-  defp failure(conn, _reason, _config, _cell), do: json(conn, 500, "internal_error")
+  defp failure(conn, {:limit, :timeout}, _config), do: json(conn, 504, "timeout")
+  defp failure(conn, {:limit, _}, _config), do: json(conn, 500, "limit_exceeded")
+  defp failure(conn, _reason, _config), do: json(conn, 500, "internal_error")
 
   defp unavailable(conn, error, reason, retry_after_s) do
     conn
@@ -165,11 +162,11 @@ defmodule Atanor.HTTP do
         case Dispatch.execute(env, cell, {:ws_init, request}) do
           {:ok, {:ok, worker}} -> upgrade(conn, config, %{env: env, cell: cell, worker: worker})
           {:ok, {:reject, response}} -> write(conn, response)
-          {:error, reason} -> failure(conn, reason, config, cell)
+          {:error, reason} -> failure(conn, reason, config)
         end
 
       {:error, reason} ->
-        failure(conn, reason, config, nil)
+        failure(conn, reason, config)
     end
   end
 

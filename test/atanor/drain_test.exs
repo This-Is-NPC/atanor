@@ -4,7 +4,7 @@ defmodule Atanor.DrainTest do
 
   import Atanor.Test.Await
 
-  alias Atanor.{CLI, Config, Overview, Registry, Unavailable}
+  alias Atanor.{CLI, Config, Overview, Registry}
   alias Atanor.Test.Manifests
   alias AlambiqueTestkit.{GatedStore, ManualClock, MemoryStore}
   alias AtanorTestkit.Node
@@ -12,7 +12,6 @@ defmodule Atanor.DrainTest do
   @moduletag :tmp_dir
   @moduletag capture_log: true
   @operator "operator-secret"
-  @cell {"log", "a"}
   @cell_id "log.a"
 
   defp start(opts \\ []) do
@@ -167,28 +166,29 @@ defmodule Atanor.DrainTest do
       world = ManualClock.new(1_800_000_000_000)
       clock = {ManualClock, ManualClock.config(world, 0)}
       a = start(alambique: [node_id: "node-a", lease_ttl_ms: 20_000, clock: clock])
-      b = start(store: a.store, alambique: [node_id: "node-b", lease_ttl_ms: 20_000, clock: clock])
+
+      b =
+        start(
+          store: a.store,
+          http: [retry_after_s: 3],
+          alambique: [node_id: "node-b", lease_ttl_ms: 20_000, clock: clock]
+        )
+
       assert post(a, "/c/a", "1").status == 200
       %{a: a, b: b}
     end
 
-    test "is a 503 held_elsewhere with a Retry-After from the lease, until A hands it back", %{a: a, b: b} do
-      # The lease runs 20 s from the frozen clock and the skew margin adds 2 s.
-      for path <- ["/c/a", "/r/a?ms=60000"] do
+    test "is a 503 held_elsewhere with the fixed Retry-After on every path, until A hands it back", %{a: a, b: b} do
+      # The lease still runs for 22 s, but the wait is the fixed `http.retry_after_s` (3 on B): a routed
+      # request, a bounded read and a handler with no routing key (a WASM worker) answer alike.
+      for path <- ["/c/a", "/r/a?ms=60000", "/c/direct/a"] do
         resp = get(b, path)
         assert resp.status == 503
         assert resp.body == %{"error" => "unavailable", "reason" => "held_elsewhere"}
-        assert resp.headers["retry-after"] == ["22"]
+        assert resp.headers["retry-after"] == ["3"]
       end
 
-      config = Registry.config(b.name)
-      capped = %{config | http: %{config.http | retry_after_max_s: 5}}
-      assert Unavailable.retry_after_s(capped, :held_elsewhere, @cell) == 5
-      assert Unavailable.retry_after_s(config, :owner_unreachable, @cell) == 1
-
       assert {:ok, _} = Atanor.drain(a.name, exit: false)
-      assert Unavailable.retry_after_s(config, :held_elsewhere, @cell) == 1
-
       assert %{status: 200, body: %{"rows" => [1]}} = get(b, "/c/a")
       assert %{owner: owner} = lease(b)
       assert owner == node()
@@ -203,8 +203,6 @@ defmodule Atanor.DrainTest do
 
       assert %{drain_timeout_ms: 15_000, drain_concurrency: 64, shutdown_ms: 75_000, exit: true} =
                Map.take(config.stop, [:drain_timeout_ms, :drain_concurrency, :shutdown_ms, :exit])
-
-      assert config.http.retry_after_max_s == 30
     end
 
     test "wrong values are refused at start" do
@@ -213,8 +211,7 @@ defmodule Atanor.DrainTest do
             [stop: [drain_timeout_ms: 0]],
             [stop: [drain_concurrency: 0]],
             [stop: [exit: "yes"]],
-            [stop: [drain_timeout_ms: 80_000, shutdown_ms: 75_000]],
-            [http: [retry_after_max_s: 0]]
+            [stop: [drain_timeout_ms: 80_000, shutdown_ms: 75_000]]
           ] do
         assert_raise ArgumentError, fn -> build(opts) end
       end

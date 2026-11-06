@@ -252,9 +252,7 @@ defmodule Atanor do
       response may have) and `:fetch_timeout_ms` (30 000, the time of a whole
       outbound HTTP fetch, redirects and name lookups included).
     * `:http` - the ingress (design §7.1): `:retry_after_s` (1, the
-      `Retry-After` of a 503 for expected unavailability; design §8.4) and
-      `:retry_after_max_s` (30, the longest `Retry-After` of a `held_elsewhere` 503, which
-      waits for the lease of a node outside the cluster);
+      `Retry-After` of a 503 for expected unavailability, `held_elsewhere` included; design §8.4);
       `:max_connections` (16 384, the total of open connections, WebSockets
       included) shared by `:acceptors` (10); `:read_timeout_ms` (10 000, how
       long the listener waits for the next bytes of a request, header or body,

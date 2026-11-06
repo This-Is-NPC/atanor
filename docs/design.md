@@ -1735,11 +1735,9 @@ defects.
 
 `held_elsewhere` is the answer while two nodes that are not a cluster take turns on a cell (§8.11):
 the lease names a node that is no member of this instance's cluster, so this node waits for the lease
-and never takes the cell. Its `Retry-After` is read from the lease of the routed cell (`Alambique.lease/3`,
-one store read per such 503): `http.retry_after_s` when the lease is released or gone, else the seconds to
-its `expires_at_ms` plus the skew margin (2 s), at least `http.retry_after_s` and at most
-`http.retry_after_max_s` (default 30, the lease TTL). A drain releases the lease, so the wait is
-normally one retry. A WebSocket upgrade gets the same 503 and header before the upgrade. A TCP connection
+and never takes the cell. Its `Retry-After` is `http.retry_after_s` (default 1), on every path (a worker with no routing key does not
+name the cell, so the lease's expiry is not known there, and a swap is over within seconds, not at the expiry). A drain releases
+the lease, so the wait is normally one retry; after a crash a client polls until the lease ends (the TTL plus the skew margin). A WebSocket upgrade gets the same 503 and header before the upgrade. A TCP connection
 has no `Retry-After`: it closes, and `[:atanor, :tcp, :disconnect]` carries `reason: {:unavailable, reason}`.
 An attach to a channel that cannot reach its owner stays `owner_unreachable`. The two 503s differ: `unavailable` means the call did not run and is
 safe to repeat, `unknown_outcome` means it may have run. A write whose batch was sent for
