@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Create the lab VMs atanor-lab-1..3 on the lab network (copy-on-write disks over the
+# cached image, cloud-init seeds with static addresses) and wait until they accept SSH.
+set -euo pipefail
+source "$(dirname "$0")/lab-common"
+
+mkdir -p "$LAB_DIR/disks" "$LAB_DIR/seeds" "$LAB_DIR/ssh"
+chmod 755 "$LAB_DIR" "$LAB_DIR/disks" "$LAB_DIR/seeds"
+chmod 700 "$LAB_DIR/ssh"
+[[ -f $LAB_DIR/ssh/id_ed25519 ]] || ssh-keygen -q -t ed25519 -N '' -C atanor-lab -f "$LAB_DIR/ssh/id_ed25519"
+# The admin and dashboard token, and the Erlang cookie (a root password for the nodes): two secrets of 32 bytes or more.
+for name in secret cookie; do
+  [[ -f $LAB_DIR/$name ]] || (umask 077; head -c 48 /dev/urandom | base64 -w0 | tr -dc 'A-Za-z0-9' >"$LAB_DIR/$name")
+done
+pubkey=$(<"$LAB_DIR/ssh/id_ed25519.pub")
+# The isolated network has no NTP: without this drop-in (a systemd credential from SMBIOS) the
+# image waits for time synchronization at boot, forever, and never starts sshd.
+no_time_wait=$(printf '[Service]\nExecStart=\nExecStart=/usr/bin/true\n' | base64 -w0)
+
+for n in $LAB_VMS; do
+  vm=$(node_vm "$n")
+  lab_only "$vm"
+  if virsh dominfo "$vm" >/dev/null 2>&1; then
+    virsh domstate "$vm" | grep -q running || virsh start "$vm" >/dev/null
+    continue
+  fi
+
+  disk=$LAB_DIR/disks/$vm.qcow2
+  seed=$LAB_DIR/seeds/$vm.iso
+  rm -f "$disk" "$seed"
+  qemu-img create -q -f qcow2 -b "$LAB_CACHE/$LAB_IMAGE" -F qcow2 "$disk" 8G
+
+  work=$(mktemp -d)
+  cat >"$work/meta-data" <<META
+instance-id: $vm
+local-hostname: $vm
+META
+  cat >"$work/network-config" <<NET
+version: 2
+ethernets:
+  eth0:
+    match: {macaddress: "$(node_mac "$n")"}
+    set-name: eth0
+    addresses: [$(node_ip "$n")/24]
+NET
+  cat >"$work/user-data" <<USER
+#cloud-config
+users:
+  - name: lab
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys: ["$pubkey"]
+ssh_pwauth: false
+write_files:
+  - path: /etc/systemd/system/atanor-lab.service
+    content: |
+      [Unit]
+      Description=Atanor lab node
+      After=network-online.target
+      Wants=network-online.target
+      StartLimitIntervalSec=0
+      [Service]
+      User=lab
+      EnvironmentFile=/etc/atanor-lab.env
+      # The node name is the address; wait until it is configured.
+      ExecStartPre=/bin/sh -c 'until ip -o -4 addr show dev eth0 | grep -q " $LAB_SUBNET."; do sleep 0.5; done'
+      ExecStart=/opt/atanor-lab/bin/atanor_lab start
+      Restart=on-failure
+      RestartSec=2
+      TimeoutStopSec=60
+      LimitNOFILE=65536
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - [mkdir, -p, /opt/atanor-lab, /var/lib/atanor-lab/cells]
+  - [chown, -R, "lab:lab", /opt/atanor-lab, /var/lib/atanor-lab]
+  - [systemctl, daemon-reload]
+USER
+  xorriso -as mkisofs -quiet -o "$seed" -V cidata -J -r "$work/user-data" "$work/meta-data" "$work/network-config" 2>/dev/null
+  rm -r "$work"
+
+  virt-install --connect qemu:///system --name "$vm" --import --memory "$([[ $n == store ]] && echo 2048 || echo 4096)" --vcpus 2 --cpu host-passthrough \
+    --xml ./os/smbios/@mode=sysinfo --sysinfo "type=smbios,oemStrings.entry0=io.systemd.credential.binary:systemd.unit-dropin.systemd-time-wait-sync.service=$no_time_wait" \
+    --osinfo archlinux --disk "path=$disk,format=qcow2,bus=virtio" \
+    --disk "path=$seed,device=cdrom,readonly=on" \
+    --network "network=$LAB_NET,model=virtio,mac=$(node_mac "$n")" \
+    --graphics none --console pty,target_type=serial --noautoconsole >/dev/null
+  echo "created $vm"
+done
+
+for n in $LAB_VMS; do
+  for _ in $(seq 1 120); do lab_ssh "$n" true 2>/dev/null && break; sleep 1; done
+  lab_ssh "$n" true || { echo "$(node_vm "$n") does not answer SSH" >&2; exit 1; }
+  echo "$(node_vm "$n") ready at $(node_ip "$n")"
+done

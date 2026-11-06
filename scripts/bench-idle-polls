@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Store requests of an idle node's time-driven polls (design §12.14). Arguments: finished sweep operations (default 300), seconds (default 10).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec mix run bench/idle_polls.exs "$@"

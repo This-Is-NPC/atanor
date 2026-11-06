@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Roll the node containers of the project atanor-cluster onto a rebuilt image, one at a time: stop the
+# node (graceful), replace it, start it, and wait until it is ready and every node sees it before the
+# next one.
+#
+#   cluster-roll build   build the image with a new release id (ATANOR_CLUSTER_RELEASE, default roll-EPOCH)
+#   cluster-roll roll    (set CLUSTER_ROLL_LOGS=DIR to keep the log of each container it replaces)
+#                        stop each node and recreate it from the image under the same name; prints a line
+#                        with the time of each step (epoch seconds)
+#
+# CLUSTER_ROLL_PAUSE=SECONDS waits that long after each node is ready (default 0).
+# `roll` names one service at a time, so only one node is out at a time.
+set -euo pipefail
+source "$(dirname "$0")/cluster-common"
+
+stamp() { printf '%s %s\n' "$(date +%s.%N | cut -c1-14)" "$*"; }
+
+# ready ID: the node's health check passes and every node sees every other one.
+ready() {
+  local want=$1 id=$2
+  until [[ $(docker inspect -f '{{.State.Health.Status}}' "$id" 2>/dev/null) == healthy ]]; do sleep 0.5; done
+  until [[ $(admin_get /health | jq -r '.nodes | length' 2>/dev/null || echo 0) -eq $want ]]; do sleep 0.5; done
+}
+
+case ${1:-} in
+  build)
+    export ATANOR_CLUSTER_RELEASE=${ATANOR_CLUSTER_RELEASE:-roll-$(date +%s)}
+    compose build node-1 >&2
+    echo "$ATANOR_CLUSTER_RELEASE" ;;
+  roll)
+    count=$(cluster_ids node | wc -l)
+    for number in $(seq 1 "$count"); do
+      id=$(cluster_container "node-$number")
+      name=$(container_name "$id")
+      stamp "stop $name"
+      docker stop --timeout 30 "$id" >/dev/null
+      [[ -z ${CLUSTER_ROLL_LOGS:-} ]] || docker logs "$id" >"$CLUSTER_ROLL_LOGS/$name-old.log" 2>&1 || true
+      stamp "stopped $name, recreating it from the new image"
+      compose up -d --no-deps "node-$number" >/dev/null 2>&1
+      new=$(cluster_container "node-$number")
+      stamp "started $name ($new), waiting until it is ready"
+      ready "$count" "$new"
+      stamp "ready $name"
+      sleep "${CLUSTER_ROLL_PAUSE:-0}"
+    done ;;
+  *) sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

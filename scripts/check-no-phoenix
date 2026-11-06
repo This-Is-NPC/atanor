@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Prove the runtime works without Phoenix or Ranch: compile Atanor into
+# examples/hello-native, which does not depend on them, and serve a request.
+# Safe to rerun.
+# ATANOR_CHECK_START_TIMEOUT_MS bounds the node start after the build (default 20000).
+set -euo pipefail
+cd "$(dirname "$0")/../examples/hello-native"
+
+start_timeout_ms=${ATANOR_CHECK_START_TIMEOUT_MS:-20000}
+if [[ ! $start_timeout_ms =~ ^[0-9]+$ ]] || ((start_timeout_ms < 1)); then
+  echo "ATANOR_CHECK_START_TIMEOUT_MS must be a positive integer" >&2
+  exit 1
+fi
+
+log=$(mktemp)
+node_pid=
+cleanup() {
+  [[ -n "$node_pid" ]] && kill "$node_pid" 2>/dev/null || true
+  rm -f "$log"
+}
+trap cleanup EXIT
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+
+# Build the dependencies first: compiling Alambique on a cold tree takes longer
+# than the start wait below, which only covers startup.
+mise exec -- mix deps.get >/dev/null
+mise exec -- mix deps.compile
+mise exec -- mix deps.compile atanor --force 2>&1 | tee "$log"
+grep -qi "warning" "$log" && fail "compiling Atanor without Phoenix warned"
+mise exec -- mix compile >/dev/null
+
+ebin=_build/dev/lib/atanor/ebin
+[[ -f $ebin/Elixir.Atanor.Dashboard.beam ]] || fail "Atanor.Dashboard was not compiled"
+for module in Supervisor Endpoint Router Metrics; do
+  [[ ! -e $ebin/Elixir.Atanor.Dashboard.$module.beam ]] || fail "Atanor.Dashboard.$module was compiled"
+done
+[[ ! -d _build/dev/lib/phoenix ]] || fail "Phoenix is in the build of the example"
+[[ ! -d _build/dev/lib/ranch ]] || fail "Ranch is in the build of the example"
+[[ -f $ebin/Elixir.Atanor.TCP.Ranch.beam ]] || fail "Atanor.TCP.Ranch was not compiled"
+[[ -f $ebin/Elixir.Atanor.TCP.Ranch.Transport.beam ]] || fail "Atanor.TCP.Ranch.Transport was not compiled"
+echo "ok: no dashboard module is compiled and Phoenix and Ranch are absent"
+
+mise exec -- mix atanor.dev --port 0 >"$log" 2>&1 &
+node_pid=$!
+
+checks=$(( (start_timeout_ms + 199) / 200 ))
+for _ in $(seq 1 "$checks"); do
+  grep -q "Atanor listening" "$log" && break
+  kill -0 "$node_pid" 2>/dev/null || fail "the node stopped: $(cat "$log")"
+  sleep 0.2
+done
+url=$(sed -n 's/^Atanor listening on //p' "$log")
+[[ -n $url ]] || fail "the node did not start within ${start_timeout_ms} ms: $(cat "$log")"
+grep -q "^Dashboard not started: add " "$log" || fail "the task did not explain the missing dependencies"
+
+reply=$(curl -s -H "host: localhost" "$url/hello/world")
+echo "GET /hello/world -> $reply"
+[[ -n $reply ]] || fail "the worker did not answer"
+echo "ok: the node serves without Phoenix"

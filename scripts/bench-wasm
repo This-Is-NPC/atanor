@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Runs the WASM benchmark once per CPU limit mode. Argument: seconds per
+# throughput case (default 5). Set ATANOR_BENCH_CPU to run one mode.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+for mode in ${ATANOR_BENCH_CPU:-epoch fuel}; do
+  ATANOR_BENCH_CPU="$mode" MIX_ENV=test mix run bench/wasm.exs "$@"
+done

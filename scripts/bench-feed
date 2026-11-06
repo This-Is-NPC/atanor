@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Time for a change feed subscriber to receive a burst of changes and a lone write (design §12.14). Arguments: writes (default 2000), feed.poll_ms (default 1000), then optionally object_batches and linger_ms.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec mix run bench/feed.exs "$@"

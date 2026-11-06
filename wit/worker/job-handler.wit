@@ -1,0 +1,16 @@
+package atanor:worker@0.1.0;
+
+/// Exported by workers whose manifest sets `bindings.jobs`. Each call runs in
+/// a fresh instance under the worker's limits. Delivery is at least once; the
+/// job id is stable across retries and takeovers.
+interface job-handler {
+  handle-job: func(
+    namespace: string,
+    key: string,
+    id: string,
+    idempotency-key: string,
+    kind: string,
+    payload: list<u8>,
+    attempt: u32,
+  ) -> result<_, string>;
+}

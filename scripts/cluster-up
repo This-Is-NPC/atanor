@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Build the node image if needed, start the cluster (project atanor-cluster) and wait until every
+# node is ready and the load balancer serves. Settings: ATANOR_CLUSTER_* (see
+# docs/how-to-run-a-cluster-in-containers.md). Safe to rerun.
+set -euo pipefail
+source "$(dirname "$0")/cluster-common"
+
+nodes=${ATANOR_CLUSTER_NODES:-3}
+timeout_s=${ATANOR_CLUSTER_UP_TIMEOUT:-300}
+[[ $nodes =~ ^[0-9]+$ && $nodes -ge 1 && $nodes -le 10 ]] || { echo "ATANOR_CLUSTER_NODES must be 1 to 10" >&2; exit 1; }
+
+"$repo/scripts/cluster-secrets"
+"$repo/scripts/cluster-context"
+
+# The release id of the image is the commit; a dirty tree says so.
+if [[ -z ${ATANOR_CLUSTER_RELEASE:-} ]]; then
+  ATANOR_CLUSTER_RELEASE=$(git -C "$repo" rev-parse --short=12 HEAD)
+  [[ -z $(git -C "$repo" status --porcelain -- lib native mix.exs mix.lock cluster) ]] || ATANOR_CLUSTER_RELEASE+=-dirty
+  export ATANOR_CLUSTER_RELEASE
+fi
+
+services=(store lb)
+for n in $(seq 1 "$nodes"); do services+=("node-$n"); done
+compose build node-1
+compose up -d --remove-orphans "${services[@]}"
+# Nodes above the wanted number from an earlier run go away.
+for id in $(cluster_ids node); do
+  number=$(container_name "$id"); number=${number##*-}
+  (( number <= nodes )) || docker rm -f "$id" >/dev/null
+done
+
+echo "waiting for $nodes nodes..."
+deadline=$((SECONDS + timeout_s))
+while :; do
+  healthy=0
+  for id in $(cluster_ids node); do
+    [[ $(docker inspect -f '{{.State.Health.Status}}' "$id") == healthy ]] && healthy=$((healthy + 1))
+  done
+  [[ $healthy -eq $nodes ]] && break
+  (( SECONDS < deadline )) || { echo "only $healthy of $nodes nodes are ready after ${timeout_s}s" >&2; compose ps >&2; exit 1; }
+  sleep 1
+done
+
+# The load balancer: every node in rotation, the nodes see each other, a request is answered.
+while :; do
+  up=$(curl -s -m 2 "$(published_url 8404)/stats;csv" | awk -F, '$1 == "atanor_http" && $2 ~ /^node/ && $18 == "UP"' | wc -l || true)
+  seen=$(admin_get /health | jq -r '.nodes | length' 2>/dev/null || true)
+  code=$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$(published_url 4000)/" || true)
+  [[ $up -eq $nodes && ${seen:-0} -eq $nodes && $code != 000 && $code != 503 ]] && break
+  (( SECONDS < deadline )) || { echo "load balancer not ready: $up servers up, nodes see $seen, HTTP $code" >&2; exit 1; }
+  sleep 1
+done
+
+echo "cluster ready: $nodes nodes, release $ATANOR_CLUSTER_RELEASE"
+echo "  http      $(published_url 4000)"
+echo "  admin     $(published_url 4001)   (token: cluster/secrets/admin_token)"
+echo "  dashboard $(published_url 4002)/workers?token=\$(cat cluster/secrets/dashboard_token)"
+echo "  balancer  $(published_url 8404)/stats"

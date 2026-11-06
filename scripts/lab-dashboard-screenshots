@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Capture the lab dashboard into docs/img/lab-*.png: needs the lab up and the node 3 fault
+# command (lab VM only). Usage: lab-dashboard-screenshots   (the scenario `dashboard` runs it under load)
+set -euo pipefail
+source "$(dirname "$0")/lab-common"
+cd "$repo"
+mkdir -p docs/img
+NODE_PATH="$(mise where npm:playwright)/node_modules" node scripts/capture-lab-dashboard.cjs \
+  "http://$(node_ip 1):4002" "$(<"$LAB_DIR/secret")" docs/img "virsh -c qemu:///system destroy $(node_vm 3)"

@@ -1,0 +1,1474 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Atanor admin API: deploys, tokens and audit",
+    "version": "0.1.0",
+    "description": "The endpoints of the admin API that deployers and the `atanor` command use (docs/how-to-use-the-admin-api.md, design 10.2.1). The read-only cluster endpoints are described in the how-to. test/atanor/openapi_test.exs keeps this file in step with the code."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:4001",
+      "description": "The admin listener (option `admin:` of `Atanor`)"
+    }
+  ],
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "paths": {
+    "/heads": {
+      "get": {
+        "operationId": "listHeads",
+        "summary": "List the heads of the workers the token may read",
+        "description": "Needs the scope `any valid token; only workers with `worker:<name>:read` are listed`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeadsPage"
+                },
+                "example": {
+                  "workers": [
+                    {
+                      "worker": "hello",
+                      "active": "2b1294c007ec8b2ff45a97a1bc75243cceffa24737338966eb728cbb15bd6f78",
+                      "previous": [],
+                      "revision": 1,
+                      "updated_at": "2026-11-01T20:36:34.791360Z"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The heads."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/workers/{worker}/packages": {
+      "post": {
+        "operationId": "uploadPackage",
+        "summary": "Upload a package, optionally activating it",
+        "description": "Needs the scope `worker:<worker>:deploy (and worker:<worker>:activate with activate=true)`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageUploaded"
+                },
+                "example": {
+                  "worker": "hello",
+                  "package_id": "2b1294c007ec8b2ff45a97a1bc75243cceffa24737338966eb728cbb15bd6f78",
+                  "kind": "native",
+                  "size": 331,
+                  "head": null
+                }
+              }
+            },
+            "description": "Stored. The node recomputed the hash, parsed the package and checked the manifest."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "409": {
+            "description": "With `activate=true`: `partitions_changed` (the namespace is recorded with another number of partitions, or none; the body names `namespace`, `recorded` and `declared`), `namespace_has_data` (the namespace has cells and cannot become partitioned), `namespace_owned` (another worker owns a namespace the package declares), `namespace_conflict`, `route_taken`, `listener_taken`, `migrations_lowered` (the body's `subject` names the namespace, route or listener) or `conflict`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "partitions_changed",
+                  "namespace": "events",
+                  "recorded": 6,
+                  "declared": 12
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "More bytes than the node's `admin` option `max_package_bytes` (default 67108864).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TooLarge"
+                },
+                "example": {
+                  "error": "package_too_large",
+                  "max_bytes": 67108864
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`hash_mismatch`, `invalid_package` (not a package, an invalid manifest, a manifest over the `package` option's `max_manifest_bytes` or a component over `max_component_bytes`), `package_of_other_worker`, `module_not_loaded` (a native package names a module this node does not have), or, with `activate=true`, what the operator's policy refuses: `host_not_allowed`, `listener_not_allowed`, `listener_not_configured`, `namespace_not_allowed`, `http_not_allowed` or `module_not_allowed` (`subject` names the host, listener, namespace or module).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "hash_mismatch"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "worker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9_-]+$"
+            }
+          },
+          {
+            "name": "activate",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "x-package-sha256",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "description": "The SHA-256 of the body, which is also the package id."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workers/{worker}/activate": {
+      "post": {
+        "operationId": "activatePackage",
+        "summary": "Make an uploaded package the active one",
+        "description": "Needs the scope `worker:<worker>:activate`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Head"
+                },
+                "example": {
+                  "worker": "hello",
+                  "active": "2b1294c007ec8b2ff45a97a1bc75243cceffa24737338966eb728cbb15bd6f78",
+                  "previous": [],
+                  "revision": 1,
+                  "updated_at": "2026-11-01T20:36:34.791360Z"
+                }
+              }
+            },
+            "description": "The new head."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`conflict`: other changes moved the head meanwhile; try again. Also `partitions_changed`, `namespace_has_data`, `namespace_owned` and the other refusals of an upload with `activate=true`; the policy refusals are 422.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "conflict"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "422": {
+            "description": "The operator's policy refuses the package: `host_not_allowed`, `listener_not_allowed`, `listener_not_configured`, `namespace_not_allowed`, `http_not_allowed` or `module_not_allowed`; `subject` names what was refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "namespace_not_allowed",
+                  "subject": "ledger"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "worker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9_-]+$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivateRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workers/{worker}/rollback": {
+      "post": {
+        "operationId": "rollbackWorker",
+        "summary": "Return a worker to its previous package",
+        "description": "Needs the scope `worker:<worker>:rollback`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Head"
+                },
+                "example": {
+                  "worker": "hello",
+                  "active": "2b1294c007ec8b2ff45a97a1bc75243cceffa24737338966eb728cbb15bd6f78",
+                  "previous": [],
+                  "revision": 1,
+                  "updated_at": "2026-11-01T20:36:34.791360Z"
+                }
+              }
+            },
+            "description": "The new head."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`no_previous`, `conflict` or `partitions_changed` (the previous package declares other partitions than the namespace is recorded with).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "no_previous"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "422": {
+            "description": "The operator's policy refuses the package: `host_not_allowed`, `listener_not_allowed`, `listener_not_configured`, `namespace_not_allowed`, `http_not_allowed` or `module_not_allowed`; `subject` names what was refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "namespace_not_allowed",
+                  "subject": "ledger"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "worker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9_-]+$"
+            }
+          }
+        ]
+      }
+    },
+    "/workers/{worker}/versions": {
+      "get": {
+        "operationId": "listVersions",
+        "summary": "List the packages uploaded for a worker, oldest first",
+        "description": "Needs the scope `worker:<worker>:read`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionsPage"
+                },
+                "example": {
+                  "worker": "hello",
+                  "active": "2b1294c007ec8b2ff45a97a1bc75243cceffa24737338966eb728cbb15bd6f78",
+                  "previous": [],
+                  "revision": 1,
+                  "updated_at": "2026-11-01T20:36:34.791360Z",
+                  "versions": [
+                    {
+                      "id": "1793565394790799-2b1294c0",
+                      "package_id": "2b1294c007ec8b2ff45a97a1bc75243cceffa24737338966eb728cbb15bd6f78",
+                      "kind": "native",
+                      "size": 331,
+                      "uploaded_at": "2026-11-01T20:36:34.790799Z",
+                      "uploaded_by": {
+                        "type": "operator"
+                      },
+                      "state": "active"
+                    }
+                  ],
+                  "next": null
+                }
+              }
+            },
+            "description": "The head and a page of versions."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "worker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9_-]+$"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Entries per page; default and maximum are the node's `admin` options `default_limit` and `max_limit`."
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next` of the previous page."
+          }
+        ]
+      }
+    },
+    "/workers/{worker}/status": {
+      "get": {
+        "operationId": "workerStatus",
+        "summary": "Show the head and what the answering node applied",
+        "description": "Needs the scope `worker:<worker>:read`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerStatus"
+                },
+                "example": {
+                  "worker": "hello",
+                  "active": "2b1294c007ec8b2ff45a97a1bc75243cceffa24737338966eb728cbb15bd6f78",
+                  "previous": [],
+                  "revision": 1,
+                  "updated_at": "2026-11-01T20:36:34.791360Z",
+                  "node": "nonode@nohost",
+                  "applied": "2b1294c007ec8b2ff45a97a1bc75243cceffa24737338966eb728cbb15bd6f78",
+                  "error": null
+                }
+              }
+            },
+            "description": "The head with the node's view."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "worker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9_-]+$"
+            }
+          }
+        ]
+      }
+    },
+    "/tokens": {
+      "post": {
+        "operationId": "createToken",
+        "summary": "Create a scoped token",
+        "description": "Needs the scope `cluster:admin`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenCreated"
+                },
+                "example": {
+                  "id": "atn_0123456789abcdef01234567",
+                  "name": "ci-hello",
+                  "description": "CI of hello",
+                  "scopes": [
+                    "worker:hello:deploy",
+                    "worker:hello:activate",
+                    "worker:hello:read"
+                  ],
+                  "created_at": "2026-11-01T20:36:34Z",
+                  "created_by": "operator",
+                  "expires_at": "2027-06-01T00:00:00Z",
+                  "revoked_at": null,
+                  "token": "atn_0123456789abcdef01234567_EXAMPLE-SECRET-NOT-A-REAL-TOKEN"
+                }
+              }
+            },
+            "description": "The token record and its secret, shown once."
+          },
+          "400": {
+            "description": "`invalid_json` or `invalid_token` with a `reason`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "invalid_token",
+                  "reason": "expires_at must be in the future"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewToken"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listTokens",
+        "summary": "List the tokens, by id",
+        "description": "Needs the scope `cluster:admin`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokensPage"
+                },
+                "example": {
+                  "tokens": [
+                    {
+                      "id": "atn_0123456789abcdef01234567",
+                      "name": "ci-hello",
+                      "description": "CI of hello",
+                      "scopes": [
+                        "worker:hello:deploy",
+                        "worker:hello:activate",
+                        "worker:hello:read"
+                      ],
+                      "created_at": "2026-11-01T20:36:34Z",
+                      "created_by": "operator",
+                      "expires_at": "2027-06-01T00:00:00Z",
+                      "revoked_at": null
+                    }
+                  ],
+                  "next": null
+                }
+              }
+            },
+            "description": "A page of tokens; secrets are never returned."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Entries per page; default and maximum are the node's `admin` options `default_limit` and `max_limit`."
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next` of the previous page."
+          }
+        ]
+      }
+    },
+    "/tokens/{id}": {
+      "get": {
+        "operationId": "getToken",
+        "summary": "Show a token",
+        "description": "Needs the scope `cluster:admin`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Token"
+                },
+                "example": {
+                  "id": "atn_0123456789abcdef01234567",
+                  "name": "ci-hello",
+                  "description": "CI of hello",
+                  "scopes": [
+                    "worker:hello:deploy",
+                    "worker:hello:activate",
+                    "worker:hello:read"
+                  ],
+                  "created_at": "2026-11-01T20:36:34Z",
+                  "created_by": "operator",
+                  "expires_at": "2027-06-01T00:00:00Z",
+                  "revoked_at": null
+                }
+              }
+            },
+            "description": "The token."
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/tokens/{id}/revoke": {
+      "post": {
+        "operationId": "revokeToken",
+        "summary": "Revoke a token",
+        "description": "Needs the scope `cluster:admin`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Token"
+                },
+                "example": {
+                  "id": "atn_0123456789abcdef01234567",
+                  "name": "ci-hello",
+                  "description": "CI of hello",
+                  "scopes": [
+                    "worker:hello:deploy",
+                    "worker:hello:activate",
+                    "worker:hello:read"
+                  ],
+                  "created_at": "2026-11-01T20:36:34Z",
+                  "created_by": "operator",
+                  "expires_at": "2027-06-01T00:00:00Z",
+                  "revoked_at": "2026-11-02T10:00:00Z"
+                }
+              }
+            },
+            "description": "The revoked token; revoking again keeps the first time."
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/audit": {
+      "get": {
+        "operationId": "listAudit",
+        "summary": "Read the audit log, oldest first",
+        "description": "Needs the scope `cluster:admin`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage"
+                },
+                "example": {
+                  "entries": [
+                    {
+                      "id": "1793565394785461-42240e64",
+                      "time": "2026-11-01T20:36:34.785461Z",
+                      "node": "nonode@nohost",
+                      "actor": {
+                        "type": "operator"
+                      },
+                      "action": "token.create",
+                      "target": "atn_0123456789abcdef01234567",
+                      "status": 201,
+                      "result": "ok",
+                      "error": null,
+                      "remote_ip": "127.0.0.1"
+                    }
+                  ],
+                  "next": null
+                }
+              }
+            },
+            "description": "A page of entries."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Entries per page; default and maximum are the node's `admin` options `default_limit` and `max_limit`."
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next` of the previous page."
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The operator token, or a scoped token `atn_<id>_<secret>`."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string",
+            "description": "With a refusal of the node's policy or of the other workers (`namespace_owned`, `host_not_allowed`, ...): the namespace, host, listener, module or route concerned. Never another worker's name."
+          },
+          "package_worker": {
+            "type": "string",
+            "description": "With `package_of_other_worker`: the worker the package belongs to."
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "description": "Every error is JSON with a stable `error` code and, often, a `reason` for people."
+      },
+      "Forbidden": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "const": "forbidden"
+          },
+          "required": {
+            "type": "string",
+            "description": "The scope the request needed."
+          }
+        },
+        "required": [
+          "error",
+          "required"
+        ]
+      },
+      "TooLarge": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "const": "package_too_large"
+          },
+          "max_bytes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "error",
+          "max_bytes"
+        ]
+      },
+      "Head": {
+        "type": "object",
+        "properties": {
+          "worker": {
+            "type": "string"
+          },
+          "active": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The active package id, null when none."
+          },
+          "previous": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "description": "Newest first."
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "worker",
+          "active",
+          "previous",
+          "revision",
+          "updated_at"
+        ],
+        "examples": [
+          {
+            "worker": "hello",
+            "active": "2b1294c007ec8b2ff45a97a1bc75243cceffa24737338966eb728cbb15bd6f78",
+            "previous": [],
+            "revision": 1,
+            "updated_at": "2026-11-01T20:36:34.791360Z"
+          }
+        ]
+      },
+      "PackageUploaded": {
+        "type": "object",
+        "properties": {
+          "worker": {
+            "type": "string"
+          },
+          "package_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "kind": {
+            "enum": [
+              "native",
+              "wasm"
+            ]
+          },
+          "size": {
+            "type": "integer"
+          },
+          "head": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Head"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The head after `activate=true`, otherwise null."
+          }
+        },
+        "required": [
+          "worker",
+          "package_id",
+          "kind",
+          "size",
+          "head"
+        ]
+      },
+      "Version": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The cursor of this entry."
+          },
+          "package_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "kind": {
+            "enum": [
+              "native",
+              "wasm"
+            ]
+          },
+          "size": {
+            "type": "integer"
+          },
+          "uploaded_at": {
+            "type": "string"
+          },
+          "uploaded_by": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "state": {
+            "enum": [
+              "active",
+              "previous",
+              null
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "package_id",
+          "kind",
+          "size",
+          "uploaded_at",
+          "uploaded_by",
+          "state"
+        ]
+      },
+      "VersionsPage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Head"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "versions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Version"
+                }
+              },
+              "next": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "versions",
+              "next"
+            ]
+          }
+        ]
+      },
+      "WorkerStatus": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Head"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "node": {
+                "type": "string",
+                "description": "The node that answered."
+              },
+              "applied": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The package that node applied."
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Why the head could not be applied."
+              }
+            },
+            "required": [
+              "node",
+              "applied",
+              "error"
+            ]
+          }
+        ]
+      },
+      "HeadsPage": {
+        "type": "object",
+        "properties": {
+          "workers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Head"
+            }
+          }
+        },
+        "required": [
+          "workers"
+        ]
+      },
+      "ActivateRequest": {
+        "type": "object",
+        "properties": {
+          "package_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "package_id"
+        ]
+      },
+      "NewToken": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "scopes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^(cluster:admin|worker:([a-z0-9_-]+|\\*):(deploy|activate|rollback|read))$"
+            }
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "In the future, with an offset."
+          }
+        },
+        "required": [
+          "name",
+          "scopes"
+        ]
+      },
+      "Token": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^atn_[0-9a-f]{24}$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revoked_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "scopes",
+          "created_at",
+          "created_by",
+          "expires_at",
+          "revoked_at"
+        ],
+        "examples": [
+          {
+            "id": "atn_0123456789abcdef01234567",
+            "name": "ci-hello",
+            "description": "CI of hello",
+            "scopes": [
+              "worker:hello:deploy",
+              "worker:hello:activate",
+              "worker:hello:read"
+            ],
+            "created_at": "2026-11-01T20:36:34Z",
+            "created_by": "operator",
+            "expires_at": "2027-06-01T00:00:00Z",
+            "revoked_at": null
+          }
+        ]
+      },
+      "TokenCreated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Token"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "token": {
+                "type": "string",
+                "description": "The secret, `atn_<id>_<secret>`; shown only here."
+              }
+            },
+            "required": [
+              "token"
+            ]
+          }
+        ]
+      },
+      "TokensPage": {
+        "type": "object",
+        "properties": {
+          "tokens": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Token"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "tokens",
+          "next"
+        ]
+      },
+      "AuditEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "enum": [
+                  "operator",
+                  "token"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "action": {
+            "enum": [
+              "package.upload",
+              "version.activate",
+              "version.rollback",
+              "token.create",
+              "token.revoke"
+            ]
+          },
+          "worker": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "result": {
+            "enum": [
+              "ok",
+              "denied",
+              "failed"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remote_ip": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "time",
+          "node",
+          "actor",
+          "action",
+          "status",
+          "result",
+          "error",
+          "remote_ip"
+        ]
+      },
+      "AuditPage": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEntry"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "entries",
+          "next"
+        ]
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "The token is missing, wrong, expired or revoked.",
+        "headers": {
+          "www-authenticate": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "unauthorized"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The token lacks the scope the request needs.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Forbidden"
+            },
+            "example": {
+              "error": "forbidden",
+              "required": "worker:hello:rollback"
+            }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "The node cannot do it now: it is starting (`not_ready`) or cannot reach the bucket (`store_unavailable`).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "store_unavailable"
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "The request is malformed; `error` says what.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "invalid_worker"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Not found.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "not_found"
+            }
+          }
+        }
+      }
+    }
+  }
+}

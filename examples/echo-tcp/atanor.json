@@ -1,0 +1,12 @@
+{
+  "manifest_version": 1,
+  "name": "visits",
+  "kind": "native",
+  "module": "Elixir.Echo.Worker",
+  "bindings": {
+    "cells": {
+      "visits": {"migrations": [[1, "CREATE TABLE visits (n INTEGER NOT NULL)"], [2, "INSERT INTO visits (n) VALUES (0)"]]}
+    }
+  },
+  "routes": [{"tcp": {"listener": "visits"}}]
+}

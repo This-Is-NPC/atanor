@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Latency tail of one hot cell over a store with latency (design §12.14). Arguments: clients (8), seconds (20), store latency in ms (25).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec mix run bench/hot_cell_tail.exs "$@"

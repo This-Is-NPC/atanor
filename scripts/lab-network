@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Create and start the isolated libvirt network atanor-lab (no forwarding, no DHCP, own bridge).
+set -euo pipefail
+source "$(dirname "$0")/lab-common"
+lab_only "$LAB_NET"
+
+if ! virsh net-info "$LAB_NET" >/dev/null 2>&1; then
+  virsh net-define /dev/stdin <<XML >/dev/null
+<network>
+  <name>$LAB_NET</name>
+  <bridge name='$LAB_BRIDGE' stp='off' delay='0'/>
+  <ip address='$LAB_HOST_IP' netmask='255.255.255.0'/>
+</network>
+XML
+fi
+virsh net-info "$LAB_NET" | grep -q 'Active:.*yes' || virsh net-start "$LAB_NET" >/dev/null
+echo "network $LAB_NET up on $LAB_BRIDGE ($LAB_HOST_IP/24)"

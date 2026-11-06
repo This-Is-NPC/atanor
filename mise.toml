@@ -1,0 +1,201 @@
+[tools]
+erlang = "28.5.0.7"
+elixir = "1.20.4-otp-28"
+rust = { version = "1.97.1", targets = "wasm32-wasip2" }
+"aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
+
+[tasks.test]
+description = "Run the default test suite (no external services)"
+run = "mix test"
+
+[tasks.test-listeners-parallel]
+description = "Run the listener tests in two concurrent processes on a busy loopback (argument: rounds, default 20)"
+run = "scripts/test-listeners-parallel"
+
+[tasks.dev]
+description = "Run a single local node over the in-memory store (arguments: --port, --data-dir, --store seaweedfs)"
+run = "mix atanor.dev"
+
+[tasks."build:cli"]
+description = "Build the atanor command (escript) into _build/cli/atanor"
+run = "scripts/build-cli"
+sources = ["lib/**/*.ex", "mix.exs", "mix.lock"]
+outputs = ["_build/cli/atanor"]
+
+[tasks."seaweedfs:up"]
+description = "Start the disposable SeaweedFS container on 127.0.0.1:18343"
+run = "scripts/seaweedfs-up"
+
+[tasks."seaweedfs:down"]
+description = "Remove the disposable SeaweedFS container"
+run = "scripts/seaweedfs-down"
+
+[tasks."test:seaweedfs"]
+description = "Run the tests tagged seaweedfs against SeaweedFS"
+depends = ["seaweedfs:up"]
+run = "mix test --only seaweedfs"
+
+[tasks."test:cluster"]
+description = "Run the tests tagged cluster on peer nodes (about six minutes; needs epmd)"
+run = "mix test --only cluster"
+
+[tasks."build:wasm-fixtures"]
+description = "Build the test guests into test/fixtures/wasm"
+run = "scripts/build-wasm-fixtures"
+sources = ["test/fixtures/guests/Cargo.toml", "test/fixtures/guests/src/**", "test/fixtures/guests/wit/*.wit", "wit/**/*.wit"]
+outputs = ["test/fixtures/wasm/*.wasm"]
+
+[tasks."test:native"]
+description = "Run the Rust unit tests of the WASM crate"
+run = "scripts/test-native"
+
+[tasks."test:coverage"]
+description = "Measure line coverage of lib/ and the Rust crate over the unit, cluster, native and SeaweedFS runs; fails below 90% per language (about 30 minutes; see scripts/test-coverage for stages and ATANOR_COVERAGE_* settings)"
+run = "scripts/test-coverage"
+
+[tasks."bench:wasm"]
+description = "Measure compile, instantiation and requests per second of WASM workers (argument: seconds per case)"
+run = "scripts/bench-wasm"
+
+[tasks."bench:http"]
+description = "Measure requests per second and latency of native and WASM workers (argument: seconds per case)"
+run = "scripts/bench-http"
+
+[tasks."bench:micro"]
+description = "Time the per-request and per-job costs in nanoseconds per call (arguments: config, wasm, regex, match, jobs, purge)"
+run = "scripts/bench-micro"
+
+[tasks."bench:feed"]
+description = "Time a change feed subscriber receiving a burst of changes and a lone change (arguments: writes, feed.poll_ms, then optionally object_batches and linger_ms)"
+run = "scripts/bench-feed"
+
+[tasks."bench:idle-polls"]
+description = "Count the store reads of an idle node polling finished sweep operations (arguments: operations, seconds)"
+run = "scripts/bench-idle-polls"
+
+[tasks."bench:hot-cell-tail"]
+description = "Measure the latency tail of one hot cell over a store with added latency (arguments: clients, seconds, store latency in ms)"
+run = "scripts/bench-hot-cell-tail"
+
+[tasks."bench:auth"]
+description = "Time the verification of an RS256 and an ES256 bearer token"
+run = "scripts/bench-auth"
+
+[tasks."bench:cells"]
+description = "Wake thousands of cells on one node through Atanor and report resource use (arguments: number of cells, idle timeout in seconds)"
+run = "scripts/bench-cells"
+
+[tasks."bench:fetch"]
+description = "Measure the latency of sequential outbound HTTP fetches to a local target (argument: number of fetches, default 500)"
+run = "scripts/bench-fetch"
+
+[tasks."bench:jobs"]
+description = "Measure enqueue, execution and bulk-operation throughput (arguments: cells, jobs in one cell)"
+run = "scripts/bench-jobs"
+
+[tasks."bench:job-trips"]
+description = "Count store requests per job and jobs per second in one cell against SeaweedFS with added latency (options: --jobs, --latency, --concurrency, --handler, --raw)"
+depends = ["seaweedfs:up"]
+run = "scripts/bench-job-trips"
+
+[tasks."bench:cluster"]
+description = "Compare requests forwarded to the owner of a cell with local ones on three peer nodes (argument: seconds per case; needs epmd)"
+run = "scripts/bench-cluster"
+
+[tasks."check:no-phoenix"]
+description = "Compile and run Atanor in examples/hello-native, which does not depend on Phoenix or Ranch"
+run = "scripts/check-no-phoenix"
+
+[tasks."docs:dashboard-screenshots"]
+description = "Regenerate the dashboard screenshots in docs/img from a node with synthetic data (needs chromium)"
+run = "scripts/dashboard-screenshots"
+
+[tasks."lab:build"]
+description = "Build the release of the cluster lab application (lab/app)"
+run = "scripts/lab-build"
+
+[tasks."lab:image"]
+description = "Download the Arch Linux cloud image into /var/tmp/atanor-lab/cache and verify its checksum"
+run = "scripts/lab-image"
+
+[tasks."lab:network"]
+description = "Create the isolated libvirt network atanor-lab (qemu:///system)"
+run = "scripts/lab-network"
+
+[tasks."lab:vms"]
+description = "Create the VMs atanor-lab-1..3 and atanor-lab-store on the lab network"
+run = "scripts/lab-vms"
+
+[tasks."lab:store"]
+description = "Install and start SeaweedFS in atanor-lab-store and create the bucket"
+run = "scripts/lab-store"
+
+[tasks."lab:nodes"]
+description = "Install the release in the three VMs, start the nodes and wait until they serve"
+run = "scripts/lab-nodes"
+
+[tasks."lab:up"]
+description = "Bring the cluster lab up: build, image, network, VMs, store, nodes (see docs/how-to-run-the-cluster-lab.md)"
+run = [
+  { task = "lab:build" },
+  { task = "lab:image" },
+  { task = "lab:network" },
+  { task = "lab:vms" },
+  { task = "lab:store" },
+  { task = "lab:nodes" },
+]
+
+[tasks."lab:down"]
+description = "Remove the lab VMs, disks, seeds, key and network (the image cache stays); safe to rerun"
+run = "scripts/lab-down"
+
+[tasks."lab:scenario"]
+description = "Run named lab scenarios, or list them without arguments (results in lab/results/STAMP)"
+run = "scripts/lab-scenario"
+
+[tasks."lab:test"]
+description = "Run every lab scenario and write the results to lab/results/STAMP (about 50 minutes)"
+run = "scripts/lab-scenario all"
+
+[tasks."docs:lab-dashboard-screenshots"]
+description = "Capture docs/img/lab-*.png from the running lab (loses node 3 on purpose; reset by the next scenario)"
+run = "scripts/lab-scenario dashboard"
+
+[tasks."bench:detector"]
+description = "Measure time to detect a lost node and to serve its cells again, and the heartbeat cost, on peer nodes (argument: repetitions; about five minutes; needs epmd)"
+run = "scripts/bench-detector"
+
+[tasks."build:scoreboard"]
+description = "Build the scoreboard example (WASM) into examples/scoreboard/scoreboard.wasm"
+run = "scripts/build-scoreboard"
+sources = ["examples/scoreboard/guest/src/**", "examples/scoreboard/guest/Cargo.toml", "examples/scoreboard/guest/wit/world.wit", "wit/**/*.wit"]
+outputs = ["examples/scoreboard/scoreboard.wasm"]
+
+[tasks."cluster:up"]
+description = "Build the node image if needed, start the container cluster (project atanor-cluster) and wait until it serves (env: ATANOR_CLUSTER_NODES, _NODE_CPUS, _NODE_MEMORY, _HTTP_PORT, _TMPFS=1 for data in memory, ...)"
+run = "scripts/cluster-up"
+
+[tasks."cluster:down"]
+description = "Stop and remove the containers, network and volumes of the atanor-cluster project and print the container ids"
+run = "scripts/cluster-down"
+
+[tasks."cluster:chaos"]
+description = "Inject a fault: ACTION TARGET, with ACTION kill|stop|start|restart|pause|unpause|partition|heal|status and TARGET node-N|store|lb"
+run = "scripts/cluster-chaos"
+
+[tasks."cluster:deploy-example"]
+description = "Deploy examples/scoreboard to the running cluster with atanor deploy and a token scoped to that worker"
+depends = ["build:cli", "build:scoreboard"]
+run = "scripts/cluster-deploy-example"
+
+[tasks."cluster:scoreboard-check"]
+description = "Write acknowledged scores through the load balancer and compare them with what is stored (arguments: write|verify --url URL --rooms R1,R2 --log FILE ...)"
+run = "scripts/scoreboard-check"
+
+[tasks."cluster:chaos-run"]
+description = "Run one fault scenario under load and print acknowledged/refused/unknown requests, LOST and DUPLICATED writes, recovery time and latency (kill|pause|partition|store-restart|rollout-deploy|rollout-restart; see docs/how-to-run-a-cluster-in-containers.md)"
+run = "scripts/cluster-chaos-run"
+
+[tasks."cluster:roll"]
+description = "Roll the cluster's nodes onto a rebuilt image one at a time: build|roll (used by cluster:chaos-run rollout-restart)"
+run = "scripts/cluster-roll"

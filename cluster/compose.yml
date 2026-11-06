@@ -1,0 +1,175 @@
+# An Atanor cluster in containers: N nodes, SeaweedFS as the store, HAProxy in front.
+# Use it through `mise run cluster:up` (docs/how-to-run-a-cluster-in-containers.md): the scripts
+# generate the secrets in cluster/secrets and the Alambique checkout (cluster/.build/alambique) the
+# image needs. The nodes are the services node-1 to node-10 (cluster:up starts the first
+# ATANOR_CLUSTER_NODES): each has a fixed hostname and name, which is the name of the Erlang node
+# (atanor@node-N).
+# Every setting below has a default; the variables are in the how-to.
+name: atanor-cluster
+
+x-logging: &logging
+  driver: json-file
+  options: {max-size: 10m, max-file: "3"}
+
+services:
+  store:
+    image: ${ATANOR_CLUSTER_STORE_IMAGE:-chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/s3_access_key)" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/s3_secret_key)";
+        exec /entrypoint.sh mini -dir=/data -ip=store -ip.bind=0.0.0.0 -s3.port=8333 -admin.ui=false
+    secrets: [s3_access_key, s3_secret_key]
+    volumes: [store-data:/data]
+    cpus: ${ATANOR_CLUSTER_STORE_CPUS:-1.5}
+    mem_limit: ${ATANOR_CLUSTER_STORE_MEMORY:-2g}
+    pids_limit: 1024
+    healthcheck:
+      # Any HTTP answer (even 403) means the S3 gateway is listening.
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://127.0.0.1:8333/"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    logging: *logging
+
+  bucket:
+    image: ${ATANOR_CLUSTER_IMAGE:-atanor-cluster-node:local}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        curl -sS -f -o /dev/null -w 'bucket ${ATANOR_CLUSTER_BUCKET:-atanor}: HTTP %{http_code}\n'
+        --aws-sigv4 aws:amz:us-east-1:s3 --user "$$(cat /run/secrets/s3_access_key):$$(cat /run/secrets/s3_secret_key)"
+        -X PUT http://store:8333/${ATANOR_CLUSTER_BUCKET:-atanor}
+    secrets: [s3_access_key, s3_secret_key]
+    depends_on:
+      store: {condition: service_healthy}
+    restart: "no"
+    logging: *logging
+
+  node-1: &node
+    image: ${ATANOR_CLUSTER_IMAGE:-atanor-cluster-node:local}
+    build:
+      context: ..
+      dockerfile: cluster/Dockerfile
+      additional_contexts:
+        alambique: ./.build/alambique
+      args:
+        RELEASE_ID: ${ATANOR_CLUSTER_RELEASE:-local}
+        CARGO_BUILD_JOBS: ${ATANOR_CLUSTER_BUILD_JOBS:-6}
+    init: true
+    hostname: node-1
+    container_name: atanor-cluster-node-1
+    networks:
+      default: {aliases: [node]}
+    cpus: ${ATANOR_CLUSTER_NODE_CPUS:-1.5}
+    mem_limit: ${ATANOR_CLUSTER_NODE_MEMORY:-2g}
+    pids_limit: 2048
+    # NET_ADMIN lets `cluster:chaos partition` drop packets inside the node's own network
+    # namespace; nothing on the host is touched.
+    cap_add: [NET_ADMIN]
+    # The chaos task restarts what it stopped; a killed node stays down until then.
+    restart: "no"
+    stop_grace_period: 30s
+    secrets: [cookie, admin_token, dashboard_token, s3_access_key, s3_secret_key]
+    environment:
+      ATANOR_NODE_S3_ENDPOINT: http://store:8333
+      ATANOR_NODE_BUCKET: ${ATANOR_CLUSTER_BUCKET:-atanor}
+      ATANOR_NODE_PEERS: node-1,node-2,node-3,node-4,node-5,node-6,node-7,node-8,node-9,node-10
+      ATANOR_NODE_LEASE_TTL_MS: ${ATANOR_CLUSTER_LEASE_TTL_MS:-30000}
+      ATANOR_NODE_NET_TICKTIME: ${ATANOR_CLUSTER_NET_TICKTIME:-60}
+    volumes: [/var/lib/atanor]
+    depends_on:
+      bucket: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -o /dev/null -H \"authorization: Bearer $$(cat /run/secrets/admin_token)\" http://127.0.0.1:4001/health/ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+    logging: *logging
+
+  node-2:
+    <<: *node
+    hostname: node-2
+    container_name: atanor-cluster-node-2
+    # The image is built by node-1.
+    build: !reset null
+  node-3:
+    <<: *node
+    hostname: node-3
+    container_name: atanor-cluster-node-3
+    # The image is built by node-1.
+    build: !reset null
+  node-4:
+    <<: *node
+    hostname: node-4
+    container_name: atanor-cluster-node-4
+    # The image is built by node-1.
+    build: !reset null
+  node-5:
+    <<: *node
+    hostname: node-5
+    container_name: atanor-cluster-node-5
+    # The image is built by node-1.
+    build: !reset null
+  node-6:
+    <<: *node
+    hostname: node-6
+    container_name: atanor-cluster-node-6
+    # The image is built by node-1.
+    build: !reset null
+  node-7:
+    <<: *node
+    hostname: node-7
+    container_name: atanor-cluster-node-7
+    # The image is built by node-1.
+    build: !reset null
+  node-8:
+    <<: *node
+    hostname: node-8
+    container_name: atanor-cluster-node-8
+    # The image is built by node-1.
+    build: !reset null
+  node-9:
+    <<: *node
+    hostname: node-9
+    container_name: atanor-cluster-node-9
+    # The image is built by node-1.
+    build: !reset null
+  node-10:
+    <<: *node
+    hostname: node-10
+    container_name: atanor-cluster-node-10
+    # The image is built by node-1.
+    build: !reset null
+
+  lb:
+    image: ${ATANOR_CLUSTER_LB_IMAGE:-haproxy:3.2-alpine@sha256:5893840576071e6217cd52ebdcc14f454c6f7a631056fa6f4e0f40d3cac4215b}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - export ATANOR_ADMIN_TOKEN="$$(cat /run/secrets/admin_token)"; exec haproxy -db -f /usr/local/etc/haproxy/haproxy.cfg
+    secrets: [admin_token]
+    volumes: [./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro]
+    # Everything is published on the host's loopback only.
+    ports:
+      - ${ATANOR_CLUSTER_BIND:-127.0.0.1}:${ATANOR_CLUSTER_HTTP_PORT:-18080}:4000
+      - ${ATANOR_CLUSTER_BIND:-127.0.0.1}:${ATANOR_CLUSTER_ADMIN_PORT:-18081}:4001
+      - ${ATANOR_CLUSTER_BIND:-127.0.0.1}:${ATANOR_CLUSTER_DASHBOARD_PORT:-18082}:4002
+      - ${ATANOR_CLUSTER_BIND:-127.0.0.1}:${ATANOR_CLUSTER_STATS_PORT:-18083}:8404
+    cpus: ${ATANOR_CLUSTER_LB_CPUS:-0.5}
+    mem_limit: ${ATANOR_CLUSTER_LB_MEMORY:-256m}
+    pids_limit: 256
+    restart: "no"
+    logging: *logging
+
+volumes:
+  store-data:
+
+secrets:
+  cookie: {file: ./secrets/cookie}
+  admin_token: {file: ./secrets/admin_token}
+  dashboard_token: {file: ./secrets/dashboard_token}
+  s3_access_key: {file: ./secrets/s3_access_key}
+  s3_secret_key: {file: ./secrets/s3_secret_key}

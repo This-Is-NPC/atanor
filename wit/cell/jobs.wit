@@ -1,0 +1,39 @@
+package atanor:cell@0.1.0;
+
+/// Jobs on a cell, for workers whose manifest sets `bindings.jobs`. The
+/// namespace must be in `bindings.cells`. A job id is stable across retries
+/// and takeovers and is the default idempotency key.
+interface jobs {
+  use sql.{address, statement};
+
+  variant unique-period {
+    /// Unique while the job is pending, running or dead.
+    until-done,
+    /// Unique for the life of the cell.
+    forever,
+    /// Unique for this many seconds.
+    seconds(s64),
+  }
+
+  record new-job {
+    kind: string,
+    payload: list<u8>,
+    scheduled-at-ms: option<s64>,
+    max-attempts: option<u32>,
+    unique-key: option<string>,
+    unique-period: option<unique-period>,
+    idempotency-key: option<string>,
+  }
+
+  variant error {
+    /// Jobs are not in `bindings.jobs` or the namespace is not granted.
+    not-granted(string),
+    failed(string),
+  }
+
+  /// Enqueues a job in its own transaction.
+  enqueue: func(cell: address, job: new-job) -> result<string, error>;
+
+  /// Runs the statements and enqueues the job in one transaction.
+  enqueue-batch: func(cell: address, statements: list<statement>, job: new-job) -> result<string, error>;
+}

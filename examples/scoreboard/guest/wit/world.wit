@@ -1,0 +1,10 @@
+package atanor:scoreboard;
+
+world scoreboard {
+  include wasi:http/proxy@0.2.12;
+  import atanor:cell/sql@0.1.0;
+  import atanor:cell/jobs@0.1.0;
+  import atanor:cell/sockets@0.1.0;
+  export atanor:worker/job-handler@0.1.0;
+  export atanor:worker/socket-handler@0.1.0;
+}

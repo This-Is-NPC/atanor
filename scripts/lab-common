@@ -1,0 +1,40 @@
+# Shared settings and helpers of the lab scripts; sourced, not run.
+# Every object the lab creates is named atanor-lab*, and nothing else is touched.
+
+LAB=atanor-lab
+LAB_DIR=${ATANOR_LAB_DIR:-/var/tmp/atanor-lab}   # disks, seeds, key, token; not under $HOME, which qemu cannot traverse
+LAB_CACHE=$LAB_DIR/cache                         # downloaded image and its checksum, kept by lab:down
+LAB_NET=$LAB
+LAB_BRIDGE=virbr-alab
+LAB_SUBNET=10.77.42
+LAB_HOST_IP=$LAB_SUBNET.1
+LAB_S3="http://$LAB_SUBNET.20:8333"
+LAB_IMAGE=Arch-Linux-x86_64-cloudimg-20261101.620452.qcow2
+LAB_IMAGE_URL=https://geo.mirror.pkgbuild.com/images/latest
+LAB_NODES="1 2 3"       # the Atanor nodes; the store VM is "store"
+LAB_VMS="$LAB_NODES store"
+
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+virsh() { command virsh -c qemu:///system "$@"; }
+node_ip() { if [[ $1 == store ]]; then echo "$LAB_SUBNET.20"; else echo "$LAB_SUBNET.1$1"; fi; }
+node_vm() { echo "$LAB-$1"; }
+node_mac() { if [[ $1 == store ]]; then echo 52:54:00:a7:00:20; else printf '52:54:00:a7:00:1%s' "$1"; fi; }
+node_name() { echo "atanor@$(node_ip "$1")"; }
+
+# Refuses any name that is not a lab object.
+lab_only() {
+  case "$1" in
+    "$LAB" | "$LAB"-*) ;;
+    *) echo "refusing to touch '$1': not a lab object" >&2; exit 1 ;;
+  esac
+}
+
+ssh_opts=(-i "$LAB_DIR/ssh/id_ed25519" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+  -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes)
+# lab_ssh N COMMAND...: runs a command in lab VM N.
+lab_ssh() { local n=$1; shift; ssh "${ssh_opts[@]}" "lab@$(node_ip "$n")" "$@"; }
+lab_scp() { scp -q "${ssh_opts[@]}" "$@"; }
+now_ms() { date +%s%3N; }
+# lab_rpc N EXPRESSION: evaluates an Elixir expression inside the release running in VM N.
+lab_rpc() { lab_ssh "$1" "set -a; . /etc/atanor-lab.env; set +a; /opt/atanor-lab/bin/atanor_lab rpc '$2'"; }

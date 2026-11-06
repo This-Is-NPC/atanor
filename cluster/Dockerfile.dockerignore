@@ -1,0 +1,16 @@
+**/_build
+**/deps
+**/target
+.git
+erl_crash.dump
+tmp
+priv
+lab
+bench
+docs
+test
+testkit
+examples
+cluster/secrets
+cluster/.build
+cluster/node/mix.lock

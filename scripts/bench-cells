@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Wakes thousands of cells through Atanor. Arguments: number of cells (default 5000), idle timeout in seconds (default 20).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec mix run bench/cells.exs "$@"

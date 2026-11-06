@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Run the Rust unit tests of the WASM crate.
+set -euo pipefail
+cd "$(dirname "$0")/../native/atanor_wasm"
+cargo test --release

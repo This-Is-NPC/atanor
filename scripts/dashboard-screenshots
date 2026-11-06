@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Regenerate docs/img/dashboard-*.png: start scripts/dashboard-demo.exs (a node with
+# synthetic data and background traffic) and capture each page with Playwright
+# (mise: npm:playwright, with its browsers installed). Safe to rerun; it replaces the images.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+work=$(mktemp -d)
+node_pid=
+cleanup() {
+  [[ -n "$node_pid" ]] && kill "$node_pid" 2>/dev/null || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+MIX_ENV=test mise exec -- mix run scripts/dashboard-demo.exs >"$work/node.log" 2>&1 &
+node_pid=$!
+
+for _ in $(seq 300); do
+  grep -q '^DASHBOARD ' "$work/node.log" && break
+  kill -0 "$node_pid" 2>/dev/null || { cat "$work/node.log" >&2; exit 1; }
+  sleep 0.2
+done
+url=$(sed -n 's/^DASHBOARD //p' "$work/node.log")
+[[ -n $url ]] || { cat "$work/node.log" >&2; exit 1; }
+sleep 20 # traffic for the charts
+
+mkdir -p docs/img
+NODE_PATH="$(mise where npm:playwright)/node_modules" node scripts/capture-dashboard.cjs "$url" demo-token docs/img

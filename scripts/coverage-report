@@ -1,0 +1,67 @@
+#!/usr/bin/env -S mix run --no-start --no-compile --no-deps-check
+# Print a coverage table sorted by coverage (largest gap first on ties) and exit 1 below the threshold.
+#   coverage-report elixir DIR THRESHOLD   merges DIR/*.coverdata; ignores the test_coverage ignore_modules of mix.exs
+#   coverage-report rust JSON THRESHOLD    reads `cargo llvm-cov report --json`
+defmodule CoverageReport do
+  def main(["elixir", dir, threshold]) do
+    ignore = Mix.Project.config()[:test_coverage][:ignore_modules] || []
+    Mix.ensure_application!(:tools)
+    {:ok, _} = :cover.start()
+
+    for file <- Path.wildcard(Path.join(dir, "*.coverdata")), do: :ok = :cover.import(String.to_charlist(file))
+
+    # Silence the "analysis includes imported files" message of cover.
+    {:ok, io} = StringIO.open("")
+    Process.group_leader(Process.whereis(:cover_server), io)
+    {:result, ok, _failed} = :cover.analyse(:cover.imported_modules(), :coverage, :line)
+
+    rows =
+      ok
+      |> Enum.reject(fn {{mod, line}, _} -> line == 0 or ignored?(mod, ignore) end)
+      |> Enum.group_by(fn {{mod, _}, _} -> inspect(mod) end, fn {_, {cov, not_cov}} -> {cov, not_cov} end)
+      |> Enum.map(fn {mod, lines} -> {mod, Enum.sum(for({c, _} <- lines, do: c)), Enum.sum(for({_, n} <- lines, do: n))} end)
+
+    report("Elixir (lib/)", "module", rows, threshold)
+  end
+
+  def main(["rust", json, threshold]) do
+    [%{"files" => files}] = json |> File.read!() |> :json.decode() |> Map.fetch!("data")
+    root = File.cwd!() <> "/"
+
+    rows =
+      for %{"filename" => name, "summary" => %{"lines" => %{"count" => count, "covered" => covered}}} <- files,
+          do: {String.replace_prefix(name, root, ""), covered, count - covered}
+
+    report("Rust (native/atanor_wasm)", "file", rows, threshold)
+  end
+
+  defp ignored?(mod, ignore), do: Enum.any?(ignore, &(if(is_struct(&1, Regex), do: Regex.match?(&1, inspect(mod)), else: mod == &1)))
+
+  defp report(title, label, rows, threshold) do
+    {threshold, _} = Float.parse(threshold)
+    rows = Enum.sort_by(rows, fn {name, cov, not_cov} -> {pct(cov, not_cov), -not_cov, name} end)
+    width = rows |> Enum.map(&(&1 |> elem(0) |> String.length())) |> Enum.max(fn -> 10 end) |> max(String.length(label))
+
+    IO.puts("\n#{title}")
+    IO.puts("#{String.pad_trailing(label, width)}  #{String.pad_leading("lines", 6)}  #{String.pad_leading("uncovered", 9)}  #{String.pad_leading("cover", 7)}")
+
+    for {name, cov, not_cov} <- rows do
+      IO.puts("#{String.pad_trailing(name, width)}  #{String.pad_leading("#{cov + not_cov}", 6)}  #{String.pad_leading("#{not_cov}", 9)}  #{String.pad_leading(fmt(pct(cov, not_cov)), 6)}%")
+    end
+
+    {cov, not_cov} = Enum.reduce(rows, {0, 0}, fn {_, c, n}, {ac, an} -> {ac + c, an + n} end)
+    total = pct(cov, not_cov)
+    IO.puts("TOTAL #{title}: #{fmt(total)}% of #{cov + not_cov} lines (#{not_cov} uncovered), threshold #{fmt(threshold)}%")
+
+    if total < threshold do
+      IO.puts("FAIL #{title}: below the threshold")
+      System.halt(1)
+    end
+  end
+
+  defp pct(_cov, 0), do: 100.0
+  defp pct(cov, not_cov), do: cov / (cov + not_cov) * 100
+  defp fmt(x), do: :erlang.float_to_binary(x * 1.0, decimals: 2)
+end
+
+CoverageReport.main(System.argv())

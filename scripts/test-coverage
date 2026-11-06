@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Measure test coverage of the production code: Elixir (lib/) and Rust (native/atanor_wasm).
+#
+#   scripts/test-coverage [--keep] [--report-only] [STAGE...] [-- MIX_TEST_ARGS...]
+#
+# STAGE is native, unit, cluster or seaweedfs (default: all). Each stage exports its results; the report merges
+# everything collected so far. Data is cleared first unless --keep or --report-only is given, so a long stage can be
+# run in parts (--keep cluster -- test/cluster/a_test.exs). Arguments after -- go to `mix test` in the stages run.
+#
+# The Elixir runs use `mix test --cover`, and the Rust library is built instrumented (cargo-llvm-cov) in a separate
+# build path and target directory, so the Rust lines run by the Elixir WASM tests and by peer nodes count too.
+# Peer nodes started by AtanorTestkit.Cluster are cover-compiled and flushed when the cluster stops; a peer that is
+# killed or halted loses its counters. The instrumented NIF is written to priv/native, which all build paths share:
+# the script puts the normal one back when it ends.
+#
+# Environment (defaults):
+#   ATANOR_COVERAGE_THRESHOLD   minimum line coverage per language, in percent (90)
+#   ATANOR_COVERAGE_IGNORE      comma-separated regexes of Elixir module names left out (mix.exs: test support, testkit)
+#   ATANOR_COVERAGE_RUST_IGNORE regex of Rust file names left out, for cargo llvm-cov (none; it already skips tests/)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+root=$PWD
+crate=$root/native/atanor_wasm
+
+threshold=${ATANOR_COVERAGE_THRESHOLD:-90}
+keep=0 report_only=0 stages=() mix_args=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --keep) keep=1 ;;
+    --report-only) report_only=1 ;;
+    --) shift; mix_args=("$@"); break ;;
+    native|unit|cluster|seaweedfs) stages+=("$1") ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+[ ${#stages[@]} -gt 0 ] || stages=(native unit cluster seaweedfs)
+
+# Instrumented Rust: cargo-llvm-cov sets the flags and the profile file; keep them out of the normal target dir.
+set -a
+eval "$(cd "$crate" && cargo llvm-cov show-env --export-prefix 2>/dev/null)"
+set +a
+export CARGO_TARGET_DIR=$crate/target/llvm-cov-target
+export CARGO_LLVM_COV_TARGET_DIR=$CARGO_TARGET_DIR CARGO_LLVM_COV_BUILD_DIR=$CARGO_TARGET_DIR
+export LLVM_PROFILE_FILE=$CARGO_TARGET_DIR/atanor_wasm-%p-%m.profraw
+export MIX_BUILD_PATH=$root/_build/coverage
+export MIX_ENV=test
+
+cover=$root/cover
+stamp=$(date +%s)
+
+if [ $report_only -eq 0 ]; then
+  if [ $keep -eq 0 ]; then
+    rm -rf "$cover"
+    (cd "$crate" && cargo llvm-cov clean --profraw-only)
+  fi
+  mkdir -p "$cover"
+  # priv/ is shared by every build path: keep the normal NIF and put it back, and force the instrumented build.
+  nif=$root/priv/native/atanor_wasm.so
+  saved=$(mktemp)
+  [ ! -f "$nif" ] || cp -p "$nif" "$saved"
+  cleanup() {
+    [ ! -s "$saved" ] || cp -p "$saved" "$nif"
+    rm -f "$saved"
+    if [[ " ${stages[*]} " == *" seaweedfs "* ]]; then mise run seaweedfs:down; fi
+  }
+  trap cleanup EXIT
+  rm -rf "$MIX_BUILD_PATH/lib/atanor"
+  for stage in "${stages[@]}"; do
+    echo "== stage $stage"
+    case $stage in
+      native) scripts/test-native ;;
+      unit) mise run test --cover --export-coverage "unit-$stamp" "${mix_args[@]}" ;;
+      cluster) mise run test:cluster --cover --export-coverage "cluster-$stamp" "${mix_args[@]}" ;;
+      seaweedfs) mise run test:seaweedfs --cover --export-coverage "seaweedfs-$stamp" "${mix_args[@]}" ;;
+    esac
+  done
+fi
+
+echo "== report"
+status=0
+scripts/coverage-report elixir "$cover" "$threshold" || status=1
+
+json=$cover/rust.json
+ignore=()
+[ -z "${ATANOR_COVERAGE_RUST_IGNORE:-}" ] || ignore=(--ignore-filename-regex "$ATANOR_COVERAGE_RUST_IGNORE")
+(cd "$crate" && cargo llvm-cov report --release --json --summary-only --output-path "$json" ${ignore[@]+"${ignore[@]}"})
+scripts/coverage-report rust "$json" "$threshold" || status=1
+exit $status

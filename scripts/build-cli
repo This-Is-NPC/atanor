@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Builds the `atanor` command, an escript that needs only Erlang to run.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+mix escript.build
+echo "built _build/cli/atanor; copy it to a directory on your PATH"

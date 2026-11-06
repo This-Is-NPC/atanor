@@ -1,0 +1,20 @@
+package atanor:cell@0.1.0;
+
+/// The worker's alarm on a cell (one per cell), for workers whose manifest
+/// sets `bindings.alarms`. The alarm fires into the worker's exported
+/// `atanor:worker/alarm-handler`. Cells are addressed as in `sql`, and the
+/// namespace must be in `bindings.cells`.
+interface alarms {
+  variant error {
+    /// The namespace is not in the manifest's `bindings.cells`.
+    not-granted(string),
+    failed(string),
+  }
+
+  /// Sets the alarm on the cell to fire at `at-ms` (milliseconds since the
+  /// epoch) with `payload`, replacing the one it had on that cell.
+  set-alarm: func(namespace: string, key: string, at-ms: s64, payload: list<u8>) -> result<_, error>;
+
+  /// Cancels the alarm on the cell. Succeeds when there is none.
+  cancel-alarm: func(namespace: string, key: string) -> result<_, error>;
+}

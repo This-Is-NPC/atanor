@@ -1,0 +1,20 @@
+{
+  "manifest_version": 1,
+  "name": "scoreboard",
+  "kind": "wasm",
+  "component": "scoreboard.wasm",
+  "bindings": {
+    "cells": {
+      "rooms": {
+        "migrations": [
+          [1, "CREATE TABLE writes (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, player TEXT NOT NULL, points INTEGER NOT NULL)"],
+          [2, "CREATE TABLE rankings (player TEXT PRIMARY KEY, total INTEGER NOT NULL, rank INTEGER NOT NULL)"],
+          [3, "CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)"]
+        ]
+      }
+    },
+    "jobs": true,
+    "sockets": true
+  },
+  "routes": [{"http": {"host": "scoreboard.localhost", "path": "/rooms"}}]
+}

@@ -1,0 +1,36 @@
+[package]
+name = "guests"
+version = "0.1.0"
+license = "MIT"
+edition = "2021"
+publish = false
+
+# One crate, one feature per guest: scripts/build-wasm-fixtures builds each
+# feature into test/fixtures/wasm/<feature>.wasm.
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+hello = []
+echo = []
+spin = []
+hog = []
+fieldhog = []
+crash = []
+outbound = []
+cell = []
+secret = []
+caller = []
+sneaky = []
+alarm = []
+job = []
+socket = []
+channel = []
+
+[dependencies]
+wit-bindgen = "0.51"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

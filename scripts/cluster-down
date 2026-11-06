@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Stop and remove the containers, network and volumes of the Compose project atanor-cluster, and
+# print the ids of the containers removed. The image and the secrets are kept. Safe to rerun.
+set -euo pipefail
+source "$(dirname "$0")/cluster-common"
+
+ids=$(cluster_ids)
+if [[ -n $ids ]]; then
+  echo "removing containers:"
+  for id in $ids; do echo "  $id $(container_name "$id")"; done
+fi
+docker compose -p "$CLUSTER" down --volumes --remove-orphans --timeout 30 >/dev/null 2>&1 || true
+
+# Whatever the project still owns after `down` (a failed run): by label, never by name.
+left=$(cluster_ids)
+[[ -z $left ]] || { echo "force-removing: $left"; docker rm -f $left >/dev/null; }
+networks=$(docker network ls -q --filter "label=$label")
+[[ -z $networks ]] || docker network rm $networks >/dev/null
+volumes=$(docker volume ls -q --filter "label=$label")
+[[ -z $volumes ]] || docker volume rm $volumes >/dev/null
+echo "project $CLUSTER removed"

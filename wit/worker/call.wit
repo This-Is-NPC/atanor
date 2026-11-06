@@ -1,0 +1,27 @@
+package atanor:worker@0.1.0;
+
+/// Calls another worker the manifest grants in `bindings.workers`. The
+/// request and response are plain records, because the callee runs inside
+/// the node as data, not as a `wasi:http` stream.
+interface call {
+  record request {
+    method: string,
+    path: string,
+    query: string,
+    headers: list<tuple<string, string>>,
+    body: list<u8>,
+  }
+
+  record response {
+    status: u16,
+    headers: list<tuple<string, string>>,
+    body: list<u8>,
+  }
+
+  variant error {
+    not-granted(string),
+    failed(string),
+  }
+
+  call: func(worker: string, request: request) -> result<response, error>;
+}

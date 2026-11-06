@@ -1,0 +1,56 @@
+package atanor:worker@0.1.0;
+
+/// Exported by workers that accept WebSockets. The host terminates the
+/// WebSocket and calls these functions, each in a fresh instance under the
+/// worker's limits, so state lives in cells. `socket` is an id, unique to the
+/// connection, that the guest can store in a cell.
+interface socket-handler {
+  record request {
+    method: string,
+    path: string,
+    query: string,
+    headers: list<tuple<string, string>>,
+  }
+
+  record response {
+    status: u16,
+    headers: list<tuple<string, string>>,
+    body: list<u8>,
+  }
+
+  variant frame {
+    text(string),
+    binary(list<u8>),
+  }
+
+  variant incoming {
+    text(string),
+    binary(list<u8>),
+    /// A message sent with `atanor:cell/sockets.send-to-cell` to a cell the
+    /// socket is attached to.
+    cell(list<u8>),
+  }
+
+  variant upgrade {
+    accept,
+    /// Refuse with this HTTP response instead of upgrading.
+    reject(response),
+  }
+
+  record reply {
+    /// Frames to send, in order.
+    frames: list<frame>,
+    /// Close the socket after sending them.
+    close: bool,
+  }
+
+  /// A WebSocket upgrade request arrived. The socket does not exist yet, so
+  /// `attach` is not available here; attach in `on-message`.
+  on-open: func(socket: string, request: request) -> result<upgrade, string>;
+
+  /// A frame or a cell message arrived. An error closes the socket with 1011.
+  on-message: func(socket: string, message: incoming) -> result<reply, string>;
+
+  /// The socket ended, for any reason.
+  on-close: func(socket: string);
+}

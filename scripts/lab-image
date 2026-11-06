@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Download the Arch Linux cloud image into the lab cache and verify it against the
+# publisher's SHA256 file. The image is data: nothing from it runs on this host.
+set -euo pipefail
+source "$(dirname "$0")/lab-common"
+
+mkdir -p "$LAB_CACHE"
+cd "$LAB_CACHE"
+if [[ -f $LAB_IMAGE && -f $LAB_IMAGE.SHA256 ]] && sha256sum --status -c "$LAB_IMAGE.SHA256" 2>/dev/null; then
+  echo "image ok: $LAB_CACHE/$LAB_IMAGE"
+  exit 0
+fi
+rm -f "$LAB_IMAGE" "$LAB_IMAGE.SHA256"
+curl -sfLO "$LAB_IMAGE_URL/$LAB_IMAGE.SHA256"
+curl -sfLO "$LAB_IMAGE_URL/$LAB_IMAGE"
+sha256sum -c "$LAB_IMAGE.SHA256"

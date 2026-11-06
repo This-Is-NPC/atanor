@@ -1,0 +1,13 @@
+{
+  "manifest_version": 1,
+  "name": "hello",
+  "kind": "native",
+  "module": "Elixir.Hello.Worker",
+  "bindings": {
+    "cells": {
+      "hits": {"migrations": [[1, "CREATE TABLE hits (n INTEGER NOT NULL)"], [2, "INSERT INTO hits (n) VALUES (0)"]]}
+    },
+    "alarms": true
+  },
+  "routes": [{"http": {"host": "localhost", "path": "/hello"}}]
+}

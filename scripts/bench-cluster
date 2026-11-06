@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Forwarded against local requests on three peer nodes. Argument: seconds per case (default 5).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec mix run bench/cluster.exs "$@"

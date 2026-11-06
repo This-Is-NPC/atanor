@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""Run one fault scenario against the container cluster under continuous load and print what it cost.
+
+  cluster-chaos-run SCENARIO [--target node-N] [--rooms N] [--workers W] [--rate RPS] [--warmup S]
+                    [--hold S] [--settle S] [--timeout S] [--version V] [--out DIR]
+
+SCENARIO:
+  kill            docker kill of TARGET, start it after --hold seconds
+  pause           docker pause of TARGET for --hold seconds (longer than the lease), then unpause
+  partition       TARGET cut from the other nodes for --hold seconds, then healed
+  store-restart   graceful restart of SeaweedFS
+  rollout-deploy  `atanor deploy --activate` of a scoreboard build that answers with another
+                  x-scoreboard-version (--version)
+  rollout-restart rolling restart of every node onto a rebuilt image (scripts/cluster-roll)
+
+The cluster must be up with the scoreboard deployed. The runner starts the load (scripts/scoreboard-check
+write over --rooms rooms, --workers concurrent requests, at most --rate requests per second) and a WebSocket
+client (scripts/scoreboard-watch), waits --warmup seconds, injects the fault, undoes it after --hold, waits
+--settle seconds, stops both by PID, and runs `scoreboard-check verify`. Results go to --out (default
+/tmp/atanor-o9x-SCENARIO-TIME) and, as one JSON line, to stdout last. Exit status is 1 when an acknowledged
+write was lost or duplicated, or a refused write was stored.
+"""
+import argparse
+import atexit
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+import urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+COMPOSE = ["docker", "compose", "-p", "atanor-cluster", "-f", os.path.join(ROOT, "cluster", "compose.yml")]
+if os.environ.get("ATANOR_CLUSTER_TMPFS") == "1":
+    COMPOSE += ["-f", os.path.join(ROOT, "cluster", "compose.tmpfs.yml")]
+SCENARIOS = ["kill", "pause", "partition", "store-restart", "rollout-deploy", "rollout-restart"]
+HOLD = {"kill": 20, "pause": 40, "partition": 40, "store-restart": 0, "rollout-deploy": 15, "rollout-restart": 0}
+children = []
+
+
+def say(message):
+    print(f"[{time.time() - started:7.1f}s] {message}", flush=True)
+
+
+def run(*command, **kwargs):
+    return subprocess.run(command, check=True, text=True, capture_output=True, **kwargs).stdout
+
+
+def published(port):
+    return run(*COMPOSE, "port", "lb", str(port)).strip()
+
+
+def admin(path):
+    request = urllib.request.Request(f"http://{published(4001)}{path}",
+                                     headers={"authorization": "Bearer " + open(f"{ROOT}/cluster/secrets/admin_token").read().strip()})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.load(response)
+
+
+def balancer_up():
+    with urllib.request.urlopen(f"http://{published(8404)}/stats;csv", timeout=5) as response:
+        lines = response.read().decode().splitlines()
+    return sum(1 for l in lines if l.startswith("atanor_http,node") and l.split(",")[17] == "UP")
+
+
+def nodes_seen():
+    return len(admin("/health")["nodes"])
+
+
+def owners(rooms):
+    """room -> node name, from the live cells of every node."""
+    found = {}
+    for name in admin("/health")["nodes"]:
+        cursor = None
+        while True:
+            page = admin(f"/cells?node={name}&limit=1000" + (f"&after={cursor}" if cursor else ""))
+            for cell in page["cells"]:
+                if cell["namespace"] == "rooms" and cell["key"] in rooms:
+                    found[cell["key"]] = name
+            cursor = page.get("next")
+            if not cursor:
+                break
+    return found
+
+
+def wait_healthy(count, timeout=180):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if nodes_seen() == count and balancer_up() == count:
+                return
+        except Exception:
+            pass
+        time.sleep(0.5)
+    raise SystemExit(f"cluster did not return to {count} nodes in {timeout}s")
+
+
+def chaos(action, target, *extra):
+    say(f"chaos {action} {target}")
+    run(os.path.join(HERE, "cluster-chaos"), action, target, *extra)
+
+
+def spawn(command, log):
+    process = subprocess.Popen(command, stdout=open(log, "w"), stderr=subprocess.STDOUT)
+    children.append(process)
+    return process
+
+
+def stop_children():
+    for process in children:
+        if process.poll() is None:
+            process.terminate()
+    for process in children:
+        try:
+            process.wait(30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+def main():
+    global started
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("scenario", choices=SCENARIOS)
+    parser.add_argument("--target", help="node-N for kill, pause and partition (default: the node with most of the rooms)")
+    parser.add_argument("--rooms", type=int, default=12)
+    parser.add_argument("--workers", type=int, default=8, help="concurrent requests of the load generator (at most 6 cores are used)")
+    parser.add_argument("--rate", type=float, default=60, help="requests per second in total")
+    parser.add_argument("--warmup", type=float, default=25)
+    parser.add_argument("--hold", type=float, help="seconds the fault lasts (default depends on the scenario)")
+    parser.add_argument("--settle", type=float, default=40, help="seconds of load after the fault is undone")
+    parser.add_argument("--timeout", type=float, default=10, help="client timeout of a request")
+    parser.add_argument("--version", default=str(int(time.time()) % 100000), help="rollout-deploy: the new x-scoreboard-version")
+    parser.add_argument("--out")
+    args = parser.parse_args()
+    hold = HOLD[args.scenario] if args.hold is None else args.hold
+    out = args.out or time.strftime(f"/tmp/atanor-o9x-{args.scenario}-%H%M%S")
+    os.makedirs(out, exist_ok=True)
+    started = time.time()
+    atexit.register(stop_children)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+
+    url = "http://scoreboard.localhost:" + published(4000).split(":")[1]
+    wait_healthy(len(run("docker", "ps", "-q", "--filter", "label=com.docker.compose.project=atanor-cluster",
+                         "--filter", "name=^/?atanor-cluster-node-[0-9]+$").split()))
+    count = nodes_seen()
+    rooms = [f"c{int(started) % 100000}-{i}" for i in range(args.rooms)]
+    release = None
+    if args.scenario == "rollout-deploy":
+        say(f"building the scoreboard as version {args.version}")
+        run(os.path.join(HERE, "build-scoreboard"), env={**os.environ, "SCOREBOARD_VERSION": args.version})
+    if args.scenario == "rollout-restart":
+        say("building the node image with a new release id")
+        release = run(os.path.join(HERE, "cluster-roll"), "build").strip().splitlines()[-1]
+        say(f"image built, release {release}")
+
+    log, ws_log = f"{out}/load.log", f"{out}/ws.log"
+    for path in (log, ws_log):
+        open(path, "w").close()
+    total = args.warmup + hold + 600
+    t0 = time.time()
+    say(f"load: {len(rooms)} rooms, {args.workers} workers, {args.rate}/s, logs in {out}")
+    spawn([os.path.join(HERE, "scoreboard-check"), "write", "--url", url, "--rooms", ",".join(rooms), "--duration", str(total),
+           "--workers", str(args.workers), "--rate", str(args.rate), "--timeout", str(args.timeout), "--log", log], f"{out}/write.out")
+    time.sleep(args.warmup - 3)
+
+    placed = owners(set(rooms))
+    per_node = {}
+    for room, node in placed.items():
+        per_node.setdefault(node, []).append(room)
+    say("cells per node: " + ", ".join(f"{n.split('@')[1]} {len(r)}" for n, r in sorted(per_node.items())))
+    whole = args.scenario in ("store-restart", "rollout-deploy", "rollout-restart")
+    target = None
+    if not whole:
+        target = args.target or max(per_node, key=lambda n: len(per_node[n])).split("@")[1].replace("atanor-cluster-", "")
+        affected = per_node.get(f"atanor@{target}", [])
+    else:
+        affected = list(rooms)
+    ws_room = (affected or rooms)[0]
+    spawn(["node", os.path.join(HERE, "scoreboard-watch"), url, ws_room, "0", "--log", ws_log], f"{out}/watch.out")
+    time.sleep(3)
+
+    events = {}
+    events["fault_at"] = time.time()
+    say(f"fault: {args.scenario} {target or ''} (affects {len(affected)} rooms: {', '.join(affected)})")
+    if args.scenario == "kill":
+        chaos("kill", target)
+        time.sleep(hold)
+        events["heal_at"] = time.time()
+        chaos("start", target)
+    elif args.scenario == "pause":
+        chaos("pause", target)
+        time.sleep(hold)
+        events["heal_at"] = time.time()
+        chaos("unpause", target)
+    elif args.scenario == "partition":
+        chaos("partition", target)
+        time.sleep(hold)
+        events["heal_at"] = time.time()
+        chaos("heal", target)
+    elif args.scenario == "store-restart":
+        chaos("restart", "store")
+        events["heal_at"] = time.time()
+    elif args.scenario == "rollout-deploy":
+        say(run(os.path.join(HERE, "cluster-deploy-example")).strip().splitlines()[-1])
+        time.sleep(hold)
+        events["heal_at"] = time.time()
+    else:
+        say(run(os.path.join(HERE, "cluster-roll"), "roll", env={**os.environ, "CLUSTER_ROLL_LOGS": out}).strip().replace("\n", "\n         "))
+        events["heal_at"] = time.time()
+    if args.scenario in ("kill", "pause", "partition", "store-restart"):
+        wait_healthy(count)
+        events["healthy_at"] = time.time()
+        say(f"cluster healthy again {events['healthy_at'] - events['heal_at']:.1f}s after the fault was undone")
+    time.sleep(args.settle)
+    events["end_at"] = time.time()
+
+    moved = {}
+    try:
+        after = owners(set(affected))
+        moved = {room: after.get(room, "?").split("@")[-1].replace("atanor-cluster-", "") for room in affected}
+    except Exception as error:
+        say(f"cannot read the owners: {error}")
+    stop_children()
+    say("load stopped")
+    for name in run(*COMPOSE, "ps", "-aq").split():
+        with open(f"{out}/docker-{name}.log", "w") as file:
+            subprocess.run(["docker", "logs", "--since", str(int(started)), name], stdout=file, stderr=subprocess.STDOUT)
+
+    skip, rejoin = 12, 15
+    fault, heal, end = events["fault_at"], events["heal_at"], events["end_at"]
+    command = [os.path.join(HERE, "scoreboard-check"), "verify", "--url", url, "--log", log, "--json", f"{out}/result.json",
+               "--ws-log", ws_log, "--ws-room", ws_room, "--restore-rooms", ",".join(affected), "--fault-at", str(fault),
+               "--restore-until", str(heal if args.scenario in ("kill", "pause", "partition") else end),
+               "--phase", f"before={t0 + skip}:{fault}", "--phase", f"during={fault}:{heal}",
+               "--phase", f"rejoin={heal}:{heal + rejoin}", "--phase", f"after={heal + rejoin}:{end}"]
+    say("verifying")
+    check = subprocess.run(command, text=True, capture_output=True)
+    print(check.stdout, end="")
+    print(check.stderr, end="", file=sys.stderr)
+    result = json.load(open(f"{out}/result.json"))
+    result.update(scenario=args.scenario, target=target, affected_rooms=len(affected), rooms=len(rooms), workers=args.workers,
+                  rate=args.rate, hold_s=hold, events={k: round(v - fault, 1) for k, v in events.items()}, epoch=events, moved=moved,
+                  release=release, version=args.version if args.scenario == "rollout-deploy" else None, out=out)
+    json.dump(result, open(f"{out}/result.json", "w"), indent=1)
+    summary = {k: result[k] for k in ("scenario", "target", "sent", "acked", "refused", "unknown", "no_answer", "lost",
+                                      "duplicated", "unknown_stored", "refused_stored", "reasons", "restore", "phases", "websocket")}
+    print(json.dumps(summary))
+    sys.exit(check.returncode)
+
+
+started = time.time()
+main()

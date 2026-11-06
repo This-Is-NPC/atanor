@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Inject one fault into one container of the project atanor-cluster, or undo it.
+#
+#   cluster-chaos ACTION TARGET [FROM...]
+#
+# TARGET is node-N (or N), store or lb. ACTION:
+#   kill       SIGKILL, no shutdown          start      start a stopped or killed container
+#   stop       graceful stop                 restart    stop gracefully and start again
+#   pause      freeze (cgroup freezer)       unpause    thaw
+#   partition  node: drop all traffic with the other nodes (or only with the nodes in FROM);
+#              store: disconnect it from the cluster network
+#   heal       undo partition
+#   status     the containers, the load balancer's view and each node's view of the cluster
+#
+# Containers are found by the label of the Compose project and acted on by id.
+set -euo pipefail
+source "$(dirname "$0")/cluster-common"
+
+usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+[[ $# -ge 1 ]] || usage
+action=$1; shift
+
+status() {
+  docker ps -a --filter "label=$label" --format 'table {{.Names}}\t{{.Status}}'
+  echo "load balancer (server slots in rotation):"
+  curl -s -m 3 "$(published_url 8404)/stats;csv" \
+    | awk -F, '$1 == "atanor_http" && $2 ~ /^node/ && $18 != "MAINT (resolution)" {printf "  %s %s\n", $2, $18}' || true
+  echo "views of the cluster:"
+  for id in $(cluster_ids node); do
+    [[ $(docker inspect -f '{{.State.Running}} {{.State.Paused}}' "$id") == "true false" ]] || continue
+    docker exec "$id" sh -c 'curl -s -m 3 -H "authorization: Bearer $(cat /run/secrets/admin_token)" http://127.0.0.1:4001/health' \
+      | jq -r --arg name "$(container_name "$id")" '"  \($name) (\(.node)) sees \(.nodes | length) nodes"' 2>/dev/null \
+      || echo "  $(container_name "$id") does not answer"
+  done
+}
+
+[[ $action != status ]] || { status; exit 0; }
+[[ $# -ge 1 ]] || usage
+target=$1; shift
+id=$(cluster_container "$target")
+name=$(container_name "$id")
+
+# Peers of a node: the other node containers, by address.
+peer_ips() {
+  local from=("$@") peer
+  if [[ ${#from[@]} -eq 0 ]]; then
+    for peer in $(cluster_ids node); do [[ $peer == "$id" ]] || from+=("$peer"); done
+  else
+    from=($(for t in "${from[@]}"; do cluster_container "$t"; done))
+  fi
+  for peer in "${from[@]}"; do container_ip "$peer"; done
+}
+
+is_node=false
+[[ $(container_name "$id") == "$CLUSTER"-node-* ]] && is_node=true
+chain=ATANOR_CHAOS
+net=${CLUSTER}_default
+
+case $action in
+  kill) docker kill --signal KILL "$id" >/dev/null ;;
+  stop) docker stop --timeout 30 "$id" >/dev/null ;;
+  start) docker start "$id" >/dev/null ;;
+  restart) docker restart --timeout 30 "$id" >/dev/null ;;
+  pause) docker pause "$id" >/dev/null ;;
+  unpause) docker unpause "$id" >/dev/null ;;
+  partition)
+    if $is_node; then
+      ips=$(peer_ips "$@")
+      docker exec -u 0 "$id" sh -c "iptables -N $chain 2>/dev/null || iptables -F $chain
+        iptables -C INPUT -j $chain 2>/dev/null || iptables -I INPUT -j $chain
+        iptables -C OUTPUT -j $chain 2>/dev/null || iptables -I OUTPUT -j $chain
+        for ip in $(echo $ips); do iptables -A $chain -s \$ip -j DROP; iptables -A $chain -d \$ip -j DROP; done"
+      # With FROM, the peers drop this node too, so the cut is symmetric.
+      if [[ $# -gt 0 ]]; then
+        mine=$(container_ip "$id")
+        for t in "$@"; do
+          docker exec -u 0 "$(cluster_container "$t")" sh -c "iptables -N $chain 2>/dev/null || true
+            iptables -C INPUT -j $chain 2>/dev/null || iptables -I INPUT -j $chain
+            iptables -C OUTPUT -j $chain 2>/dev/null || iptables -I OUTPUT -j $chain
+            iptables -A $chain -s $mine -j DROP; iptables -A $chain -d $mine -j DROP"
+        done
+      fi
+    else
+      docker network disconnect "$net" "$id"
+    fi ;;
+  heal)
+    if $is_node; then
+      for t in $(cluster_ids node); do
+        [[ $(docker inspect -f '{{.State.Running}}' "$t") == true ]] || continue
+        docker exec -u 0 "$t" sh -c "iptables -F $chain 2>/dev/null || true"
+      done
+    else
+      docker network connect --alias "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$id")" "$net" "$id" 2>/dev/null || true
+    fi ;;
+  *) usage ;;
+esac
+echo "$action $name ($id)"

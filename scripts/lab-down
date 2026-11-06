@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Remove every lab object: VMs, disks, seeds, key, network. The image cache stays.
+# Safe to rerun; refuses names that are not atanor-lab*.
+set -euo pipefail
+source "$(dirname "$0")/lab-common"
+
+for n in $LAB_VMS; do
+  vm=$(node_vm "$n")
+  lab_only "$vm"
+  if virsh dominfo "$vm" >/dev/null 2>&1; then
+    virsh destroy "$vm" >/dev/null 2>&1 || true
+    virsh undefine "$vm" --nvram >/dev/null 2>&1 || virsh undefine "$vm" >/dev/null
+    echo "removed $vm"
+  fi
+done
+
+lab_only "$LAB_NET"
+if virsh net-info "$LAB_NET" >/dev/null 2>&1; then
+  virsh net-destroy "$LAB_NET" >/dev/null 2>&1 || true
+  virsh net-undefine "$LAB_NET" >/dev/null
+  echo "removed network $LAB_NET"
+fi
+
+# Only the lab directories below LAB_DIR, never the cache.
+case "$LAB_DIR" in /var/tmp/atanor-lab*) ;; *) echo "refusing to remove $LAB_DIR" >&2; exit 1 ;; esac
+rm -rf "$LAB_DIR/disks" "$LAB_DIR/seeds" "$LAB_DIR/ssh" "$LAB_DIR/secret" "$LAB_DIR/cookie"
+echo "lab removed"

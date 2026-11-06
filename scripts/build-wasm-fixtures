@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Build the test guests (test/fixtures/guests) into test/fixtures/wasm/*.wasm,
+# one component per crate feature. Safe to rerun.
+#
+# The guests' WIT dependencies are assembled in test/fixtures/guests/wit/deps
+# (not committed) by scripts/wasm-guest-deps.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+guests="$root/test/fixtures/guests"
+out="$root/test/fixtures/wasm"
+mkdir -p "$out"
+
+"$root/scripts/wasm-guest-deps" "$guests"
+
+cd "$guests"
+for feature in hello echo spin hog fieldhog crash outbound cell secret caller sneaky alarm socket channel job; do
+  cargo build --release --quiet --target wasm32-wasip2 --no-default-features --features "$feature"
+  cp "target/wasm32-wasip2/release/guests.wasm" "$out/$feature.wasm"
+  echo "built $feature.wasm ($(wc -c <"$out/$feature.wasm") bytes)"
+done

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Install SeaweedFS in the store VM (the weed binary is taken from the pinned Docker image,
+# the VMs have no internet), start it and create the bucket.
+set -euo pipefail
+source "$(dirname "$0")/lab-common"
+
+weed=$LAB_CACHE/weed
+if [[ ! -x $weed ]]; then
+  container=$LAB-weed-extract
+  lab_only "$container"
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  docker create --name "$container" chrislusf/seaweedfs:4.48 >/dev/null
+  docker cp "$container:/usr/bin/weed" "$weed"
+  docker rm -f "$container" >/dev/null
+fi
+
+ip=$(node_ip store)
+if ! lab_ssh store 'systemctl is-active --quiet weed'; then
+  lab_scp "$weed" "lab@$ip:/tmp/weed"
+  lab_ssh store "sudo install -m 755 /tmp/weed /usr/local/bin/weed && rm /tmp/weed
+    sudo mkdir -p /var/lib/weed
+    sudo tee /etc/systemd/system/weed.service >/dev/null <<UNIT
+[Unit]
+Description=SeaweedFS for the Atanor lab
+After=network.target
+[Service]
+Environment=AWS_ACCESS_KEY_ID=atanor AWS_SECRET_ACCESS_KEY=atanor-secret
+ExecStart=/usr/local/bin/weed mini -dir=/var/lib/weed -ip=$ip -ip.bind=$ip -s3.port=8333 -admin.ui=false
+LimitNOFILE=65536
+UNIT
+    sudo systemctl daemon-reload && sudo systemctl enable --now weed 2>/dev/null"
+fi
+
+for _ in $(seq 1 120); do
+  status=$(curl -s -o /dev/null -w '%{http_code}' --aws-sigv4 aws:amz:us-east-1:s3 --user atanor:atanor-secret \
+    -X PUT "$LAB_S3/atanor-lab" || true)
+  [[ $status == 200 || $status == 409 ]] && { echo "SeaweedFS ready on $LAB_S3, bucket atanor-lab"; exit 0; }
+  sleep 0.5
+done
+echo "SeaweedFS did not become ready" >&2
+lab_ssh store 'sudo journalctl -u weed --no-pager | tail -30' >&2
+exit 1

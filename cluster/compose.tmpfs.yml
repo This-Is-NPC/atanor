@@ -1,0 +1,23 @@
+# Added by scripts/cluster-common when ATANOR_CLUSTER_TMPFS=1: the data of SeaweedFS and of every
+# node lives in memory instead of on the host's disk. It is lost when the container is removed
+# or the host restarts. The size counts against the memory limit of the container.
+x-node-tmpfs: &node-tmpfs
+  volumes: !reset []
+  tmpfs:
+    - /var/lib/atanor:size=${ATANOR_CLUSTER_TMPFS_SIZE:-1g},mode=1777
+
+services:
+  store:
+    volumes: !reset []
+    tmpfs:
+      - /data:size=${ATANOR_CLUSTER_TMPFS_SIZE:-1g}
+  node-1: *node-tmpfs
+  node-2: *node-tmpfs
+  node-3: *node-tmpfs
+  node-4: *node-tmpfs
+  node-5: *node-tmpfs
+  node-6: *node-tmpfs
+  node-7: *node-tmpfs
+  node-8: *node-tmpfs
+  node-9: *node-tmpfs
+  node-10: *node-tmpfs

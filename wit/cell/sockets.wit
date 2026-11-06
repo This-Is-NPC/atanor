@@ -1,0 +1,53 @@
+package atanor:cell@0.1.0;
+
+/// WebSockets attached to cells, for workers whose manifest sets
+/// `bindings.sockets`. The namespace must be in `bindings.cells`.
+interface sockets {
+  variant error {
+    /// The namespace is not in the manifest's `bindings.cells`.
+    not-granted(string),
+    /// The reason, for example `:too_large`, `:too_many_subscriptions` or
+    /// `:too_many_channels` (the `channels` limits of the node).
+    failed(string),
+  }
+
+  /// A message of an ephemeral channel: sent to the sockets as this frame.
+  variant message {
+    text(string),
+    binary(list<u8>),
+  }
+
+  record members {
+    /// How many sockets are in the channel, on every node.
+    count: u32,
+    /// The ids of those that joined with one.
+    ids: list<string>,
+  }
+
+  /// Attaches the socket being served to the cell, so `send-to-cell` reaches
+  /// it. Attaching twice is the same as once. Fails in calls that have no
+  /// socket: HTTP requests, alarms and `on-open`.
+  attach: func(namespace: string, key: string) -> result<_, error>;
+
+  /// Sends `message` to every socket attached to the cell, on any node.
+  /// Each one gets it in `on-message` as `incoming.cell`.
+  send-to-cell: func(namespace: string, key: string, message: list<u8>) -> result<_, error>;
+
+  /// Joins the socket being served to the ephemeral channel of the cell, so
+  /// it receives what `publish` sends there as a frame, without a call of the
+  /// guest. `id` names the member for `channel-members`. Joining again
+  /// replaces the id. Fails where `attach` does.
+  join-channel: func(namespace: string, key: string, id: option<string>) -> result<_, error>;
+
+  /// Removes the socket being served from the channel; succeeds when it is
+  /// not in it.
+  leave-channel: func(namespace: string, key: string) -> result<_, error>;
+
+  /// Sends `message` as a frame to every socket in the channel of the cell,
+  /// on any node. It is not written to the cell, runs no transaction and does
+  /// not call the cell's owner. Also available in `on-frame`.
+  publish: func(namespace: string, key: string, message: message) -> result<_, error>;
+
+  /// Who is in the channel of the cell, on every node.
+  channel-members: func(namespace: string, key: string) -> result<members, error>;
+}

@@ -1,0 +1,9 @@
+package atanor:worker@0.1.0;
+
+/// Exported by workers whose manifest sets `bindings.alarms`. Each call runs
+/// in a fresh instance under the worker's limits.
+interface alarm-handler {
+  /// An alarm set with `atanor:cell/alarms` fired. An error, a trap or a
+  /// limit makes the host retry with backoff; delivery is at least once.
+  handle-alarm: func(namespace: string, key: string, payload: list<u8>) -> result<_, string>;
+}

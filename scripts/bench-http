@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# HTTP throughput and latency of native and WASM workers. Argument: seconds per case (default 5).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec mix run bench/http.exs "$@"

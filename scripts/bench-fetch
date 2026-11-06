@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Sequential outbound HTTP fetches against a local target (design §4). Argument: fetches (default 500).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec mix run bench/fetch.exs "$@"

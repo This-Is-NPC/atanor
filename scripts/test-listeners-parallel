@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Runs the listener tests in two concurrent `mix test` processes while a third process holds
+# many listening sockets on 127.0.0.1 and 0.0.0.0. Usage: test-listeners-parallel [rounds] (default 20).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+rounds=${1:-20}
+files=(test/atanor/tcp_test.exs test/atanor/ranch_test.exs)
+out=$(mktemp -d)
+noise=
+cleanup() { [[ -n $noise ]] && kill "$noise" 2>/dev/null || true; rm -rf "$out"; }
+trap cleanup EXIT
+
+python3 -I - <<'PY' &
+import socket, time
+held = []
+for host in ("127.0.0.1", "0.0.0.0"):
+    for _ in range(3000):
+        s = socket.socket()
+        try:
+            s.bind((host, 0)); s.listen()
+        except OSError:
+            break
+        held.append(s)
+time.sleep(3600)
+PY
+noise=$!
+
+MIX_ENV=test mix compile >/dev/null # compile once, before the race
+failed=0
+for i in $(seq "$rounds"); do
+  mix test "${files[@]}" >"$out/a" 2>&1 & a=$!
+  mix test "${files[@]}" >"$out/b" 2>&1 & b=$!
+  ra=0; rb=0
+  wait "$a" || ra=$?
+  wait "$b" || rb=$?
+  if ((ra != 0 || rb != 0)); then
+    failed=$((failed + 1))
+    echo "round $i failed (exit $ra, $rb)"; cat "$out/a" "$out/b"
+  fi
+done
+echo "rounds: $rounds, failed rounds: $failed"
+((failed == 0))

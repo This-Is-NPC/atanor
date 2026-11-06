@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Cost of verifying a bearer token (design §12.14).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec mix run bench/auth_check.exs "$@"

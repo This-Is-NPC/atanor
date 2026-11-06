@@ -1,0 +1,43 @@
+#!/usr/bin/env node
+// Join a scoreboard room over a WebSocket and print every event until interrupted or SECONDS pass.
+//   scoreboard-watch URL ROOM [SECONDS] [--log FILE]
+// URL: the load balancer, for example http://scoreboard.localhost:18080.
+// With --log, each event is appended to FILE as a JSON line with its time ("open" and "close" too)
+// and the client reconnects when the connection drops, as a browser would.
+// Needs Node.js 22 or later (global WebSocket).
+const { appendFileSync } = require("node:fs");
+
+const args = process.argv.slice(2);
+const at = args.indexOf("--log");
+const logFile = at >= 0 ? args.splice(at, 2)[1] : null;
+const [url, room, seconds = "0"] = args;
+if (!url || !room) {
+  console.error("usage: scoreboard-watch URL ROOM [SECONDS] [--log FILE]");
+  process.exit(2);
+}
+const record = (event) => appendFileSync(logFile, JSON.stringify({ t: Date.now() / 1000, ...event }) + "\n");
+
+function connect() {
+  const socket = new WebSocket(`ws://scoreboard.localhost:${new URL(url).port}/rooms/${room}/live`);
+  socket.onopen = () => {
+    if (logFile) record({ type: "open" });
+    socket.send(`join ${room}`);
+  };
+  socket.onmessage = (event) => {
+    if (logFile) record(JSON.parse(event.data));
+    else console.log(event.data);
+  };
+  socket.onerror = (e) => {
+    if (logFile) return;
+    console.error(e.message ?? e);
+    console.error("cannot connect");
+    process.exit(1);
+  };
+  socket.onclose = (event) => {
+    if (!logFile) process.exit(event.code === 1000 ? 0 : 1);
+    record({ type: "close", code: event.code });
+    setTimeout(connect, 200);
+  };
+}
+connect();
+if (Number(seconds) > 0) setTimeout(() => process.exit(0), Number(seconds) * 1000);

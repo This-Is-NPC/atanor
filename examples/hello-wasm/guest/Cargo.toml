@@ -1,0 +1,17 @@
+[package]
+name = "hello-guest"
+version = "0.1.0"
+license = "MIT"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasi = "0.14"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

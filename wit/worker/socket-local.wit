@@ -1,0 +1,22 @@
+package atanor:worker@0.1.0;
+
+/// Optionally exported next to `socket-handler`. The host calls `on-frame`
+/// for each text or binary frame a client sends, on the node that holds the
+/// socket and before `socket-handler.on-message`, which runs on the owner of
+/// the cell. The call has no access to cells: `sql`, `attach` and the other
+/// cell calls fail with `not-granted`; `sockets.publish` and
+/// `sockets.channel-members` work. It runs in a fresh instance under the
+/// worker's limits.
+interface socket-local {
+  use socket-handler.{frame};
+
+  enum verdict {
+    /// Continue with `on-message`.
+    pass,
+    /// The frame ends here.
+    drop,
+  }
+
+  /// An error closes the socket with 1011.
+  on-frame: func(socket: string, frame: frame) -> result<verdict, string>;
+}

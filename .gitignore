@@ -1,0 +1,30 @@
+_build
+deps
+erl_crash.dump
+*.db*
+/tmp
+/native/*/target
+/priv
+/test/fixtures/guests/target
+/test/fixtures/guests/wit/deps
+/lab/results
+/cluster/secrets
+/cluster/.build
+/cover
+# Claude Code local state (worktrees, settings); only untracked item in `git status` today.
+/.claude/
+# Crash dumps from any directory (examples, lab, cluster nodes), not only the root one.
+erl_crash.dump*
+# Editor and OS junk; none tracked today, protects future contributors.
+.DS_Store
+*.swp
+*~
+.elixir_ls/
+.vscode/
+.idea/
+# mix archives/escript output and generated docs, in case contributors build them at the root.
+*.ez
+/doc
+# Environment files with secrets, should anyone add one beside cluster/secrets.
+.env
+.env.*

@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""Write scores to the scoreboard under load and check them against what is stored.
+
+  scoreboard-check write  --url URL --rooms R1,R2 (--count N | --duration S) --log FILE
+                          [--workers W] [--rate RPS] [--timeout S] [--once]
+  scoreboard-check verify --url URL --log FILE [--json FILE] [--phase NAME=START:END ...]
+                          [--restore-rooms R1,R2 --fault-at EPOCH [--restore-until EPOCH] [--slow-ms MS]] [--ws-log FILE --ws-room R]
+
+`write` posts scores with unique client-chosen ids through URL (the load balancer), round-robin
+over the rooms, and logs each one when it is answered. SIGTERM or SIGINT stops it after the calls
+in flight. Every request is put in one of three groups (`classify`):
+
+  acked    201: the client was told the write is committed;
+  refused  the call provably did not run: 503 `unavailable` (no_quorum, owner_down, owner_unreachable,
+           fenced, deployment_unavailable), 503 `overloaded`, a 503 of the balancer (no server in
+           rotation), or a refused connection;
+  unknown  the call may have run: a timeout or a reset (no answer at all), 503 `unknown_outcome`,
+           502, 504 and any other 5xx.
+
+`verify` reads every stored write of the rooms in the log and reports, for the acknowledged writes,
+LOST (not stored) and DUPLICATED (stored more than once); how many unknown and refused writes were
+stored (a refused write that was stored is a BUG); and the latency of acknowledged requests per
+phase. Exit status: 0 when nothing is LOST, DUPLICATED or a refused write stored.
+"""
+import argparse
+import http.client
+import itertools
+import json
+import signal
+import sys
+import threading
+import time
+import urllib.parse
+import uuid
+
+HOST = "scoreboard.localhost"
+PLAYERS = ["ada", "bob", "cy", "dee", "eve"]
+REFUSED_ERRORS = ("unavailable", "overloaded")
+
+
+def call(url, method="GET", timeout=10):
+    """(status, body, version, server); status 0 is no answer, body then names the failure. `version` is
+    the scoreboard deployment that answered (header x-scoreboard-version), `server` the balancer's
+    slot that sent it (x-atanor-server)."""
+    parts = urllib.parse.urlsplit(url)
+    connection = http.client.HTTPConnection(parts.hostname, parts.port, timeout=timeout)
+    try:
+        connection.request(method, parts.path + ("?" + parts.query if parts.query else ""), headers={"host": HOST})
+        response = connection.getresponse()
+        return (response.status, response.read().decode(errors="replace"), response.getheader("x-scoreboard-version", ""),
+                response.getheader("x-atanor-server", ""))
+    except Exception as error:  # refused, reset, timeout
+        return 0, f"{type(error).__name__}: {error}", "", ""
+    finally:
+        connection.close()
+
+
+def classify(status, body):
+    """(group, reason) of one answer; see the module comment."""
+    if status == 201:
+        return "acked", ""
+    if status == 0:
+        return ("refused", "connection_refused") if body.startswith("ConnectionRefusedError") else ("unknown", "no_answer")
+    try:
+        parsed = json.loads(body)
+        error, reason = parsed.get("error"), parsed.get("reason") or parsed.get("error")
+    except (ValueError, AttributeError):
+        error, reason = None, None
+    if status == 503 and error in REFUSED_ERRORS:
+        return "refused", reason
+    if status == 503 and error == "unknown_outcome":
+        return "unknown", "unknown_outcome"
+    if status == 503 and "No server is available" in body:
+        return "refused", "balancer_no_server"
+    return "unknown", f"http_{status}"
+
+
+def write(args):
+    rooms = args.rooms.split(",")
+    run = uuid.uuid4().hex[:8]
+    numbers = itertools.count()
+    lock = threading.Lock()
+    stop = threading.Event()
+    sent = {"n": 0}
+    slot = {"next": time.time()}
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, lambda *_: stop.set())
+    deadline = time.time() + args.duration if args.duration else None
+
+    def pace():
+        if not args.rate:
+            return
+        with lock:
+            at = max(slot["next"], time.time() - 1)
+            slot["next"] = at + 1 / args.rate
+        time.sleep(max(0, at - time.time()))
+
+    def worker(log):
+        while not stop.is_set():
+            if deadline and time.time() >= deadline:
+                return
+            with lock:
+                i = next(numbers)
+            if args.count and i >= args.count:
+                return
+            pace()
+            room, score_id = rooms[i % len(rooms)], f"{run}-{i}"
+            query = f"id={score_id}&player={PLAYERS[i % len(PLAYERS)]}&points={i % 7 + 1}" + ("&once=1" if args.once else "")
+            started = time.time()
+            status, body, version, server = call(f"{args.url}/rooms/{room}/scores?{query}", "POST", args.timeout)
+            group, reason = classify(status, body)
+            entry = {"id": score_id, "room": room, "t": round(started, 3), "ms": round((time.time() - started) * 1000),
+                     "status": status, "kind": group, "reason": reason, "version": version,
+                     "server": server, **({} if group == "acked" else {"body": body[:200]})}
+            with lock:
+                log.write(json.dumps(entry) + "\n")
+                sent["n"] += 1
+
+    with open(args.log, "a", buffering=1) as log:
+        threads = [threading.Thread(target=worker, args=(log,)) for _ in range(args.workers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            while thread.is_alive():
+                thread.join(0.2)
+    print(f"sent {sent['n']} over {len(rooms)} rooms with {args.workers} workers, log {args.log}")
+
+
+def stored(url, room):
+    """Every stored write of a room, in seq order; retries while the cell is unavailable."""
+    seen, after, deadline = [], 0, time.time() + 120
+    while True:
+        status, body, _, _ = call(f"{url}/rooms/{room}/writes?after={after}&limit=1000", timeout=30)
+        if status != 200:
+            if time.time() < deadline:
+                time.sleep(1)
+                continue
+            sys.exit(f"cannot read room {room}: HTTP {status} {body}")
+        page = json.loads(body)["writes"]
+        if not page:
+            return seen
+        seen += page
+        after = page[-1]["seq"]
+
+
+def percentile(values, p):
+    if not values:
+        return None
+    values = sorted(values)
+    return values[min(len(values) - 1, int(p / 100 * len(values)))]
+
+
+def end(entry):
+    return entry["t"] + entry["ms"] / 1000
+
+
+def restore(entries, rooms, fault_at, until, slow_ms):
+    """When the rooms were served again after `fault_at`. A call is disturbed when it failed or took
+    longer than `slow_ms` (a call belongs to the time it ended). The rooms are served again when the
+    last disturbed call ends, or, if it failed, when the next acknowledged call does. Only calls that
+    ended by `until` count (later ones belong to the recovery of the fault, not to the fault)."""
+    mine = [e for e in entries if e["room"] in rooms]
+    bad = [e for e in mine if (e["kind"] != "acked" or e["ms"] > slow_ms) and fault_at <= end(e) <= until]
+    if not bad:
+        return {"disturbed": False, "first_failure_s": None, "restored_s": 0.0, "outage_s": 0.0}
+    first = max(min(e["t"] for e in bad), fault_at)
+    last = max(bad, key=end)
+    back = [last] if last["kind"] == "acked" else [e for e in mine if e["kind"] == "acked" and e["t"] > end(last)]
+    if not back:
+        return {"disturbed": True, "first_failure_s": round(first - fault_at, 2), "restored_s": None, "outage_s": None}
+    done = end(min(back, key=lambda e: e["t"]))
+    return {"disturbed": True, "first_failure_s": round(first - fault_at, 2), "restored_s": round(done - fault_at, 2),
+            "outage_s": round(done - first, 2)}
+
+
+def websocket(path, room, acked):
+    """Pushes of the watched room against the writes acknowledged after the first connection."""
+    pushed, opens, first = [], 0, None
+    with open(path) as log:
+        for line in log:
+            event = json.loads(line)
+            if event.get("type") == "open":
+                opens += 1
+                first = first or event["t"]
+            elif event.get("type") == "score":
+                pushed.append(event["id"])
+    count = {}
+    for score_id in pushed:
+        count[score_id] = count.get(score_id, 0) + 1
+    return {"room": room, "connections": opens, "pushes": len(pushed),
+            "missed": len({e["id"] for e in acked if first and e["t"] >= first} - count.keys()), "duplicated": sum(n > 1 for n in count.values())}
+
+
+def verify(args):
+    with open(args.log) as log:
+        entries = [json.loads(line) for line in log if line.strip()]
+    rooms = sorted({e["room"] for e in entries})
+    rows = {room: stored(args.url, room) for room in rooms}
+    count = {}
+    for room_rows in rows.values():
+        for row in room_rows:
+            count[row["id"]] = count.get(row["id"], 0) + 1
+    ids = {kind: {e["id"] for e in entries if e["kind"] == kind} for kind in ("acked", "refused", "unknown")}
+    groups = {kind: [e for e in entries if e["kind"] == kind] for kind in ids}
+    reasons = {}
+    for e in entries:
+        if e["kind"] != "acked":
+            key = f"{e['kind']}:{e['reason']}"
+            reasons[key] = reasons.get(key, 0) + 1
+    lost = sorted(ids["acked"] - count.keys())
+    duplicated = sorted(i for i in ids["acked"] if count.get(i, 0) > 1)
+    refused_stored = sorted(ids["refused"] & count.keys())
+    result = {
+        "sent": len(entries), "acked": len(ids["acked"]), "refused": len(ids["refused"]), "unknown": len(ids["unknown"]),
+        "no_answer": sum(e["status"] == 0 and e["kind"] == "unknown" for e in entries),
+        "reasons": reasons, "rooms": len(rooms), "stored_rows": sum(len(r) for r in rows.values()),
+        "lost": len(lost), "duplicated": len(duplicated),
+        "unknown_stored": len(ids["unknown"] & count.keys()), "refused_stored": len(refused_stored),
+    }
+    if entries:
+        result["duration_s"] = round(max(end(e) for e in entries) - min(e["t"] for e in entries), 1)
+    versions = {}
+    for e in groups["acked"]:
+        versions[e["version"]] = versions.get(e["version"], 0) + 1
+    result["versions"] = versions
+    result["version_spans"] = {v: [min(e["t"] for e in groups["acked"] if e["version"] == v),
+                                   max(e["t"] for e in groups["acked"] if e["version"] == v)] for v in versions}
+    acked_ms = [e["ms"] for e in groups["acked"]]
+    result["latency_ms"] = {"p50": percentile(acked_ms, 50), "p99": percentile(acked_ms, 99)}
+    result["phases"] = {}
+    for phase in args.phase or []:
+        name, span = phase.split("=")
+        start, stop = map(float, span.split(":"))
+        inside = [e for e in entries if start <= end(e) < stop]
+        ms = [e["ms"] for e in inside if e["kind"] == "acked"]
+        result["phases"][name] = {"requests": len(inside), "acked": len(ms), "seconds": round(stop - start, 1),
+                                  "p50": percentile(ms, 50), "p99": percentile(ms, 99)}
+    if args.restore_rooms:
+        result["restore"] = restore(entries, set(args.restore_rooms.split(",")), args.fault_at, args.restore_until, args.slow_ms)
+    if args.ws_log:
+        result["websocket"] = websocket(args.ws_log, args.ws_room, [e for e in groups["acked"] if e["room"] == args.ws_room])
+
+    print(f"sent {result['sent']}: acknowledged {result['acked']}, refused {result['refused']}, unknown {result['unknown']}"
+          f" (no answer {result['no_answer']}); stored rows {result['stored_rows']}")
+    print(f"acknowledged: LOST {result['lost']}, DUPLICATED {result['duplicated']}")
+    print(f"stored although not acknowledged: unknown {result['unknown_stored']} of {result['unknown']},"
+          f" refused {result['refused_stored']} of {result['refused']}")
+    for key, n in sorted(reasons.items()):
+        print(f"  {key}: {n}")
+    if len(versions) > 1:
+        print("  acknowledged by deployment version:", ", ".join(f"{v or '-'}: {n}" for v, n in sorted(versions.items())))
+    for i in lost[:20]:
+        print("LOST", i)
+    for i in duplicated[:20]:
+        print("DUPLICATED", i, count[i])
+    for i in refused_stored[:20]:
+        print("BUG refused write stored", i)
+    if args.json:
+        with open(args.json, "w") as out:
+            json.dump(result, out, indent=1)
+    sys.exit(1 if lost or duplicated or refused_stored else 0)
+
+
+parser = argparse.ArgumentParser()
+sub = parser.add_subparsers(dest="command", required=True)
+w = sub.add_parser("write")
+w.add_argument("--url", required=True)
+w.add_argument("--rooms", "--room", required=True, help="comma-separated room names")
+w.add_argument("--log", required=True)
+w.add_argument("--count", type=int, default=0, help="stop after N requests")
+w.add_argument("--duration", type=float, default=0, help="stop after S seconds")
+w.add_argument("--workers", type=int, default=4, help="concurrent requests")
+w.add_argument("--rate", type=float, default=0, help="at most RPS requests per second in total (0: no limit)")
+w.add_argument("--timeout", type=float, default=10, help="seconds before a request counts as unanswered")
+w.add_argument("--once", action="store_true", help="retry-safe writes: a repeated id is stored once")
+v = sub.add_parser("verify")
+v.add_argument("--url", required=True)
+v.add_argument("--log", required=True)
+v.add_argument("--json", help="also write the report as JSON")
+v.add_argument("--phase", action="append", help="NAME=START:END in epoch seconds: requests that ended then, and the latency of the acknowledged ones")
+v.add_argument("--restore-rooms", help="rooms whose cells the fault takes from their owner")
+v.add_argument("--restore-until", type=float, default=float("inf"), help="epoch seconds: ignore calls that ended later")
+v.add_argument("--slow-ms", type=float, default=2500, help="an acknowledged call slower than this counts as disturbed")
+v.add_argument("--fault-at", type=float, default=0, help="epoch seconds when the fault was injected")
+v.add_argument("--ws-log", help="events logged by scoreboard-watch --log")
+v.add_argument("--ws-room")
+args = parser.parse_args()
+if args.command == "write":
+    if not (args.count or args.duration):
+        parser.error("write needs --count or --duration")
+    write(args)
+else:
+    verify(args)

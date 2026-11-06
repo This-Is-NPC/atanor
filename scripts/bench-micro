@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Micro benchmarks of per-request and per-job costs (design §12.14). Arguments: section names (default all).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec mix run bench/micro.exs "$@"

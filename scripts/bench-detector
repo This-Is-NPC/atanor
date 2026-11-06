@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Failure detection on peer nodes: time to down and to serve again, and heartbeat cost. Argument: repetitions (default 3).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec mix run bench/detector.exs "$@"

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Jobs and bulk-operation throughput (design §12.9). Arguments: cells (default
+# 1000) and jobs in one cell (default 2000).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec mix run bench/jobs.exs "$@"

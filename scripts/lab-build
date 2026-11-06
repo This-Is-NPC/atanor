@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Build the release of the lab application (lab/app) with the pinned toolchain.
+set -euo pipefail
+cd "$(dirname "$0")/../lab/app"
+mise exec -- mix deps.get >/dev/null
+MIX_ENV=prod mise exec -- mix release --overwrite

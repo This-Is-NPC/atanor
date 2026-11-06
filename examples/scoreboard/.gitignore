@@ -1,0 +1,3 @@
+scoreboard.wasm
+guest/target
+guest/wit/deps

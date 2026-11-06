@@ -1,0 +1,60 @@
+package atanor:guests;
+
+world plain {
+  include wasi:http/proxy@0.2.12;
+}
+
+world cell {
+  include wasi:http/proxy@0.2.12;
+  import atanor:cell/sql@0.1.0;
+}
+
+world secret {
+  include wasi:http/proxy@0.2.12;
+  import atanor:config/secrets@0.1.0;
+}
+
+world caller {
+  include wasi:http/proxy@0.2.12;
+  import atanor:worker/call@0.1.0;
+}
+
+world alarm {
+  include wasi:http/proxy@0.2.12;
+  import atanor:cell/sql@0.1.0;
+  import atanor:cell/alarms@0.1.0;
+  export atanor:worker/alarm-handler@0.1.0;
+}
+
+world job {
+  include wasi:http/proxy@0.2.12;
+  import atanor:cell/sql@0.1.0;
+  import atanor:cell/jobs@0.1.0;
+  export atanor:worker/job-handler@0.1.0;
+}
+
+world socket {
+  include wasi:http/proxy@0.2.12;
+  import atanor:cell/sql@0.1.0;
+  import atanor:cell/sockets@0.1.0;
+  export atanor:worker/socket-handler@0.1.0;
+}
+
+world sneaky {
+  include wasi:http/proxy@0.2.12;
+  import atanor:cell/sql@0.1.0;
+  import atanor:cell/alarms@0.1.0;
+  import atanor:cell/sockets@0.1.0;
+  import atanor:config/secrets@0.1.0;
+  import atanor:worker/call@0.1.0;
+  export atanor:worker/alarm-handler@0.1.0;
+  export atanor:worker/socket-handler@0.1.0;
+}
+
+world channel {
+  include wasi:http/proxy@0.2.12;
+  import atanor:cell/sql@0.1.0;
+  import atanor:cell/sockets@0.1.0;
+  export atanor:worker/socket-handler@0.1.0;
+  export atanor:worker/socket-local@0.1.0;
+}

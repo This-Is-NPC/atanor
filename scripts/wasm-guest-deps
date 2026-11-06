@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Assemble GUEST_DIR/wit/deps for a WASM guest crate (not committed): the repository's own WIT
+# packages, linked, and the WASI 0.2.12 packages shipped with the wasmtime-wasi-http crate the
+# NIF already uses. Safe to rerun.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+guest="$(cd "${1:?usage: wasm-guest-deps GUEST_DIR}" && pwd)"
+deps="$guest/wit/deps"
+wasi="$(cd "$root/native/atanor_wasm" && cargo metadata --format-version 1 \
+  | grep -o '"manifest_path":"[^"]*/wasmtime-wasi-http-[^"]*/Cargo.toml"' | head -1 \
+  | sed 's/^"manifest_path":"//; s|/Cargo.toml"$||')/wit/deps"
+rm -rf "$deps"
+mkdir -p "$deps"
+cp "$wasi"/*.wit "$deps/"
+for package in cell config worker; do
+  ln -s "$(realpath --relative-to="$deps" "$root/wit/$package")" "$deps/atanor-$package"
+done

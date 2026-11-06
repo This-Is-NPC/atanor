@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Store round trips and jobs per second of the job path against SeaweedFS with
+# added store latency (design §12.13). Options: see bench/job_trips.exs.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec mix run bench/job_trips.exs "$@"

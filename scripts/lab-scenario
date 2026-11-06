@@ -1,0 +1,731 @@
+#!/usr/bin/env bash
+# Run measured failure scenarios against the running lab and write the results to
+# lab/results/STAMP/NAME.txt. Usage: lab-scenario NAME...   (no names: list them)
+# Faults are injected inside the VMs only (tc netem, date) or with virsh on lab VMs.
+set -euo pipefail
+source "$(dirname "$0")/lab-common"
+
+secret=$(<"$LAB_DIR/secret")
+nodes_arg=$(for n in $LAB_NODES; do node_ip "$n"; done | paste -sd,)
+store_ip=$(node_ip store)
+stamp=${LAB_STAMP:-$(date +%Y%m%d-%H%M%S)}
+out=$repo/lab/results/$stamp
+mkdir -p "$out"
+load_tool=$repo/lab/tools/load.exs
+elixir() { (cd "$repo" && mise exec -- elixir "$@"); }
+
+log() { echo "[$(date +%H:%M:%S)] $*"; }
+# EVENTS holds NAME=EPOCH_MS pairs for the report.
+EVENTS=()
+event() { EVENTS+=("$1=$(now_ms)"); log "event $1"; }
+
+cluster_size() {
+  curl -s -m 2 -H "authorization: Bearer $secret" "http://$(node_ip "$1"):4001/health" |
+    sed -n 's/.*"nodes":\[\([^]]*\)\].*/\1/p' | tr ',' '\n' | grep -c atanor@ || true
+}
+wait_for() { # timeout_s command...
+  local deadline=$((SECONDS + $1)); shift
+  until "$@"; do ((SECONDS < deadline)) || return 1; sleep 1; done
+}
+all_joined() { for n in $LAB_NODES; do [[ $(cluster_size "$n") == 3 ]] || return 1; done; }
+node_serves() { [[ $(curl -s -m 5 -o /dev/null -w '%{http_code}' -H 'host: lab' -X POST --data 0 "http://$(node_ip "$1"):4000/c/ready-$1") == 200 ]]; }
+
+# netem N PARAMS DST...: delays or drops what VM N sends to the DST addresses.
+netem() {
+  local n=$1 params=$2 d; shift 2
+  local cmds="tc qdisc del dev eth0 root 2>/dev/null; tc qdisc add dev eth0 root handle 1: prio bands 3 priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0; tc qdisc add dev eth0 parent 1:3 handle 30: netem $params"
+  for d in "$@"; do cmds+="; tc filter add dev eth0 parent 1: protocol ip prio 1 u32 match ip dst $d/32 flowid 1:3"; done
+  lab_ssh "$n" "sudo sh -c '$cmds'"
+}
+clear_netem() { lab_ssh "$1" 'sudo tc qdisc del dev eth0 root 2>/dev/null; true'; }
+peers_of() { for m in $LAB_NODES; do [[ $m == "$1" ]] || node_ip "$m"; done; }
+# netem_peers PARAMS: every node's traffic to the other nodes.
+netem_peers() { for n in $LAB_NODES; do netem "$n" "$1" $(peers_of "$n"); done; }
+netem_store() { for n in $LAB_NODES; do netem "$n" "$1" "$store_ip"; done; }
+clear_all() { for n in $LAB_NODES; do clear_netem "$n"; done; }
+sync_clocks() { for n in $LAB_VMS; do lab_ssh "$n" "sudo date -u -s @$(date +%s.%N)" >/dev/null; done; }
+
+# Everything running, faults cleared, clocks in sync, three nodes joined.
+reset_lab() {
+  for n in $LAB_VMS; do
+    case $(virsh domstate "$(node_vm "$n")") in
+      running) ;;
+      paused) virsh resume "$(node_vm "$n")" >/dev/null ;;
+      *) virsh start "$(node_vm "$n")" >/dev/null ;;
+    esac
+    wait_for 120 lab_ssh "$n" true 2>/dev/null
+  done
+  clear_all
+  sync_clocks
+  for n in $LAB_NODES; do lab_ssh "$n" 'sudo pkill -CONT -x beam.smp; systemctl is-active --quiet atanor-lab || sudo systemctl start atanor-lab'; done
+  wait_for 120 all_joined || { echo "cluster did not form" >&2; exit 1; }
+  for n in $LAB_NODES; do wait_for 60 node_serves "$n"; done
+}
+
+# load NAME SECONDS [OPTIONS...]: starts the load generator in the background (LOAD_PID).
+load() {
+  local name=$1 seconds=$2; shift 2
+  elixir "$load_tool" run --nodes "$nodes_arg" --log "$out/$name.log" --seconds "$seconds" --timeout 5000 "$@" >"$out/$name.load" 2>&1 &
+  LOAD_PID=$!
+}
+finish() { # NAME [REPORT OPTIONS...]: waits for the load, verifies the cells, writes the report
+  local name=$1; shift
+  wait "$LOAD_PID"
+  local args=(); for e in "${EVENTS[@]}"; do args+=(--event "$e"); done
+  {
+    echo "== $name  $(date -u +%FT%TZ)"
+    elixir "$load_tool" report --log "$out/$name.log" "${args[@]}" "$@"
+    elixir "$load_tool" verify --nodes "$nodes_arg" --log "$out/$name.log"
+  } | tee "$out/$name.txt"
+  EVENTS=()
+}
+
+# probe_start N NAME: a cell owned by VM N is written once a second through node 1 and the
+# status and duration of each request are logged to $out/NAME.probe (PROBE_PID).
+probe_start() {
+  local ip cell i; ip=$(node_ip "$1")
+  for i in $(seq 1 200); do
+    cell=probe-$RANDOM
+    curl -s -m 10 -H 'host: lab' -X POST --data 0 "http://$(node_ip 1):4000/c/$cell" | grep -q "\"atanor@$ip\"" && break
+  done
+  (while true; do
+    curl -s -m 120 -o /dev/null -w "$(now_ms) %{http_code} %{time_total}s\n" -H 'host: lab' -X POST --data 0 "http://$(node_ip 1):4000/c/$cell" || echo "$(now_ms) curl-failed"
+    sleep 1
+  done >"$out/$2.probe") &
+  PROBE_PID=$!
+}
+probe_stop() { kill "$PROBE_PID" 2>/dev/null || true; wait "$PROBE_PID" 2>/dev/null || true; }
+
+# set_node_env KEY VALUE: changes the service environment of all nodes and restarts them.
+set_node_env() {
+  for n in $LAB_NODES; do
+    lab_ssh "$n" "sudo sed -i '/^$1=/d' /etc/atanor-lab.env; echo '$1=$2' | sudo tee -a /etc/atanor-lab.env >/dev/null; sudo systemctl restart atanor-lab"
+  done
+  wait_for 120 all_joined
+  for n in $LAB_NODES; do wait_for 60 node_serves "$n"; done
+}
+
+crash_run() { # NAME
+  local ip; ip=$(node_ip 2)
+  load "$1" 170 --timeout 15000
+  probe_start 2 "$1"
+  sleep 20; event kill; virsh destroy "$(node_vm 2)" >/dev/null
+  sleep 70; event vm_start; virsh start "$(node_vm 2)" >/dev/null
+  wait_for 120 lab_ssh 2 true 2>/dev/null; event ssh_up
+  wait_for 120 all_joined; event rejoined
+  probe_stop
+  finish "$1" --victim "$ip"
+}
+
+scenario_crash() { crash_run crash; }
+
+# The same crash when a silent peer is noticed after 10 s instead of 60 s.
+scenario_crash_ticktime() {
+  set_node_env ATANOR_LAB_NET_TICKTIME 10
+  crash_run crash-ticktime10
+  set_node_env ATANOR_LAB_NET_TICKTIME 60
+}
+
+scenario_graceful_stop() {
+  local ip; ip=$(node_ip 2)
+  load graceful-stop 120 --timeout 15000
+  probe_start 2 graceful-stop
+  sleep 20; event stop; lab_ssh 2 'sudo systemctl stop atanor-lab'; event stopped
+  sleep 40; event start; lab_ssh 2 'sudo systemctl start atanor-lab'
+  wait_for 120 all_joined; event rejoined
+  probe_stop
+  finish graceful-stop --victim "$ip"
+}
+
+scenario_graceful_shutdown() {
+  local ip; ip=$(node_ip 2)
+  load graceful-shutdown 150 --timeout 15000
+  probe_start 2 graceful-shutdown
+  sleep 20; event shutdown; virsh shutdown "$(node_vm 2)" >/dev/null
+  wait_for 120 bash -c "virsh -c qemu:///system domstate $(node_vm 2) | grep -q 'shut off'"; event off
+  sleep 30; event vm_start; virsh start "$(node_vm 2)" >/dev/null
+  wait_for 120 lab_ssh 2 true 2>/dev/null
+  wait_for 120 all_joined; event rejoined
+  probe_stop
+  finish graceful-shutdown --victim "$ip"
+}
+
+scenario_partition_peers() {
+  local ip; ip=$(node_ip 2)
+  load partition-peers 150
+  sleep 20; event cut
+  netem 2 "loss 100%" $(peers_of 2)
+  for n in 1 3; do netem "$n" "loss 100%" "$ip"; done
+  sleep 40; echo "health seen by node 1: $(curl -s -m 3 -H "authorization: Bearer $secret" "http://$(node_ip 1):4001/health")" >"$out/partition-peers.health"
+  echo "health seen by node 2: $(curl -s -m 3 -H "authorization: Bearer $secret" "http://$ip:4001/health")" >>"$out/partition-peers.health"
+  sleep 20; event heal; clear_all
+  wait_for 120 all_joined; event rejoined
+  finish partition-peers --victim "$ip"
+  cat "$out/partition-peers.health"
+}
+
+scenario_partition_store() {
+  local ip; ip=$(node_ip 2)
+  load partition-store 150
+  sleep 20; event cut; netem 2 "loss 100%" "$store_ip"
+  sleep 60; event heal; clear_netem 2
+  sleep 5
+  finish partition-store --victim "$ip"
+}
+
+scenario_netem() {
+  local case params
+  for case in baseline delay1ms delay20ms delay80ms loss1pct loss5pct; do
+    case $case in
+      baseline) params= ;;
+      delay1ms) params="delay 1ms" ;;
+      delay20ms) params="delay 20ms" ;;
+      delay80ms) params="delay 80ms" ;;
+      loss1pct) params="loss 1%" ;;
+      loss5pct) params="loss 5%" ;;
+    esac
+    [[ -z $params ]] && clear_all || netem_peers "$params"
+    # Light load measures latency; saturating load measures throughput.
+    load "netem-$case-light" 20 --clients 12 --think 20; finish "netem-$case-light"
+    load "netem-$case-saturated" 20 --clients 24 --think 0; finish "netem-$case-saturated"
+    clear_all
+  done
+}
+
+scenario_store_outage() {
+  load store-outage-15s 90
+  sleep 20; event cut; netem_store "loss 100%"
+  sleep 15; event heal; clear_all
+  finish store-outage-15s
+  load store-outage-60s 150
+  sleep 20; event cut; netem_store "loss 100%"
+  sleep 60; event heal; clear_all
+  finish store-outage-60s
+}
+
+scenario_store_slow() {
+  local d
+  for d in 100 500; do
+    load "store-slow-${d}ms" 90
+    sleep 20; event slow; netem_store "delay ${d}ms"
+    sleep 40; event heal; clear_all
+    finish "store-slow-${d}ms"
+  done
+}
+
+scenario_clock() {
+  local skew
+  for skew in +1 +5 -5 +20; do
+    local name=clock$skew
+    load "$name" 100
+    sleep 20; event skew; lab_ssh 2 "sudo date -u -s @\$(( \$(date +%s) $skew ))" >/dev/null
+    sleep 50; event restore; sync_clocks
+    finish "$name" --victim "$(node_ip 2)"
+  done
+}
+
+# Detection and takeover (design §12.8). Settings come from the environment:
+#   LAB_REPEAT (3) runs of the destroy, kill and partition faults; LAB_STALL_SECONDS ("2 3.5 8") pauses of the
+#   beam of node 2; LAB_HOG_SECONDS (30) and LAB_HOG_PROCS (4) for the CPU hog; LAB_SKEWS ("+1 +5 -5 +20") seconds
+#   of clock skew; LAB_COST_SECONDS (60) for the heartbeat cost; LAB_FREEZE_KINDS ("stop suspend") and
+#   LAB_FREEZE_SECONDS (20) for freeze_rejoin (LAB_REPEAT runs of each kind).
+repeat=${LAB_REPEAT:-3}
+stall_seconds=${LAB_STALL_SECONDS:-"2 3.5 8"}
+hog_seconds=${LAB_HOG_SECONDS:-30}
+hog_procs=${LAB_HOG_PROCS:-4}
+skews=${LAB_SKEWS:-"+1 +5 -5 +20"}
+cost_seconds=${LAB_COST_SECONDS:-60}
+freeze_kinds=${LAB_FREEZE_KINDS:-"stop suspend"}
+freeze_seconds=${LAB_FREEZE_SECONDS:-20}
+
+# watch_start OBSERVER TARGET NAME: every 100 ms, what node OBSERVER says of node TARGET, into $out/NAME.state.
+watch_start() {
+  local url target; url="http://$(node_ip "$1"):4001/nodes"; target=$(node_name "$2")
+  (while true; do
+    state=$(curl -s -m 1 -H "authorization: Bearer $secret" "$url" | sed 's/},{/}\n{/g' | grep "\"node\":\"$target\"" | sed -n 's/.*"state":"\([a-z_]*\)".*/\1/p')
+    echo "$(now_ms) ${state:-none}"
+    sleep 0.1
+  done >"$out/$3.state") &
+  WATCH_PID=$!
+}
+watch_stop() { kill "$WATCH_PID" 2>/dev/null || true; wait "$WATCH_PID" 2>/dev/null || true; }
+# first_state NAME STATE AFTER_MS: ms from AFTER_MS to the first sample in STATE, or "never".
+first_state() { awk -v s="$2" -v t="$3" '$1 >= t && $2 == s { print $1 - t; found = 1; exit } END { if (!found) print "never" }' "$out/$1.state"; }
+# alive_again NAME AFTER_MS: ms from AFTER_MS to the first sample in alive after one in down, or "never".
+alive_again() { awk -v t="$2" '$1 >= t && $2 == "down" { seen = 1 } seen && $2 == "alive" { print $1 - t; found = 1; exit } END { if (!found) print "never" }' "$out/$1.state"; }
+# probe_served NAME FAULT_MS: ms from FAULT_MS until the first 200 of the probe that ends after it, or "never".
+probe_served() { awk -v t="$2" '$2 == 200 { end = $1 + $3 * 1000; if (end > t) { printf "%d\n", end - t; found = 1; exit } } END { if (!found) print "never" }' "$out/$1.probe"; }
+# journal_events NAME SINCE_MS: the detector events of every node since SINCE_MS, into $out/NAME.events.
+journal_events() {
+  local n
+  : >"$out/$1.events"
+  for n in $LAB_NODES; do
+    lab_ssh "$n" "sudo journalctl -u atanor-lab --since @$(($2 / 1000)) -o cat | grep lab-event" 2>/dev/null | sed "s/^/node$n /" >>"$out/$1.events" || true
+  done
+}
+count_events() { grep -c "lab-event $2" "$out/$1.events" || true; }
+
+# detect_run NAME INJECT RESTORE HOLD_SECONDS: load through the three nodes, INJECT at +20 s, RESTORE after
+# HOLD_SECONDS, then the report of how long node 1 took to see node 2 down and the cells to serve again.
+detect_run() {
+  local name=$1 inject=$2 restore=$3 hold=$4 ip fault
+  ip=$(node_ip 2)
+  # A short client timeout: a client stuck in a request to the lost node would otherwise hide the takeover.
+  load "$name" $((20 + ${hold%.*} + 61)) --timeout 2000
+  watch_start 1 2 "$name"
+  probe_start 2 "$name"
+  sleep 20; fault=$(now_ms); event fault; $inject
+  sleep "$hold"; event restore; $restore
+  wait_for 120 all_joined; event rejoined
+  sleep 5
+  watch_stop
+  probe_stop
+  journal_events "$name" "$fault"
+  finish "$name" --victim "$ip"
+  {
+    echo "node 1 saw node 2 suspect after $(first_state "$name" suspect "$fault") ms, down after $(first_state "$name" down "$fault") ms, alive again after $(alive_again "$name" "$fault") ms"
+    echo "probe (a cell of node 2 written once a second through node 1) answered 200 again after $(probe_served "$name" "$fault") ms"
+    echo "detector events (all nodes): $(count_events "$name" 'node.suspect') suspect, $(count_events "$name" 'node.down') down, $(count_events "$name" 'node.link_broken') link_broken; down by observer: $(grep 'lab-event node.down' "$out/$name.events" | cut -d' ' -f1 | sort | uniq -c | tr '\n' ' ')"
+    echo "takeovers: $(count_events "$name" 'cell.take_over') events, $(grep 'lab-event cell.take_over' "$out/$name.events" | grep -c 'result: :ok' || true) ok"
+  } | tee -a "$out/$name.txt"
+}
+
+inject_destroy() { virsh destroy "$(node_vm 2)" >/dev/null; }
+restore_destroy() { virsh start "$(node_vm 2)" >/dev/null; wait_for 120 lab_ssh 2 true 2>/dev/null; }
+inject_kill() { lab_ssh 2 'sudo systemctl kill -s KILL atanor-lab'; }
+restore_none() { :; }
+inject_partition() {
+  netem 2 "loss 100%" $(peers_of 2)
+  for n in 1 3; do netem "$n" "loss 100%" "$(node_ip 2)"; done
+}
+restore_partition() { clear_all; }
+inject_stall() { lab_ssh 2 'sudo pkill -STOP -x beam.smp'; }
+restore_stall() { lab_ssh 2 'sudo pkill -CONT -x beam.smp'; }
+inject_hog() {
+  lab_ssh 2 "sudo systemd-run --quiet --unit=atanor-lab-hog -p RuntimeMaxSec=$hog_seconds /bin/sh -c 'for i in \$(seq $hog_procs); do (while :; do :; done) & done; wait'"
+}
+restore_hog() { lab_ssh 2 'sudo systemctl stop atanor-lab-hog 2>/dev/null; true'; }
+
+scenario_detect_destroy() { local i; for i in $(seq "$repeat"); do reset_lab; detect_run "detect-destroy-$i" inject_destroy restore_destroy 15; done; }
+scenario_detect_kill() { local i; for i in $(seq "$repeat"); do reset_lab; detect_run "detect-kill-$i" inject_kill restore_none 15; done; }
+scenario_detect_partition() { local i; for i in $(seq "$repeat"); do reset_lab; detect_run "detect-partition-$i" inject_partition restore_partition 40; done; }
+
+# The same destroy with the takeover off: the cells wait for their lease.
+scenario_detect_destroy_no_takeover() {
+  set_node_env ATANOR_LAB_TAKEOVER off
+  detect_run detect-destroy-no-takeover inject_destroy restore_destroy 15
+  set_node_env ATANOR_LAB_TAKEOVER on
+}
+
+# Pauses of the beam of node 2 (a GC-like stall) shorter and longer than the detection time.
+scenario_detect_stall() {
+  local s
+  for s in $stall_seconds; do reset_lab; detect_run "detect-stall-${s}s" inject_stall restore_stall "$s"; done
+}
+
+# --- freeze_rejoin: node 2 frozen past detection and takeover, then thawed (design §8.8, §8.10) ---
+
+# watch_all_start NAME: every 100 ms, what each node says of the other two, into $out/NAME.all as
+# "MS 1>2 1>3 2>1 2>3 3>1 3>2" (none: no answer within 1 s).
+watch_all_start() {
+  local d; d=$(mktemp -d)
+  (while true; do
+    ts=$(now_ms)
+    for o in $LAB_NODES; do curl -s -m 1 -H "authorization: Bearer $secret" "http://$(node_ip "$o"):4001/nodes" >"$d/$o" & done
+    wait
+    line=$ts
+    for o in $LAB_NODES; do
+      for t in $LAB_NODES; do
+        [[ $o == "$t" ]] && continue
+        s=$(sed 's/},{/}\n{/g' "$d/$o" | grep "\"node\":\"$(node_name "$t")\"" | sed -n 's/.*"state":"\([a-z_]*\)".*/\1/p' || true)
+        line+=" ${s:-none}"
+      done
+    done
+    echo "$line"
+    sleep 0.1
+  done >"$out/$1.all"; rm -rf "$d") &
+  WATCH_PID=$!
+}
+# all_alive NAME THAW_MS: ms from THAW_MS to the first sample with all six views alive, or "never".
+all_alive() { awk -v t="$2" '$1 >= t { ok = 1; for (i = 2; i <= 7; i++) if ($i != "alive") ok = 0; if (ok) { print $1 - t; found = 1; exit } } END { if (!found) print "never" }' "$out/$1.all"; }
+# not_alive_after NAME THAW_MS: samples not all alive after the first all-alive one (flapping), and the last such ms.
+not_alive_after() { awk -v t="$2" '$1 >= t { ok = 1; for (i = 2; i <= 7; i++) if ($i != "alive") ok = 0; if (ok) seen = 1; else if (seen) { n++; last = $1 - t } } END { printf "%d samples (last at +%s ms)\n", n, n ? last : "-" }' "$out/$1.all"; }
+# owner_changes NAME THAW_MS: "CHANGES CELLS MAX": handler changes after THAW_MS in the load log, the cells
+# that had any, and the most changes of one cell (the first answer after the thaw is compared with the last before).
+owner_changes() {
+  awk '$6 == 200 { print $2, $4, $7 }' "$out/$1.log" | sort -n | awk -v t="$2" '
+    { if (($2 in last) && last[$2] != $3 && $1 > t) { ch[$2]++; total++ } last[$2] = $3 }
+    END { max = 0; for (c in ch) { cells++; if (ch[c] > max) max = ch[c] } printf "%d %d %d\n", total, cells, max }'
+}
+# clock_offset N: ms the clock of VM N is behind the host (after a suspend the guest clock lags); the ssh
+# round trip (up to a second or two under load) is the uncertainty.
+clock_offset() { local a g b; a=$(now_ms); g=$(lab_ssh "$1" 'date +%s%3N'); b=$(now_ms); echo $(((a + b) / 2 - g)); }
+# take_overs NAME THAW_MS "OFF1 OFF2 OFF3": "TOTAL CELLS MAX_PER_CELL" of the cell.take_over events at or after
+# THAW_MS (node timestamps corrected by their clock offsets).
+take_overs() {
+  awk -v t="$2" -v offs="$3" 'BEGIN { split(offs, o, " ") }
+    /lab-event cell.take_over/ { n = substr($1, 5) + 0; ts = $2 * 1000 + o[n]; if (ts < t) next
+      match($0, /cell: "[^"]*"/); c = substr($0, RSTART, RLENGTH); k[c]++; total++ }
+    END { max = 0; for (c in k) { cells++; if (k[c] > max) max = k[c] } printf "%d %d %d\n", total, cells, max }' "$out/$1.events"
+}
+# journal_events_unix NAME SINCE_MS: the lab-event lines of every node, prefixed "nodeN SECONDS".
+journal_events_unix() {
+  local n
+  : >"$out/$1.events"
+  for n in $LAB_NODES; do
+    lab_ssh "$n" "sudo journalctl -u atanor-lab --since @$(($2 / 1000)) -o short-unix | grep lab-event" 2>/dev/null |
+      sed -E "s/^([0-9.]+) [^ ]+ [^ ]+ /node$n \1 /" >>"$out/$1.events" || true
+  done
+}
+
+# The freeze and thaw moments (T_FREEZE, T_THAW, epoch ms) are taken where the fault takes effect: in node 2
+# (its clock is in sync and does not jump) for the SIGSTOP, on the host for the VM suspend.
+inject_freeze_stop() { T_FREEZE=$(lab_ssh 2 'sudo pkill -STOP -x beam.smp; date +%s%3N'); }
+restore_freeze_stop() { T_THAW=$(lab_ssh 2 'sudo pkill -CONT -x beam.smp; date +%s%3N'); }
+inject_freeze_suspend() { virsh suspend "$(node_vm 2)" >/dev/null; T_FREEZE=$(now_ms); }
+restore_freeze_suspend() { virsh resume "$(node_vm 2)" >/dev/null; T_THAW=$(now_ms); }
+
+# freeze_run NAME KIND HOLD_SECONDS: load through the three nodes, node 2 frozen at +20 s for HOLD_SECONDS
+# (KIND stop: SIGSTOP of its beam; suspend: its VM), thawed, then 30 s more of watching. Reports the time to
+# all-alive, the owner changes after the thaw and, with the verification, whether a write was lost or applied twice.
+freeze_run() {
+  local name=$1 kind=$2 hold=$3 fault thaw offs ac oc ocells omax to tcells tmax
+  load "$name" $((20 + hold + 60)) --timeout 2000
+  watch_all_start "$name"
+  sleep 20; "inject_freeze_$kind"; fault=$T_FREEZE; EVENTS+=("fault=$fault")
+  sleep "$hold"; "restore_freeze_$kind"; thaw=$T_THAW; EVENTS+=("thaw=$thaw")
+  offs="$(clock_offset 1) $(clock_offset 2) $(clock_offset 3)"
+  wait_for 120 all_joined; event rejoined
+  sleep 30
+  watch_stop
+  journal_events_unix "$name" $((fault - 60000))
+  finish "$name" --victim "$(node_ip 2)"
+  ac=$(all_alive "$name" "$thaw"); read -r oc ocells omax <<<"$(owner_changes "$name" "$thaw")"
+  read -r to tcells tmax <<<"$(take_overs "$name" "$thaw" "$offs")"
+  {
+    echo "frozen for $((thaw - fault)) ms; clock behind the host after the thaw (nodes 1 2 3): $offs ms"
+    echo "all six views alive again after $ac ms from the thaw; not-all-alive samples after that: $(not_alive_after "$name" "$thaw")"
+    echo "owner changes after the thaw (load log): $oc changes in $ocells cells, at most $omax per cell"
+    echo "take_over events after the thaw (journals): $to in $tcells cells, at most $tmax per cell"
+    if [[ $ac != never ]] && ((omax <= 1)) && grep -q '^LOST acknowledged:   0 ' "$out/$name.txt" && grep -q '^DUPLICATED rows:     0 ' "$out/$name.txt"; then
+      echo "RESULT $name: ok"
+    else
+      echo "RESULT $name: FAILED"
+    fi
+  } | tee -a "$out/$name.txt"
+}
+
+# Node 2 frozen for LAB_FREEZE_SECONDS (more than detection plus takeover), by SIGSTOP of its beam and by
+# suspending its VM, LAB_REPEAT times each.
+scenario_freeze_rejoin() {
+  local kind i
+  for kind in $freeze_kinds; do
+    for i in $(seq "$repeat"); do
+      reset_lab
+      freeze_run "freeze-$kind-$i" "$kind" "$freeze_seconds"
+    done
+  done
+}
+
+# Node 2 runs out of CPU: hog processes share its 2 vCPUs with the beam.
+scenario_detect_cpu_hog() { detect_run detect-cpu-hog inject_hog restore_hog "$hog_seconds"; }
+
+# Skew of the clock of node 2, within and beyond the skew margin of the leases (2 s).
+scenario_detect_clock() {
+  local skew
+  for skew in $skews; do
+    reset_lab
+    inject_skew() { lab_ssh 2 "sudo date -u -s @\$(( \$(date +%s) $skew ))" >/dev/null; }
+    detect_run "detect-clock$skew" inject_skew sync_clocks 40
+  done
+}
+
+# Heartbeats on an idle cluster: distribution packets and bytes sent per node and the detector's reductions,
+# with the default interval and with an interval so long that no heartbeat is sent.
+scenario_heartbeat_cost() {
+  local interval
+  for interval in 1000 3600000; do
+    set_node_env ATANOR_LAB_DETECTOR_INTERVAL_MS "$interval"
+    sleep 5
+    local before=() after=() n t0 t1
+    t0=$(now_ms)
+    for n in $LAB_NODES; do before+=("$(lab_rpc "$n" 'IO.inspect(AtanorLab.Stats.read())')"); done
+    sleep "$cost_seconds"
+    t1=$(now_ms)
+    for n in $LAB_NODES; do after+=("$(lab_rpc "$n" 'IO.inspect(AtanorLab.Stats.read())')"); done
+    echo "heartbeat interval $interval ms, $(((t1 - t0) / 1000)) s idle:" | tee -a "$out/heartbeat-cost.txt"
+    for i in 0 1 2; do
+      echo "node $((i + 1)): before ${before[$i]} after ${after[$i]}" | tee -a "$out/heartbeat-cost.txt"
+    done
+  done
+  set_node_env ATANOR_LAB_DETECTOR_INTERVAL_MS 1000
+}
+
+# Screenshots of the dashboard under load while node 3 is lost (docs/img/lab-*.png).
+scenario_dashboard() {
+  load dashboard 130
+  "$repo/scripts/lab-dashboard-screenshots"
+  wait "$LOAD_PID"
+  virsh start "$(node_vm 3)" >/dev/null
+  wait_for 120 lab_ssh 3 true 2>/dev/null
+  wait_for 120 all_joined
+}
+
+# --- hot_cell: many connections on the three nodes, heavy writes and reads to ONE cell ---
+
+# Settings from the environment: LAB_HOT_HTTP (48) keep-alive HTTP clients and LAB_HOT_WS (300) WebSockets, spread
+# over the three nodes, LAB_HOT_WS_THINK (500) ms between the frames of a WebSocket, LAB_HOT_SECONDS (60) of load
+# after a 15 s warm-up in which the connections open.
+hot_http=${LAB_HOT_HTTP:-48}
+hot_ws=${LAB_HOT_WS:-300}
+hot_ws_think=${LAB_HOT_WS_THINK:-500}
+hot_seconds=${LAB_HOT_SECONDS:-60}
+hot_warmup=15
+# LAB_HOT_CURSORS (0) of the WebSockets also send a cursor frame every LAB_HOT_CURSOR_MS (1000) ms that every WebSocket of
+# the cell receives: through the owner (LAB_HOT_CURSOR_MODE=cell, send_to_cell) or the ephemeral channel (channel).
+hot_cursors=${LAB_HOT_CURSORS:-0}
+hot_cursor_ms=${LAB_HOT_CURSOR_MS:-1000}
+hot_cursor_mode=${LAB_HOT_CURSOR_MODE:-cell}
+# LAB_HOT_PARTITIONS (0): 3, 6 or 12 splits the cell into that many partitions (design §4.2). The same clients send the
+# same requests, each with a partition key among LAB_HOT_KEYS (1000) for the HTTP clients and one of its own for each
+# WebSocket. The placement of hot cells and the hog are not combined with it.
+hot_partitions=${LAB_HOT_PARTITIONS:-0}
+hot_keys=${LAB_HOT_KEYS:-1000}
+# LAB_HOT_READ_BOUND_MS (0): above 0 the reads are bounded requests of that many ms (design §19.3), served by the node they
+# reach. LAB_HOT_REPLICAS=on restarts the nodes with the Alambique read replicas on and the placement loop turning them
+# on for the hot cell (moves off; ATANOR_LAB_HOT_REPLICA_ENTER and the other ATANOR_LAB_HOT_* options apply).
+# LAB_HOT_PIPELINE_DEPTH sets the pipeline depth of Alambique on the nodes (its default, 8, without it).
+# LAB_HOT_WRITE_RATIO (0.5) and LAB_HOT_WS_WRITE_RATIO (0.1) are the shares of writes among the requests of an HTTP
+# client and of a WebSocket.
+hot_write_ratio=${LAB_HOT_WRITE_RATIO:-0.5}
+hot_ws_write_ratio=${LAB_HOT_WS_WRITE_RATIO:-0.1}
+hot_read_bound=${LAB_HOT_READ_BOUND_MS:-0}
+hot_replicas=${LAB_HOT_REPLICAS:-off}
+hot_pipeline=${LAB_HOT_PIPELINE_DEPTH:-}
+
+# cpu_sample N: "CPU_US BUSY_US NS ESTABLISHED" of VM N: the CPU time the atanor-lab service has used, all the
+# busy CPU time of the VM, the clock of the VM in ns, and its TCP connections on the HTTP port.
+cpu_sample() {
+  lab_ssh "$1" "echo \$(awk '/^usage_usec/ { print \$2 }' /sys/fs/cgroup/system.slice/atanor-lab.service/cpu.stat)" \
+    "\$(awk '/^cpu / { print (\$2 + \$3 + \$4 + \$7 + \$8 + \$9) * 10000 }' /proc/stat)" \
+    "\$(date +%s%N) \$(ss -Htn state established '( sport = :4000 )' | wc -l)"
+}
+
+# cpu_sample_all DIR: cpu_sample of the three nodes at once, into DIR/N.
+cpu_sample_all() {
+  local n pids=()
+  for n in $LAB_NODES; do cpu_sample "$n" >"$1/$n" & pids+=($!); done
+  wait "${pids[@]}"
+}
+
+# store_sample FILE: "BUSY_US NS CORES" of the store VM (SeaweedFS), to tell a store that is the limit from nodes that are.
+store_sample() {
+  lab_ssh store "echo \$(awk '/^cpu / { print (\$2 + \$3 + \$4 + \$7 + \$8 + \$9) * 10000 }' /proc/stat) \$(date +%s%N) \$(nproc)" >"$1"
+}
+
+# store_report BEFORE_FILE AFTER_FILE: the busy CPU of the store VM as % of one core.
+store_report() {
+  paste -d' ' "$1" "$2" | awk '{ printf "store VM: %.0f%% of one core (of %d00%%)\n", ($4 - $1) / (($5 - $2) / 1000) * 100, $3 }'
+}
+
+# cpu_report BEFORE_DIR AFTER_DIR: per node, the CPU of the service and of the VM as % of one core (the VMs have 2).
+cpu_report() {
+  local n
+  for n in $LAB_NODES; do
+    paste -d' ' "$1/$n" "$2/$n" | awk -v n="$n" '{
+      dt = ($7 - $3) / 1000
+      printf "node %s: service %.0f%%, VM %.0f%% of one core (of 200%%); established HTTP-port connections %d\n",
+        n, ($5 - $1) / dt * 100, ($6 - $2) / dt * 100, $8 }'
+  done
+}
+
+# LAB_HOT_PLACEMENT (off): "on" starts the nodes with the automatic placement of hot cells (design §8.15) and
+# reports the move. Every ATANOR_LAB_HOT_<OPTION> in the environment (ATANOR_LAB_HOT_CPU_ENTER=40) is passed to
+# the nodes; LAB_HOT_DEDICATED=N tags VM N "dedicated" and sends the hot cells of the namespace there. LAB_HOT_HOG=1
+# starts two busy loops in the VM of the owner, LAB_HOT_BASE_S (10) s after a 5 s start, so that the owner is under
+# CPU pressure and the other two nodes are not; with the placement off it shows what the hog costs. The windows of
+# the report: LAB_HOT_BASE_S before the hog, and LAB_HOT_AFTER_S (15) from LAB_HOT_SETTLE_S (5) after the move (or
+# after the hog, without a move). The loads of the cell grow with it: past about 55,000 rows its latency degrades
+# whatever the placement (design §12.6), so keep LAB_HOT_SECONDS at 60.
+hot_placement=${LAB_HOT_PLACEMENT:-off}
+hot_hog=${LAB_HOT_HOG:-0}
+hot_dedicated=${LAB_HOT_DEDICATED:-}
+hot_base_s=${LAB_HOT_BASE_S:-10}
+hot_after_s=${LAB_HOT_AFTER_S:-15}
+hot_settle_s=${LAB_HOT_SETTLE_S:-5}
+
+# wait_until_ms EPOCH_MS: sleeps until that time on this host's clock.
+wait_until_ms() { local left=$(($1 - $(now_ms))); ((left <= 0)) || sleep "$(awk -v ms="$left" 'BEGIN { print ms / 1000 }')"; }
+
+# hot_env_set: the nodes restart with the placement on (or, without arguments, with it off), and with the replicas
+# and the pipeline depth that LAB_HOT_REPLICAS and LAB_HOT_PIPELINE_DEPTH ask for.
+hot_env_set() {
+  local n kv
+  for n in $LAB_NODES; do
+    lab_ssh "$n" "sudo sed -i -e '/^ATANOR_LAB_HOT_/d' -e '/^ATANOR_LAB_REPLICAS=/d' -e '/^ATANOR_LAB_PIPELINE_DEPTH=/d' /etc/atanor-lab.env"
+    if [[ ${1:-} == on ]]; then
+      for kv in ATANOR_LAB_HOT_CELLS=on $(env | grep '^ATANOR_LAB_HOT_' | grep -v -e '^ATANOR_LAB_HOT_CELLS=' -e '^ATANOR_LAB_HOT_TAGS=' -e '^ATANOR_LAB_HOT_AFFINITY='); do
+        lab_ssh "$n" "echo '$kv' | sudo tee -a /etc/atanor-lab.env >/dev/null"
+      done
+      if [[ $hot_replicas == on ]]; then
+        for kv in ATANOR_LAB_REPLICAS=on ATANOR_LAB_HOT_REPLICAS=on ATANOR_LAB_HOT_MOVE=off; do
+          lab_ssh "$n" "echo '$kv' | sudo tee -a /etc/atanor-lab.env >/dev/null"
+        done
+      fi
+      if [[ -n $hot_dedicated ]]; then
+        lab_ssh "$n" "echo 'ATANOR_LAB_HOT_AFFINITY=log=dedicated' | sudo tee -a /etc/atanor-lab.env >/dev/null"
+        [[ $n == "$hot_dedicated" ]] && lab_ssh "$n" "echo 'ATANOR_LAB_HOT_TAGS=dedicated' | sudo tee -a /etc/atanor-lab.env >/dev/null"
+      fi
+    fi
+    [[ -z $hot_pipeline ]] || lab_ssh "$n" "echo 'ATANOR_LAB_PIPELINE_DEPTH=$hot_pipeline' | sudo tee -a /etc/atanor-lab.env >/dev/null"
+    lab_ssh "$n" 'sudo systemctl restart atanor-lab'
+  done
+  wait_for 120 all_joined
+  for n in $LAB_NODES; do wait_for 60 node_serves "$n"; done
+}
+
+# The nodes run with settings of their own in this scenario: the placement, the replicas or a pipeline depth.
+hot_env_changed() { [[ $hot_placement == on || $hot_replicas == on || -n $hot_pipeline ]]; }
+# The placement loop runs: it moves cells, or it turns the replicas on.
+hot_loop() { [[ $hot_placement == on || $hot_replicas == on ]]; }
+
+# hog_start N SECONDS: two busy loops in VM N (it has two vCPUs); the PIDs are in HOG_PIDS.
+hog_start() { HOG_PIDS=$(lab_ssh "$1" "for i in 1 2; do nohup timeout $2 sh -c 'while :; do :; done' >/dev/null 2>&1 & echo \$!; done" | tr '\n' ' '); }
+hog_stop() { [[ -z ${HOG_PIDS:-} ]] || lab_ssh "$1" "kill $HOG_PIDS 2>/dev/null; true"; HOG_PIDS=; }
+
+# hot_move_seconds: the Unix time of the first move the loop made by itself, from $out/hot_cell.events.
+hot_move_seconds() { awk '/lab-event hot_cell.move/ && /result: :ok/ && !/reason: :manual/ { print $2; exit }' "$out/hot_cell.events"; }
+
+scenario_hot_cell() {
+  local before after n owner owner_n cell t_load t_first t_hog= t_move= t_ref= t_base0 t_base1 t_after0 t_after1 deadline moved
+  local windows_steady=() replica_stats=()
+  if ((hot_partitions > 0)) && [[ $hot_placement == on || $hot_hog == 1 ]]; then
+    echo "LAB_HOT_PARTITIONS does not combine with LAB_HOT_PLACEMENT=on or LAB_HOT_HOG=1" >&2; exit 1
+  fi
+  before=$(mktemp -d); after=$(mktemp -d)
+  local load_start; load_start=$(cut -d' ' -f1 /proc/loadavg)
+  if hot_loop; then hot_env_set on; elif hot_env_changed; then hot_env_set; fi
+  t_load=$(now_ms)
+  elixir "$load_tool" hot --nodes "$nodes_arg" --log "$out/hot_cell.log" --seconds "$hot_seconds" --warmup "$hot_warmup" \
+    --http "$hot_http" --ws "$hot_ws" --ws-think "$hot_ws_think" --timeout 5000 \
+    --cursors "$hot_cursors" --cursor-ms "$hot_cursor_ms" --cursor-mode "$hot_cursor_mode" \
+    --partitions "$hot_partitions" --keys "$hot_keys" --read-bound "$hot_read_bound" \
+    --write-ratio "$hot_write_ratio" --ws-write-ratio "$hot_ws_write_ratio" >"$out/hot_cell.load" 2>&1 &
+  LOAD_PID=$!
+  if [[ $hot_placement == on || $hot_hog == 1 ]]; then
+    # Timeline, from the first write: 5 s, the baseline window, then the hog (if any), then the move (if the placement
+    # is on), then the window after it.
+    wait_for 60 grep -q '^starting cell' "$out/hot_cell.load"
+    cell=$(sed -n 's/^starting cell \(hot-[0-9]*\):.*/\1/p' "$out/hot_cell.load")
+    t_first=$(now_ms); wait_until_ms $((t_first + hot_warmup * 1000)); t_first=$(now_ms)
+    owner=$(curl -s -m 5 -H 'host: lab' "http://$(node_ip 1):4000/c/$cell?count=1" | sed -n 's/.*"node":"atanor@\([0-9.]*\)".*/\1/p')
+    owner_n=${owner#$LAB_SUBNET.1}
+    sleep 5
+    cpu_sample_all "$before"; t_base0=$(now_ms)
+    sleep "$hot_base_s"
+    cpu_sample_all "$after"; t_base1=$(now_ms)
+    cpu_report "$before" "$after" >"$out/hot_cell.cpu_base"
+    if [[ $hot_hog == 1 ]]; then
+      hog_start "$owner_n" "$hot_seconds"; t_hog=$(now_ms); t_ref=$t_hog; log "hog on $owner"
+    fi
+    : >"$out/hot_cell.events"
+    if [[ $hot_placement == on ]]; then
+      deadline=$((SECONDS + hot_seconds - 5 - hot_base_s - hot_after_s - hot_settle_s - 5))
+      while ((SECONDS < deadline)); do
+        journal_events_unix hot_cell $((t_first - 5000))
+        moved=$(hot_move_seconds)
+        [[ -n $moved ]] && break
+        sleep 2
+      done
+      if [[ -n ${moved:-} ]]; then
+        t_move=$(awk -v s="$moved" 'BEGIN { printf "%d", s * 1000 }'); t_ref=$t_move; log "move at +$((t_move - t_first)) ms"
+      fi
+    fi
+    if [[ -n $t_ref ]]; then
+      wait_until_ms $((t_ref + hot_settle_s * 1000))
+      cpu_sample_all "$before"; t_after0=$(now_ms)
+      sleep "$hot_after_s"
+      cpu_sample_all "$after"; t_after1=$(now_ms)
+      cpu_report "$before" "$after" >"$out/hot_cell.cpu_after"
+    fi
+    [[ -n $t_hog ]] && hog_stop "$owner_n"
+  else
+    sleep $((hot_warmup + 5))
+    cpu_sample_all "$before"; store_sample "$before/store.sample"; t_base0=$(now_ms)
+    sleep $((hot_seconds - 10))
+    cpu_sample_all "$after"; store_sample "$after/store.sample"; t_base1=$(now_ms)
+    windows_steady=(--window "steady=$t_base0,$t_base1")
+    for n in $LAB_NODES; do replica_stats[n]=$(lab_rpc "$n" 'IO.inspect(Map.take(AtanorLab.Stats.read(), [:replica_reads, :owner_reads]))'); done
+  fi
+  wait "$LOAD_PID"
+  hot_loop && journal_events_unix hot_cell $((t_load - 5000))
+  local windows=("${windows_steady[@]}") after_name=after_move ref_name=move
+  if [[ -n $t_ref ]]; then
+    t_first=$(head -1 "$out/hot_cell.log" | cut -d' ' -f1)
+    [[ -z $t_move ]] && after_name=hogged ref_name=hog
+    windows+=(--window "before=$t_base0,$t_base1" --window "$after_name=$t_after0,$t_after1")
+  fi
+  owner=$(awk '$6 == 200 { print $7 }' "$out/hot_cell.log" | sort | uniq -c | sort -rn | awk 'NR == 1 { print $2 }')
+  {
+    echo "== hot_cell  $(date -u +%FT%TZ)  placement=$hot_placement hog=$hot_hog dedicated=${hot_dedicated:-none} partitions=$hot_partitions write_ratio=$hot_write_ratio ws_write_ratio=$hot_ws_write_ratio read_bound_ms=$hot_read_bound replicas=$hot_replicas pipeline_depth=${hot_pipeline:-default}"
+    echo "host load at the start: $load_start (1 min)"
+    cat "$out/hot_cell.load"
+    echo "host load: $(cut -d' ' -f1-3 /proc/loadavg) (1, 5, 15 min) at the end"
+    echo "owner of the cell (handler node of most writes): $owner"
+    echo "writes by handler node: $(awk '$6 == 200 { print $7 }' "$out/hot_cell.log" | sort | uniq -c | sed 's/atanor@//' | paste -sd' ')"
+    echo "reads by handler node: $(awk '$6 == 200 { print $7 }' "$out/hot_cell.log.reads" | sort | uniq -c | sed 's/atanor@//' | paste -sd' ')"
+    if ((hot_read_bound > 0)); then
+      for n in $LAB_NODES; do echo "bounded reads answered on node $n (replica or owner): ${replica_stats[n]}"; done
+    fi
+    if [[ -n $t_ref ]]; then
+      echo "-- CPU of each node, baseline window (${hot_base_s} s before the hog)"
+      cat "$out/hot_cell.cpu_base"
+      echo "-- CPU of each node, ${hot_after_s} s from ${hot_settle_s} s after the $ref_name"
+      cat "$out/hot_cell.cpu_after"
+    else
+      echo "-- CPU of each node over the ${hot_seconds} s of load, less 10 s at the edges"
+      cpu_report "$before" "$after"
+      store_report "$before/store.sample" "$after/store.sample"
+    fi
+    echo "-- writes (POST and WebSocket 'w N')"
+    elixir "$load_tool" report --log "$out/hot_cell.log" "${windows[@]}"
+    echo "-- reads (GET ?count=1 and WebSocket 'r')"
+    elixir "$load_tool" report --log "$out/hot_cell.log.reads" "${windows[@]}"
+    echo "-- every acknowledged write is in the cell?"
+    elixir "$load_tool" verify --nodes "$nodes_arg" --log "$out/hot_cell.log" --partitions "$hot_partitions"
+    if hot_loop; then
+      echo "-- placement events (all nodes)"
+      grep 'lab-event hot_cell' "$out/hot_cell.events" || echo "none"
+    fi
+    if [[ $hot_placement != on ]]; then
+      echo "automatic move time: n/a (the placement is off)"
+    elif [[ -n $t_move ]]; then
+      echo "automatic move time: $((t_move - t_first)) ms after the first write${t_hog:+, $((t_move - t_hog)) ms after the hog started}"
+    else
+      echo "automatic move time: no move in the window"
+    fi
+  } | tee "$out/hot_cell.txt"
+  hot_env_changed && hot_env_set
+  rm -rf "$before" "$after"
+}
+
+all=(crash crash_ticktime graceful_stop graceful_shutdown partition_peers partition_store netem store_outage store_slow clock dashboard)
+# Run with `lab-scenario hot_cell` (not part of `all`: it is a load measurement, not a fault).
+# Run with `lab-scenario detect`: the detector and takeover scenarios.
+detect=(detect_destroy detect_kill detect_partition detect_destroy_no_takeover detect_stall freeze_rejoin detect_cpu_hog detect_clock heartbeat_cost graceful_stop graceful_shutdown)
+
+if (($# == 0)); then
+  echo "scenarios: ${all[*]} ${detect[*]} hot_cell"
+  echo "groups: all, detect (${detect[*]})"
+  exit 0
+fi
+[[ $1 == all ]] && set -- "${all[@]}"
+[[ $1 == detect ]] && set -- "${detect[@]}"
+for name in "$@"; do
+  declare -F "scenario_$name" >/dev/null || { echo "unknown scenario $name" >&2; exit 1; }
+  log "reset before $name"
+  reset_lab
+  "scenario_$name"
+  clear_all
+done
+echo "results in $out"

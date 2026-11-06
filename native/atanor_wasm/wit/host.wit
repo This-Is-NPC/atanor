@@ -1,0 +1,30 @@
+package atanor:host;
+
+/// The imports the host can provide. It only generates the host traits;
+/// guests import single interfaces, never this world.
+world host {
+  import atanor:cell/sql@0.1.0;
+  import atanor:cell/alarms@0.1.0;
+  import atanor:cell/sockets@0.1.0;
+  import atanor:cell/jobs@0.1.0;
+  import atanor:config/secrets@0.1.0;
+  import atanor:worker/call@0.1.0;
+}
+
+/// The exports the host calls, one world each because a worker may have
+/// either.
+world alarm-guest {
+  export atanor:worker/alarm-handler@0.1.0;
+}
+
+world socket-guest {
+  export atanor:worker/socket-handler@0.1.0;
+}
+
+world local-guest {
+  export atanor:worker/socket-local@0.1.0;
+}
+
+world job-guest {
+  export atanor:worker/job-handler@0.1.0;
+}

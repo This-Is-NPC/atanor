@@ -1,0 +1,27 @@
+[package]
+name = "atanor_wasm"
+version = "0.1.0"
+license = "MIT"
+edition = "2021"
+publish = false
+
+[lib]
+name = "atanor_wasm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rustler = "0.38"
+wasmtime = { version = "50", default-features = false, features = ["component-model", "cranelift", "runtime", "async", "std", "parallel-compilation", "pooling-allocator"] }
+wasmtime-wasi = { version = "50", default-features = false, features = ["p2"] }
+wasmtime-wasi-http = { version = "50", default-features = false, features = ["p2"] }
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+libc = "0.2"
+http-body = "1"
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+wat = "1"
+tempfile = "3.27.0"

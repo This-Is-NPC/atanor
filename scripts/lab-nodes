@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Install the release in the VMs, (re)start the three nodes, activate the lab worker and
+# wait until every node serves a write for a cell through every other node.
+set -euo pipefail
+source "$(dirname "$0")/lab-common"
+
+release=$repo/lab/app/_build/prod/rel/atanor_lab
+secret=$(<"$LAB_DIR/secret")
+cookie=$(<"$LAB_DIR/cookie")
+# A token on a public address needs 32 bytes (`mise run lab:down` removes an older, shorter one).
+[[ ${#secret} -ge 32 ]] || { echo "$LAB_DIR/secret is shorter than 32 characters: remove it and run lab-vms again" >&2; exit 1; }
+peers=$(for n in $LAB_NODES; do node_name "$n"; done | paste -sd,)
+tarball=$(mktemp)
+trap 'rm -f "$tarball"' EXIT
+tar -C "$release" -czf "$tarball" .
+
+for n in $LAB_NODES; do
+  ip=$(node_ip "$n")
+  lab_scp "$tarball" "lab@$ip:/tmp/atanor-lab.tgz"
+  lab_ssh "$n" "sudo systemctl stop atanor-lab 2>/dev/null; sudo rm -rf /opt/atanor-lab/* /var/lib/atanor-lab/cells/* && tar -C /opt/atanor-lab -xzf /tmp/atanor-lab.tgz && rm /tmp/atanor-lab.tgz
+    sudo tee /etc/atanor-lab.env >/dev/null <<ENV
+ATANOR_LAB_IP=$ip
+ATANOR_LAB_COOKIE=$cookie
+ATANOR_LAB_TOKEN=$secret
+ATANOR_LAB_PEERS=$peers
+ATANOR_LAB_S3_ENDPOINT=$LAB_S3
+LANG=C.UTF-8
+ATANOR_LAB_LEASE_TTL_MS=${ATANOR_LAB_LEASE_TTL_MS:-30000}
+ENV
+    sudo chown lab:lab /etc/atanor-lab.env; sudo chmod 600 /etc/atanor-lab.env
+    sudo systemctl enable atanor-lab 2>/dev/null; sudo systemctl start atanor-lab"
+done
+
+# Wait until each node is ready and its admin API lists all three.
+for n in $LAB_NODES; do
+  for _ in $(seq 1 120); do
+    ready=$(curl -s -m 2 -o /dev/null -w '%{http_code}' -H "authorization: Bearer $secret" "http://$(node_ip "$n"):4001/health/ready" || true)
+    health=$(curl -s -m 2 -H "authorization: Bearer $secret" "http://$(node_ip "$n"):4001/health" || true)
+    [[ $ready == 200 && $health == *'"workers"'* && $(grep -o 'atanor@' <<<"$health" | wc -l) -ge 4 ]] && break # the node field plus three names
+    sleep 1
+  done
+  [[ -n ${health:-} ]] || { echo "node $n is not up" >&2; exit 1; }
+done
+
+lab_rpc 1 'IO.inspect(AtanorLab.Application.deploy())' 
+
+for from in $LAB_NODES; do
+  for to in $LAB_NODES; do
+    for _ in $(seq 1 60); do
+      code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -H 'host: lab' -X POST --data 0 \
+        "http://$(node_ip "$from"):4000/c/ready-$to") && [[ $code == 200 ]] && break
+      sleep 1
+    done
+    [[ $code == 200 ]] || { echo "write through node $from failed: HTTP $code" >&2; exit 1; }
+  done
+done
+curl -s -H "authorization: Bearer $secret" "http://$(node_ip 1):4001/health"; echo
+echo "cluster ready: dashboard http://$(node_ip 1):4002/workers?token=$secret"

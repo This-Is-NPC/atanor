@@ -1,0 +1,52 @@
+# Shared helpers of the cluster scripts; sourced, not run.
+# Every object the cluster creates belongs to the Compose project atanor-cluster, and nothing
+# else is touched: containers are found by that project's label and acted on by id.
+
+CLUSTER=atanor-cluster
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cluster_dir=$repo/cluster
+secrets_dir=$cluster_dir/secrets
+label="com.docker.compose.project=$CLUSTER"
+
+# ATANOR_CLUSTER_TMPFS=1 adds compose.tmpfs.yml: the data of the store and the nodes lives in memory.
+# Set it the same way for every command, or `compose up` recreates the containers with the other layout.
+compose_files=(-f "$cluster_dir/compose.yml")
+[[ ${ATANOR_CLUSTER_TMPFS:-0} != 1 ]] || compose_files+=(-f "$cluster_dir/compose.tmpfs.yml")
+compose() { docker compose -p "$CLUSTER" "${compose_files[@]}" "$@"; }
+
+# cluster_ids [SERVICE]: ids of the project's containers (all states), optionally of one service.
+# The service "node" means the node services node-1 to node-10.
+cluster_ids() {
+  local filters=(--filter "label=$label")
+  case ${1:-} in
+    "") ;;
+    node) filters+=(--filter "name=^/?$CLUSTER-node-[0-9]+$") ;;
+    *) filters+=(--filter "label=com.docker.compose.service=$1") ;;
+  esac
+  docker ps -aq "${filters[@]}"
+}
+
+# cluster_container TARGET: the id of node-N (or N), store, lb or bucket.
+cluster_container() {
+  local target=$1 id
+  [[ $target =~ ^[0-9]+$ ]] && target=node-$target
+  case $target in
+    node-[0-9]*) id=$(docker ps -aq --filter "label=$label" --filter "name=^/?$CLUSTER-$target$") ;;
+    store | lb | bucket) id=$(docker ps -aq --filter "label=$label" --filter "label=com.docker.compose.service=$target") ;;
+    *) echo "unknown target '$target': use node-N, store or lb" >&2; return 1 ;;
+  esac
+  [[ -n $id ]] || { echo "no container for '$target' in project $CLUSTER" >&2; return 1; }
+  echo "$id" | head -n 1
+}
+
+container_name() { docker inspect -f '{{.Name}}' "$1" | sed 's|^/||'; }
+container_ip() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1"; }
+
+# published_url PORT_IN_CONTAINER: the host URL of a published port of the load balancer.
+published_url() { echo "http://$(compose port lb "$1")"; }
+admin_token() { cat "$secrets_dir/admin_token"; }
+# admin_get PATH [CURL OPTIONS...]: a GET on the admin API through the load balancer.
+admin_get() {
+  local path=$1; shift
+  curl -s -m 5 -H "authorization: Bearer $(admin_token)" "$@" "$(published_url 4001)$path"
+}

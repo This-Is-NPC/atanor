@@ -1,0 +1,75 @@
+package atanor:cell@0.1.0;
+
+/// SQL on the cells of the namespaces the manifest grants. A cell is
+/// addressed by namespace and key. Statements use SQLite `?` parameters.
+interface sql {
+  variant value {
+    null,
+    integer(s64),
+    real(f64),
+    text(string),
+    blob(list<u8>),
+  }
+
+  record address {
+    namespace: string,
+    key: string,
+  }
+
+  record rows {
+    columns: list<string>,
+    rows: list<list<value>>,
+  }
+
+  record statement {
+    sql: string,
+    params: list<value>,
+  }
+
+  variant error {
+    /// The namespace is not in the manifest's `bindings.cells`.
+    not-granted(string),
+    /// The call failed. A limit gives a message that starts with a code and
+    /// `": "`: `statement_timeout` (the statement ran past the cell's
+    /// `sql.statement_timeout_ms`; a batch is undone), `result_too_large` (more
+    /// rows or bytes than `sql.max_result_rows` or `sql.max_result_bytes`),
+    /// `bad_params` (a wrong number or type of parameters), `overloaded` (the
+    /// node is at its `awake` limits) and `busy` (too many calls wait on this
+    /// cell). The last two did not run the call: retry after a moment. The
+    /// ingress answers 503 `overloaded` when the guest then responds 5xx.
+    /// `store_unavailable` (a job's index could not be written to the store;
+    /// the transaction was rolled back) did not run the call either, and the
+    /// ingress answers 503 `unavailable`. `sync_failed` (the commit could not
+    /// be uploaded) may have been applied: look before repeating a write.
+    /// Other messages are SQLite's.
+    failed(string),
+  }
+
+  /// The physical cell that holds `partition-key` of the logical cell, for a
+  /// namespace whose manifest declares `partitions`. Use the returned address
+  /// with every cell function: the same partition key always gives the same
+  /// cell. Fails when the namespace has no partitions or the key is not a valid
+  /// cell key. The physical cell is the one a cell function accepts for a
+  /// partitioned namespace; the logical address is refused there.
+  partition: func(cell: address, partition-key: string) -> result<address, error>;
+
+  /// Runs a read statement.
+  query: func(cell: address, sql: string, params: list<value>) -> result<rows, error>;
+
+  /// Runs a read statement and accepts an answer that misses writes
+  /// acknowledged less than `max-lag-ms` milliseconds before the call. On a node
+  /// that does not own the cell it may be answered from a local replica of the
+  /// cell, which the operator turns on (`replicas`); otherwise the owner answers
+  /// it, so the call is always correct. `max-lag-ms` must be above 0. Use `query`
+  /// for a read that must see every acknowledged write.
+  query-bounded: func(cell: address, sql: string, params: list<value>, max-lag-ms: u32) -> result<rows, error>;
+
+  /// Runs a write statement; rows come back for `RETURNING`.
+  execute: func(cell: address, sql: string, params: list<value>) -> result<rows, error>;
+
+  /// Runs the statements in order in one transaction: all commit or none do.
+  /// There are no interactive transactions across host calls, because a
+  /// transaction holds the cell's single writer and a guest could keep it
+  /// open until its deadline.
+  batch: func(cell: address, statements: list<statement>) -> result<list<rows>, error>;
+}
