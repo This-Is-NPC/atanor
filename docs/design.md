@@ -95,8 +95,9 @@ A stop does not go through the state: the listeners, the admin among them,
 close first (§8.11). Nothing calls `Alambique.join/1` after the start, so a node
 that drains is not brought back.
 
-The state is in `Atanor.Registry.state/1`: `{:starting, reason}`, `:ready` or
-`:stopping` (set when the drain starts, §8.11). A
+The state is in `Atanor.Registry.state/1`: `{:starting, reason}`, `:ready`,
+`:draining` (a drain was asked for, §8.11) or `:stopping` (the instance is
+stopping, §8.11). A
 worker head that changes later is applied by the watcher while the node is
 ready, as before (§5.3). A TCP listener that cannot be bound when the node
 starts is logged and left closed (§7.3), where a later activation would refuse
@@ -1718,12 +1719,24 @@ An expected unavailability is a 503 that names the reason and carries
 `Retry-After` (seconds, `http.retry_after_s`, 1 by default): `no_quorum` (this
 node is not a majority), `owner_unreachable` (the owner is not reachable and not
 confirmed down), `owner_down` (confirmed down but the cell was not taken over),
+`draining` (this node hands its cells off and does not wake the cell),
+`held_elsewhere` (a node outside this cluster holds the cell's lease, with its own `Retry-After`: see below),
 `fenced` (a lease was lost, expired or fenced), `overloaded` (the WASM queue is full),
 `store_unavailable` (the store did not answer a request that a job's transaction needed, and the
 transaction was rolled back) or `deployment_unavailable` (the node cannot build the pinned
 deployment). A
 worker that maps the cell error to a 5xx still gets that 503; 500 stays for
-defects. The two 503s differ: `unavailable` means the call did not run and is
+defects.
+
+`held_elsewhere` is the answer while two nodes that are not a cluster take turns on a cell (§8.11):
+the lease names a node that is no member of this instance's cluster, so this node waits for the lease
+and never takes the cell. Its `Retry-After` is read from the lease of the routed cell (`Alambique.lease/3`,
+one store read per such 503): `http.retry_after_s` when the lease is released or gone, else the seconds to
+its `expires_at_ms` plus the skew margin (2 s), at least `http.retry_after_s` and at most
+`http.retry_after_max_s` (default 30, the lease TTL). A drain releases the lease, so the wait is
+normally one retry. A WebSocket upgrade gets the same 503 and header before the upgrade. A TCP connection
+has no `Retry-After`: it closes, and `[:atanor, :tcp, :disconnect]` carries `reason: {:unavailable, reason}`.
+An attach to a channel that cannot reach its owner stays `owner_unreachable`. The two 503s differ: `unavailable` means the call did not run and is
 safe to repeat, `unknown_outcome` means it may have run. A write whose batch was sent for
 upload when its cell stopped, for any reason (`lease_lost`, `lease_expired`, `fenced`, a drain),
 is answered `:outcome_unknown` by Alambique, so `fenced` on a write means it did not run;
@@ -2066,7 +2079,56 @@ Because the takeover bumps the epoch, the detector being wrong costs
 availability and never correctness. Telemetry for each transition and takeover:
 [telemetry.md](telemetry.md).
 
-### 8.11 Stopping gracefully
+### 8.11 Draining and stopping gracefully
+
+A node hands its cells back in one function, `Atanor.drain/2` (`Atanor.Drain`). Four things run it: the
+admin API (`POST /drain`), the command `atanor drain`, SIGTERM and the stop of the instance (the second part of
+this section). It is how one node replaces another with no cluster between them: the node that leaves drains,
+and the node that comes takes each cell from the store at its next call, with no call between the two.
+
+The sequence of `Atanor.drain/2`:
+
+1. **The node reports `draining`.** The state is `:draining` before anything else, so `/health/ready` and
+   `/health/serving` answer 503 `draining` (`/health` stays 200, with `status: "draining"`) and a balancer that
+   polls them stops sending requests. The listeners (HTTP, TCP, WebSocket, admin) stay open and keep serving
+   the cells the node still holds. The alarm scheduler leaves its `:pg` group at its next tick, so no alarm
+   fires here and the other nodes take the shards.
+2. **The jobs finish.** The job runner stops claiming and waits up to `stop.jobs_ms` for the running attempts
+   (§15.3), so no job runs on a cell that is handed off.
+3. **`Alambique.drain/2`**: the node leaves the membership, refuses to wake cells (`{:error, :draining}`, a
+   503 `draining` to the client, §8.4) and hibernates every awake cell: it uploads what is pending, publishes
+   the feed and releases the lease (`released: true`), so another node takes the cell at once, without
+   waiting for the lease to expire. One cell is bounded by `stop.drain_timeout_ms` (default 15 000), up to
+   `stop.drain_concurrency` (default 64) at a time; the whole drain by `stop.shutdown_ms` (default 75 000,
+   at least the first). Past it the drain gives up and reports `{:drain, :deadline}`.
+4. **The node stops** (`stop.exit`, default `true`): `System.stop/1` with status 0, or 1 when a cell stayed
+   with its lease. The drain started by the API or the command answers before that, with
+   `%{state, hibernated, errors, duration_ms}`; `exit: false` or a function (`Atanor.drain(name, exit: fun)`)
+   replaces it, which is how the tests and a drain that must not end the VM use it.
+
+A cell that the drain could not hibernate stays with its lease, which expires as after a crash (30 s plus the
+2 s skew margin by default); a client of the node that takes over gets 503 `held_elsewhere` until then (§8.4).
+The drain is one way: the node does not take cells again until it restarts. A second call joins a drain that
+is running, or returns what the finished one did (`GET /drain`, `Atanor.drain_status/1`).
+
+**SIGTERM** (what `docker stop`, systemd and Kubernetes send) runs the same drain with the listeners still
+serving, then stops the VM. The application swaps `Atanor.Signal` in for OTP's `erl_signal_handler` on
+`:erl_signal_server`, once per VM, and swaps it back when the application stops; the other signals keep OTP's
+behavior. On SIGTERM it drains every running instance whose `stop.sigterm` is `:drain` (the default), in
+parallel, then calls `System.stop/1` with status 1 if any drain left a cell or failed, else 0. With no
+instance, or with `stop: [sigterm: :stop]`, the VM stops at once as OTP does, and the stop runs the drain
+after the listeners close (the order below). The stop that follows finds the drain done and does not repeat
+it. A second SIGTERM during the drain joins it and forces nothing: the grace period of the container or the
+unit (`docker stop --time`, `TimeoutStopSec`, `terminationGracePeriodSeconds`) must exceed
+`stop.shutdown_ms` (75 s by default), and SIGKILL is the way to force a stop; the leases then expire as
+after a crash.
+
+A cell that has to be handed back is still safe if the node dies half way: leases not released expire, and
+Alambique's fencing (§8.10) stops the old owner's writes after another node took over.
+
+Telemetry: `[:atanor, :node, :drain, :start]` and `[:atanor, :node, :drain]` ([telemetry.md](telemetry.md)).
+
+#### The order of a stop
 
 The supervision tree of an instance stops its children in reverse order, and
 the order is the contract (`Atanor.Supervisor`):
@@ -2113,11 +2175,10 @@ the order is the contract (`Atanor.Supervisor`):
    2 to 3 ms, and none after ([the container cluster how-to](how-to-run-a-cluster-in-containers.md)).
    A handler that Dispatch routes to the owner can wait twice (in the cell call and
    again in Dispatch), each bounded by the setting.
-3. **`Alambique.drain/2`** (`Atanor.Drain`): the node leaves the membership,
-   refuses new wakes and hibernates every cell it holds, so the leases are
-   released. `stop.drain_timeout_ms` (per cell) and `stop.drain_concurrency` are
-   passed through; `nil` keeps the instance's Alambique `:drain` settings.
-   `stop.shutdown_ms` (default 75 000) bounds the whole step.
+3. **The drain** (`Atanor.Drain`, the sequence above, jobs already stopped): the node leaves the
+   membership, refuses new wakes and hibernates every cell it holds, so the leases are released, with
+   `stop.drain_timeout_ms`, `stop.drain_concurrency` and `stop.shutdown_ms` (the whole step). A drain asked
+   for earlier is not repeated.
 4. Alambique stops (its own drain finds nothing left).
 
 The jobs sit above the detector in that order. The job runner stops claiming and

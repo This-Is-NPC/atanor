@@ -14,7 +14,7 @@ the `cell` (`{namespace, key}`), so the dashboards of the three questions
 | Cluster routing | `[:atanor, :forward]` |
 | Failure detection | `[:atanor, :node, :suspect \| :down \| :link_broken \| :alive]` |
 | Placement of hot cells | `[:atanor, :hot_cell, :sample \| :decision \| :move \| :replicas]` |
-| Takeover of a lost node's cells, graceful stop | `[:atanor, :cell, :take_over]`, `[:atanor, :node, :drain]` |
+| Takeover of a lost node's cells, drain and graceful stop | `[:atanor, :cell, :take_over]`, `[:atanor, :node, :drain, ...]` |
 | A node starts: deployments applied, then serving | `[:atanor, :deployments, :loaded]`, `[:atanor, :node, :ready]` |
 | Awake cells migrated to a new worker version | `[:atanor, :foreign_store]` | `count` (1) | `instance`, `node` (the node of another store that a call was routed toward). A configuration error, not unavailability; the call is refused and not retried (design §8.4) |
 | `[:atanor, :cells, :migrate]` |
@@ -102,15 +102,17 @@ that moment; 300 is the cap) and `instance` and `node` (the peer) in the metadat
 | `[:atanor, :cell, :take_over]` | `duration` (the whole step: quorum, lease read, `Alambique.take_over/4`) | `instance`, `cell` (the Alambique id, `<namespace>.<key>`), `node` (the lost owner), `reason` (why the detector has it down), `result`: `:ok` (the cell is served here now), `:moved` (another node won a concurrent takeover and serves it), `:stale` (the lease no longer named the lost owner), `:no_quorum` (this node is not in a majority, nothing was taken) or `{:error, reason}` (the cell stays unavailable until its lease expires) |
 | `[:atanor, :deployments, :loaded]` | `duration`, `workers` (heads read) | `instance`, `node` |
 | `[:atanor, :node, :ready]` | none | `instance`, `node` |
-| `[:atanor, :node, :drain]` | `duration`, `hibernated` (cells put to sleep), `errors` (cells that could not be) | `instance`, `node`, `error_list` (`{cell, reason}`) |
+| `[:atanor, :node, :drain, :start]` | `system_time` | `instance`, `node`, `trigger` (`:api`: `Atanor.drain/2`, the admin API or `atanor drain`; `:stop`: the instance stops) |
+| `[:atanor, :node, :drain]` | `duration` (native units), `hibernated` (cells put to sleep, their leases released), `errors` (cells that could not be) | `instance`, `node`, `trigger`, `error_list` (`{cell, reason}`; `{:drain, :deadline}` when `stop.shutdown_ms` ended the drain) |
 
 `:loaded` is emitted once per start, when the first load of the deployments
 is complete, and `:ready` when `/health/ready` turns 200 (design §2.1). The
 node joins the cluster between the two, so no cell wakes on it before
 `:loaded`. `:take_over` is emitted by the node that took the cell, once per call that needed
-it (design §8.10); a cell already awake here costs no event. `:drain` is emitted
-by the node that stops, at the end of its drain (design §8.11), and a non-empty
-`error_list` is also logged as a warning.
+it (design §8.10); a cell already awake here costs no event. `:drain` is the end of the
+drain of the node that hands its cells back, on demand or because it stops
+(design §8.11); `:start` is its beginning. A non-empty `error_list` is also logged as
+a warning.
 
 Alert on `:down` and `:link_broken`; a `:suspect` that is followed by `:alive`
 within seconds is a late heartbeat, and many of them say the settings are too
@@ -142,7 +144,7 @@ unbound).
 | Event | Measurements | Metadata |
 | --- | --- | --- |
 | `[:atanor, :tcp, :connect]` | `count` (1) | `worker`, `deployment`, `listener`, `cell` |
-| `[:atanor, :tcp, :disconnect]` | `duration`, `bytes_in`, `bytes_out` (ThousandIsland only) | as above, plus `reason`: `:peer`, `:worker` (the worker closed), `:timeout` (idle), `:shutdown` (listener closed), `:error` (callback failure or write error). Ranch connections add `exit_reason` (the process exit reason) and have no byte counts |
+| `[:atanor, :tcp, :disconnect]` | `duration`, `bytes_in`, `bytes_out` (ThousandIsland only) | as above, plus `reason`: `:peer`, `:worker` (the worker closed), `:timeout` (idle), `:shutdown` (listener closed), `:error` (callback failure or write error), `{:unavailable, reason}` (the cell could not be reached, for example `:draining` or `:held_elsewhere`; a TCP connection has no `Retry-After`, design §8.4). Ranch connections add `exit_reason` (the process exit reason) and have no byte counts |
 | `[:atanor, :ws, :connect]` | `count` (1) | `worker`, `deployment`, `cell` |
 | `[:atanor, :ws, :disconnect]` | `duration` | as above, plus `reason` (the WebSock terminate reason) |
 | `[:atanor, :alarm, :fired]` | `duration` (claim to acknowledgment, including the handler) | `worker`, `deployment`, `cell` (here the cell id, `<namespace>.<key>`), `attempt` |

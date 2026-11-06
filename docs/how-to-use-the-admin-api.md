@@ -85,6 +85,10 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    `serving` is `ready`. A node that has just regained its majority waits
    `takeover.settle_ms` (2 s) before it says `serving` again.
 
+   A node that was told to drain (step 13) answers 503 `draining` on both
+   paths, so the balancer stops sending it requests; `/health` stays 200 and
+   says `"status":"draining"`.
+
    While the node loads its deployments the answer is 503 with the reason, for
    example when the store cannot be read (output of the test
    `test/atanor/readiness_test.exs`):
@@ -422,6 +426,43 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     The limits are options of `admin:`: `max_package_bytes` (default
     67,108,864), `max_scopes` (64 per token), and `default_limit` and
     `max_limit` (100 and 1,000), which also bound the token and audit pages.
+
+13. Hand the cells of a node back before you stop it. `POST /drain` makes the
+    node report `draining`, hibernate every cell it holds and release each
+    lease, so another node takes each cell at its next call; then the node
+    stops itself. The answer comes when the cells are back, at most
+    `stop.shutdown_ms` (75 seconds by default) later. Needs `cluster:admin`.
+    The same as `atanor drain` ([cli.md](cli.md)).
+
+    ```sh
+    curl -s -H "authorization: Bearer demo-token" localhost:5010/drain
+    curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/drain
+    curl -si -H "authorization: Bearer demo-token" localhost:5010/health/ready
+    ```
+
+    Output of the test node, started with `stop: [exit: false]` so it stays
+    up (without it the VM stops after the answer):
+
+    ```text
+    GET /drain -> 200 {"errors":[],"node":"nonode@nohost","state":"idle"}
+    POST /drain -> 200 {"duration_ms":6,"errors":[],"hibernated":1,"node":"nonode@nohost","state":"drained"}
+    GET /health/ready -> 503 {"node":"nonode@nohost","reason":"the node is handing its cells off","status":"draining"}
+    GET /health/serving -> 503 {"node":"nonode@nohost","reason":"the node is handing its cells off","status":"draining"}
+    GET ingress /c/a -> 503 retry-after=["1"] {"error":"unavailable","reason":"draining"}
+    ```
+
+    While it drains the node keeps serving the cells it still holds on every
+    listener. A request that needs a cell it handed back is 503 `draining`
+    with `Retry-After`; the node that takes the cell answers it. `errors`
+    lists cells that stayed with their leases until these expire (`cell` and
+    `reason`; `:drain` with `:deadline` when the whole drain ran out of
+    time), and the node then stops with status 1. A cell that another node
+    still holds is 503 `held_elsewhere` on the node that asks, with a
+    `Retry-After` that follows the lease. `GET /drain` reads `idle`,
+    `draining` or `drained`. The options are `stop: [drain_timeout_ms,
+    drain_concurrency, shutdown_ms, exit]`
+    ([configuration](configuration.md), design
+    [§8.11](design.md#811-draining-and-stopping-gracefully)).
 
 ## Troubleshooting
 

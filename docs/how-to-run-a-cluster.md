@@ -270,7 +270,7 @@ in a cluster of two a silent failure then waits for the lease
 
 A node stopped with a release stop, `Supervisor.stop/1` or `System.stop/0`
 closes its listeners, tells its peers that it leaves, and hands its cells off
-before it exits (design [§8.11](design.md#811-stopping-gracefully)). Its cells
+before it exits (design [§8.11](design.md#811-draining-and-stopping-gracefully)). Its cells
 serve again on the other nodes in about 10 ms, and `GET` requests through the
 other nodes see no error. A `POST` that was running on the stopping node can
 still get 503 `unknown_outcome`. Put a load balancer's drain before the stop so
@@ -284,6 +284,8 @@ long open connections get to finish.
 | 503 `{"error":"unavailable","reason":"no_quorum"}` | The call did not run: this node is not a majority of the nodes it knows, so it took nothing over. | Repeat it through a node in the majority, or after the partition heals. |
 | 503 `{"error":"unavailable","reason":"owner_unreachable"}` | The call did not run: the owner is not reachable and is not confirmed down yet. | Repeat it; the cell is taken over when the detector confirms the loss. |
 | 503 `{"error":"unavailable","reason":"owner_down"}` | The call did not run: the owner is confirmed down but the cell has not been taken over (takeover off, or its lease has not expired). | Repeat it until the lease is taken over. |
+| 503 `{"error":"unavailable","reason":"draining"}` | The call did not run: this node hands its cells off and does not wake the cell. | Repeat it; another node serves the cell (see [the admin API](how-to-use-the-admin-api.md), step 13). |
+| 503 `{"error":"unavailable","reason":"held_elsewhere"}` | The call did not run: a node outside this cluster (one being replaced) holds the cell's lease. | Wait the `Retry-After` time, which follows the lease; the lease is released when that node drains. |
 | 503 `{"error":"unavailable","reason":"fenced"}` | The call did not run: this node lost the cell's lease (a takeover or a move fenced it). | Repeat it; the owner lookup finds the new owner. |
 | 503 `{"error":"overloaded","reason":"overloaded"}` | The call did not run: the WASM queue was full. | Retry after the `Retry-After` time, or raise the queue. |
 | 503 `{"error":"unknown_outcome","reason":"unknown_outcome"}` | The call started on a node that was lost. A `GET` is repeated by Atanor itself; a `POST` is not. | Read the state before repeating a write. |
@@ -291,7 +293,7 @@ long open connections get to finish.
 | 500 `{"error":"internal_error"}` | A defect: the worker raised, returned an invalid response, or an unexpected error happened. | Report it; it is not expected unavailability. |
 
 Every 503 carries `Retry-After` in seconds (`http: [retry_after_s: 1]` by
-default) and a `reason` field. A worker that catches a cell error and answers 5xx
+default; `held_elsewhere` follows the lease, at most `retry_after_max_s`, 30) and a `reason` field. A worker that catches a cell error and answers 5xx
 still gets the 503: the runtime keeps the availability reason of the cell call.
 
 [design.md §8.4](design.md#84-when-the-node-is-lost) has the full table.

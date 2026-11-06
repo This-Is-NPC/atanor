@@ -162,6 +162,26 @@ secret: atn_9d07e7f2c249e1dc21a5435d_<secret>
 Keep the secret now: it is not shown again.
 ```
 
+### atanor drain
+
+Hands the cells of the node at the profile's URL back and stops the node. Needs
+`cluster:admin`. The node reports `draining` on `/health/ready`, so a balancer
+stops sending to it; it keeps serving the cells it still holds, hibernates
+every cell and releases each lease, so another node takes it at its next call,
+then stops itself (`stop: [exit: false]` on the node leaves it running,
+drained). The command waits for the answer, `ATANOR_DRAIN_TIMEOUT` seconds at
+most (the drain goes on if it gives up), and exits 1 when some cells stayed with
+their leases. Run it against the node that leaves, not through a balancer. See
+[the admin API](how-to-use-the-admin-api.md), step 13, and design
+[§8.11](design.md#811-draining-and-stopping-gracefully).
+
+Output against a test node with three cells (`stop: [exit: false]`):
+
+```text
+$ atanor drain
+drained nonode@nohost: 3 cells handed back in 14 ms
+```
+
 ### atanor token list
 
 Lists the tokens (never their secrets). Needs `cluster:admin`. Takes `--limit N`
@@ -182,7 +202,7 @@ prints the version.
 | Option | Meaning |
 | --- | --- |
 | `--profile NAME` | The profile to use (default `default`, or `ATANOR_PROFILE`). |
-| `--timeout SECONDS` | Seconds to wait for an answer; replaces `ATANOR_TIMEOUT` and `ATANOR_UPLOAD_TIMEOUT`. |
+| `--timeout SECONDS` | Seconds to wait for an answer; replaces `ATANOR_TIMEOUT`, `ATANOR_UPLOAD_TIMEOUT` and `ATANOR_DRAIN_TIMEOUT`. |
 | `--help` | Show the help of the command. |
 
 ## Environment variables
@@ -195,6 +215,7 @@ prints the version.
 | `ATANOR_CONNECT_TIMEOUT` | Seconds to open the connection. | 10 |
 | `ATANOR_TIMEOUT` | Seconds to wait for an answer. | 30 |
 | `ATANOR_UPLOAD_TIMEOUT` | Seconds to wait for the answer to an upload (`deploy`). | 300 |
+| `ATANOR_DRAIN_TIMEOUT` | Seconds to wait for the answer to `drain`. | 300 |
 | `XDG_CONFIG_HOME` | Where `atanor/config.json` lives. | `~/.config` |
 | `MIX_ENV` | The build `deploy` reads native modules from. | `dev` |
 

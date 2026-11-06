@@ -375,7 +375,7 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
      the node that received the request, and its cell calls reach the owner
      through Alambique's router, which meets a draining owner as `owner_down`
      at once; a native worker routed to the owner waits up to
-     `routing.leave_wait_ms` (3 s) first ([design §8.11](design.md#811-stopping-gracefully)).
+     `routing.leave_wait_ms` (3 s) first ([design §8.11](design.md#811-draining-and-stopping-gracefully)).
    - **Latency noise.** Stalls of about 2 s that hit every room of one node at
      once appear above about 60 requests per second when the data is on btrfs,
      and not with the data on tmpfs ([Keeping the data in memory](#keeping-the-data-in-memory)).
