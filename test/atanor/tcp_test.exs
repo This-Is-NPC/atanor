@@ -349,4 +349,30 @@ defmodule Atanor.TCPTest do
       assert until(fn -> closed?(socket) end)
     end
   end
+
+  describe "a drain" do
+    test "closes a connection whose cell is not woken here, with the reason, as TCP has no Retry-After" do
+      handler = {__MODULE__, make_ref()}
+      parent = self()
+
+      :telemetry.attach(
+        handler,
+        [:atanor, :tcp, :disconnect],
+        fn _event, _measures, meta, _ -> send(parent, {:disconnect, meta.reason}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      node = started(stop: [exit: false])
+      socket = connect(node)
+      assert line(socket) == "220 smtp ready"
+      assert say(socket, "RCPT bob") == "250 ok"
+
+      assert {:ok, _} = Atanor.drain(node.name)
+      :ok = :gen_tcp.send(socket, "DATA\r\n")
+      assert closed?(socket)
+      assert_receive {:disconnect, {:unavailable, :draining}}
+    end
+  end
 end

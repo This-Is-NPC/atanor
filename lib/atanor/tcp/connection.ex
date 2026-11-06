@@ -67,6 +67,10 @@ defmodule Atanor.TCP.Connection do
     {:close, %{state | closed: :worker}}
   end
 
+  # A TCP connection has no `Retry-After`: it closes, and the disconnect event names the reason.
+  defp advance(_socket, state, {:error, {:unavailable, reason}}),
+    do: {:close, %{state | closed: {:unavailable, reason}}}
+
   defp advance(_socket, state, {:error, _}), do: {:close, %{state | closed: :error}}
 
   # The routing key is asked after the worker answered, until it names a cell.

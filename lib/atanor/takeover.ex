@@ -12,6 +12,7 @@ defmodule Atanor.Takeover do
   slow.
   """
 
+  alias Atanor.Deployments.Watcher
   alias Atanor.{Detector, Fence, Jobs, Registry}
 
   @doc """
@@ -28,14 +29,16 @@ defmodule Atanor.Takeover do
     * `{:error, :owner_down}`: the detector confirms the owner down but takeover
       is disabled; the cell waits for its lease;
     * `{:error, :owner_unreachable}`: the owner is not confirmed down yet, or the
-      takeover did not finish; the call did not run.
+      takeover did not finish; the call did not run;
+    * `{:error, :held_elsewhere}`: the owner is no node of this cluster (see `unreachable/2`); the call
+      did not run and this node never takes the cell from it.
 
   A takeover that lost a race (`:epoch_changed`, `:contended`) reads the lease
   again, up to `takeover.attempts` times, so two nodes that suspect the same
   owner end with one winner and the epoch raised once.
   """
   @spec recover(atom, String.t(), String.t()) ::
-          {:ok, node} | :stale | :no_quorum | {:error, :owner_down | :owner_unreachable | term}
+          {:ok, node} | :stale | :no_quorum | {:error, :owner_down | :owner_unreachable | :held_elsewhere | term}
   def recover(instance, id, owner) do
     config = Registry.config(instance)
 
@@ -62,8 +65,20 @@ defmodule Atanor.Takeover do
         result
 
       :error ->
-        {:error, :owner_unreachable}
+        {:error, unreachable(instance, owner)}
     end
+  end
+
+  @doc """
+  Why a cell whose lease names `owner` cannot be reached and `owner` is not down: `:held_elsewhere` when
+  `owner` is no node of this cluster (a node being replaced holds it until it hands it back or the lease
+  ends), else `:owner_unreachable`.
+  """
+  @spec unreachable(atom, String.t()) :: :held_elsewhere | :owner_unreachable
+  def unreachable(instance, owner) do
+    if Enum.any?(Watcher.nodes(instance), &(Atom.to_string(&1) == owner)),
+      do: :owner_unreachable,
+      else: :held_elsewhere
   end
 
   defp quorum?(instance) do

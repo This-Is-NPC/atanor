@@ -32,7 +32,7 @@ defmodule Atanor.Cluster.StoppedInstanceTest do
     cell: cell
   } do
     assert {:ok, %{status: 503, body: body}} = request(cluster, :n1, :get, "/c/direct/" <> cell)
-    assert %{"error" => "unavailable", "reason" => "owner_down"} = Jason.decode!(body)
+    assert %{"error" => "unavailable", "reason" => "draining"} = Jason.decode!(body)
   end
 
   test "a call forwarded to the node did not run, whatever it is", %{cluster: cluster, cell: cell} do

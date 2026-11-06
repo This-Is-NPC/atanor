@@ -182,7 +182,11 @@ defmodule Atanor.Dispatch do
       # No peers: run here, unless this node lost the cell without being told (design §8.13).
       cell != nil ->
         with {:ok, id} <- Cell.id(cell) do
-          if current?(env.instance, id), do: local(env, cell, call, false), else: {:error, {:unavailable, :fenced}}
+          case ownership(env.instance, id) do
+            :owned -> local(env, cell, call, false)
+            {:lost, reason} when reason in [:held_elsewhere, :draining] -> Unavailable.error(env.instance, reason)
+            _ -> {:error, {:unavailable, :fenced}}
+          end
         end
 
       true ->
@@ -309,12 +313,13 @@ defmodule Atanor.Dispatch do
   defp blocked?(instance, node, call),
     do: Detector.blocked?(instance, node) and not (idempotent?(call) and Detector.left?(instance, node))
 
-  # A cell call refused with `owner_down` did not run (design §8.4). While a node leaves, that is a
+  # A cell call refused with `owner_down` or `draining` did not run (design §8.4). While a node leaves, that is a
   # node that hibernated the cell and refused to wake it: the call waits for the handoff like the others.
-  defp draining({:error, {:unavailable, :owner_down}}, env, cell, id, call, attempts, until) do
+  defp draining({:error, {:unavailable, reason}} = refused, env, cell, id, call, attempts, until)
+       when reason in [:owner_down, :draining] do
     if Detector.any_left?(env.instance),
-      do: wait(env.instance, true, attempts, until, fn a, u -> retry(env, cell, id, call, a, u, :owner_down) end),
-      else: {:error, {:unavailable, :owner_down}}
+      do: wait(env.instance, true, attempts, until, fn a, u -> retry(env, cell, id, call, a, u, reason) end),
+      else: refused
   end
 
   defp draining(result, _env, _cell, _id, _call, _attempts, _until), do: result
@@ -389,7 +394,9 @@ defmodule Atanor.Dispatch do
   # A node that stops hibernates its cells under the handlers that still run: a failure then
   # says nothing about the cell, and the caller routes an idempotent call again.
   defp handed_off(instance, call, {:error, _} = failure) do
-    if Registry.state(instance) == :stopping and idempotent?(call), do: {:moved, nil}, else: {:executed, failure}
+    if Registry.state(instance) in [:draining, :stopping] and idempotent?(call),
+      do: {:moved, nil},
+      else: {:executed, failure}
   end
 
   defp handed_off(_instance, _call, result), do: {:executed, result}
@@ -402,7 +409,7 @@ defmodule Atanor.Dispatch do
 
   # `:lost` is a definite answer: the lease or the router says another node serves the cell. `:unknown`
   # is any other failure of the read (a timeout, an overloaded cell); it stops a new handler but not one
-  # that is running.
+  # that is running. `{:lost, reason}` is a lost cell that is `:held_elsewhere` (a node outside the cluster holds its lease) or `:draining` (this node hands its cells off).
   defp ownership(instance, id) do
     config = Registry.config(instance)
     routing = config.routing
@@ -430,12 +437,19 @@ defmodule Atanor.Dispatch do
           {:error, {:lease_unreadable, _}} ->
             :owned
 
+          # The router of this node refuses to wake the cell: it hands its cells off.
+          {:error, :draining} ->
+            {:lost, :draining}
+
           {:error, reason} when reason in [:fenced, :lease_lost, :lease_expired] ->
             :lost
 
           # The lease names another node that this one cannot reach.
-          {:error, {:unavailable, _owner, _expires}} ->
-            :lost
+          {:error, {:unavailable, owner, _expires}} ->
+            case Takeover.unreachable(instance, owner) do
+              :held_elsewhere -> {:lost, :held_elsewhere}
+              _ -> :lost
+            end
 
           {:error, _} ->
             :unknown

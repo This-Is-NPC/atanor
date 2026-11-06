@@ -11,14 +11,14 @@ defmodule Atanor.HTTP do
   Failures never leak internals: no route is a 404, an oversized body a 413,
   a worker that crashes or returns something else a 500, all with a JSON body.
   Expected unavailability is a 503 with the reason and `Retry-After`
-  (`:http`'s `:retry_after_s`, design §8.4); a worker that mapped the error to
+  (`:http`'s `:retry_after_s`, or the lease's time left for `held_elsewhere`, design §8.4); a worker that mapped the error to
   5xx still gets the 503.
   """
   @behaviour Plug
 
   import Plug.Conn
 
-  alias Atanor.{Auth, Dispatch, Env, Registry, Request, Response, Route, Telemetry, Workers}
+  alias Atanor.{Auth, Dispatch, Env, Registry, Request, Response, Route, Telemetry, Unavailable, Workers}
   alias Atanor.Diagnostics.Breadcrumb
   alias Atanor.HTTP.Socket
 
@@ -106,11 +106,15 @@ defmodule Atanor.HTTP do
       {:ok, body, conn} ->
         request = request(conn, body)
 
-        with {:ok, cell, consistency} <- route(env, request),
-             {:ok, response} <- Dispatch.execute(%{env | consistency: consistency}, cell, {:http, request}) do
-          write(conn, response)
-        else
-          {:error, reason} -> failure(conn, reason, config.http)
+        case route(env, request) do
+          {:ok, cell, consistency} ->
+            case Dispatch.execute(%{env | consistency: consistency}, cell, {:http, request}) do
+              {:ok, response} -> write(conn, response)
+              {:error, reason} -> failure(conn, reason, config, cell)
+            end
+
+          {:error, reason} ->
+            failure(conn, reason, config, nil)
         end
 
       {:more, _, conn} ->
@@ -121,24 +125,31 @@ defmodule Atanor.HTTP do
     end
   end
 
-  defp failure(conn, :invalid_key, _http), do: json(conn, 400, "invalid_key")
-  defp failure(conn, :overloaded, http), do: unavailable(conn, "overloaded", "overloaded", http)
-  defp failure(conn, {:unavailable, reason}, http), do: unavailable(conn, "unavailable", reason_name(reason), http)
+  # `cell` is the cell the request routed to, whose lease a `held_elsewhere` 503 waits for.
+  defp failure(conn, :invalid_key, _config, _cell), do: json(conn, 400, "invalid_key")
+
+  defp failure(conn, :overloaded, config, _cell),
+    do: unavailable(conn, "overloaded", "overloaded", config.http.retry_after_s)
+
+  defp failure(conn, {:unavailable, reason}, config, cell) do
+    retry_after = Unavailable.retry_after_s(config, reason, cell)
+    unavailable(conn, "unavailable", reason_name(reason), retry_after)
+  end
 
   # A configuration error, not unavailability: no `Retry-After`, a repeat fails the same way (design §8.4).
-  defp failure(conn, {:foreign_store, _node}, _http),
+  defp failure(conn, {:foreign_store, _node}, _config, _cell),
     do: json(conn, 500, %{error: "foreign_store", reason: "foreign_store"})
 
-  defp failure(conn, :unknown_outcome, http),
-    do: unavailable(conn, "unknown_outcome", "unknown_outcome", http)
+  defp failure(conn, :unknown_outcome, config, _cell),
+    do: unavailable(conn, "unknown_outcome", "unknown_outcome", config.http.retry_after_s)
 
-  defp failure(conn, {:limit, :timeout}, _http), do: json(conn, 504, "timeout")
-  defp failure(conn, {:limit, _}, _http), do: json(conn, 500, "limit_exceeded")
-  defp failure(conn, _reason, _http), do: json(conn, 500, "internal_error")
+  defp failure(conn, {:limit, :timeout}, _config, _cell), do: json(conn, 504, "timeout")
+  defp failure(conn, {:limit, _}, _config, _cell), do: json(conn, 500, "limit_exceeded")
+  defp failure(conn, _reason, _config, _cell), do: json(conn, 500, "internal_error")
 
-  defp unavailable(conn, error, reason, http) do
+  defp unavailable(conn, error, reason, retry_after_s) do
     conn
-    |> put_resp_header("retry-after", Integer.to_string(http.retry_after_s))
+    |> put_resp_header("retry-after", Integer.to_string(retry_after_s))
     |> json(503, %{error: error, reason: reason})
   end
 
@@ -149,26 +160,27 @@ defmodule Atanor.HTTP do
     request = request(conn, "")
 
     # The bound of `route_key/2` is for plain requests: a socket is served by the owner.
-    with {:ok, cell, _consistency} <- route(env, request),
-         {:ok, result} <- Dispatch.execute(env, cell, {:ws_init, request}) do
-      case result do
-        {:ok, worker} ->
-          arg = %{env: env, cell: cell, worker: worker, expires_at: token_expiry(conn)}
+    case route(env, request) do
+      {:ok, cell, _consistency} ->
+        case Dispatch.execute(env, cell, {:ws_init, request}) do
+          {:ok, {:ok, worker}} -> upgrade(conn, config, %{env: env, cell: cell, worker: worker})
+          {:ok, {:reject, response}} -> write(conn, response)
+          {:error, reason} -> failure(conn, reason, config, cell)
+        end
 
-          options = [
-            timeout: config.websocket.idle_timeout_ms,
-            max_frame_size: config.websocket.max_frame_bytes,
-            max_fragmented_message_size: config.websocket.max_frame_bytes
-          ]
-
-          WebSockAdapter.upgrade(conn, Socket, arg, options)
-
-        {:reject, response} ->
-          write(conn, response)
-      end
-    else
-      {:error, reason} -> failure(conn, reason, config.http)
+      {:error, reason} ->
+        failure(conn, reason, config, nil)
     end
+  end
+
+  defp upgrade(conn, config, arg) do
+    options = [
+      timeout: config.websocket.idle_timeout_ms,
+      max_frame_size: config.websocket.max_frame_bytes,
+      max_fragmented_message_size: config.websocket.max_frame_bytes
+    ]
+
+    WebSockAdapter.upgrade(conn, Socket, Map.put(arg, :expires_at, token_expiry(conn)), options)
   end
 
   # The `exp` (seconds) of the verified token of a protected route, which the socket must not outlive.
