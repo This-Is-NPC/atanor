@@ -18,7 +18,7 @@ defmodule Atanor.CLI do
 
   @version Mix.Project.config()[:version]
   @default_profile "default"
-  @defaults %{connect_timeout: 10, timeout: 30, upload_timeout: 300}
+  @defaults %{connect_timeout: 10, timeout: 30, upload_timeout: 300, drain_timeout: 300}
 
   @env_vars [
     {"ATANOR_PROFILE", "The profile to use when `--profile` is not given (default `default`)."},
@@ -28,6 +28,7 @@ defmodule Atanor.CLI do
     {"ATANOR_CONNECT_TIMEOUT", "Seconds to open the connection (default #{@defaults.connect_timeout})."},
     {"ATANOR_TIMEOUT", "Seconds to wait for an answer (default #{@defaults.timeout})."},
     {"ATANOR_UPLOAD_TIMEOUT", "Seconds to wait for the answer to an upload (default #{@defaults.upload_timeout})."},
+    {"ATANOR_DRAIN_TIMEOUT", "Seconds to wait for the answer to `drain` (default #{@defaults.drain_timeout})."},
     {"XDG_CONFIG_HOME", "Where the profiles file lives, `atanor/config.json` inside it (default `~/.config`)."},
     {"MIX_ENV", "The build `deploy` reads native modules from, `_build/$MIX_ENV` (default `dev`)."}
   ]
@@ -38,7 +39,7 @@ defmodule Atanor.CLI do
       flag: :timeout,
       type: :float,
       arg: "SECONDS",
-      doc: "Seconds to wait for an answer; overrides ATANOR_TIMEOUT and ATANOR_UPLOAD_TIMEOUT."
+      doc: "Seconds to wait for an answer; overrides ATANOR_TIMEOUT, ATANOR_UPLOAD_TIMEOUT and ATANOR_DRAIN_TIMEOUT."
     },
     %{flag: :help, type: :boolean, doc: "Show the help of the command."}
   ]
@@ -117,6 +118,14 @@ defmodule Atanor.CLI do
         %{flag: :limit, type: :integer, arg: "N", doc: "Versions per page (the server's default when omitted)."},
         %{flag: :after, type: :string, arg: "CURSOR", doc: "Continue after the cursor printed by the previous page."}
       ]
+    },
+    %{
+      name: "drain",
+      args: "",
+      summary: "Hand the node's cells back, then stop the node.",
+      doc:
+        "Needs `cluster:admin`. The node leaves the load balancer (`/health/serving` fails with `draining`), hibernates every cell it holds and releases each lease, so another node takes it at its next call, then stops itself. It answers when the cells are back, and exits 1 when some stay with their leases. The node's `stop.exit: false` leaves it running, drained. Stop waiting after ATANOR_DRAIN_TIMEOUT seconds; the drain goes on.",
+      options: []
     },
     %{
       name: "token create",
@@ -250,6 +259,7 @@ defmodule Atanor.CLI do
   defp run_command("activate", opts, [w, id], ctx), do: with_conn(opts, ctx, :request, &activate(&1, w, id))
   defp run_command("versions", opts, [w], ctx), do: with_conn(opts, ctx, :request, &versions(&1, w, opts))
 
+  defp run_command("drain", opts, [], ctx), do: with_conn(opts, ctx, :drain, &drain/1)
   defp run_command("token create", opts, [name], ctx), do: with_conn(opts, ctx, :request, &token_create(&1, name, opts))
   defp run_command("token list", opts, [], ctx), do: with_conn(opts, ctx, :request, &token_list(&1, opts))
   defp run_command("token revoke", opts, [id], ctx), do: with_conn(opts, ctx, :request, &token_revoke(&1, id))
@@ -334,6 +344,9 @@ defmodule Atanor.CLI do
 
       kind == :upload ->
         seconds(env, "ATANOR_UPLOAD_TIMEOUT", @defaults.upload_timeout)
+
+      kind == :drain ->
+        seconds(env, "ATANOR_DRAIN_TIMEOUT", @defaults.drain_timeout)
 
       true ->
         seconds(env, "ATANOR_TIMEOUT", @defaults.timeout)
@@ -522,6 +535,21 @@ defmodule Atanor.CLI do
   defp uploader(%{"type" => "token", "name" => name, "id" => id}), do: "token #{name} (#{id})"
   defp uploader(%{"type" => type}), do: type
   defp uploader(_), do: "unknown"
+
+  defp drain(conn) do
+    with {:ok, body} <- Client.request(conn, :post, "/drain") do
+      summary = "#{body["node"]}: #{body["hibernated"]} cells handed back in #{body["duration_ms"]} ms"
+
+      case body["errors"] do
+        [] ->
+          {:ok, ["drained " <> summary]}
+
+        errors ->
+          left = Enum.map_join(errors, ", ", &"#{&1["cell"]} (#{&1["reason"]})")
+          {:error, "drain left #{length(errors)} cells to their leases, #{summary}: #{left}"}
+      end
+    end
+  end
 
   defp token_create(conn, name, opts) do
     scopes = Keyword.get_values(opts, :scope)

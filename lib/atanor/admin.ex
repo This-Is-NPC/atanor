@@ -17,7 +17,7 @@ defmodule Atanor.Admin do
   (1,000). The write endpoints are the node-gone hint, dead-letter
   retry/discard, operation create/pause/resume/continue/cancel/undo report and apply, migration
   rehearsal start/cancel, the TLS certificate
-  reload of one listener and unfreezing a cell; each is logged and emits
+  reload of one listener, unfreezing a cell and draining the node (`POST /drain`, `GET /drain`); each is logged and emits
   `[:atanor, :admin, :action]`.
   """
 
@@ -98,7 +98,7 @@ defmodule Atanor.Admin do
   # The listener opens before the node has loaded its deployments (design §2.1):
   # only the health endpoints answer until it is ready.
   defp serve(%{path_info: ["health" | _]} = conn, name, _state), do: route(conn, name)
-  defp serve(conn, name, :ready), do: route(conn, name)
+  defp serve(conn, name, state) when state in [:ready, :draining], do: route(conn, name)
 
   defp serve(conn, name, _state) do
     {_status, body} = Overview.ready(name)
@@ -107,6 +107,8 @@ defmodule Atanor.Admin do
 
   defp route(%{method: "GET", path_info: path} = conn, name), do: get(conn, path, name)
   defp route(%{method: "POST", path_info: ["nodes", node, "gone"]} = conn, name), do: gone(conn, name, node)
+
+  defp route(%{method: "POST", path_info: ["drain"]} = conn, name), do: drain(conn, name)
 
   defp route(%{method: "POST", path_info: ["listeners", listener, "reload-tls"]} = conn, name),
     do: reload_tls(conn, name, listener)
@@ -155,6 +157,7 @@ defmodule Atanor.Admin do
     json(conn, status, body)
   end
 
+  defp get(conn, ["drain"], name), do: json(conn, 200, Overview.drain(name))
   defp get(conn, ["nodes"], name), do: json(conn, 200, Overview.peers(name))
   defp get(conn, ["hot-cells"], name), do: json(conn, 200, Overview.hot_cells(name))
   defp get(conn, ["routes"], name), do: json(conn, 200, Overview.routes(name))
@@ -188,6 +191,13 @@ defmodule Atanor.Admin do
       {:ok, body} -> json(conn, 200, body)
       {:error, :unknown_node} -> json(conn, 404, %{error: "unknown_node"})
     end
+  end
+
+  # Hands this node's cells back and answers when it is done; the node then stops (`stop.exit`, design §8.11).
+  defp drain(conn, name) do
+    action(conn, name, :drain, node())
+    {:ok, status} = Atanor.drain(name)
+    json(conn, 200, Overview.drain_body(status))
   end
 
   # New certificates for one listener; a failed load keeps the previous one (design §7.3).

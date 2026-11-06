@@ -1,9 +1,9 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Atanor admin API: deploys, tokens and audit",
+    "title": "Atanor admin API: deploys, tokens, audit and drain",
     "version": "0.1.0",
-    "description": "The endpoints of the admin API that deployers and the `atanor` command use (docs/how-to-use-the-admin-api.md, design 10.2.1). The read-only cluster endpoints are described in the how-to. test/atanor/openapi_test.exs keeps this file in step with the code."
+    "description": "The endpoints of the admin API that deployers, operators and the `atanor` command use (docs/how-to-use-the-admin-api.md, design 10.2.1). The read-only cluster endpoints are described in the how-to. test/atanor/openapi_test.exs keeps this file in step with the code."
   },
   "servers": [
     {
@@ -850,6 +850,82 @@
           }
         ]
       }
+    },
+    "/drain": {
+      "post": {
+        "operationId": "drainNode",
+        "summary": "Hand this node's cells back",
+        "description": "Needs the scope `cluster:admin`. Runs on the node that answers. The node reports `draining` on `/health/ready` and `/health/serving`, hibernates every cell it holds and releases each lease, then answers; it stops itself afterwards unless its option `stop: [exit: false]` is set (status 1 when `errors` is not empty). The answer waits for the whole drain, which `stop.shutdown_ms` (75 000 ms by default) bounds. A second call joins the drain or returns its result.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Drain"
+                },
+                "example": {
+                  "state": "drained",
+                  "node": "atanor@node-a",
+                  "hibernated": 42,
+                  "duration_ms": 381,
+                  "errors": []
+                }
+              }
+            },
+            "description": "The drain ended."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "get": {
+        "operationId": "drainStatus",
+        "summary": "Read the state of this node's drain",
+        "description": "Needs the scope `cluster:admin`.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Drain"
+                },
+                "example": {
+                  "state": "idle",
+                  "node": "atanor@node-a",
+                  "errors": []
+                }
+              }
+            },
+            "description": "The state."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1392,6 +1468,65 @@
         "required": [
           "entries",
           "next"
+        ]
+      },
+      "Drain": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "draining",
+              "drained"
+            ],
+            "description": "`idle`: no drain asked for; `draining`: running; `drained`: the cells are back (or left to their leases, see `errors`)."
+          },
+          "node": {
+            "type": "string"
+          },
+          "hibernated": {
+            "type": "integer",
+            "description": "Cells hibernated, each with its lease released. Absent until the drain ends."
+          },
+          "duration_ms": {
+            "type": "integer",
+            "description": "How long the drain took. Absent until it ends."
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "cell": {
+                  "type": "string",
+                  "description": "The cell id, `<namespace>.<key>`, or `:drain` for the whole step."
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "cell",
+                "reason"
+              ]
+            },
+            "description": "Cells that stay with their leases until these expire. `:deadline` means `stop.shutdown_ms` ended the drain."
+          }
+        },
+        "required": [
+          "state",
+          "node",
+          "errors"
+        ],
+        "examples": [
+          {
+            "state": "drained",
+            "node": "atanor@node-a",
+            "hibernated": 42,
+            "duration_ms": 381,
+            "errors": []
+          }
         ]
       }
     },

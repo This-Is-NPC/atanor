@@ -33,7 +33,11 @@ defmodule Atanor.Alarms.Scheduler do
 
   @impl true
   def handle_info(:tick, config) do
-    scan(config)
+    # A node that hands its cells off fires nothing, and its shards go to the others.
+    if Atanor.Registry.state(config.name) in [:draining, :stopping],
+      do: :pg.leave(@scope, Alarms.group(config.prefix), self()),
+      else: scan(config)
+
     Process.send_after(self(), :tick, config.alarms.tick_ms)
     {:noreply, config}
   end

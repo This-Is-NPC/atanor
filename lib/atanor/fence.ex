@@ -241,8 +241,5 @@ defmodule Atanor.Fence do
 
   defp view(%{epoch: epoch}, _margin), do: {:lost, epoch, nil}
 
-  defp now(config) do
-    {clock, clock_config} = Config.lease_clock(config)
-    clock.now_ms(clock_config)
-  end
+  defp now(config), do: Config.now_ms(config)
 end

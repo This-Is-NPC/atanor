@@ -8,7 +8,7 @@ defmodule Atanor.OpenAPITest do
   @spec_path "docs/openapi/admin.json"
   @document @spec_path |> File.read!() |> Jason.decode!()
   # The endpoints the document describes: the first segment, and for workers the last one.
-  @family ~w(heads tokens audit)
+  @family ~w(heads tokens audit drain)
   @worker_endpoints ~w(packages activate rollback versions status)
 
   defp operations do
@@ -65,7 +65,7 @@ defmodule Atanor.OpenAPITest do
     from_spec = operations() |> Enum.map(fn {method, template, _} -> {method, normalize(template)} end) |> Enum.sort()
 
     assert from_code == from_spec
-    assert length(from_code) == 11
+    assert length(from_code) == 13
   end
 
   test "every example validates against its schema" do
@@ -86,7 +86,7 @@ defmodule Atanor.OpenAPITest do
 
   describe "live answers match the document" do
     setup do
-      node = Node.start(admin: [token: @operator, port: 0])
+      node = Node.start(admin: [token: @operator, port: 0], stop: [exit: false])
       on_exit(fn -> Node.stop(node) end)
       {:ok, node: node, seen: :ets.new(:seen, [:public, :bag])}
     end
@@ -210,6 +210,10 @@ defmodule Atanor.OpenAPITest do
       assert {200, %{"entries" => [_ | _]}} = c.({"GET", "/audit"}, [], query: "?limit=3")
       assert {400, _} = c.({"GET", "/audit"}, [], query: "?limit=0")
       assert {200, _} = c.({"GET", "/tokens"}, [], query: "?limit=1")
+
+      assert {200, %{"state" => "idle"}} = c.({"GET", "/drain"}, [], [])
+      assert {401, _} = c.({"POST", "/drain"}, [], token: nil)
+      assert {200, %{"state" => "drained", "errors" => []}} = c.({"POST", "/drain"}, [], [])
 
       covered = seen |> :ets.tab2list() |> Enum.map(fn {{m, t}, _} -> {m, t} end) |> Enum.uniq() |> Enum.sort()
       assert covered == operations() |> Enum.map(fn {m, t, _} -> {m, t} end) |> Enum.sort()

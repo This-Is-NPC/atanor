@@ -33,11 +33,27 @@ defmodule Atanor.Overview do
     }
   end
 
+  @doc "The state of this node's drain, as the admin API shows it (design §8.11)."
+  def drain(name), do: name |> Atanor.drain_status() |> drain_body()
+
+  @doc false
+  def drain_body(status) do
+    errors =
+      for {cell, reason} <- Map.get(status, :errors, []),
+          do: %{cell: to_string_or_inspect(cell), reason: inspect(reason)}
+
+    status |> Map.put(:errors, errors) |> Map.put(:node, node())
+  end
+
+  defp to_string_or_inspect(cell) when is_binary(cell), do: cell
+  defp to_string_or_inspect(other), do: inspect(other)
+
   @doc "Whether this node serves, for a load balancer: the HTTP status and the body."
   def ready(name) do
     case Registry.state(name) do
       :ready -> {200, %{status: "ready", node: node()}}
       {:starting, reason} -> {503, %{status: "starting", node: node(), reason: reason}}
+      :draining -> {503, %{status: "draining", node: node(), reason: "the node is handing its cells off"}}
       :stopping -> {503, %{status: "stopping", node: node(), reason: "the node is stopping"}}
     end
   end
@@ -67,6 +83,7 @@ defmodule Atanor.Overview do
 
   defp status(:ready), do: "ok"
   defp status({:starting, _}), do: "starting"
+  defp status(:draining), do: "draining"
   defp status(:stopping), do: "stopping"
 
   @doc "The HTTP and TCP routes this node serves."

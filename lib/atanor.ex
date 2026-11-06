@@ -160,12 +160,15 @@ defmodule Atanor do
       `:leave_wait_ms` (3 000, how long a call waits for the owner that is
       leaving to hand the cell off; a stop took up to 0.7 s on a loaded
       machine in the tests and 1.4 s in the lab, design §8.11).
-    * `:stop` - the graceful stop (design §8.11): `:jobs_ms` (15 000, wait for
+    * `:stop` - the drain and the graceful stop (design §8.11): `:jobs_ms` (15 000, wait for
       local job tasks), `:sweeps_ms` (5 000, release operation leases),
       `:connections_ms` (15 000, how
       long open connections get after the listeners close), `:drain_timeout_ms`
-      and `:drain_concurrency` (`nil`, the `:drain` settings of Alambique) and
-      `:shutdown_ms` (75 000, the whole drain).
+      (15 000, one cell hibernating and releasing its lease), `:drain_concurrency` (64,
+      cells handed off at once), `:shutdown_ms` (75 000, the whole drain, at least `:drain_timeout_ms`)
+      `:exit` (true: a drain asked for through `drain/2`, the admin API or `atanor drain` stops
+      the node when it ends) and `:sigterm` (`:drain`: SIGTERM drains this instance with the listeners open,
+      then stops the VM; `:stop`: SIGTERM stops the VM at once).
     * `:jobs` - the per-cell job runner (design §15): `:max_attempts` (20),
       `:timeout_ms` (30 000), `:claim_ms` (60 000), `:backoff_ms` (1 000),
       `:max_backoff_ms` (300 000), `:concurrency` (64 per node),
@@ -249,7 +252,9 @@ defmodule Atanor do
       response may have) and `:fetch_timeout_ms` (30 000, the time of a whole
       outbound HTTP fetch, redirects and name lookups included).
     * `:http` - the ingress (design §7.1): `:retry_after_s` (1, the
-      `Retry-After` of a 503 for expected unavailability; design §8.4);
+      `Retry-After` of a 503 for expected unavailability; design §8.4) and
+      `:retry_after_max_s` (30, the longest `Retry-After` of a `held_elsewhere` 503, which
+      waits for the lease of a node outside the cluster);
       `:max_connections` (16 384, the total of open connections, WebSockets
       included) shared by `:acceptors` (10); `:read_timeout_ms` (10 000, how
       long the listener waits for the next bytes of a request, header or body,
@@ -362,6 +367,27 @@ defmodule Atanor do
     {:ok, {_ip, port}} = ThousandIsland.listener_info(Registry.http_listener(name))
     port
   end
+
+  @doc """
+  Hands the node's cells back and returns `{:ok, status}` when it is done (design §8.11).
+
+  The node reports `draining` on `/health/ready` and `/health/serving` first, runs its jobs out, then
+  hibernates every awake cell and releases its lease, so another node takes each one at its next call.
+  The listeners keep serving the cells the node still holds, and a call that needs a cell the node no
+  longer holds is a 503 `draining`. `status` is `%{state: :drained, hibernated: n, errors: [{cell, reason}],
+  duration_ms: ms}`; a cell in `errors` stays with its lease until it expires. The whole drain ends at
+  `stop.shutdown_ms`.
+
+  Option `:exit` (default `stop.exit`): `true` stops the node when the drain ends, with status 0 or 1 when
+  `errors` is not empty; `false` leaves it running, drained; a function of one argument receives that status
+  instead. The admin API and `atanor drain` use the default.
+  """
+  @spec drain(atom, keyword) :: {:ok, map}
+  def drain(name \\ __MODULE__, opts \\ []), do: Atanor.Drain.run(name, opts)
+
+  @doc "The state of the drain: `%{state: :idle | :draining | :drained}` and, once drained, what it did."
+  @spec drain_status(atom) :: map
+  def drain_status(name \\ __MODULE__), do: Atanor.Drain.status(name)
 
   @doc "The port the admin API listens on."
   @spec admin_port(atom) :: :inet.port_number()

@@ -27,7 +27,11 @@ defmodule Atanor.Jobs.Drain do
   end
 
   @impl true
-  def terminate(_reason, config) do
+  def terminate(_reason, config), do: run(config)
+
+  @doc false
+  # Shared with `Atanor.Drain`, which runs it first when a drain is asked for.
+  def run(config) do
     # A job that finishes now must not start the next one of its cell.
     try do
       Atanor.Jobs.Slots.close(config.name)

@@ -91,7 +91,7 @@ defmodule Atanor.DetectorTest do
     assert %{attempts: 3, retry_ms: 50, remote_timeout_ms: 60_000, owner_check: true, owner_check_ms: 1_000} =
              config.routing
 
-    assert %{drain_timeout_ms: nil, drain_concurrency: nil, shutdown_ms: 75_000, connections_ms: 15_000} = config.stop
+    assert %{drain_timeout_ms: 15_000, drain_concurrency: 64, shutdown_ms: 75_000, connections_ms: 15_000} = config.stop
 
     config =
       build.(takeover: [enabled: false, timeout_ms: 5_000], stop: [drain_concurrency: 8], routing: [retry_ms: 10])

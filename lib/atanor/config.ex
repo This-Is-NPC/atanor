@@ -86,6 +86,7 @@ defmodule Atanor.Config do
   # the next bytes of the request (header or body), and the last two bound the work of matching a route.
   @http %{
     retry_after_s: 1,
+    retry_after_max_s: 30,
     max_connections: 16_384,
     acceptors: 10,
     read_timeout_ms: 10_000,
@@ -193,10 +194,14 @@ defmodule Atanor.Config do
     pinned_limit: 16,
     leave_wait_ms: 3_000
   }
-  # Graceful stop (design §8.11). nil: the `:drain` settings of the Alambique instance.
+  # Graceful stop and drain (design §8.11). `drain_timeout_ms` bounds one cell and `drain_concurrency` the cells
+  # handed off at once (Alambique's own defaults); `shutdown_ms` bounds the whole drain. `exit` stops the node
+  # when a drain started by `Atanor.drain/2`, the admin API or the CLI ends.
   @stop %{
-    drain_timeout_ms: nil,
-    drain_concurrency: nil,
+    drain_timeout_ms: 15_000,
+    drain_concurrency: 64,
+    exit: true,
+    sigterm: :drain,
     shutdown_ms: 75_000,
     connections_ms: 15_000,
     jobs_ms: 15_000,
@@ -407,6 +412,13 @@ defmodule Atanor.Config do
   @spec lease_clock(t) :: {module, term}
   def lease_clock(%__MODULE__{alambique_opts: opts}), do: Keyword.get(opts, :clock, @alambique_clock)
 
+  @doc "The time on the clock the cells' leases use, in milliseconds."
+  @spec now_ms(t) :: integer
+  def now_ms(%__MODULE__{} = config) do
+    {clock, clock_config} = lease_clock(config)
+    clock.now_ms(clock_config)
+  end
+
   @doc "The clock skew the cells' leases tolerate, in milliseconds."
   @spec skew_margin_ms(t) :: pos_integer
   def skew_margin_ms(%__MODULE__{alambique_opts: opts}),
@@ -493,7 +505,7 @@ defmodule Atanor.Config do
       takeover: settings!(opts[:takeover], @takeover, :takeover),
       hot_cells: hot_cells!(opts[:hot_cells], Keyword.get(opts, :alambique, [])),
       routing: settings!(opts[:routing], @routing, :routing),
-      stop: settings!(opts[:stop], @stop, :stop),
+      stop: stop!(opts[:stop]),
       migrate: settings!(opts[:migrate], @migrate, :migrate),
       deployments: limits!(opts[:deployments], @deployments, :deployments),
       ready: ready!(opts[:ready]),
@@ -655,6 +667,13 @@ defmodule Atanor.Config do
     tcp = limits!(opts, @tcp, :tcp)
     check!(tcp.acceptors <= tcp.max_connections, ":tcp :acceptors must not exceed :max_connections")
     tcp
+  end
+
+  defp stop!(opts) do
+    stop = settings!(opts, @stop, :stop)
+    check!(stop.sigterm in [:drain, :stop], ":stop :sigterm must be :drain or :stop")
+    check!(stop.drain_timeout_ms <= stop.shutdown_ms, ":stop :drain_timeout_ms must not exceed :shutdown_ms")
+    stop
   end
 
   defp http!(opts) do
@@ -950,6 +969,7 @@ defmodule Atanor.Config do
   end
 
   defp setting?(default, value) when is_boolean(default), do: is_boolean(value)
+  defp setting?(default, value) when is_atom(default) and not is_nil(default), do: is_atom(value)
   defp setting?(nil, value), do: is_nil(value) or positive_integer?(value)
   defp setting?(_default, value), do: positive_integer?(value)
 

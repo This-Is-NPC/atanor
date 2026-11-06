@@ -25,7 +25,7 @@ defmodule Atanor.Registry do
   def config(name), do: tables(name).instance
 
   @typedoc "The node's lifecycle (design §2.1); `:starting` carries the reason it is not ready."
-  @type state :: {:starting, String.t()} | :ready | :stopping
+  @type state :: {:starting, String.t()} | :ready | :draining | :stopping
 
   @doc "The lifecycle state of the node."
   @spec state(atom) :: state
