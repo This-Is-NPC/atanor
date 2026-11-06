@@ -195,7 +195,16 @@ defmodule Atanor.Jobs do
   # owner: the node that died is fenced at `epoch`, so every claim of it is older and cannot be live.
   @spec release_claims(atom, String.t(), node, non_neg_integer) ::
           {:ok, non_neg_integer} | :stale | {:error, term}
-  def release_claims(instance, id, node, epoch) do
+  def release_claims(instance, id, node, epoch), do: release(instance, id, node, epoch, true)
+
+  @doc false
+  # Makes the jobs this node claimed in the cell `id` claimable at once, when the node hands the cell back
+  # (design §15.12). The caller has to know that none of them runs here: `Atanor.Jobs.Drain.release/1`
+  # calls it once the node runs no job. No scan starts here, because this node claims nothing more.
+  @spec release_own(atom, String.t()) :: {:ok, non_neg_integer} | {:error, term}
+  def release_own(instance, id), do: release(instance, id, node(), nil, false)
+
+  defp release(instance, id, node, epoch, claim?) do
     config = Registry.config(instance)
     by = Atom.to_string(node)
 
@@ -218,7 +227,7 @@ defmodule Atanor.Jobs do
           })
 
           # Claim them now instead of at the next scan.
-          _ = Dispatch.internal(instance, cell, {:jobs, nil})
+          if claim?, do: Dispatch.internal(instance, cell, {:jobs, nil})
           {:ok, count}
 
         :stale ->
@@ -227,6 +236,7 @@ defmodule Atanor.Jobs do
     end
   end
 
+  # `epoch` nil: the caller owns the cell and releases its own claims.
   defp release_tx(tx, instance, cell, id, by, epoch) do
     running = "FROM #{@table} WHERE state = 'running' AND claimed_by = ? AND claimed_until_ms > ?"
     now = Alarms.now(Registry.config(instance))
@@ -237,27 +247,30 @@ defmodule Atanor.Jobs do
 
       {:ok, _} ->
         # Read inside the owner's transaction, so a later owner cannot be mistaken for this one.
-        case Alambique.lease(Registry.config(instance).alambique, id) do
-          {:ok, %{epoch: ^epoch, owner: owner}} when owner == node() ->
-            {:ok, %{rows: rows}} =
-              Tx.execute(
-                tx,
-                "UPDATE #{@table} SET claimed_until_ms = ? WHERE id IN (SELECT id " <> running <> ") RETURNING id",
-                [
-                  now,
-                  by,
-                  now
-                ]
-              )
+        if owns?(instance, id, epoch) do
+          {:ok, %{rows: rows}} =
+            Tx.execute(
+              tx,
+              "UPDATE #{@table} SET claimed_until_ms = ? WHERE id IN (SELECT id " <> running <> ") RETURNING id",
+              [now, by, now]
+            )
 
-            {:released, length(rows), rearm_tx(tx, instance, cell, nil, 0)}
-
-          _ ->
-            :stale
+          {:released, length(rows), rearm_tx(tx, instance, cell, nil, 0)}
+        else
+          :stale
         end
 
       {:error, reason} ->
         if no_table?(reason), do: {:released, 0, :unchanged}, else: Tx.rollback(tx, reason)
+    end
+  end
+
+  defp owns?(_instance, _id, nil), do: true
+
+  defp owns?(instance, id, epoch) do
+    case Alambique.lease(Registry.config(instance).alambique, id) do
+      {:ok, %{epoch: ^epoch, owner: owner}} -> owner == node()
+      _ -> false
     end
   end
 
@@ -482,13 +495,12 @@ defmodule Atanor.Jobs do
     # The task takes over the slot the caller holds and gives it back by exiting, however it ends.
     {:ok, pid} =
       Task.Supervisor.start_child(Atanor.Tasks.name(instance), fn ->
-        chain? = config.jobs.claim_on_finish and not Slots.closed?(instance)
-
         outcome =
           case attempt(instance, cell, job, deployment, config) do
             # The node lost the cell: the new owner decides what the job does next.
             :fenced -> :lost
-            result -> finished(instance, cell, job, lease, result, started, chain?)
+            # A node that drains while the job runs claims no next job.
+            result -> finished(instance, cell, job, lease, result, started, chain?(instance, config))
           end
 
         # The finish transaction claimed the cell's next due job, which takes over this job's slot (design §15.5).
@@ -499,6 +511,8 @@ defmodule Atanor.Jobs do
 
     Slots.transfer(instance, job.worker, pid)
   end
+
+  defp chain?(instance, config), do: config.jobs.claim_on_finish and not Slots.closed?(instance)
 
   defp attempt(instance, cell, job, deployment, config) do
     env = Env.new(instance, deployment)

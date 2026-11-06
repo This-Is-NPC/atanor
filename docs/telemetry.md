@@ -200,7 +200,7 @@ drives the operation, and an undo report, apply and rewind by the node that made
 | `[:atanor, :job, :finished]` | `duration` (the attempt) | `worker`, `cell`, `id`, `kind`, `attempt`, `result` (`:ok` or `:error`), `reason`, `final` (`true` when the job became dead), `node` |
 | `[:atanor, :job, :dead]` | `count` (1) | `worker`, `cell`, `id`, `kind`, `reason`, `node` |
 | `[:atanor, :handler, :fenced]` | `count` (1) | `kind` (`:job` or `:alarm`), `worker`, `cell`, `reason` (`:local_deadline`: the node's lease on the cell ended; `:lost`: a read showed another owner or epoch; `:unreadable`: the lease could not be read, so the handler did not start; `:stopped`: the instance is stopping), `deadline_ms` (the deadline on the lease clock, for `:local_deadline` and `:lost`), `node` |
-| `[:atanor, :job, :released]` | `count` (jobs released) | `cell`, `from` (the node that was taken over), `epoch` (the epoch the takeover raised), `node` (the node that released) |
+| `[:atanor, :job, :released]` | `count` (jobs released) | `cell`, `from` (the node that was taken over), `epoch` (the epoch the takeover raised; `nil` when a draining node released its own claims, and `from` is then the node itself), `node` (the node that released) |
 | `[:atanor, :sweep, :started]`, `:paused`, `:resumed`, `:cancelled`, `:done`, `:failed` | `count` (1) | `operation`, `selector`, `driver`, `node` |
 | `[:atanor, :sweep, :continued]`, `:awaiting_confirmation`, `:canary_passed` | `count` (1) | `operation`, `selector`, `driver`, `node` |
 | `[:atanor, :sweep, :halted]` | `count` (1) | `operation`, `selector`, `driver`, `node`, `reason` (`"error_rate"`, `"canary_timeout"` or `"guard_unavailable"`) |

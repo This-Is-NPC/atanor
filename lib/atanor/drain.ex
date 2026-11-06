@@ -137,11 +137,17 @@ defmodule Atanor.Drain do
     Map.put(summary, :duration_ms, System.convert_time_unit(duration, :native, :millisecond))
   end
 
-  # The jobs finish first: a job that runs while its cell is handed off would only fail on it.
+  # The jobs finish first: a job that runs while its cell is handed off would only fail on it. The claims of
+  # the jobs that did not finish are released while this node still owns the cells (design §15.12).
   defp bounded(config) do
     task =
       Task.async(fn ->
         Jobs.Drain.run(config)
+
+        with {:busy, running} <- Jobs.Drain.release(config) do
+          Logger.warning("atanor: #{running} jobs still run, so their claims stay until they expire")
+        end
+
         {:ok, summary} = Alambique.drain(config.alambique, options(config.stop))
         summary
       end)

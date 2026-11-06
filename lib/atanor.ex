@@ -175,7 +175,7 @@ defmodule Atanor do
       `:worker_concurrency` (8), `:cell_concurrency` (1),
       `:claim_on_finish` (true, claim a cell's next due jobs when one finishes),
       `:release_claims` (true, release the claims of a node whose cell was taken
-      over, design §15.11), `:batch_size` (20),
+      over, design §15.11, and of a node that drains, §15.12), `:batch_size` (20),
       `:wait_ms` (1 000), `:max_payload_bytes` (1 000 000), `:max_pending`
       (10 000 pending and running jobs in a cell), `:max_cell_bytes`
       (67 108 864, the payloads of those jobs), `:max_cron` (100 schedules
