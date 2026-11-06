@@ -2135,6 +2135,9 @@ Alambique's fencing (§8.10) stops the old owner's writes after another node too
 
 Telemetry: `[:atanor, :node, :drain, :start]` and `[:atanor, :node, :drain]` ([telemetry.md](telemetry.md)).
 
+The walk-through of a swap, with the container grace period, the peers and the `node_id` it needs, and its measurements under
+load, is [how-to-replace-a-node.md](how-to-replace-a-node.md).
+
 #### The order of a stop
 
 The supervision tree of an instance stops its children in reverse order, and

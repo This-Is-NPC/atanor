@@ -57,6 +57,9 @@ Set these in the environment of `mise run`; the defaults are in `compose.yml`.
 | `ATANOR_CLUSTER_BIND` | 127.0.0.1 | Host address the ports bind to. Keep loopback. |
 | `ATANOR_CLUSTER_STORE_IMAGE`, `_LB_IMAGE` | pinned digests | Images. |
 | `ATANOR_CLUSTER_LEASE_TTL_MS`, `_NET_TICKTIME` | 30000, 60 | Cell lease and Erlang net tick time (seconds). |
+| `ATANOR_CLUSTER_PEERS` | `node-1`..`node-10` | Host names each node connects to. Set it empty and the nodes form no cluster, which `cluster:swap-run` needs ([how-to-replace-a-node.md](how-to-replace-a-node.md)). |
+| `ATANOR_CLUSTER_STOP_GRACE` | 90s | Time `docker stop` waits for a node to drain; keep it above the drain (`stop.shutdown_ms`, 75 s). |
+| `ATANOR_CLUSTER_SHUTDOWN_MS`, `_DRAIN_TIMEOUT_MS`, `_DRAIN_CONCURRENCY` | node defaults (75000, 15000, 64) | The node's `stop.shutdown_ms`, `drain_timeout_ms` and `drain_concurrency`. |
 | `ATANOR_CLUSTER_BUILD_JOBS` | 6 | Cargo jobs while building. |
 | `ATANOR_CLUSTER_RELEASE` | commit, plus `-dirty` | The release id nodes report (`GET /deployments`). |
 | `ATANOR_CLUSTER_UP_TIMEOUT` | 300 | Seconds `cluster:up` waits. |
@@ -471,6 +474,8 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
 
 - [how-to-run-a-cluster.md](how-to-run-a-cluster.md) explains takeover, the
   detector and what clients see when a node fails.
+- [how-to-replace-a-node.md](how-to-replace-a-node.md) for a swap of one node by
+  another under load (`mise run cluster:swap-run`).
 - [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md) and [cli.md](cli.md)
   for tokens and deploys.
 - [examples/scoreboard](../examples/scoreboard/README.md) for the app and its
