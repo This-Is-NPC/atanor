@@ -6,6 +6,9 @@ set -euo pipefail
 source "$(dirname "$0")/cluster-common"
 
 nodes=${ATANOR_CLUSTER_NODES:-3}
+# With ATANOR_CLUSTER_PEERS set empty the nodes form no cluster: each one sees only itself.
+sees=$nodes
+[[ -z ${ATANOR_CLUSTER_PEERS-x} ]] && sees=1
 timeout_s=${ATANOR_CLUSTER_UP_TIMEOUT:-300}
 [[ $nodes =~ ^[0-9]+$ && $nodes -ge 1 && $nodes -le 10 ]] || { echo "ATANOR_CLUSTER_NODES must be 1 to 10" >&2; exit 1; }
 
@@ -46,7 +49,7 @@ while :; do
   up=$(curl -s -m 2 "$(published_url 8404)/stats;csv" | awk -F, '$1 == "atanor_http" && $2 ~ /^node/ && $18 == "UP"' | wc -l || true)
   seen=$(admin_get /health | jq -r '.nodes | length' 2>/dev/null || true)
   code=$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$(published_url 4000)/" || true)
-  [[ $up -eq $nodes && ${seen:-0} -eq $nodes && $code != 000 && $code != 503 ]] && break
+  [[ $up -eq $nodes && ${seen:-0} -eq $sees && $code != 000 && $code != 503 ]] && break
   (( SECONDS < deadline )) || { echo "load balancer not ready: $up servers up, nodes see $seen, HTTP $code" >&2; exit 1; }
   sleep 1
 done

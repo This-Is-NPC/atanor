@@ -71,12 +71,17 @@ services:
     cap_add: [NET_ADMIN]
     # The chaos task restarts what it stopped; a killed node stays down until then.
     restart: "no"
-    stop_grace_period: 30s
+    # Longer than the drain (stop.shutdown_ms, 75 s), or `docker stop` kills a node that is still handing cells back.
+    stop_grace_period: ${ATANOR_CLUSTER_STOP_GRACE:-90s}
     secrets: [cookie, admin_token, dashboard_token, s3_access_key, s3_secret_key]
     environment:
       ATANOR_NODE_S3_ENDPOINT: http://store:8333
       ATANOR_NODE_BUCKET: ${ATANOR_CLUSTER_BUCKET:-atanor}
-      ATANOR_NODE_PEERS: node-1,node-2,node-3,node-4,node-5,node-6,node-7,node-8,node-9,node-10
+      # Empty (ATANOR_CLUSTER_PEERS=): the nodes form no cluster, as when one replaces another.
+      ATANOR_NODE_PEERS: ${ATANOR_CLUSTER_PEERS-node-1,node-2,node-3,node-4,node-5,node-6,node-7,node-8,node-9,node-10}
+      ATANOR_NODE_SHUTDOWN_MS: ${ATANOR_CLUSTER_SHUTDOWN_MS:-}
+      ATANOR_NODE_DRAIN_TIMEOUT_MS: ${ATANOR_CLUSTER_DRAIN_TIMEOUT_MS:-}
+      ATANOR_NODE_DRAIN_CONCURRENCY: ${ATANOR_CLUSTER_DRAIN_CONCURRENCY:-}
       ATANOR_NODE_LEASE_TTL_MS: ${ATANOR_CLUSTER_LEASE_TTL_MS:-30000}
       ATANOR_NODE_NET_TICKTIME: ${ATANOR_CLUSTER_NET_TICKTIME:-60}
     volumes: [/var/lib/atanor]
