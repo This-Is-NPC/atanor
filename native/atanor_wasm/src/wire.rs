@@ -42,9 +42,10 @@ impl Encoder for Wire {
                 .map(|i| i.encode(env))
                 .collect::<Vec<_>>()
                 .encode(env),
-            Wire::Tuple(items) => {
-                rustler::types::tuple::make_tuple(env, &items.iter().map(|i| i.encode(env)).collect::<Vec<_>>())
-            }
+            Wire::Tuple(items) => rustler::types::tuple::make_tuple(
+                env,
+                &items.iter().map(|i| i.encode(env)).collect::<Vec<_>>(),
+            ),
         }
     }
 }
@@ -53,7 +54,9 @@ impl<'a> Decoder<'a> for Wire {
     fn decode(term: Term<'a>) -> NifResult<Wire> {
         match term.get_type() {
             TermType::Atom => {
-                let s: String = rustler::Atom::from_term(term)?.to_term(term.get_env()).atom_to_string()?;
+                let s: String = rustler::Atom::from_term(term)?
+                    .to_term(term.get_env())
+                    .atom_to_string()?;
                 Ok(if s == "nil" { Wire::Nil } else { Wire::Atom(s) })
             }
             TermType::Integer => Ok(Wire::Int(term.decode()?)),

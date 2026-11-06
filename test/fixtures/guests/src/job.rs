@@ -10,7 +10,10 @@ use crate::{Handler, Request, Response};
 pub fn handle(request: Request) -> Response {
     let ns = request.header("x-ns");
     let key = request.header("x-key");
-    let cell = Address { namespace: ns.to_string(), key: key.to_string() };
+    let cell = Address {
+        namespace: ns.to_string(),
+        key: key.to_string(),
+    };
     let at = request.header("x-at").parse().ok();
     let job = NewJob {
         kind: request.header("x-kind").to_string(),
@@ -26,7 +29,9 @@ pub fn handle(request: Request) -> Response {
         "batch" => {
             let statements = vec![Statement {
                 sql: "INSERT INTO fires (payload) VALUES (?)".to_string(),
-                params: vec![Value::Text(String::from_utf8_lossy(&request.body).into_owned())],
+                params: vec![Value::Text(
+                    String::from_utf8_lossy(&request.body).into_owned(),
+                )],
             }];
             jobs::enqueue_batch(&cell, &statements, &job)
         }

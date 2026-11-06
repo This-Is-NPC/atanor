@@ -63,7 +63,15 @@ impl Link {
 
         let sent = OwnedEnv::new().send_and_clear(&self.pid, |env| {
             let op = Atom::from_str(env, op).unwrap();
-            (atoms::atanor_wasm(), self.tag, atoms::host(), id, op, Wire::List(args)).encode(env)
+            (
+                atoms::atanor_wasm(),
+                self.tag,
+                atoms::host(),
+                id,
+                op,
+                Wire::List(args),
+            )
+                .encode(env)
         });
         if sent.is_err() {
             pending().lock().unwrap().remove(&id);
@@ -89,9 +97,15 @@ fn parse_reply(wire: Wire) -> Reply {
                 kind: kind.clone(),
                 message: String::from_utf8_lossy(m).into_owned(),
             },
-            _ => Reply::Err { kind: "failed".into(), message: "malformed host reply".into() },
+            _ => Reply::Err {
+                kind: "failed".into(),
+                message: "malformed host reply".into(),
+            },
         },
-        _ => Reply::Err { kind: "failed".into(), message: "malformed host reply".into() },
+        _ => Reply::Err {
+            kind: "failed".into(),
+            message: "malformed host reply".into(),
+        },
     }
 }
 
@@ -109,8 +123,8 @@ use atanor::cell::alarms;
 use atanor::cell::jobs;
 use atanor::cell::sockets;
 use atanor::cell::sql as cell;
-use atanor::config::secrets as secrets;
-use atanor::worker::call as call;
+use atanor::config::secrets;
+use atanor::worker::call;
 
 fn param(v: &cell::Value) -> Wire {
     match v {
@@ -135,9 +149,17 @@ fn value(w: Wire) -> cell::Value {
 }
 
 fn rows(w: Wire) -> cell::Rows {
-    let Wire::Tuple(mut t) = w else { return cell::Rows { columns: vec![], rows: vec![] } };
+    let Wire::Tuple(mut t) = w else {
+        return cell::Rows {
+            columns: vec![],
+            rows: vec![],
+        };
+    };
     let (Some(Wire::List(rows)), Some(Wire::List(columns))) = (t.pop(), t.pop()) else {
-        return cell::Rows { columns: vec![], rows: vec![] };
+        return cell::Rows {
+            columns: vec![],
+            rows: vec![],
+        };
     };
     cell::Rows {
         columns: columns.into_iter().map(|c| string(c)).collect(),
@@ -163,11 +185,19 @@ fn address(a: &cell::Address) -> [Wire; 2] {
 }
 
 fn cell_error(kind: String, message: String) -> cell::Error {
-    if kind == "not_granted" { cell::Error::NotGranted(message) } else { cell::Error::Failed(message) }
+    if kind == "not_granted" {
+        cell::Error::NotGranted(message)
+    } else {
+        cell::Error::Failed(message)
+    }
 }
 
 fn headers(h: &[(String, String)]) -> Wire {
-    Wire::List(h.iter().map(|(n, v)| Wire::Tuple(vec![Wire::text(n), Wire::text(v)])).collect())
+    Wire::List(
+        h.iter()
+            .map(|(n, v)| Wire::Tuple(vec![Wire::text(n), Wire::text(v)]))
+            .collect(),
+    )
 }
 
 pub fn parse_headers(w: Wire) -> Vec<(String, String)> {
@@ -196,7 +226,9 @@ pub fn parse_response(w: Wire) -> Option<(u16, Vec<(String, String)>, Vec<u8>)> 
         _ => return None,
     };
     let headers = parse_headers(t.pop()?);
-    let Wire::Int(status) = t.pop()? else { return None };
+    let Wire::Int(status) = t.pop()? else {
+        return None;
+    };
     Some((status as u16, headers, body))
 }
 
@@ -207,15 +239,21 @@ impl cell::Host for State {
         partition_key: String,
     ) -> wasmtime::Result<Result<cell::Address, cell::Error>> {
         let [ns, key] = address(&c);
-        Ok(match self.link.call("partition", vec![ns, key, Wire::text(partition_key)]).await? {
-            Reply::Ok(Wire::Tuple(mut t)) if t.len() == 2 => {
-                let key = string(t.pop().unwrap());
-                let namespace = string(t.pop().unwrap());
-                Ok(cell::Address { namespace, key })
-            }
-            Reply::Ok(_) => Err(cell::Error::Failed("malformed host reply".into())),
-            Reply::Err { kind, message } => Err(cell_error(kind, message)),
-        })
+        Ok(
+            match self
+                .link
+                .call("partition", vec![ns, key, Wire::text(partition_key)])
+                .await?
+            {
+                Reply::Ok(Wire::Tuple(mut t)) if t.len() == 2 => {
+                    let key = string(t.pop().unwrap());
+                    let namespace = string(t.pop().unwrap());
+                    Ok(cell::Address { namespace, key })
+                }
+                Reply::Ok(_) => Err(cell::Error::Failed("malformed host reply".into())),
+                Reply::Err { kind, message } => Err(cell_error(kind, message)),
+            },
+        )
     }
 
     async fn query(
@@ -234,7 +272,8 @@ impl cell::Host for State {
         params: Vec<cell::Value>,
         max_lag_ms: u32,
     ) -> wasmtime::Result<Result<cell::Rows, cell::Error>> {
-        self.sql("query_bounded", &c, sql, params, Some(max_lag_ms)).await
+        self.sql("query_bounded", &c, sql, params, Some(max_lag_ms))
+            .await
     }
 
     async fn execute(
@@ -255,14 +294,21 @@ impl cell::Host for State {
         let statements = Wire::List(
             statements
                 .iter()
-                .map(|s| Wire::Tuple(vec![Wire::text(&s.sql), Wire::List(s.params.iter().map(param).collect())]))
+                .map(|s| {
+                    Wire::Tuple(vec![
+                        Wire::text(&s.sql),
+                        Wire::List(s.params.iter().map(param).collect()),
+                    ])
+                })
                 .collect(),
         );
-        Ok(match self.link.call("batch", vec![ns, key, statements]).await? {
-            Reply::Ok(Wire::List(results)) => Ok(results.into_iter().map(rows).collect()),
-            Reply::Ok(_) => Err(cell::Error::Failed("malformed host reply".into())),
-            Reply::Err { kind, message } => Err(cell_error(kind, message)),
-        })
+        Ok(
+            match self.link.call("batch", vec![ns, key, statements]).await? {
+                Reply::Ok(Wire::List(results)) => Ok(results.into_iter().map(rows).collect()),
+                Reply::Ok(_) => Err(cell::Error::Failed("malformed host reply".into())),
+                Reply::Err { kind, message } => Err(cell_error(kind, message)),
+            },
+        )
     }
 }
 
@@ -276,7 +322,12 @@ impl State {
         max_lag_ms: Option<u32>,
     ) -> wasmtime::Result<Result<cell::Rows, cell::Error>> {
         let [ns, key] = address(c);
-        let mut args = vec![ns, key, Wire::text(sql), Wire::List(params.iter().map(param).collect())];
+        let mut args = vec![
+            ns,
+            key,
+            Wire::text(sql),
+            Wire::List(params.iter().map(param).collect()),
+        ];
         args.extend(max_lag_ms.map(|ms| Wire::Int(ms.into())));
         Ok(match self.link.call(op, args).await? {
             Reply::Ok(wire) => Ok(rows(wire)),
@@ -287,14 +338,16 @@ impl State {
 
 impl secrets::Host for State {
     async fn get(&mut self, name: String) -> wasmtime::Result<Result<String, secrets::Error>> {
-        Ok(match self.link.call("secret", vec![Wire::text(name)]).await? {
-            Reply::Ok(wire) => Ok(string(wire)),
-            Reply::Err { kind, message } => Err(if kind == "not_granted" {
-                secrets::Error::NotGranted(message)
-            } else {
-                secrets::Error::Missing(message)
-            }),
-        })
+        Ok(
+            match self.link.call("secret", vec![Wire::text(name)]).await? {
+                Reply::Ok(wire) => Ok(string(wire)),
+                Reply::Err { kind, message } => Err(if kind == "not_granted" {
+                    secrets::Error::NotGranted(message)
+                } else {
+                    secrets::Error::Missing(message)
+                }),
+            },
+        )
     }
 }
 
@@ -314,7 +367,11 @@ impl call::Host for State {
         ];
         Ok(match self.link.call("call", args).await? {
             Reply::Ok(wire) => match parse_response(wire) {
-                Some((status, headers, body)) => Ok(call::Response { status, headers, body }),
+                Some((status, headers, body)) => Ok(call::Response {
+                    status,
+                    headers,
+                    body,
+                }),
                 None => Err(call::Error::Failed("malformed host reply".into())),
             },
             Reply::Err { kind, message } => Err(if kind == "not_granted" {
@@ -342,17 +399,40 @@ impl alarms::Host for State {
         at_ms: i64,
         payload: Vec<u8>,
     ) -> wasmtime::Result<Result<(), alarms::Error>> {
-        let args = vec![Wire::text(namespace), Wire::text(key), Wire::Int(at_ms), Wire::Bin(payload)];
+        let args = vec![
+            Wire::text(namespace),
+            Wire::text(key),
+            Wire::Int(at_ms),
+            Wire::Bin(payload),
+        ];
         let reply = self.link.call("set_alarm", args).await?;
-        Ok(unit(reply).map_err(|(denied, m)| if denied { alarms::Error::NotGranted(m) } else { alarms::Error::Failed(m) }))
+        Ok(unit(reply).map_err(|(denied, m)| {
+            if denied {
+                alarms::Error::NotGranted(m)
+            } else {
+                alarms::Error::Failed(m)
+            }
+        }))
     }
 
-    async fn cancel_alarm(&mut self, namespace: String, key: String) -> wasmtime::Result<Result<(), alarms::Error>> {
-        let reply = self.link.call("cancel_alarm", vec![Wire::text(namespace), Wire::text(key)]).await?;
-        Ok(unit(reply).map_err(|(denied, m)| if denied { alarms::Error::NotGranted(m) } else { alarms::Error::Failed(m) }))
+    async fn cancel_alarm(
+        &mut self,
+        namespace: String,
+        key: String,
+    ) -> wasmtime::Result<Result<(), alarms::Error>> {
+        let reply = self
+            .link
+            .call("cancel_alarm", vec![Wire::text(namespace), Wire::text(key)])
+            .await?;
+        Ok(unit(reply).map_err(|(denied, m)| {
+            if denied {
+                alarms::Error::NotGranted(m)
+            } else {
+                alarms::Error::Failed(m)
+            }
+        }))
     }
 }
-
 
 impl jobs::Host for State {
     async fn enqueue(
@@ -374,7 +454,12 @@ impl jobs::Host for State {
         let statements = Wire::List(
             statements
                 .iter()
-                .map(|s| Wire::Tuple(vec![Wire::text(&s.sql), Wire::List(s.params.iter().map(param).collect())]))
+                .map(|s| {
+                    Wire::Tuple(vec![
+                        Wire::text(&s.sql),
+                        Wire::List(s.params.iter().map(param).collect()),
+                    ])
+                })
                 .collect(),
         );
         let mut args = vec![Wire::text(&c.namespace), Wire::text(&c.key), statements];
@@ -421,7 +506,11 @@ fn option_period(value: Option<jobs::UniquePeriod>) -> Wire {
 }
 
 impl State {
-    async fn job_call(&mut self, op: &str, args: Vec<Wire>) -> wasmtime::Result<Result<String, jobs::Error>> {
+    async fn job_call(
+        &mut self,
+        op: &str,
+        args: Vec<Wire>,
+    ) -> wasmtime::Result<Result<String, jobs::Error>> {
         Ok(match self.link.call(op, args).await? {
             Reply::Ok(wire) => Ok(string(wire)),
             Reply::Err { kind, message } => Err(if kind == "not_granted" {
@@ -434,8 +523,15 @@ impl State {
 }
 
 impl sockets::Host for State {
-    async fn attach(&mut self, namespace: String, key: String) -> wasmtime::Result<Result<(), sockets::Error>> {
-        let reply = self.link.call("attach", vec![Wire::text(namespace), Wire::text(key)]).await?;
+    async fn attach(
+        &mut self,
+        namespace: String,
+        key: String,
+    ) -> wasmtime::Result<Result<(), sockets::Error>> {
+        let reply = self
+            .link
+            .call("attach", vec![Wire::text(namespace), Wire::text(key)])
+            .await?;
         Ok(unit(reply).map_err(socket_error))
     }
 
@@ -457,12 +553,28 @@ impl sockets::Host for State {
         id: Option<String>,
     ) -> wasmtime::Result<Result<(), sockets::Error>> {
         let id = id.map_or(Wire::Nil, Wire::text);
-        let reply = self.link.call("join_channel", vec![Wire::text(namespace), Wire::text(key), id]).await?;
+        let reply = self
+            .link
+            .call(
+                "join_channel",
+                vec![Wire::text(namespace), Wire::text(key), id],
+            )
+            .await?;
         Ok(unit(reply).map_err(socket_error))
     }
 
-    async fn leave_channel(&mut self, namespace: String, key: String) -> wasmtime::Result<Result<(), sockets::Error>> {
-        let reply = self.link.call("leave_channel", vec![Wire::text(namespace), Wire::text(key)]).await?;
+    async fn leave_channel(
+        &mut self,
+        namespace: String,
+        key: String,
+    ) -> wasmtime::Result<Result<(), sockets::Error>> {
+        let reply = self
+            .link
+            .call(
+                "leave_channel",
+                vec![Wire::text(namespace), Wire::text(key)],
+            )
+            .await?;
         Ok(unit(reply).map_err(socket_error))
     }
 
@@ -476,7 +588,13 @@ impl sockets::Host for State {
             sockets::Message::Text(t) => Wire::Tuple(vec![Wire::atom("text"), Wire::text(t)]),
             sockets::Message::Binary(b) => Wire::Tuple(vec![Wire::atom("binary"), Wire::Bin(b)]),
         };
-        let reply = self.link.call("publish", vec![Wire::text(namespace), Wire::text(key), frame]).await?;
+        let reply = self
+            .link
+            .call(
+                "publish",
+                vec![Wire::text(namespace), Wire::text(key), frame],
+            )
+            .await?;
         Ok(unit(reply).map_err(socket_error))
     }
 
@@ -485,7 +603,13 @@ impl sockets::Host for State {
         namespace: String,
         key: String,
     ) -> wasmtime::Result<Result<sockets::Members, sockets::Error>> {
-        let reply = self.link.call("channel_members", vec![Wire::text(namespace), Wire::text(key)]).await?;
+        let reply = self
+            .link
+            .call(
+                "channel_members",
+                vec![Wire::text(namespace), Wire::text(key)],
+            )
+            .await?;
         Ok(match reply {
             Reply::Ok(Wire::Tuple(mut t)) if t.len() == 2 => {
                 let ids = match t.pop() {
@@ -505,7 +629,11 @@ impl sockets::Host for State {
 }
 
 fn socket_error((denied, message): (bool, String)) -> sockets::Error {
-    if denied { sockets::Error::NotGranted(message) } else { sockets::Error::Failed(message) }
+    if denied {
+        sockets::Error::NotGranted(message)
+    } else {
+        sockets::Error::Failed(message)
+    }
 }
 
 /// Links the atanor interface the guest's grants allow.

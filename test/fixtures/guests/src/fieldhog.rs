@@ -5,7 +5,11 @@ use crate::{Request, Response};
 
 pub fn handle(request: Request) -> Response {
     let arg = |name: &str| -> usize {
-        request.query.split('&').find_map(|p| p.strip_prefix(name)?.strip_prefix('=')?.parse().ok()).unwrap_or(1)
+        request
+            .query
+            .split('&')
+            .find_map(|p| p.strip_prefix(name)?.strip_prefix('=')?.parse().ok())
+            .unwrap_or(1)
     };
     let (n, size) = (arg("n"), arg("size"));
     let value = vec![b'a'; size];

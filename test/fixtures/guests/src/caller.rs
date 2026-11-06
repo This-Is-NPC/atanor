@@ -13,7 +13,10 @@ pub fn handle(request: Request) -> Response {
         body: request.body.clone(),
     };
     match call::call(request.header("x-worker"), &outgoing) {
-        Ok(r) => Response::text(200, format!("{} {}", r.status, String::from_utf8_lossy(&r.body))),
+        Ok(r) => Response::text(
+            200,
+            format!("{} {}", r.status, String::from_utf8_lossy(&r.body)),
+        ),
         Err(Error::NotGranted(name)) => Response::text(403, format!("not granted: {name}")),
         Err(Error::Failed(message)) => Response::text(500, format!("failed: {message}")),
     }

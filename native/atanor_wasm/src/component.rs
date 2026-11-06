@@ -1,8 +1,8 @@
 //! Compiling components, the disk cache of compiled code, and preparing a
 //! component with the imports its manifest grants.
 
-use std::io::Write;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::Write;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
@@ -83,7 +83,9 @@ pub enum PrepareError {
 
 fn tracked(component: Component) -> Compiled {
     stats::LIVE_COMPONENTS.fetch_add(1, Relaxed);
-    Compiled { component: AssertUnwindSafe(component) }
+    Compiled {
+        component: AssertUnwindSafe(component),
+    }
 }
 
 /// Names the engine's version and settings in cache file names.
@@ -155,7 +157,13 @@ fn store(path: &Path, serialized: &[u8]) -> std::io::Result<()> {
 
 /// Whether the host provides `name` under `grants`.
 fn granted(name: &str, grants: Grants) -> Result<(), PrepareError> {
-    let denied = |g: bool| if g { Ok(()) } else { Err(PrepareError::NotGranted(name.to_string())) };
+    let denied = |g: bool| {
+        if g {
+            Ok(())
+        } else {
+            Err(PrepareError::NotGranted(name.to_string()))
+        }
+    };
     if name.starts_with("atanor:cell/sql@0.1.0") {
         denied(grants.sql)
     } else if name == "atanor:cell/alarms@0.1.0" {
@@ -182,15 +190,25 @@ fn granted(name: &str, grants: Grants) -> Result<(), PrepareError> {
 /// that is not granted, so a manifest error is clear, and the handler a
 /// granted binding needs but the component does not export.
 pub fn prepare(compiled: &Compiled, grants: Grants) -> Result<Prepared, PrepareError> {
-    let engine = &engine::runtime().ok_or_else(|| PrepareError::Other("not configured".into()))?.engine;
+    let engine = &engine::runtime()
+        .ok_or_else(|| PrepareError::Other("not configured".into()))?
+        .engine;
     let component_type = compiled.component.component_type();
     for (name, item) in component_type.imports(engine) {
         if matches!(item.ty, ComponentItem::ComponentInstance(_)) {
             granted(name, grants)?;
         }
     }
-    let exports = |wanted: &str| component_type.exports(engine).any(|(name, _)| name == wanted);
-    let (alarm_handler, socket_handler, job_handler) = (exports(ALARM_HANDLER), exports(SOCKET_HANDLER), exports(JOB_HANDLER));
+    let exports = |wanted: &str| {
+        component_type
+            .exports(engine)
+            .any(|(name, _)| name == wanted)
+    };
+    let (alarm_handler, socket_handler, job_handler) = (
+        exports(ALARM_HANDLER),
+        exports(SOCKET_HANDLER),
+        exports(JOB_HANDLER),
+    );
     let socket_local = exports(SOCKET_LOCAL);
     for (needed, present, name) in [
         (grants.alarms, alarm_handler, ALARM_HANDLER),
@@ -205,14 +223,20 @@ pub fn prepare(compiled: &Compiled, grants: Grants) -> Result<Prepared, PrepareE
     let other = |e: wasmtime::Error| PrepareError::Other(format!("{e:#}"));
     let mut linker = Linker::<State>::new(engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(other)?;
-    wasmtime_wasi_http::p2::bindings::http::types::add_to_linker::<State, wasmtime_wasi_http::WasiHttp>(
+    wasmtime_wasi_http::p2::bindings::http::types::add_to_linker::<
+        State,
+        wasmtime_wasi_http::WasiHttp,
+    >(
         &mut linker,
         &Default::default(),
         <State as wasmtime_wasi_http::WasiHttpView>::http,
     )
     .map_err(other)?;
     if grants.http {
-        wasmtime_wasi_http::p2::bindings::http::outgoing_handler::add_to_linker::<State, wasmtime_wasi_http::WasiHttp>(
+        wasmtime_wasi_http::p2::bindings::http::outgoing_handler::add_to_linker::<
+            State,
+            wasmtime_wasi_http::WasiHttp,
+        >(
             &mut linker,
             <State as wasmtime_wasi_http::WasiHttpView>::http,
         )
@@ -255,9 +279,14 @@ pub fn prepare(compiled: &Compiled, grants: Grants) -> Result<Prepared, PrepareE
         .transpose()
         .map_err(other)?;
     let pre = ProxyPre::new(instance_pre).map_err(other)?;
-    Ok(Prepared { pre: AssertUnwindSafe(pre), alarm, socket, local, job })
+    Ok(Prepared {
+        pre: AssertUnwindSafe(pre),
+        alarm,
+        socket,
+        local,
+        job,
+    })
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -265,7 +294,10 @@ mod tests {
     use crate::engine;
 
     fn fixture(name: &str) -> Vec<u8> {
-        let path = format!("{}/../../test/fixtures/wasm/{name}.wasm", env!("CARGO_MANIFEST_DIR"));
+        let path = format!(
+            "{}/../../test/fixtures/wasm/{name}.wasm",
+            env!("CARGO_MANIFEST_DIR")
+        );
         std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
     }
 
@@ -291,7 +323,12 @@ mod tests {
         let bytes = fixture("hello");
         let cache = Some((dir.path(), "abc"));
         compile(engine(), &bytes, cache).unwrap();
-        let file = std::fs::read_dir(dir.path()).unwrap().next().unwrap().unwrap().path();
+        let file = std::fs::read_dir(dir.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
         let original = std::fs::read(&file).unwrap();
 
         let mut flipped = original.clone();
@@ -324,32 +361,91 @@ mod tests {
     #[test]
     fn imports_need_their_grants() {
         let none = Grants::default();
-        let all = Grants { sql: true, secrets: true, call: true, http: true, alarms: true, sockets: true, jobs: false };
+        let all = Grants {
+            sql: true,
+            secrets: true,
+            call: true,
+            http: true,
+            alarms: true,
+            sockets: true,
+            jobs: false,
+        };
         let cases = [
             ("hello", none, true),
             ("cell", none, false),
             ("cell", Grants { sql: true, ..none }, true),
             ("secret", Grants { sql: true, ..none }, false),
-            ("secret", Grants { secrets: true, ..none }, true),
+            (
+                "secret",
+                Grants {
+                    secrets: true,
+                    ..none
+                },
+                true,
+            ),
             ("caller", Grants { call: true, ..none }, true),
             ("outbound", none, false),
             ("outbound", Grants { http: true, ..none }, true),
-            ("sneaky", Grants { sql: true, secrets: true, ..none }, false),
+            (
+                "sneaky",
+                Grants {
+                    sql: true,
+                    secrets: true,
+                    ..none
+                },
+                false,
+            ),
             ("sneaky", all, true),
             ("alarm", none, false),
             ("alarm", Grants { sql: true, ..none }, false),
-            ("alarm", Grants { sql: true, alarms: true, ..none }, true),
+            (
+                "alarm",
+                Grants {
+                    sql: true,
+                    alarms: true,
+                    ..none
+                },
+                true,
+            ),
             ("socket", Grants { sql: true, ..none }, false),
-            ("socket", Grants { sql: true, sockets: true, ..none }, true),
-            ("sneaky", Grants { alarms: true, ..all }, true),
+            (
+                "socket",
+                Grants {
+                    sql: true,
+                    sockets: true,
+                    ..none
+                },
+                true,
+            ),
+            (
+                "sneaky",
+                Grants {
+                    alarms: true,
+                    ..all
+                },
+                true,
+            ),
             ("job", none, false),
             ("job", Grants { sql: true, ..none }, false),
-            ("job", Grants { sql: true, jobs: true, ..none }, true),
+            (
+                "job",
+                Grants {
+                    sql: true,
+                    jobs: true,
+                    ..none
+                },
+                true,
+            ),
         ];
         for (guest, grants, ok) in cases {
             let (compiled, _) = compile(engine(), &fixture(guest), None).unwrap();
             let result = prepare(&compiled, grants);
-            assert_eq!(result.is_ok(), ok, "{guest} with {grants:?}: {:?}", result.err());
+            assert_eq!(
+                result.is_ok(),
+                ok,
+                "{guest} with {grants:?}: {:?}",
+                result.err()
+            );
         }
     }
 
@@ -365,9 +461,14 @@ mod tests {
     #[test]
     fn granted_jobs_need_their_handler() {
         let (compiled, _) = compile(engine(), &fixture("cell"), None).unwrap();
-        let sql = Grants { sql: true, ..Grants::default() };
+        let sql = Grants {
+            sql: true,
+            ..Grants::default()
+        };
         match prepare(&compiled, Grants { jobs: true, ..sql }) {
-            Err(PrepareError::MissingExport(name)) => assert_eq!(name, "atanor:worker/job-handler@0.1.0"),
+            Err(PrepareError::MissingExport(name)) => {
+                assert_eq!(name, "atanor:worker/job-handler@0.1.0")
+            }
             other => panic!("{:?}", other.err()),
         }
     }
@@ -375,31 +476,84 @@ mod tests {
     #[test]
     fn granted_alarms_and_sockets_need_their_handlers() {
         let (compiled, _) = compile(engine(), &fixture("cell"), None).unwrap();
-        let sql = Grants { sql: true, ..Grants::default() };
-        match prepare(&compiled, Grants { alarms: true, ..sql }) {
-            Err(PrepareError::MissingExport(name)) => assert_eq!(name, "atanor:worker/alarm-handler@0.1.0"),
+        let sql = Grants {
+            sql: true,
+            ..Grants::default()
+        };
+        match prepare(
+            &compiled,
+            Grants {
+                alarms: true,
+                ..sql
+            },
+        ) {
+            Err(PrepareError::MissingExport(name)) => {
+                assert_eq!(name, "atanor:worker/alarm-handler@0.1.0")
+            }
             other => panic!("{:?}", other.err()),
         }
-        match prepare(&compiled, Grants { sockets: true, ..sql }) {
-            Err(PrepareError::MissingExport(name)) => assert_eq!(name, "atanor:worker/socket-handler@0.1.0"),
+        match prepare(
+            &compiled,
+            Grants {
+                sockets: true,
+                ..sql
+            },
+        ) {
+            Err(PrepareError::MissingExport(name)) => {
+                assert_eq!(name, "atanor:worker/socket-handler@0.1.0")
+            }
             other => panic!("{:?}", other.err()),
         }
     }
 
     #[test]
     fn exported_handlers_are_found() {
-        let sql = Grants { sql: true, ..Grants::default() };
+        let sql = Grants {
+            sql: true,
+            ..Grants::default()
+        };
         let cases = [
             ("hello", Grants::default(), false, false, false),
-            ("alarm", Grants { alarms: true, ..sql }, true, false, false),
-            ("socket", Grants { sockets: true, ..sql }, false, true, false),
-            ("channel", Grants { sockets: true, ..sql }, false, true, true),
+            (
+                "alarm",
+                Grants {
+                    alarms: true,
+                    ..sql
+                },
+                true,
+                false,
+                false,
+            ),
+            (
+                "socket",
+                Grants {
+                    sockets: true,
+                    ..sql
+                },
+                false,
+                true,
+                false,
+            ),
+            (
+                "channel",
+                Grants {
+                    sockets: true,
+                    ..sql
+                },
+                false,
+                true,
+                true,
+            ),
             ("job", Grants { jobs: true, ..sql }, false, false, false),
         ];
         for (guest, grants, alarm, socket, local) in cases {
             let (compiled, _) = compile(engine(), &fixture(guest), None).unwrap();
             let prepared = prepare(&compiled, grants).unwrap();
-            let found = (prepared.alarm.is_some(), prepared.socket.is_some(), prepared.local.is_some());
+            let found = (
+                prepared.alarm.is_some(),
+                prepared.socket.is_some(),
+                prepared.local.is_some(),
+            );
             assert_eq!(found, (alarm, socket, local), "{guest}");
         }
     }
@@ -408,6 +562,9 @@ mod tests {
     fn a_component_without_the_handler_is_refused() {
         let empty = wat::parse_str("(component)").unwrap();
         let (compiled, _) = compile(engine(), &empty, None).unwrap();
-        assert!(matches!(prepare(&compiled, Grants::default()), Err(PrepareError::Other(_))));
+        assert!(matches!(
+            prepare(&compiled, Grants::default()),
+            Err(PrepareError::Other(_))
+        ));
     }
 }

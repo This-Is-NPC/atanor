@@ -99,7 +99,9 @@ pub fn configure(settings: Settings) -> Result<(), String> {
         || settings.max_memory_bytes == 0
         || settings.table_elements == 0
     {
-        return Err("threads, queue, tick_ms, max_memory_bytes and table_elements must be positive".into());
+        return Err(
+            "threads, queue, tick_ms, max_memory_bytes and table_elements must be positive".into(),
+        );
     }
     if let Some(running) = RUNTIME.get() {
         let s = &running.settings;
@@ -110,7 +112,11 @@ pub fn configure(settings: Settings) -> Result<(), String> {
             && s.pooling == settings.pooling
             && s.max_memory_bytes == settings.max_memory_bytes
             && s.table_elements == settings.table_elements;
-        return if same { Ok(()) } else { Err("already configured differently".into()) };
+        return if same {
+            Ok(())
+        } else {
+            Err("already configured differently".into())
+        };
     }
 
     let engine = engine(cpu, &settings)?;
@@ -118,7 +124,12 @@ pub fn configure(settings: Settings) -> Result<(), String> {
     let rx = Arc::new(Mutex::new(rx));
     let tick = Duration::from_millis(settings.tick_ms);
 
-    let runtime = Runtime { engine: engine.clone(), cpu, settings: settings.clone(), tx };
+    let runtime = Runtime {
+        engine: engine.clone(),
+        cpu,
+        settings: settings.clone(),
+        tx,
+    };
     if RUNTIME.set(runtime).is_err() {
         return Ok(());
     }
@@ -202,7 +213,11 @@ mod tests {
         let settings = test_settings();
         configure(settings.clone()).unwrap();
         assert!(configure(settings.clone()).is_ok());
-        assert!(configure(Settings { threads: 2, ..settings }).is_err());
+        assert!(configure(Settings {
+            threads: 2,
+            ..settings
+        })
+        .is_err());
     }
 
     #[test]
@@ -214,7 +229,11 @@ mod tests {
     #[test]
     fn bad_settings_are_refused() {
         let ok = test_settings();
-        assert!(configure(Settings { cpu: "magic".into(), ..ok.clone() }).is_err());
+        assert!(configure(Settings {
+            cpu: "magic".into(),
+            ..ok.clone()
+        })
+        .is_err());
         assert!(configure(Settings { threads: 0, ..ok }).is_err());
     }
 }

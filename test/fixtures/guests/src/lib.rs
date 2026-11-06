@@ -36,7 +36,9 @@ world! {
 }
 
 use bindings::exports::wasi::http::incoming_handler::Guest;
-use bindings::wasi::http::types::{Fields, IncomingBody, IncomingRequest, Method, OutgoingBody, OutgoingResponse, ResponseOutparam};
+use bindings::wasi::http::types::{
+    Fields, IncomingBody, IncomingRequest, Method, OutgoingBody, OutgoingResponse, ResponseOutparam,
+};
 
 pub struct Request {
     pub method: String,
@@ -49,7 +51,11 @@ pub struct Request {
 
 impl Request {
     pub fn header(&self, name: &str) -> &str {
-        self.headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str()).unwrap_or("")
+        self.headers
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("")
     }
 }
 
@@ -60,71 +66,74 @@ pub struct Response {
 
 impl Response {
     pub fn text(status: u16, body: impl Into<String>) -> Response {
-        Response { status, body: body.into().into_bytes() }
+        Response {
+            status,
+            body: body.into().into_bytes(),
+        }
     }
 }
 
-#[cfg(feature = "hello")]
-mod hello;
-#[cfg(feature = "echo")]
-mod echo;
-#[cfg(feature = "spin")]
-mod spin;
-#[cfg(feature = "hog")]
-mod hog;
-#[cfg(feature = "fieldhog")]
-mod fieldhog;
-#[cfg(feature = "crash")]
-mod crash;
-#[cfg(feature = "outbound")]
-mod outbound;
-#[cfg(feature = "cell")]
-mod cell;
-#[cfg(feature = "secret")]
-mod secret;
-#[cfg(feature = "caller")]
-mod caller;
 #[cfg(feature = "alarm")]
 mod alarm;
-#[cfg(feature = "job")]
-mod job;
-#[cfg(feature = "socket")]
-mod socket;
+#[cfg(feature = "caller")]
+mod caller;
+#[cfg(feature = "cell")]
+mod cell;
 #[cfg(feature = "channel")]
 mod channel;
+#[cfg(feature = "crash")]
+mod crash;
+#[cfg(feature = "echo")]
+mod echo;
+#[cfg(feature = "fieldhog")]
+mod fieldhog;
+#[cfg(feature = "hello")]
+mod hello;
+#[cfg(feature = "hog")]
+mod hog;
+#[cfg(feature = "job")]
+mod job;
+#[cfg(feature = "outbound")]
+mod outbound;
+#[cfg(feature = "secret")]
+mod secret;
 #[cfg(feature = "sneaky")]
 mod sneaky;
-
-#[cfg(feature = "hello")]
-use hello::handle;
-#[cfg(feature = "echo")]
-use echo::handle;
+#[cfg(feature = "socket")]
+mod socket;
 #[cfg(feature = "spin")]
-use spin::handle;
-#[cfg(feature = "hog")]
-use hog::handle;
-#[cfg(feature = "fieldhog")]
-use fieldhog::handle;
-#[cfg(feature = "crash")]
-use crash::handle;
-#[cfg(feature = "outbound")]
-use outbound::handle;
-#[cfg(feature = "cell")]
-use cell::handle;
-#[cfg(feature = "secret")]
-use secret::handle;
-#[cfg(feature = "caller")]
-use caller::handle;
+mod spin;
+
 #[cfg(feature = "alarm")]
 use alarm::handle;
-#[cfg(feature = "job")]
-use job::handle;
-#[cfg(feature = "socket")]
-use socket::handle;
+#[cfg(feature = "caller")]
+use caller::handle;
+#[cfg(feature = "cell")]
+use cell::handle;
 #[cfg(feature = "channel")]
 use channel::handle;
+#[cfg(feature = "crash")]
+use crash::handle;
+#[cfg(feature = "echo")]
+use echo::handle;
+#[cfg(feature = "fieldhog")]
+use fieldhog::handle;
+#[cfg(feature = "hello")]
+use hello::handle;
+#[cfg(feature = "hog")]
+use hog::handle;
+#[cfg(feature = "job")]
+use job::handle;
+#[cfg(feature = "outbound")]
+use outbound::handle;
+#[cfg(feature = "secret")]
+use secret::handle;
 #[cfg(feature = "sneaky")]
 use sneaky::handle;
+#[cfg(feature = "socket")]
+use socket::handle;
+#[cfg(feature = "spin")]
+use spin::handle;
 
 pub struct Handler;
 
@@ -133,7 +142,9 @@ bindings::export!(Handler with_types_in bindings);
 impl Guest for Handler {
     fn handle(request: IncomingRequest, out: ResponseOutparam) {
         let response = handle(read(request));
-        let response_head = OutgoingResponse::new(Fields::from_list(&[("content-type".to_string(), b"text/plain".to_vec())]).unwrap());
+        let response_head = OutgoingResponse::new(
+            Fields::from_list(&[("content-type".to_string(), b"text/plain".to_vec())]).unwrap(),
+        );
         response_head.set_status_code(response.status).unwrap();
         let body = response_head.body().unwrap();
         ResponseOutparam::set(out, Ok(response_head));
@@ -168,7 +179,14 @@ fn read(request: IncomingRequest) -> Request {
         .map(|(n, v)| (n, String::from_utf8_lossy(&v).into_owned()))
         .collect();
     let body = request.consume().map(read_body).unwrap_or_default();
-    Request { method, authority: request.authority().unwrap_or_default(), path: path.to_string(), query: query.to_string(), headers, body }
+    Request {
+        method,
+        authority: request.authority().unwrap_or_default(),
+        path: path.to_string(),
+        query: query.to_string(),
+        headers,
+        body,
+    }
 }
 
 fn read_body(body: IncomingBody) -> Vec<u8> {

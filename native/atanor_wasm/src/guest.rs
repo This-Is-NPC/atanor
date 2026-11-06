@@ -15,7 +15,9 @@ use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_wasi_http::p2::bindings::http::types::{ErrorCode, Scheme};
 use wasmtime_wasi_http::p2::body::HyperOutgoingBody;
-use wasmtime_wasi_http::{Error as HttpError, WasiBody, WasiHttpCtx, WasiHttpCtxView, WasiHttpHooks, WasiHttpView};
+use wasmtime_wasi_http::{
+    Error as HttpError, WasiBody, WasiHttpCtx, WasiHttpCtxView, WasiHttpHooks, WasiHttpView,
+};
 
 use crate::component::Prepared;
 use crate::engine::{self, Cpu, INSTANCES, MEMORIES, TABLES};
@@ -68,12 +70,35 @@ pub struct ReqData {
 /// What a job asks of the guest.
 pub enum Call {
     Http(ReqData),
-    Alarm { namespace: String, key: String, payload: Vec<u8> },
-    Job { namespace: String, key: String, id: String, idempotency_key: String, kind: String, payload: Vec<u8>, attempt: u32 },
-    Open { socket: String, request: SocketRequest },
-    Message { socket: String, message: Incoming },
-    Close { socket: String },
-    Local { socket: String, frame: Incoming },
+    Alarm {
+        namespace: String,
+        key: String,
+        payload: Vec<u8>,
+    },
+    Job {
+        namespace: String,
+        key: String,
+        id: String,
+        idempotency_key: String,
+        kind: String,
+        payload: Vec<u8>,
+        attempt: u32,
+    },
+    Open {
+        socket: String,
+        request: SocketRequest,
+    },
+    Message {
+        socket: String,
+        message: Incoming,
+    },
+    Close {
+        socket: String,
+    },
+    Local {
+        socket: String,
+        frame: Incoming,
+    },
 }
 
 pub struct SocketRequest {
@@ -96,17 +121,33 @@ impl Call {
     /// `{:ws_message, socket, :text | :binary | :cell, data}`,
     /// `{:ws_local, socket, :text | :binary, data}` or `{:ws_close, socket}`.
     pub fn parse(wire: Wire) -> Option<Call> {
-        let Wire::Tuple(items) = wire else { return None };
+        let Wire::Tuple(items) = wire else {
+            return None;
+        };
         let mut it = items.into_iter();
-        let Some(Wire::Atom(kind)) = it.next() else { return None };
+        let Some(Wire::Atom(kind)) = it.next() else {
+            return None;
+        };
         let it = &mut it;
         match kind.as_str() {
             "http" => {
-                let (method, scheme, authority, path_query) = (text(it)?, text(it)?, text(it)?, text(it)?);
+                let (method, scheme, authority, path_query) =
+                    (text(it)?, text(it)?, text(it)?, text(it)?);
                 let headers = parse_headers(it.next()?);
-                Some(Call::Http(ReqData { method, scheme, authority, path_query, headers, body: bin(it)? }))
+                Some(Call::Http(ReqData {
+                    method,
+                    scheme,
+                    authority,
+                    path_query,
+                    headers,
+                    body: bin(it)?,
+                }))
             }
-            "alarm" => Some(Call::Alarm { namespace: text(it)?, key: text(it)?, payload: bin(it)? }),
+            "alarm" => Some(Call::Alarm {
+                namespace: text(it)?,
+                key: text(it)?,
+                payload: bin(it)?,
+            }),
             "job" => Some(Call::Job {
                 namespace: text(it)?,
                 key: text(it)?,
@@ -122,11 +163,21 @@ impl Call {
             "ws_open" => {
                 let (socket, method, path, query) = (text(it)?, text(it)?, text(it)?, text(it)?);
                 let headers = parse_headers(it.next()?);
-                Some(Call::Open { socket, request: SocketRequest { method, path, query, headers } })
+                Some(Call::Open {
+                    socket,
+                    request: SocketRequest {
+                        method,
+                        path,
+                        query,
+                        headers,
+                    },
+                })
             }
             "ws_message" => {
                 let socket = text(it)?;
-                let Some(Wire::Atom(what)) = it.next() else { return None };
+                let Some(Wire::Atom(what)) = it.next() else {
+                    return None;
+                };
                 let data = bin(it)?;
                 let message = match what.as_str() {
                     "text" => Incoming::Text(String::from_utf8(data).ok()?),
@@ -138,7 +189,9 @@ impl Call {
             }
             "ws_local" => {
                 let socket = text(it)?;
-                let Some(Wire::Atom(what)) = it.next() else { return None };
+                let Some(Wire::Atom(what)) = it.next() else {
+                    return None;
+                };
                 let data = bin(it)?;
                 let frame = match what.as_str() {
                     "text" => Incoming::Text(String::from_utf8(data).ok()?),
@@ -183,7 +236,12 @@ pub struct Limiter {
 }
 
 impl ResourceLimiter for Limiter {
-    fn memory_growing(&mut self, current: usize, desired: usize, _max: Option<usize>) -> wasmtime::Result<bool> {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _max: Option<usize>,
+    ) -> wasmtime::Result<bool> {
         let total = self.total.saturating_add(desired.saturating_sub(current));
         if total > self.max {
             return Err(wasmtime::Error::new(LimitHit::Memory));
@@ -193,7 +251,12 @@ impl ResourceLimiter for Limiter {
         Ok(true)
     }
 
-    fn table_growing(&mut self, _current: usize, desired: usize, _max: Option<usize>) -> wasmtime::Result<bool> {
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _max: Option<usize>,
+    ) -> wasmtime::Result<bool> {
         Ok(desired <= self.table_elements)
     }
 
@@ -227,13 +290,20 @@ pub struct State {
 
 impl WasiView for State {
     fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView { ctx: &mut self.wasi, table: &mut self.table }
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
     }
 }
 
 impl WasiHttpView for State {
     fn http(&mut self) -> WasiHttpCtxView<'_> {
-        WasiHttpCtxView { ctx: &mut self.http, table: &mut self.table, hooks: &mut self.hooks }
+        WasiHttpCtxView {
+            ctx: &mut self.http,
+            table: &mut self.table,
+            hooks: &mut self.hooks,
+        }
     }
 }
 
@@ -255,12 +325,19 @@ impl WasiHttpHooks for Hooks {
         let max = self.max_body;
         Box::new(async move {
             let (parts, body) = request.into_parts();
-            let body = collect(body, max).await.map_err(|_| HttpError::HttpRequestBodySize(None))?;
+            let body = collect(body, max)
+                .await
+                .map_err(|_| HttpError::HttpRequestBodySize(None))?;
             let uri = &parts.uri;
             let headers = parts
                 .headers
                 .iter()
-                .map(|(n, v)| Wire::Tuple(vec![Wire::text(n.as_str()), Wire::Bin(v.as_bytes().to_vec())]))
+                .map(|(n, v)| {
+                    Wire::Tuple(vec![
+                        Wire::text(n.as_str()),
+                        Wire::Bin(v.as_bytes().to_vec()),
+                    ])
+                })
                 .collect();
             let args = vec![
                 Wire::text(parts.method.as_str()),
@@ -272,10 +349,15 @@ impl WasiHttpHooks for Hooks {
                 Wire::List(headers),
                 Wire::Bin(body),
             ];
-            let reply = link.call("http", args).await.map_err(|e| HttpError::InternalError(Some(e.to_string())))?;
+            let reply = link
+                .call("http", args)
+                .await
+                .map_err(|e| HttpError::InternalError(Some(e.to_string())))?;
             let response = match reply {
                 Reply::Ok(wire) => crate::host::parse_response(wire),
-                Reply::Err { kind, .. } if kind == "not_granted" => return Err(HttpError::HttpRequestDenied),
+                Reply::Err { kind, .. } if kind == "not_granted" => {
+                    return Err(HttpError::HttpRequestDenied)
+                }
                 Reply::Err { .. } => return Err(HttpError::ConnectionRefused),
             };
             let (status, headers, body) = response.ok_or(HttpError::HttpProtocolError)?;
@@ -283,8 +365,12 @@ impl WasiHttpHooks for Hooks {
             for (n, v) in headers {
                 builder = builder.header(n, v);
             }
-            let body: WasiBody = Full::new(Bytes::from(body)).map_err(|never| match never {}).boxed_unsync();
-            let response = builder.body(body).map_err(|_| HttpError::HttpProtocolError)?;
+            let body: WasiBody = Full::new(Bytes::from(body))
+                .map_err(|never| match never {})
+                .boxed_unsync();
+            let response = builder
+                .body(body)
+                .map_err(|_| HttpError::HttpProtocolError)?;
             let done: Box<dyn std::future::Future<Output = Result<(), HttpError>> + Send> =
                 Box::new(std::future::ready(Ok(())));
             Ok((response, done))
@@ -308,7 +394,10 @@ fn http_ctx(max_field_bytes: usize) -> WasiHttpCtx {
 
 /// The CPU time this thread has used, from the kernel.
 fn thread_cpu() -> Duration {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
     Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
 }
@@ -344,12 +433,20 @@ async fn collect_response(
     rx: tokio::sync::oneshot::Receiver<Result<http::Response<HyperOutgoingBody>, ErrorCode>>,
     max: usize,
 ) -> Collected {
-    let response = rx.await.map_err(|_| Failure::NoResponse)?.map_err(Failure::Guest)?;
+    let response = rx
+        .await
+        .map_err(|_| Failure::NoResponse)?
+        .map_err(Failure::Guest)?;
     let (parts, body) = response.into_parts();
     let headers = parts
         .headers
         .iter()
-        .map(|(n, v)| (n.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
+        .map(|(n, v)| {
+            (
+                n.as_str().to_string(),
+                String::from_utf8_lossy(v.as_bytes()).into_owned(),
+            )
+        })
         .collect();
     let body = collect(body, max).await.map_err(|_| Failure::TooLarge)?;
     Ok((parts.status.as_u16(), headers, body))
@@ -366,7 +463,14 @@ struct Timing {
 
 impl Timing {
     /// Records the end of the guest's run.
-    fn finish(&mut self, store: &Store<State>, cpu: Cpu, limits: &Limits, run0: Instant, cpu_start: Duration) {
+    fn finish(
+        &mut self,
+        store: &Store<State>,
+        cpu: Cpu,
+        limits: &Limits,
+        run0: Instant,
+        cpu_start: Duration,
+    ) {
         self.run_ns = run0.elapsed().as_nanos() as u64;
         self.cpu_ns = (thread_cpu() - cpu_start).as_nanos() as u64;
         self.memory_bytes = store.data().limiter.peak as u64;
@@ -410,18 +514,34 @@ pub async fn run(job: Job) {
 /// Sends the end of a call to the process that submitted it.
 fn report(pid: &LocalPid, tag: u64, result: Wire, stderr: Wire, timing: Wire) {
     let _ = OwnedEnv::new().send_and_clear(pid, |env| {
-        (rustler::Atom::from_str(env, "atanor_wasm").unwrap(), tag, rustler::Atom::from_str(env, "done").unwrap(), result, stderr, timing)
+        (
+            rustler::Atom::from_str(env, "atanor_wasm").unwrap(),
+            tag,
+            rustler::Atom::from_str(env, "done").unwrap(),
+            result,
+            stderr,
+            timing,
+        )
             .encode(env)
     });
 }
 
 /// Ends a call whose run panicked.
 pub fn report_panic(pid: &LocalPid, tag: u64) {
-    report(pid, tag, error("guest", Wire::text("the host panicked")), Wire::Bin(Vec::new()), Wire::Nil);
+    report(
+        pid,
+        tag,
+        error("guest", Wire::text("the host panicked")),
+        Wire::Bin(Vec::new()),
+        Wire::Nil,
+    );
 }
 
 fn error(kind: &str, detail: Wire) -> Wire {
-    Wire::Tuple(vec![Wire::atom("error"), Wire::Tuple(vec![Wire::atom(kind), detail])])
+    Wire::Tuple(vec![
+        Wire::atom("error"),
+        Wire::Tuple(vec![Wire::atom(kind), detail]),
+    ])
 }
 
 fn limit(kind: LimitHit) -> Wire {
@@ -445,7 +565,11 @@ fn classify(e: &wasmtime::Error, cpu: Cpu) -> Wire {
         return limit(LimitHit::Cpu);
     }
     stats::bump(&stats::TRAPS_OTHER);
-    let kind = if e.downcast_ref::<Trap>().is_some() { "trap" } else { "guest" };
+    let kind = if e.downcast_ref::<Trap>().is_some() {
+        "trap"
+    } else {
+        "guest"
+    };
     error(kind, Wire::text(format!("{e:#}")))
 }
 
@@ -460,7 +584,11 @@ async fn execute(
     let runtime = engine::runtime().expect("configured");
     let deadline = started + Duration::from_millis(limits.timeout_ms);
     let wall_deadline = Instant::now() + Duration::from_millis(limits.timeout_ms);
-    let link = Link { pid: job.pid, tag: job.tag, deadline };
+    let link = Link {
+        pid: job.pid,
+        tag: job.tag,
+        deadline,
+    };
     let stderr = MemoryOutputPipe::new(limits.stderr_bytes as usize);
 
     let mut store = Store::new(
@@ -469,7 +597,10 @@ async fn execute(
             wasi: WasiCtx::builder().stderr(stderr.clone()).build(),
             table: resource_table(limits.max_resources as usize),
             http: http_ctx(limits.max_field_bytes as usize),
-            hooks: Hooks { link: link.clone(), max_body: limits.max_response_bytes as usize },
+            hooks: Hooks {
+                link: link.clone(),
+                max_body: limits.max_response_bytes as usize,
+            },
             limiter: Limiter {
                 max: limits.memory_bytes as usize,
                 table_elements: limits.table_elements as usize,
@@ -526,7 +657,11 @@ async fn http(
         Ok(r) => r,
         Err(e) => return error("guest", Wire::text(e)),
     };
-    let scheme = if req.scheme == "https" { Scheme::Https } else { Scheme::Http };
+    let scheme = if req.scheme == "https" {
+        Scheme::Https
+    } else {
+        Scheme::Http
+    };
     let (tx, rx) = tokio::sync::oneshot::channel();
     let slot = Arc::new(Mutex::new(Some(tx)));
     let (incoming, out) = {
@@ -552,7 +687,11 @@ async fn http(
     timing.instantiate_ns = t0.elapsed().as_nanos() as u64;
 
     let run0 = Instant::now();
-    let mut call = Box::pin(proxy.wasi_http_incoming_handler().call_handle(&mut store, incoming, out));
+    let mut call = Box::pin(
+        proxy
+            .wasi_http_incoming_handler()
+            .call_handle(&mut store, incoming, out),
+    );
     let mut collect = Box::pin(collect_response(rx, limits.max_response_bytes as usize));
 
     enum First {
@@ -586,22 +725,42 @@ async fn http(
                 .collect();
             Wire::Tuple(vec![
                 Wire::atom("ok"),
-                Wire::Tuple(vec![Wire::Int(status as i64), Wire::List(headers), Wire::Bin(body)]),
+                Wire::Tuple(vec![
+                    Wire::Int(status as i64),
+                    Wire::List(headers),
+                    Wire::Bin(body),
+                ]),
             ])
         }
-        Err(Failure::TooLarge) => Wire::Tuple(vec![Wire::atom("error"), Wire::atom("response_too_large")]),
-        Err(Failure::NoResponse) => error("guest", Wire::text("the guest returned without a response")),
+        Err(Failure::TooLarge) => {
+            Wire::Tuple(vec![Wire::atom("error"), Wire::atom("response_too_large")])
+        }
+        Err(Failure::NoResponse) => {
+            error("guest", Wire::text("the guest returned without a response"))
+        }
         Err(Failure::Guest(code)) => error("guest", Wire::text(format!("{code:?}"))),
     }
 }
 
 /// Calls the alarm or socket handler the component exports.
-async fn handler(job: &Job, mut store: Store<State>, cpu: Cpu, cpu_start: Duration, timing: &mut Timing) -> Wire {
+async fn handler(
+    job: &Job,
+    mut store: Store<State>,
+    cpu: Cpu,
+    cpu_start: Duration,
+    timing: &mut Timing,
+) -> Wire {
     let t0 = Instant::now();
     let run0;
     let result = match &job.call {
-        Call::Alarm { namespace, key, payload } => {
-            let Some(pre) = &job.pre.alarm else { return error("guest", Wire::text("no alarm handler")) };
+        Call::Alarm {
+            namespace,
+            key,
+            payload,
+        } => {
+            let Some(pre) = &job.pre.alarm else {
+                return error("guest", Wire::text("no alarm handler"));
+            };
             let guest = match pre.instantiate_async(&mut store).await {
                 Ok(g) => g,
                 Err(e) => return classify(&e, cpu),
@@ -614,8 +773,18 @@ async fn handler(job: &Job, mut store: Store<State>, cpu: Cpu, cpu_start: Durati
                 .await
                 .map(|r| r.map(|()| Wire::Nil))
         }
-        Call::Job { namespace, key, id, idempotency_key, kind, payload, attempt } => {
-            let Some(pre) = &job.pre.job else { return error("guest", Wire::text("no job handler")) };
+        Call::Job {
+            namespace,
+            key,
+            id,
+            idempotency_key,
+            kind,
+            payload,
+            attempt,
+        } => {
+            let Some(pre) = &job.pre.job else {
+                return error("guest", Wire::text("no job handler"));
+            };
             let guest = match pre.instantiate_async(&mut store).await {
                 Ok(g) => g,
                 Err(e) => return classify(&e, cpu),
@@ -624,13 +793,24 @@ async fn handler(job: &Job, mut store: Store<State>, cpu: Cpu, cpu_start: Durati
             run0 = Instant::now();
             guest
                 .atanor_worker_job_handler()
-                .call_handle_job(&mut store, namespace, key, id, idempotency_key, kind, payload, *attempt)
+                .call_handle_job(
+                    &mut store,
+                    namespace,
+                    key,
+                    id,
+                    idempotency_key,
+                    kind,
+                    payload,
+                    *attempt,
+                )
                 .await
                 .map(|r| r.map(|()| Wire::Nil))
         }
         Call::Http(_) => unreachable!("served by `http`"),
         Call::Local { socket, frame } => {
-            let Some(pre) = &job.pre.local else { return error("guest", Wire::text("no local socket handler")) };
+            let Some(pre) = &job.pre.local else {
+                return error("guest", Wire::text("no local socket handler"));
+            };
             let guest = match pre.instantiate_async(&mut store).await {
                 Ok(g) => g,
                 Err(e) => return classify(&e, cpu),
@@ -642,22 +822,33 @@ async fn handler(job: &Job, mut store: Store<State>, cpu: Cpu, cpu_start: Durati
                 Incoming::Binary(b) => LocalFrame::Binary(b.clone()),
                 Incoming::Cell(_) => unreachable!("not a frame"),
             };
-            guest.atanor_worker_socket_local().call_on_frame(&mut store, socket, &frame).await.map(|r| {
-                r.map(|verdict| match verdict {
-                    local::Verdict::Pass => Wire::atom("pass"),
-                    local::Verdict::Drop => Wire::atom("drop"),
+            guest
+                .atanor_worker_socket_local()
+                .call_on_frame(&mut store, socket, &frame)
+                .await
+                .map(|r| {
+                    r.map(|verdict| match verdict {
+                        local::Verdict::Pass => Wire::atom("pass"),
+                        local::Verdict::Drop => Wire::atom("drop"),
+                    })
                 })
-            })
         }
         socket_call => {
-            let Some(pre) = &job.pre.socket else { return error("guest", Wire::text("no socket handler")) };
+            let Some(pre) = &job.pre.socket else {
+                return error("guest", Wire::text("no socket handler"));
+            };
             let guest = match pre.instantiate_async(&mut store).await {
                 Ok(g) => g,
                 Err(e) => return classify(&e, cpu),
             };
             timing.instantiate_ns = t0.elapsed().as_nanos() as u64;
             run0 = Instant::now();
-            socket(guest.atanor_worker_socket_handler(), &mut store, socket_call).await
+            socket(
+                guest.atanor_worker_socket_handler(),
+                &mut store,
+                socket_call,
+            )
+            .await
         }
     };
     timing.finish(&store, cpu, &job.limits, run0, cpu_start);
@@ -686,13 +877,20 @@ async fn socket(
                 query: request.query.clone(),
                 headers: request.headers.clone(),
             };
-            handler.call_on_open(store, socket, &request).await?.map(|upgrade| match upgrade {
-                ws::Upgrade::Accept => Wire::atom("accept"),
-                ws::Upgrade::Reject(r) => Wire::Tuple(vec![
-                    Wire::atom("reject"),
-                    Wire::Tuple(vec![Wire::Int(r.status as i64), headers_wire(r.headers), Wire::Bin(r.body)]),
-                ]),
-            })
+            handler
+                .call_on_open(store, socket, &request)
+                .await?
+                .map(|upgrade| match upgrade {
+                    ws::Upgrade::Accept => Wire::atom("accept"),
+                    ws::Upgrade::Reject(r) => Wire::Tuple(vec![
+                        Wire::atom("reject"),
+                        Wire::Tuple(vec![
+                            Wire::Int(r.status as i64),
+                            headers_wire(r.headers),
+                            Wire::Bin(r.body),
+                        ]),
+                    ]),
+                })
         }
         Call::Message { socket, message } => {
             let message = match message {
@@ -700,28 +898,45 @@ async fn socket(
                 Incoming::Binary(b) => ws::Incoming::Binary(b.clone()),
                 Incoming::Cell(b) => ws::Incoming::Cell(b.clone()),
             };
-            handler.call_on_message(store, socket, &message).await?.map(|reply| {
-                let frames = reply
-                    .frames
-                    .into_iter()
-                    .map(|f| match f {
-                        ws::Frame::Text(t) => Wire::Tuple(vec![Wire::atom("text"), Wire::text(t)]),
-                        ws::Frame::Binary(b) => Wire::Tuple(vec![Wire::atom("binary"), Wire::Bin(b)]),
-                    })
-                    .collect();
-                Wire::Tuple(vec![Wire::List(frames), Wire::atom(if reply.close { "true" } else { "false" })])
-            })
+            handler
+                .call_on_message(store, socket, &message)
+                .await?
+                .map(|reply| {
+                    let frames = reply
+                        .frames
+                        .into_iter()
+                        .map(|f| match f {
+                            ws::Frame::Text(t) => {
+                                Wire::Tuple(vec![Wire::atom("text"), Wire::text(t)])
+                            }
+                            ws::Frame::Binary(b) => {
+                                Wire::Tuple(vec![Wire::atom("binary"), Wire::Bin(b)])
+                            }
+                        })
+                        .collect();
+                    Wire::Tuple(vec![
+                        Wire::List(frames),
+                        Wire::atom(if reply.close { "true" } else { "false" }),
+                    ])
+                })
         }
         Call::Close { socket } => {
             handler.call_on_close(store, socket).await?;
             Ok(Wire::Nil)
         }
-        Call::Http(_) | Call::Alarm { .. } | Call::Job { .. } | Call::Local { .. } => unreachable!("not a socket call"),
+        Call::Http(_) | Call::Alarm { .. } | Call::Job { .. } | Call::Local { .. } => {
+            unreachable!("not a socket call")
+        }
     })
 }
 
 fn headers_wire(headers: Vec<(String, String)>) -> Wire {
-    Wire::List(headers.into_iter().map(|(n, v)| Wire::Tuple(vec![Wire::text(n), Wire::text(v)])).collect())
+    Wire::List(
+        headers
+            .into_iter()
+            .map(|(n, v)| Wire::Tuple(vec![Wire::text(n), Wire::text(v)]))
+            .collect(),
+    )
 }
 
 fn build_request(r: &ReqData) -> Result<http::Request<Full<Bytes>>, String> {
@@ -731,7 +946,9 @@ fn build_request(r: &ReqData) -> Result<http::Request<Full<Bytes>>, String> {
     for (n, v) in &r.headers {
         builder = builder.header(n.as_str(), v.as_str());
     }
-    builder.body(Full::new(Bytes::from(r.body.clone()))).map_err(|e| e.to_string())
+    builder
+        .body(Full::new(Bytes::from(r.body.clone())))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -740,7 +957,12 @@ mod tests {
 
     #[test]
     fn growing_memory_past_the_cap_is_the_memory_limit() {
-        let mut limiter = Limiter { max: 1000, table_elements: 100_000, total: 0, peak: 0 };
+        let mut limiter = Limiter {
+            max: 1000,
+            table_elements: 100_000,
+            total: 0,
+            peak: 0,
+        };
         assert!(limiter.memory_growing(0, 600, None).unwrap());
         assert!(limiter.memory_growing(600, 1000, None).unwrap());
         let error = limiter.memory_growing(1000, 1001, None).unwrap_err();
@@ -750,7 +972,12 @@ mod tests {
 
     #[test]
     fn the_memory_cap_is_for_all_memories_together() {
-        let mut limiter = Limiter { max: 1000, table_elements: 100_000, total: 0, peak: 0 };
+        let mut limiter = Limiter {
+            max: 1000,
+            table_elements: 100_000,
+            total: 0,
+            peak: 0,
+        };
         assert!(limiter.memory_growing(0, 600, None).unwrap());
         // A second memory starts at 0: 600 + 600 is over the cap.
         let error = limiter.memory_growing(0, 600, None).unwrap_err();
@@ -771,14 +998,22 @@ mod tests {
         while thread_cpu() - start < Duration::from_millis(30) && Instant::now() < give_up {
             x = std::hint::black_box(x.wrapping_add(1));
         }
-        assert!(thread_cpu() - start >= Duration::from_millis(30), "spinning did not count as CPU time");
+        assert!(
+            thread_cpu() - start >= Duration::from_millis(30),
+            "spinning did not count as CPU time"
+        );
     }
 
     #[test]
     fn a_body_over_the_cap_is_refused() {
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         let body = || Full::new(Bytes::from(vec![0u8; 10]));
-        assert_eq!(rt.block_on(collect(body(), 10)).ok().map(|v| v.len()), Some(10));
+        assert_eq!(
+            rt.block_on(collect(body(), 10)).ok().map(|v| v.len()),
+            Some(10)
+        );
         assert!(rt.block_on(collect(body(), 9)).is_err());
     }
 }

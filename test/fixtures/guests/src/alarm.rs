@@ -30,9 +30,13 @@ impl Guest for Handler {
         let cell = Address { namespace, key };
         let payload = String::from_utf8_lossy(&payload).into_owned();
         let record = |text: &str| {
-            sql::execute(&cell, "INSERT INTO fires (payload) VALUES (?)", &[Value::Text(text.to_string())])
-                .map(|_| ())
-                .map_err(|_| "cannot write the cell".to_string())
+            sql::execute(
+                &cell,
+                "INSERT INTO fires (payload) VALUES (?)",
+                &[Value::Text(text.to_string())],
+            )
+            .map(|_| ())
+            .map_err(|_| "cannot write the cell".to_string())
         };
         match payload.as_str() {
             "fail" => Err("boom".into()),
@@ -44,8 +48,12 @@ impl Guest for Handler {
             }
             "flaky" => {
                 record("flaky-attempt")?;
-                let rows = sql::query(&cell, "SELECT count(*) FROM fires WHERE payload = 'flaky-attempt'", &[])
-                    .map_err(|_| "cannot read the cell".to_string())?;
+                let rows = sql::query(
+                    &cell,
+                    "SELECT count(*) FROM fires WHERE payload = 'flaky-attempt'",
+                    &[],
+                )
+                .map_err(|_| "cannot read the cell".to_string())?;
                 match rows.rows[0][0] {
                     Value::Integer(1) => Err("flaky".into()),
                     _ => record("flaky"),

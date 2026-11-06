@@ -19,11 +19,11 @@ mod bindings {
 use bindings::atanor::cell::jobs::{self, NewJob};
 use bindings::atanor::cell::sockets;
 use bindings::atanor::cell::sql::{self, Address, Statement, Value};
-use bindings::exports::wasi::http::incoming_handler::Guest as Http;
 use bindings::exports::atanor::worker::job_handler::Guest as JobHandler;
 use bindings::exports::atanor::worker::socket_handler::{
     Frame, Guest as SocketHandler, Incoming, Reply, Request as SocketRequest, Upgrade,
 };
+use bindings::exports::wasi::http::incoming_handler::Guest as Http;
 use bindings::wasi::http::types::{
     Fields, IncomingBody, IncomingRequest, Method, OutgoingBody, OutgoingResponse, ResponseOutparam,
 };
@@ -68,7 +68,10 @@ fn quote(s: &str) -> String {
 }
 
 fn valid_name(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 100 && s.chars().all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c))
+    !s.is_empty()
+        && s.len() <= 100
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c))
 }
 
 fn decode(s: &str) -> String {
@@ -78,7 +81,10 @@ fn decode(s: &str) -> String {
     while i < bytes.len() {
         match bytes[i] {
             b'+' => out.push(b' '),
-            b'%' if s.get(i + 1..i + 3).is_some_and(|h| u8::from_str_radix(h, 16).is_ok()) => {
+            b'%' if s
+                .get(i + 1..i + 3)
+                .is_some_and(|h| u8::from_str_radix(h, 16).is_ok()) =>
+            {
                 out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap());
                 i += 2;
             }
@@ -114,8 +120,14 @@ fn int(v: &Value) -> i64 {
 // `overloaded`, `busy` and `store_unavailable` did not run the call: 503 tells the client to retry (the
 // ingress adds `Retry-After`). `sync_failed` may have been applied, so it stays a 500.
 fn status_of(message: &str) -> u16 {
-    let retry = ["overloaded", "busy", "store_unavailable"].iter().any(|code| message.starts_with(code));
-    if retry { 503 } else { 500 }
+    let retry = ["overloaded", "busy", "store_unavailable"]
+        .iter()
+        .any(|code| message.starts_with(code));
+    if retry {
+        503
+    } else {
+        500
+    }
 }
 
 fn failure(e: sql::Error) -> Reply2 {
@@ -127,7 +139,10 @@ fn failure(e: sql::Error) -> Reply2 {
 }
 
 fn cell(room: &str) -> Address {
-    Address { namespace: NAMESPACE.into(), key: room.into() }
+    Address {
+        namespace: NAMESPACE.into(),
+        key: room.into(),
+    }
 }
 
 fn route(method: &str, path: &str, query: &str) -> Reply2 {
@@ -145,7 +160,10 @@ fn record(room: &str, query: &str) -> Reply2 {
     let player = param(query, "player").unwrap_or_default();
     let points = param(query, "points").and_then(|p| p.parse::<i64>().ok());
     let (true, true, Some(points)) = (valid_name(&id), valid_name(&player), points) else {
-        return error(400, "id and player (1-100 of A-Za-z0-9._:-) and integer points are required");
+        return error(
+            400,
+            "id and player (1-100 of A-Za-z0-9._:-) and integer points are required",
+        );
     };
     // `once=1` makes a retry of the same id a no-op; without it every request appends a row, so a
     // duplicate is visible to a checker.
@@ -154,7 +172,11 @@ fn record(room: &str, query: &str) -> Reply2 {
     } else {
         "INSERT INTO writes (id, player, points) VALUES (?, ?, ?)"
     };
-    let mut params = vec![Value::Text(id.clone()), Value::Text(player.clone()), Value::Integer(points)];
+    let mut params = vec![
+        Value::Text(id.clone()),
+        Value::Text(player.clone()),
+        Value::Integer(points),
+    ];
     if sql.contains("NOT EXISTS") {
         params.push(Value::Text(id.clone()));
     }
@@ -168,7 +190,14 @@ fn record(room: &str, query: &str) -> Reply2 {
         idempotency_key: None,
     };
     // The row and the job commit together or not at all.
-    match jobs::enqueue_batch(&cell(room), &[Statement { sql: sql.into(), params }], &job) {
+    match jobs::enqueue_batch(
+        &cell(room),
+        &[Statement {
+            sql: sql.into(),
+            params,
+        }],
+        &job,
+    ) {
         Ok(_) => {
             let event = format!(
                 "{{\"type\":\"score\",\"id\":{},\"player\":{},\"points\":{points}}}",
@@ -176,18 +205,24 @@ fn record(room: &str, query: &str) -> Reply2 {
                 quote(&player)
             );
             let _ = sockets::send_to_cell(NAMESPACE, room, event.as_bytes());
-            json(201, format!("{{\"id\":{},\"room\":{}}}", quote(&id), quote(room)))
+            json(
+                201,
+                format!("{{\"id\":{},\"room\":{}}}", quote(&id), quote(room)),
+            )
         }
         Err(jobs::Error::NotGranted(what)) => error(403, &format!("not granted: {what}")),
-        Err(jobs::Error::Failed(why)) => {
-            error(status_of(&why), &why)
-        }
+        Err(jobs::Error::Failed(why)) => error(status_of(&why), &why),
     }
 }
 
 fn writes(room: &str, query: &str) -> Reply2 {
-    let after = param(query, "after").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-    let limit = param(query, "limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(PAGE_MAX).clamp(1, PAGE_MAX);
+    let after = param(query, "after")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+    let limit = param(query, "limit")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(PAGE_MAX)
+        .clamp(1, PAGE_MAX);
     let rows = sql::query(
         &cell(room),
         "SELECT seq, id, player, points FROM writes WHERE seq > ? ORDER BY seq LIMIT ?",
@@ -208,7 +243,14 @@ fn writes(room: &str, query: &str) -> Reply2 {
                     )
                 })
                 .collect();
-            json(200, format!("{{\"room\":{},\"writes\":[{}]}}", quote(room), items.join(",")))
+            json(
+                200,
+                format!(
+                    "{{\"room\":{},\"writes\":[{}]}}",
+                    quote(room),
+                    items.join(",")
+                ),
+            )
         }
         Err(e) => failure(e),
     }
@@ -217,9 +259,18 @@ fn writes(room: &str, query: &str) -> Reply2 {
 fn summary(room: &str) -> Reply2 {
     let cell = cell(room);
     let statements = [
-        Statement { sql: "SELECT COUNT(*), COALESCE(MAX(seq), 0) FROM writes".into(), params: vec![] },
-        Statement { sql: "SELECT COALESCE((SELECT value FROM meta WHERE key = 'ranked_through'), 0)".into(), params: vec![] },
-        Statement { sql: "SELECT rank, player, total FROM rankings ORDER BY rank, player LIMIT 100".into(), params: vec![] },
+        Statement {
+            sql: "SELECT COUNT(*), COALESCE(MAX(seq), 0) FROM writes".into(),
+            params: vec![],
+        },
+        Statement {
+            sql: "SELECT COALESCE((SELECT value FROM meta WHERE key = 'ranked_through'), 0)".into(),
+            params: vec![],
+        },
+        Statement {
+            sql: "SELECT rank, player, total FROM rankings ORDER BY rank, player LIMIT 100".into(),
+            params: vec![],
+        },
     ];
     match sql::batch(&cell, &statements) {
         Ok(sets) => {
@@ -242,7 +293,14 @@ fn rankings_json(rows: &sql::Rows) -> String {
     let items: Vec<String> = rows
         .rows
         .iter()
-        .map(|r| format!("{{\"rank\":{},\"player\":{},\"total\":{}}}", int(&r[0]), quote(&text(&r[1])), int(&r[2])))
+        .map(|r| {
+            format!(
+                "{{\"rank\":{},\"player\":{},\"total\":{}}}",
+                int(&r[0]),
+                quote(&text(&r[1])),
+                int(&r[2])
+            )
+        })
         .collect();
     format!("[{}]", items.join(","))
 }
@@ -268,7 +326,10 @@ impl Http for Handler {
 
         let headers = Fields::from_list(&[
             ("content-type".to_string(), b"application/json".to_vec()),
-            ("x-scoreboard-version".to_string(), VERSION.as_bytes().to_vec()),
+            (
+                "x-scoreboard-version".to_string(),
+                VERSION.as_bytes().to_vec(),
+            ),
         ])
         .unwrap();
         let response = OutgoingResponse::new(headers);
@@ -320,14 +381,21 @@ impl SocketHandler for Handler {
     }
 
     fn on_message(_socket: String, message: Incoming) -> Result<Reply, String> {
-        let say = |t: String| Ok(Reply { frames: vec![Frame::Text(t)], close: false });
+        let say = |t: String| {
+            Ok(Reply {
+                frames: vec![Frame::Text(t)],
+                close: false,
+            })
+        };
         match message {
             // `join ROOM`: attach, then the room's events arrive as cell messages.
             Incoming::Text(t) => match t.split_once(' ') {
-                Some(("join", room)) if valid_name(room) => match sockets::attach(NAMESPACE, room) {
-                    Ok(()) => say(format!("{{\"type\":\"joined\",\"room\":{}}}", quote(room))),
-                    Err(_) => Err("cannot attach".into()),
-                },
+                Some(("join", room)) if valid_name(room) => {
+                    match sockets::attach(NAMESPACE, room) {
+                        Ok(()) => say(format!("{{\"type\":\"joined\",\"room\":{}}}", quote(room))),
+                        Err(_) => Err("cannot attach".into()),
+                    }
+                }
                 _ => say("{\"error\":\"send: join ROOM\"}".into()),
             },
             Incoming::Cell(bytes) => say(String::from_utf8_lossy(&bytes).into_owned()),

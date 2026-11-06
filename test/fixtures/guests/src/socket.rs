@@ -16,7 +16,10 @@ pub fn handle(_: Request) -> Response {
 }
 
 fn say(text: String) -> Result<Reply, String> {
-    Ok(Reply { frames: vec![Frame::Text(text)], close: false })
+    Ok(Reply {
+        frames: vec![Frame::Text(text)],
+        close: false,
+    })
 }
 
 fn outcome(result: Result<(), sockets::Error>) -> String {
@@ -31,7 +34,11 @@ impl Guest for Handler {
     fn on_open(_socket: String, request: SocketRequest) -> Result<Upgrade, String> {
         if request.path.ends_with("/reject") {
             let body = b"no sockets for you".to_vec();
-            return Ok(Upgrade::Reject(Rejection { status: 403, headers: vec![], body }));
+            return Ok(Upgrade::Reject(Rejection {
+                status: 403,
+                headers: vec![],
+                body,
+            }));
         }
         Ok(Upgrade::Accept)
     }
@@ -40,7 +47,10 @@ impl Guest for Handler {
         match message {
             Incoming::Binary(mut data) => {
                 data.reverse();
-                Ok(Reply { frames: vec![Frame::Binary(data)], close: false })
+                Ok(Reply {
+                    frames: vec![Frame::Binary(data)],
+                    close: false,
+                })
             }
             Incoming::Cell(data) => say(format!("cell:{}", String::from_utf8_lossy(&data))),
             Incoming::Text(text) => match text.split_once(' ').unwrap_or((text.as_str(), "")) {
@@ -48,10 +58,17 @@ impl Guest for Handler {
                 ("join", room) => say(outcome(sockets::attach("rooms", room))),
                 ("say", rest) => {
                     let (room, body) = rest.split_once(' ').unwrap_or((rest, ""));
-                    say(outcome(sockets::send_to_cell("rooms", room, body.as_bytes())))
+                    say(outcome(sockets::send_to_cell(
+                        "rooms",
+                        room,
+                        body.as_bytes(),
+                    )))
                 }
                 ("id", _) => say(socket),
-                ("bye", _) => Ok(Reply { frames: vec![Frame::Text("bye".into())], close: true }),
+                ("bye", _) => Ok(Reply {
+                    frames: vec![Frame::Text("bye".into())],
+                    close: true,
+                }),
                 ("fail", _) => Err("boom".into()),
                 ("spin", _) => {
                     let mut x: u64 = 0;
@@ -65,7 +82,14 @@ impl Guest for Handler {
     }
 
     fn on_close(socket: String) {
-        let cell = Address { namespace: "rooms".into(), key: "log".into() };
-        let _ = sql::execute(&cell, "INSERT INTO log (socket) VALUES (?)", &[Value::Text(socket)]);
+        let cell = Address {
+            namespace: "rooms".into(),
+            key: "log".into(),
+        };
+        let _ = sql::execute(
+            &cell,
+            "INSERT INTO log (socket) VALUES (?)",
+            &[Value::Text(socket)],
+        );
     }
 }

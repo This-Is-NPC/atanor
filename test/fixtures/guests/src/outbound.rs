@@ -7,11 +7,19 @@ use crate::{Request, Response};
 pub fn handle(request: Request) -> Response {
     let url = request.header("x-url");
     let (scheme, rest) = url.split_once("://").unwrap_or(("http", url));
-    let (authority, path) = rest.split_once('/').map(|(a, p)| (a, format!("/{p}"))).unwrap_or((rest, "/".into()));
+    let (authority, path) = rest
+        .split_once('/')
+        .map(|(a, p)| (a, format!("/{p}")))
+        .unwrap_or((rest, "/".into()));
 
     let out = OutgoingRequest::new(Fields::new());
     out.set_method(&Method::Get).unwrap();
-    out.set_scheme(Some(&if scheme == "https" { Scheme::Https } else { Scheme::Http })).unwrap();
+    out.set_scheme(Some(&if scheme == "https" {
+        Scheme::Https
+    } else {
+        Scheme::Http
+    }))
+    .unwrap();
     out.set_authority(Some(authority)).unwrap();
     out.set_path_with_query(Some(&path)).unwrap();
 

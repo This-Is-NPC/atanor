@@ -17,7 +17,10 @@ pub fn handle(_: Request) -> Response {
 }
 
 fn say(text: String) -> Result<Reply, String> {
-    Ok(Reply { frames: vec![Frame::Text(text)], close: false })
+    Ok(Reply {
+        frames: vec![Frame::Text(text)],
+        close: false,
+    })
 }
 
 fn outcome(result: Result<(), sockets::Error>) -> String {
@@ -30,9 +33,14 @@ fn outcome(result: Result<(), sockets::Error>) -> String {
 
 impl socket_local::Guest for Handler {
     fn on_frame(socket: String, frame: Frame) -> Result<Verdict, String> {
-        let Frame::Text(text) = frame else { return Ok(Verdict::Pass) };
+        let Frame::Text(text) = frame else {
+            return Ok(Verdict::Pass);
+        };
         if text == "probe" {
-            let cell = Address { namespace: "rooms".into(), key: "probe".into() };
+            let cell = Address {
+                namespace: "rooms".into(),
+                key: "probe".into(),
+            };
             let write = match sql::execute(&cell, "INSERT INTO log (socket) VALUES ('x')", &[]) {
                 Ok(_) => "wrote".to_string(),
                 Err(sql::Error::NotGranted(what)) => format!("not granted: {what}"),
@@ -41,7 +49,10 @@ impl socket_local::Guest for Handler {
             let _ = sockets::publish("rooms", "probe", &Message::Text(write));
             return Ok(Verdict::Drop);
         }
-        match text.strip_prefix("cur ").and_then(|rest| rest.split_once(' ')) {
+        match text
+            .strip_prefix("cur ")
+            .and_then(|rest| rest.split_once(' '))
+        {
             Some((room, body)) => {
                 let _ = sockets::publish("rooms", room, &Message::Text(format!("{socket}:{body}")));
                 Ok(Verdict::Drop)
@@ -57,17 +68,29 @@ impl Guest for Handler {
     }
 
     fn on_message(_socket: String, message: Incoming) -> Result<Reply, String> {
-        let Incoming::Text(text) = message else { return say("?".into()) };
+        let Incoming::Text(text) = message else {
+            return say("?".into());
+        };
         let (word, rest) = text.split_once(' ').unwrap_or((text.as_str(), ""));
-        let (room, tail) = rest.split_once(' ').map_or((rest, None), |(r, t)| (r, Some(t)));
+        let (room, tail) = rest
+            .split_once(' ')
+            .map_or((rest, None), |(r, t)| (r, Some(t)));
         match word {
             "echo" => say(rest.to_string()),
             "join" => say(outcome(sockets::join_channel("rooms", room, tail))),
             "leave" => say(outcome(sockets::leave_channel("rooms", room))),
-            "pub" => say(outcome(sockets::publish("rooms", room, &Message::Text(tail.unwrap_or("").into())))),
+            "pub" => say(outcome(sockets::publish(
+                "rooms",
+                room,
+                &Message::Text(tail.unwrap_or("").into()),
+            ))),
             "big" => {
                 let n: usize = tail.and_then(|n| n.parse().ok()).unwrap_or(0);
-                say(outcome(sockets::publish("rooms", room, &Message::Binary(vec![0; n]))))
+                say(outcome(sockets::publish(
+                    "rooms",
+                    room,
+                    &Message::Binary(vec![0; n]),
+                )))
             }
             "members" => match sockets::channel_members("rooms", room) {
                 Ok(m) => say(format!("{}:{}", m.count, m.ids.join(","))),

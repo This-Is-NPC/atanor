@@ -9,14 +9,29 @@ use crate::bindings::exports::atanor::worker::{alarm_handler, socket_handler};
 use crate::{Handler, Request, Response};
 
 pub fn handle(request: Request) -> Response {
-    let cell = Address { namespace: "secret-ns".into(), key: "k".into() };
+    let cell = Address {
+        namespace: "secret-ns".into(),
+        key: "k".into(),
+    };
     let rows = sql::query(&cell, "SELECT 1", &[]).is_ok();
     let secret = secrets::get("API_TOKEN").is_ok();
-    let outgoing = call::Request { method: "GET".into(), path: "/".into(), query: String::new(), headers: vec![], body: vec![] };
+    let outgoing = call::Request {
+        method: "GET".into(),
+        path: "/".into(),
+        query: String::new(),
+        headers: vec![],
+        body: vec![],
+    };
     let called = call::call("other", &outgoing).is_ok();
     let alarm = alarms::set_alarm("secret-ns", "k", 0, &[]).is_ok();
     let socket = sockets::send_to_cell("secret-ns", "k", &[]).is_ok();
-    Response::text(200, format!("{} sql={rows} secret={secret} call={called} alarm={alarm} socket={socket}", request.path))
+    Response::text(
+        200,
+        format!(
+            "{} sql={rows} secret={secret} call={called} alarm={alarm} socket={socket}",
+            request.path
+        ),
+    )
 }
 
 impl alarm_handler::Guest for Handler {
@@ -26,12 +41,21 @@ impl alarm_handler::Guest for Handler {
 }
 
 impl socket_handler::Guest for Handler {
-    fn on_open(_socket: String, _request: socket_handler::Request) -> Result<socket_handler::Upgrade, String> {
+    fn on_open(
+        _socket: String,
+        _request: socket_handler::Request,
+    ) -> Result<socket_handler::Upgrade, String> {
         Ok(socket_handler::Upgrade::Accept)
     }
 
-    fn on_message(_socket: String, _message: socket_handler::Incoming) -> Result<socket_handler::Reply, String> {
-        Ok(socket_handler::Reply { frames: vec![], close: false })
+    fn on_message(
+        _socket: String,
+        _message: socket_handler::Incoming,
+    ) -> Result<socket_handler::Reply, String> {
+        Ok(socket_handler::Reply {
+            frames: vec![],
+            close: false,
+        })
     }
 
     fn on_close(_socket: String) {}

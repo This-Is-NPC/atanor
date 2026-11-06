@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use rustler::{Atom, Binary, Encoder, Env, LocalPid, NifResult, ResourceArc, Term};
 
-use component::{Compiled, Grants, Prepared, PrepareError, Source};
+use component::{Compiled, Grants, PrepareError, Prepared, Source};
 use guest::{Call, Job, Limits};
 use wire::Wire;
 
@@ -44,7 +44,10 @@ fn compile(
     key: Option<String>,
 ) -> Result<(ResourceArc<Compiled>, Atom), String> {
     let runtime = engine::runtime().ok_or("not configured")?;
-    let cache = dir.as_deref().zip(key.as_deref()).map(|(d, k)| (Path::new(d), k));
+    let cache = dir
+        .as_deref()
+        .zip(key.as_deref())
+        .map(|(d, k)| (Path::new(d), k));
     let (compiled, source) = component::compile(&runtime.engine, bytes.as_slice(), cache)?;
     let source = match source {
         Source::Compiled => atoms::compiled(),
@@ -59,25 +62,44 @@ fn prepare(
     component: ResourceArc<Compiled>,
     grants: Grants,
 ) -> Result<(ResourceArc<Prepared>, bool, bool), (Atom, String)> {
-    component::prepare(&component, grants).map(|p| {
-        let (sockets, local) = (p.socket.is_some(), p.local.is_some());
-        (ResourceArc::new(p), sockets, local)
-    }).map_err(|e| match e {
-        PrepareError::NotGranted(name) => (atoms::not_granted(), name),
-        PrepareError::Unsupported(name) => (atoms::unsupported_import(), name),
-        PrepareError::MissingExport(name) => (atoms::missing_export(), name),
-        PrepareError::Other(message) => (atoms::prepare_failed(), message),
-    })
+    component::prepare(&component, grants)
+        .map(|p| {
+            let (sockets, local) = (p.socket.is_some(), p.local.is_some());
+            (ResourceArc::new(p), sockets, local)
+        })
+        .map_err(|e| match e {
+            PrepareError::NotGranted(name) => (atoms::not_granted(), name),
+            PrepareError::Unsupported(name) => (atoms::unsupported_import(), name),
+            PrepareError::MissingExport(name) => (atoms::missing_export(), name),
+            PrepareError::Other(message) => (atoms::prepare_failed(), message),
+        })
 }
 
 /// Queues a call (see `guest::Call::parse` for its shape). The result arrives
 /// at `pid` as `{:atanor_wasm, tag, :done, result, stderr, timing}`; host
 /// calls as `{:atanor_wasm, tag, :host, id, op, args}`.
 #[rustler::nif]
-fn invoke(prepared: ResourceArc<Prepared>, call: Wire, limits: Limits, pid: LocalPid, tag: u64) -> NifResult<Atom> {
+fn invoke(
+    prepared: ResourceArc<Prepared>,
+    call: Wire,
+    limits: Limits,
+    pid: LocalPid,
+    tag: u64,
+) -> NifResult<Atom> {
     let call = Call::parse(call).ok_or(rustler::Error::BadArg)?;
-    let job = Job { pre: prepared, call, limits, pid, tag, queued_at: Instant::now() };
-    Ok(if engine::submit(job).is_ok() { atoms::ok() } else { atoms::overloaded() })
+    let job = Job {
+        pre: prepared,
+        call,
+        limits,
+        pid,
+        tag,
+        queued_at: Instant::now(),
+    };
+    Ok(if engine::submit(job).is_ok() {
+        atoms::ok()
+    } else {
+        atoms::overloaded()
+    })
 }
 
 #[rustler::nif]

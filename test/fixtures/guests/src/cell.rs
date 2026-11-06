@@ -8,7 +8,10 @@ use crate::bindings::atanor::cell::sql::{self, Address, Error, Rows, Statement, 
 use crate::{Request, Response};
 
 pub fn handle(request: Request) -> Response {
-    let cell = Address { namespace: request.header("x-ns").to_string(), key: request.header("x-key").to_string() };
+    let cell = Address {
+        namespace: request.header("x-ns").to_string(),
+        key: request.header("x-key").to_string(),
+    };
     let params: Vec<Value> = match request.header("x-params") {
         "" => vec![],
         p => p.split(',').map(|s| Value::Text(s.to_string())).collect(),
@@ -23,11 +26,18 @@ pub fn handle(request: Request) -> Response {
         }
         "execute" => sql::execute(&cell, &body, &params).map(|r| show_rows(&r)),
         "batch" => {
-            let statements: Vec<Statement> =
-                body.lines().map(|l| Statement { sql: l.to_string(), params: vec![] }).collect();
-            sql::batch(&cell, &statements).map(|rs| rs.iter().map(show_rows).collect::<Vec<_>>().join(";"))
+            let statements: Vec<Statement> = body
+                .lines()
+                .map(|l| Statement {
+                    sql: l.to_string(),
+                    params: vec![],
+                })
+                .collect();
+            sql::batch(&cell, &statements)
+                .map(|rs| rs.iter().map(show_rows).collect::<Vec<_>>().join(";"))
         }
-        "partition" => sql::partition(&cell, request.header("x-partition")).map(|a| format!("{}.{}", a.namespace, a.key)),
+        "partition" => sql::partition(&cell, request.header("x-partition"))
+            .map(|a| format!("{}.{}", a.namespace, a.key)),
         op => return Response::text(400, format!("unknown op {op}")),
     };
     match result {
