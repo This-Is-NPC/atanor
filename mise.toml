@@ -216,6 +216,10 @@ run = "scripts/scoreboard-check"
 description = "Run one fault scenario under load and print acknowledged/refused/unknown requests, LOST and DUPLICATED writes, recovery time and latency (kill|pause|partition|store-restart|rollout-deploy|rollout-restart; see docs/how-to-run-a-cluster-in-containers.md)"
 run = "scripts/cluster-chaos-run"
 
+[tasks."cluster:swap-run"]
+description = "Replace the one node of the cluster by another under load and print acknowledged/refused/unknown requests, LOST and DUPLICATED writes, error counts, swap duration and latency (--trigger sigterm|api, --rate, --workers, --warmup, --overlap, --settle; start with ATANOR_CLUSTER_NODES=1 ATANOR_CLUSTER_PEERS= mise run cluster:up; see docs/how-to-replace-a-node.md)"
+run = "scripts/cluster-swap-run"
+
 [tasks."cluster:roll"]
 description = "Roll the cluster's nodes onto a rebuilt image one at a time: build|roll (used by cluster:chaos-run rollout-restart)"
 run = "scripts/cluster-roll"

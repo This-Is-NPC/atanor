@@ -39,18 +39,18 @@ REFUSED_ERRORS = ("unavailable", "overloaded")
 
 
 def call(url, method="GET", timeout=10):
-    """(status, body, version, server); status 0 is no answer, body then names the failure. `version` is
-    the scoreboard deployment that answered (header x-scoreboard-version), `server` the balancer's
-    slot that sent it (x-atanor-server)."""
+    """(status, body, version, server, retry_after); status 0 is no answer, body then names the failure.
+    `version` is the scoreboard deployment that answered (header x-scoreboard-version), `server` the
+    balancer's slot that sent it (x-atanor-server), `retry_after` the Retry-After header."""
     parts = urllib.parse.urlsplit(url)
     connection = http.client.HTTPConnection(parts.hostname, parts.port, timeout=timeout)
     try:
         connection.request(method, parts.path + ("?" + parts.query if parts.query else ""), headers={"host": HOST})
         response = connection.getresponse()
         return (response.status, response.read().decode(errors="replace"), response.getheader("x-scoreboard-version", ""),
-                response.getheader("x-atanor-server", ""))
+                response.getheader("x-atanor-server", ""), response.getheader("retry-after", ""))
     except Exception as error:  # refused, reset, timeout
-        return 0, f"{type(error).__name__}: {error}", "", ""
+        return 0, f"{type(error).__name__}: {error}", "", "", ""
     finally:
         connection.close()
 
@@ -107,11 +107,11 @@ def write(args):
             room, score_id = rooms[i % len(rooms)], f"{run}-{i}"
             query = f"id={score_id}&player={PLAYERS[i % len(PLAYERS)]}&points={i % 7 + 1}" + ("&once=1" if args.once else "")
             started = time.time()
-            status, body, version, server = call(f"{args.url}/rooms/{room}/scores?{query}", "POST", args.timeout)
+            status, body, version, server, retry_after = call(f"{args.url}/rooms/{room}/scores?{query}", "POST", args.timeout)
             group, reason = classify(status, body)
             entry = {"id": score_id, "room": room, "t": round(started, 3), "ms": round((time.time() - started) * 1000),
                      "status": status, "kind": group, "reason": reason, "version": version,
-                     "server": server, **({} if group == "acked" else {"body": body[:200]})}
+                     "server": server, **({} if group == "acked" else {"body": body[:200], "retry_after": retry_after})}
             with lock:
                 log.write(json.dumps(entry) + "\n")
                 sent["n"] += 1
@@ -130,7 +130,7 @@ def stored(url, room):
     """Every stored write of a room, in seq order; retries while the cell is unavailable."""
     seen, after, deadline = [], 0, time.time() + 120
     while True:
-        status, body, _, _ = call(f"{url}/rooms/{room}/writes?after={after}&limit=1000", timeout=30)
+        status, body, _, _, _ = call(f"{url}/rooms/{room}/writes?after={after}&limit=1000", timeout=30)
         if status != 200:
             if time.time() < deadline:
                 time.sleep(1)
@@ -234,7 +234,7 @@ def verify(args):
         inside = [e for e in entries if start <= end(e) < stop]
         ms = [e["ms"] for e in inside if e["kind"] == "acked"]
         result["phases"][name] = {"requests": len(inside), "acked": len(ms), "seconds": round(stop - start, 1),
-                                  "p50": percentile(ms, 50), "p99": percentile(ms, 99)}
+                                  "p50": percentile(ms, 50), "p99": percentile(ms, 99), "max": max(ms, default=None)}
     if args.restore_rooms:
         result["restore"] = restore(entries, set(args.restore_rooms.split(",")), args.fault_at, args.restore_until, args.slow_ms)
     if args.ws_log:
