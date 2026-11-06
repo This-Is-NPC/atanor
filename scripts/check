@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# The local gate: what a change must pass before it is pushed. Warnings are
+# errors, the formatting is clean, the docs links resolve and the quick suite
+# passes. Safe to rerun.
+#   ATANOR_CHECK_CLUSTER=1   also run the cluster tests (mise run test:cluster)
+#   ATANOR_CHECK_COVERAGE=1  also run the coverage gate (mise run test:coverage, about 30 minutes)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+step() { printf '\n== %s\n' "$*"; }
+
+# --force: an up-to-date build prints no warnings, so it would always pass.
+step "compile (test) with warnings as errors"
+MIX_ENV=test mise exec -- mix compile --force --warnings-as-errors
+step "compile (dev) with warnings as errors"
+MIX_ENV=dev mise exec -- mix compile --force --warnings-as-errors
+step "formatting"
+scripts/format-check
+step "docs links"
+scripts/link-check
+step "quick suite"
+mise run test
+if [[ ${ATANOR_CHECK_CLUSTER:-0} == 1 ]]; then
+  step "cluster suite"
+  mise run test:cluster
+fi
+if [[ ${ATANOR_CHECK_COVERAGE:-0} == 1 ]]; then
+  step "coverage"
+  mise run test:coverage
+fi
+printf '\ncheck: passed\n'

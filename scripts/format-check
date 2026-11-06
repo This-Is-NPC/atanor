@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Check formatting: mix format for the Elixir sources and cargo fmt for each
+# Rust crate of the repository. Changes nothing. Shared by `mise run check`
+# and the pre-commit hook.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+mise exec -- mix format --check-formatted
+for crate in native/atanor_wasm test/fixtures/guests examples/hello-wasm/guest examples/scoreboard/guest; do
+  (cd "$crate" && mise exec -- cargo fmt --check)
+done

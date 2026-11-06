@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Check relative links and anchors in the tracked Markdown files.
+
+Usage: link-check [repo-root]. Prints each broken link and exits 1 if any.
+Tracked files only, so deps/, _build/, target/ and the like are never read.
+"""
+
+import os
+import re
+import sys
+import subprocess
+import urllib.parse
+
+
+def get_tracked_md_files(repo_root):
+    result = subprocess.run(
+        ["git", "ls-files", "*.md"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+    return result.stdout.strip().split("\n") if result.stdout.strip() else []
+
+
+def github_slug(text):
+    # GitHub slugs the heading's rendered text, so a link or image inside a
+    # heading contributes only its visible label, never its target.
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = text.lower()
+    text = re.sub(r"[^\w\s\-]", "", text)
+    text = re.sub(r"\s+", "-", text).strip("-")
+    return text
+
+
+def extract_target(raw):
+    # CommonMark allows a target wrapped in angle brackets to hold spaces or
+    # parentheses; take everything up to the closing bracket instead of
+    # splitting on whitespace.
+    raw = raw.strip()
+    if raw.startswith("<"):
+        end = raw.find(">")
+        if end != -1:
+            return raw[1:end]
+    return raw.split()[0]
+
+
+def get_headings_in_file(filepath):
+    heading_list = []
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception:
+        return heading_list
+
+    in_code_fence = False
+    for line in content.split("\n"):
+        if line.startswith("```"):
+            in_code_fence = not in_code_fence
+            continue
+
+        if in_code_fence:
+            continue
+
+        match = re.match(r"^(#+)\s+(.+)$", line)
+        if match:
+            text = match.group(2)
+            slug = github_slug(text)
+            heading_list.append(slug)
+
+    return heading_list
+
+
+def parse_links(content):
+    reference_defs = {}
+    in_code_fence = False
+
+    for line in content.split("\n"):
+        if line.startswith("```"):
+            in_code_fence = not in_code_fence
+            continue
+
+        if in_code_fence:
+            continue
+
+        for match in re.finditer(r"\[([^\]]+)\]:\s*(\S.*)$", line):
+            ref_label = match.group(1)
+            target = extract_target(match.group(2))
+            reference_defs[ref_label] = target
+
+    links = []
+    in_code_fence = False
+
+    for line_num, line in enumerate(content.split("\n"), 1):
+        if line.startswith("```"):
+            in_code_fence = not in_code_fence
+            continue
+
+        if in_code_fence:
+            continue
+
+        skip_ranges = []
+        for match in re.finditer(r"`[^`]*`", line):
+            skip_ranges.append((match.start(), match.end()))
+
+        def is_in_code(pos):
+            for start, end in skip_ranges:
+                if start <= pos < end:
+                    return True
+            return False
+
+        for match in re.finditer(r"!\[([^\]]*)\]\(([^)]+)\)", line):
+            if is_in_code(match.start()):
+                continue
+            target = extract_target(match.group(2))
+            links.append((line_num, "image", target))
+
+        for match in re.finditer(r"(?<![!])\[([^\]]+)\]\(([^)]+)\)", line):
+            if is_in_code(match.start()):
+                continue
+            target = extract_target(match.group(2))
+            links.append((line_num, "link", target))
+
+        for match in re.finditer(r"\[([^\]]+)\]\[([^\]]*)\]", line):
+            if is_in_code(match.start()):
+                continue
+            ref_label = match.group(2) or match.group(1)
+            if ref_label in reference_defs:
+                target = reference_defs[ref_label]
+                links.append((line_num, "link", target))
+
+    return links
+
+
+def resolve_link(link_path, from_dir, repo_root):
+    if "://" in link_path or link_path.startswith("mailto:"):
+        return None
+
+    anchor = None
+    if "#" in link_path:
+        link_path, anchor = link_path.split("#", 1)
+
+    if not link_path:
+        return ("same_file", anchor)
+
+    link_path = urllib.parse.unquote(link_path)
+    target_path = os.path.join(from_dir, link_path)
+    target_path = os.path.normpath(target_path)
+
+    if not target_path.startswith(repo_root):
+        return None
+
+    if not os.path.exists(target_path):
+        return None
+
+    return (target_path, anchor)
+
+
+def build_valid_anchors(heading_list):
+    anchors = set()
+    slug_counts = {}
+    for heading_slug in heading_list:
+        if heading_slug not in slug_counts:
+            slug_counts[heading_slug] = 0
+            anchors.add(heading_slug)
+        else:
+            anchors.add(f"{heading_slug}-{slug_counts[heading_slug]}")
+        slug_counts[heading_slug] += 1
+    return anchors
+
+
+def check_links(repo_root):
+    issues = []
+    md_files = get_tracked_md_files(repo_root)
+
+    for md_file in md_files:
+        filepath = os.path.join(repo_root, md_file)
+        from_dir = os.path.dirname(filepath)
+
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception:
+            continue
+
+        links = parse_links(content)
+
+        for line_num, link_type, target in links:
+            resolution = resolve_link(target, from_dir, repo_root)
+
+            if resolution is None:
+                if not ("://" in target or target.startswith("mailto:")):
+                    issues.append(f"{md_file}:{line_num}: {link_type} target not found: {target}")
+                continue
+
+            target_path, anchor = resolution
+
+            if anchor:
+                if target_path == "same_file":
+                    check_path = filepath
+                else:
+                    check_path = target_path
+
+                heading_list = get_headings_in_file(check_path)
+                valid_anchors = build_valid_anchors(heading_list)
+                anchor_slug = github_slug(anchor)
+
+                if anchor_slug not in valid_anchors:
+                    issues.append(
+                        f"{md_file}:{line_num}: anchor not found: #{anchor}"
+                    )
+
+    return issues
+
+
+if __name__ == "__main__":
+    repo_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
+    repo_root = os.path.abspath(repo_root)
+
+    git_path = os.path.join(repo_root, ".git")
+    if not (os.path.isdir(git_path) or os.path.isfile(git_path)):
+        sys.exit(1)
+
+    issues = check_links(repo_root)
+
+    if issues:
+        for issue in issues:
+            print(issue)
+        sys.exit(1)
+
+    sys.exit(0)

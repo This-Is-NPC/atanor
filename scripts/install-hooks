@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Install the versioned git hooks of .githooks/ by setting core.hooksPath.
+# Safe to rerun.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+hooks_path=.githooks
+for hook in pre-commit pre-push; do
+  [[ -f $hooks_path/$hook ]] || { echo "Missing hook: $hooks_path/$hook" >&2; exit 1; }
+  chmod +x "$hooks_path/$hook"
+done
+git config core.hooksPath "$hooks_path"
+
+echo "Hooks installed: core.hooksPath=$hooks_path"
+echo "  pre-commit runs scripts/format-check and refuses an unformatted commit."
+echo "  pre-push runs scripts/local-check: a red gate refuses the push, a green one posts local-check."

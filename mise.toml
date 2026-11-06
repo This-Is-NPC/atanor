@@ -102,6 +102,26 @@ run = "scripts/bench-job-trips"
 description = "Compare requests forwarded to the owner of a cell with local ones on three peer nodes (argument: seconds per case; needs epmd)"
 run = "scripts/bench-cluster"
 
+[tasks.check]
+description = "Run the local gate: warnings as errors, formatting, docs links and the quick suite (env: ATANOR_CHECK_CLUSTER=1, ATANOR_CHECK_COVERAGE=1 add the cluster and coverage runs)"
+run = "scripts/check"
+
+[tasks."check:format"]
+description = "Check the formatting of the Elixir sources and of each Rust crate without changing files"
+run = "scripts/format-check"
+
+[tasks."check:links"]
+description = "Check the relative links and anchors of the tracked Markdown files"
+run = "scripts/link-check"
+
+[tasks."local-check"]
+description = "Run the gate on HEAD and post the local-check status master requires (options: --post-only --state=success --sha=SHA, --dry-run)"
+run = "scripts/local-check"
+
+[tasks."hooks:install"]
+description = "Install the git hooks of .githooks: pre-commit checks formatting, pre-push runs local-check"
+run = "scripts/install-hooks"
+
 [tasks."check:no-phoenix"]
 description = "Compile and run Atanor in examples/hello-native, which does not depend on Phoenix or Ranch"
 run = "scripts/check-no-phoenix"
