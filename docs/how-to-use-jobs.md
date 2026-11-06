@@ -169,6 +169,11 @@ in step 6.
   jobs/s in the bench), though the jobs complete about 3 times sooner overall
   ([design §12.9](design.md#129-jobs-and-bulk-operations)). Set it to `false`
   to favour enqueue speed.
+- **A node was replaced (drained) and its job waited a minute.** A draining node releases the claims of the
+  jobs it did not finish when `jobs.release_claims` is true (default), so the node that takes the cell runs
+  them within one `alarms.tick_ms`. A job still running when the drain ends (`stop.jobs_ms`) is not
+  released: its claim expires at `jobs.claim_ms`. Give each node its own name
+  ([design §15.12](design.md#1512-the-claims-of-a-node-that-hands-its-cells-back)).
 - **A node died and its job did not run again for minutes.** The jobs a node
   had claimed run again on the node that takes the cell over, once the old lease has ended
   (`jobs.release_claims`, default true), when the cell is used: a request, an

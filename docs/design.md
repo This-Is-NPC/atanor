@@ -1284,8 +1284,13 @@ are the members of the `:pg` group `{Atanor.Alarms, prefix}`, and a shard
 belongs to the member with the highest `phash2({shard, member})` (rendezvous
 hashing), so one node owns all and a node that leaves moves only its shards. Views
 of the group can differ for a moment, so ownership is an optimization and the
-claim below is the safeguard. Entries of a worker with no active deployment on
-the node are left in place and wait.
+claim below is the safeguard. Two nodes that share a store and are not clustered (a node replacing
+another, §8.11) each think they own every shard, and both scan. That is safe without a cluster: the claim is a
+conditional `UPDATE ... WHERE at_ms = <the entry's time>` inside a cell transaction, which runs on the node that
+holds the cell's lease. A node that does not hold the lease cannot run it (`held_elsewhere`, §8.4), so it fires
+nothing and leaves the entry for its next scan; the node that holds it wins the claim once, and the entry is
+deleted. When the first node hands the cell back, the second claims the entry at its next tick. Entries of a
+worker with no active deployment on the node are left in place and wait.
 
 **WASM workers.** The guest sets and cancels its alarm with
 `atanor:cell/alarms` (`set-alarm(namespace, key, at-ms, payload)`,
@@ -2094,7 +2099,9 @@ The sequence of `Atanor.drain/2`:
    the cells the node still holds. The alarm scheduler leaves its `:pg` group at its next tick, so no alarm
    fires here and the other nodes take the shards.
 2. **The jobs finish.** The job runner stops claiming and waits up to `stop.jobs_ms` for the running attempts
-   (§15.3), so no job runs on a cell that is handed off.
+   (§15.3), so no job runs on a cell that is handed off. Then, while the node still owns its cells, it
+   releases the claims of the jobs that did not finish, so the node that takes a cell runs them at once
+   (§15.12).
 3. **`Alambique.drain/2`**: the node leaves the membership, refuses to wake cells (`{:error, :draining}`, a
    503 `draining` to the client, §8.4) and hibernates every awake cell: it uploads what is pending, publishes
    the feed and releases the lease (`released: true`), so another node takes the cell at once, without
@@ -4286,7 +4293,7 @@ is released: the claim expires.
 
 | Option (`jobs:`) | Default | Meaning |
 | --- | --- | --- |
-| `release_claims` | true | release the claims of a node whose cell this node took over |
+| `release_claims` | true | release the claims of a node whose cell this node took over (§15.11), and this node's own claims when it drains (§15.12) |
 
 The fence that stops an attempt is configured in `routing:` (§8.13: `fence`, `fence_check_ms`).
 
@@ -4297,6 +4304,49 @@ named node's claims, only at the epoch, nothing to release) and
 sequences of kills, restarts, freezes and cuts: a job starts again on another
 attempt only after a release of the previous owner's claim, or a claim that
 expired, and the old attempt stops within the bound).
+
+### 15.12 The claims of a node that hands its cells back
+
+A node that drains (§8.11) leaves jobs behind that it did not finish: claims it wrote and no longer serves.
+Left alone they would wait for `claim_ms` (60 s) although the node that takes the cell is ready at once.
+With `jobs.release_claims` (default true), the drain releases them. The evidence is the node's own state, not
+a detector: the drain closed the runner (`Slots.close/1`), so the node claims nothing more, and it still
+owns the cells because the hibernation that hands them back has not started.
+
+**What happens.** In `Atanor.Drain`, after the jobs wait (`stop.jobs_ms`) and before `Alambique.drain/2`,
+`Atanor.Jobs.Drain.release/1` lists the cells that have a process on the node (`Alambique.cells/2`) and, for
+each (up to `stop.drain_concurrency` at a time), calls `Atanor.Jobs.release_own/2`. It is the transaction of
+§15.11 with the node itself as `claimed_by`: the `running` jobs with a live claim of this node get
+`claimed_until_ms` set to now, and the `@jobs` wake-up is re-armed to now. No scan starts here. The event
+`[:atanor, :job, :released]` records the count (`epoch` is `nil`).
+
+**Why it is safe.**
+
+* *Only when no job runs here.* `release/1` releases nothing while `Jobs.stats/1` shows a running attempt
+  (the wait ended at `stop.jobs_ms` with a job still going). That attempt is not over, and releasing its claim
+  would let the next node run the job beside it. The drain logs a warning, and those claims expire at
+  `claim_ms` as after a crash. With no attempt running, every live claim of this node in a cell it owns
+  belongs to no task: it is an orphan (a start that failed, a result write whose answer was lost).
+* *A job that finished stays finished.* Only `running` rows are touched; `done`, `dead` and `pending` rows
+  are not. A finishing job writes its result with a conditional update on its claim, so a release cannot
+  undo it, and a job that ends after the drain closed the runner claims no next job (the chaining
+  decision is taken when the job ends, not when it starts).
+* *Fencing.* The release runs in the owner's cell transaction, before the lease is released. After the
+  handback the next node takes the lease at a higher epoch, claims the job (the claim counts a new attempt)
+  and runs it. The job keeps its id and idempotency key, so the at-least-once rule of §15.4 stands: an
+  effect outside the cell needs the id or `idempotency_key` at the receiver. There is no takeover, so there
+  is no fence deferral (§8.13): the new owner starts the job as soon as it wakes the cell.
+* *Distinct node names.* `claimed_by` is the Erlang node name. Two nodes that share a name
+  (`nonode@nohost`) cannot tell their claims apart; name each node.
+
+**When the new node starts them.** Nothing needs to wake the cell: the `@jobs` row has a store index entry,
+and every scheduler scans the index (§7.4). The new node's next tick (`alarms.tick_ms`, 1 s) finds the entry
+that is due, takes the cell (the lease is free) and claims the jobs. Before the handback the same scan finds
+the cell held by the other node and leaves the entry. A job that is pending and due starts the same way.
+
+Tests: `test/atanor/jobs_handback_test.exs` (a claim released at the drain, a running job left to finish, a
+finished job not repeated, a pending job started promptly by the node that takes the cell) and
+`test/atanor/alarms_handback_test.exs` (an alarm due while two nodes scan fires once).
 
 ## 16. The change feed for workers
 
