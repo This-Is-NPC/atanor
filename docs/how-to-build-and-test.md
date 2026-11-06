@@ -88,6 +88,50 @@ temporary data directory and an ephemeral port; `stop/1` removes it.
 (kills, partitions of the store and of the distribution, clock skew); the tests
 that use it are tagged `cluster` and run with `mise run test:cluster`.
 
+## Run the gate before you push
+
+`master` requires the commit status `local-check`. Nothing on GitHub runs the
+gate; your machine does, and posts the status.
+
+```sh
+mise run hooks:install   # sets core.hooksPath to .githooks (once per clone)
+mise run check           # the gate
+```
+
+`mise run check` runs, in order: `mix compile --warnings-as-errors` in the
+test and dev environments (forced, so old warnings show), `mix format
+--check-formatted` and `cargo fmt --check` for each Rust crate
+(`mise run check:format`), the link and anchor check of the tracked Markdown
+files (`mise run check:links`), and the quick suite (`mise run test`). It
+stops at the first failure. Two optional stages are off by default:
+
+- `ATANOR_CHECK_CLUSTER=1` adds `mise run test:cluster`.
+- `ATANOR_CHECK_COVERAGE=1` adds `mise run test:coverage` (about 30 minutes).
+
+The hooks:
+
+- `pre-commit` runs only `mise run check:format`.
+- `pre-push` runs the gate on each pushed commit. A red gate refuses the
+  push. A green one posts `local-check` as `success` once GitHub has the commit.
+  Tag pushes and deletions pass.
+
+The status is posted with `gh`, so it needs `gh auth login`. Without it the
+gate still runs and the push goes through, but `master` will refuse the merge.
+The gate vouches only for a clean checkout of the pushed commit.
+
+The pull request that release-please opens is pushed by a bot. Check out its
+branch, run `mise run check`, then post the status for that commit:
+
+```sh
+scripts/local-check --post-only --state=success --sha=<commit of the PR head>
+```
+
+`--dry-run` prints the API calls instead of sending them. To skip on purpose
+set `ATANOR_SKIP_LOCAL_CHECK=1` (for example `ATANOR_SKIP_LOCAL_CHECK=1 git
+push`); no status is posted, so `master` still refuses the merge until an
+administrator bypasses the rule or you post one. `git commit --no-verify` and
+`git push --no-verify` skip the hooks.
+
 ## Releases
 
 Releases are cut by [release-please](https://github.com/googleapis/release-please)

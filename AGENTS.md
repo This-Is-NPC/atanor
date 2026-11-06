@@ -44,6 +44,9 @@ request.
 - Review experiments and design alternatives with the smallest working
   demonstration that makes them assessable. Apply production verification
   when integrating the chosen behavior.
+- `mise run check` is the local gate (warnings as errors, formatting, docs
+  links, quick suite); `master` requires the `local-check` status it posts
+  on push (`docs/how-to-build-and-test.md`).
 - `mise run test:coverage` measures line coverage of `lib/` and the Rust crate
   and fails below 90% per language; use it when a change adds or removes
   production code or tests (about 30 minutes; stages in `scripts/test-coverage`).
