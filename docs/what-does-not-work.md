@@ -39,18 +39,3 @@ bursts of one worker; a smaller `max_calls` refuses more and was not faster.
 12,888 is noise). The thread count explained part of it and is fixed; the
 suspect for the rest is the 60 instance slots of the pooling allocator
 against 12. `mise run bench:wasm` reproduces it.
-
-## A late feed batch can be read behind a later one
-
-**What happens.** Alambique orders the first occurrence of each idempotency key
-of a cell by commit order. After a late publication, a batch that was stamped
-before it but arrives after it can get a key that sorts before the late one.
-Observed with `window_ms: 1`, where every batch is late: in 3 of 10 runs of 40
-cells with 16 inserts each, a cell read TXIDs 3, 5, 6, 7, 4, 8.
-
-**Workaround.** A consumer that needs the commit order sorts the changes of a
-cell by `txid` ([how-to-follow-cell-changes.md](how-to-follow-cell-changes.md)).
-The feed tests of Atanor keep their window above the publication time.
-
-**Evidence.** `test/atanor/feed_test.exs`. Not fixed in Atanor: the key time is
-chosen by Alambique's feed sender.
