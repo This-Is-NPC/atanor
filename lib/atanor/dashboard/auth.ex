@@ -21,11 +21,11 @@ if Code.ensure_loaded?(Phoenix.LiveDashboard) do
         authorized?(get_session(conn)) ->
           conn
 
-        conn.method == "GET" and token?(conn.query_params["token"]) ->
-          sign_in(conn)
+        conn.method == "GET" and is_binary(conn.query_params["token"]) ->
+          attempt(conn)
 
         true ->
-          conn |> put_resp_content_type("text/plain") |> send_resp(401, "Open the URL with ?token=<token>.\n") |> halt()
+          unauthorized(conn)
       end
     end
 
@@ -36,10 +36,36 @@ if Code.ensure_loaded?(Phoenix.LiveDashboard) do
       if authorized?(session), do: {:cont, socket}, else: {:halt, Phoenix.LiveView.redirect(socket, to: "/")}
     end
 
-    defp token?(given) when is_binary(given),
-      do: Plug.Crypto.secure_compare(given, Atanor.Dashboard.Endpoint.config(:atanor_token))
+    # Failed tokens are limited per client address, like the admin listener's.
+    defp attempt(conn) do
+      name = Atanor.Dashboard.Endpoint.config(:atanor_instance)
+      limits = Atanor.Registry.config(name).dashboard
 
-    defp token?(_), do: false
+      result =
+        Atanor.Admin.Throttle.run(name, :dashboard, conn.remote_ip, limits, fn ->
+          if Plug.Crypto.secure_compare(conn.query_params["token"], limits.token),
+            do: {:ok, :signed_in},
+            else: {:error, :unauthorized}
+        end)
+
+      case result do
+        {:ok, _} ->
+          sign_in(conn)
+
+        {:error, {:throttled, seconds}} ->
+          conn
+          |> put_resp_header("retry-after", Integer.to_string(seconds))
+          |> put_resp_content_type("text/plain")
+          |> send_resp(429, "Too many failed attempts. Try again later.\n")
+          |> halt()
+
+        {:error, :unauthorized} ->
+          unauthorized(conn)
+      end
+    end
+
+    defp unauthorized(conn),
+      do: conn |> put_resp_content_type("text/plain") |> send_resp(401, "Open the URL with ?token=<token>.\n") |> halt()
 
     # Sends the browser back to the same page without the token in its URL.
     defp sign_in(conn) do
