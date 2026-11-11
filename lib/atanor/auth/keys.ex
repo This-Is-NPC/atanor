@@ -11,6 +11,10 @@ defmodule Atanor.Auth.Keys do
   `jwks_max_age_ms` are refreshed by the next request; when the refresh fails
   the old keys keep serving, for at most `jwks_max_stale_ms` more.
 
+  `flush/1` drops every cached key and discovery document of this node, so a
+  key that a provider withdrew stops verifying at once and the next request
+  fetches again, without waiting for `min_refresh_ms` or `error_backoff_ms`.
+
   A response is read while it arrives, so one over `max_response_bytes` ends the
   fetch without being buffered (`Atanor.Egress.send_request/3`).
   """
@@ -48,6 +52,17 @@ defmodule Atanor.Auth.Keys do
     end
   end
 
+  @doc """
+  Drops everything cached for every issuer on this node and answers how many
+  issuers were held. `0` when the instance has no OIDC rule, so no process.
+  """
+  @spec flush(atom) :: non_neg_integer
+  def flush(name) do
+    GenServer.call(server(name), :flush)
+  catch
+    :exit, _ -> 0
+  end
+
   defp known?(keys, nil), do: keys != []
   defp known?(keys, kid), do: Enum.any?(keys, &(&1["kid"] == kid))
 
@@ -68,6 +83,11 @@ defmodule Atanor.Auth.Keys do
   end
 
   @impl true
+  def handle_call(:flush, _from, state) do
+    for issuer <- Map.keys(state.issuers), do: :ets.delete(server(state.name), issuer)
+    {:reply, map_size(state.issuers), %{state | issuers: %{}}}
+  end
+
   def handle_call({:keys, issuer, kid}, _from, state) do
     now = state.clock.()
     entry = Map.get(state.issuers, issuer)

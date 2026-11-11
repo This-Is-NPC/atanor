@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Atanor admin API: deploys, tokens, audit and drain",
+    "title": "Atanor admin API: deploys, tokens, audit, drain and key cache",
     "version": "0.1.0",
     "description": "The endpoints of the admin API that deployers, operators and the `atanor` command use (docs/how-to-use-the-admin-api.md, design 10.2.1). The read-only cluster endpoints are described in the how-to. test/atanor/openapi_test.exs keeps this file in step with the code."
   },
@@ -926,6 +926,43 @@
           }
         }
       }
+    },
+    "/auth/keys/flush": {
+      "post": {
+        "operationId": "flushAuthKeys",
+        "summary": "Forget the OIDC keys this node cached",
+        "description": "Needs the scope `cluster:admin`. Runs on the node that answers: every other node keeps its cache until `oidc.jwks_max_age_ms` ends or you call it there. Drops the cached discovery documents and JWKS of every issuer; the next request that needs a key fetches it, without waiting for `oidc.min_refresh_ms` or `oidc.error_backoff_ms`. Use it after a provider withdrew a key. `flushed` is the number of issuers held, 0 on a node with no OIDC rule.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The cache is empty.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlushedKeys"
+                },
+                "example": {
+                  "node": "atanor@node-a",
+                  "flushed": 1
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1538,6 +1575,29 @@
             "hibernated": 42,
             "duration_ms": 381,
             "errors": []
+          }
+        ]
+      },
+      "FlushedKeys": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "flushed": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Issuers whose keys were dropped."
+          }
+        },
+        "required": [
+          "node",
+          "flushed"
+        ],
+        "examples": [
+          {
+            "node": "atanor@node-a",
+            "flushed": 1
           }
         ]
       }

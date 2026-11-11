@@ -1401,6 +1401,11 @@ unreachable; with no keys at all the answer is 503
 a deadline of `connect_timeout_ms` plus `receive_timeout_ms`, follows no
 redirects and stops reading at `max_response_bytes`, so an oversized body is not
 buffered.
+`Atanor.Auth.Keys.flush/1` drops every cached discovery document and key set
+of this node and clears the refresh and backoff clocks, so the next request
+fetches at once; `POST /auth/keys/flush` on the admin API calls it
+(`cluster:admin`, logged, `[:atanor, :admin, :action]`). It acts on the node
+that answers, as `POST /drain` does, so a cluster needs one call per node.
 `oct` keys in a JWKS are dropped. There is no introspection: a request never
 calls the provider.
 
@@ -2689,6 +2694,7 @@ JSON; `GET` unless the table says otherwise:
 | `POST /tokens`, `GET /tokens`, `GET /tokens/:id`, `POST /tokens/:id/revoke`, `GET /audit` | scoped tokens and the audit log, `cluster:admin` (§10.2.1) |
 | `/deployments` | for every node, what it applied for each worker: `head`, `applied`, `serving` and `error` (`{:code_mismatch, ...}`, a route not allowed, ...) |
 | `/routes` | this node's HTTP routes and TCP listeners with their ports |
+| `POST /auth/keys/flush` | drops this node's cached OIDC discovery documents and keys, `cluster:admin` (§7.5); answers `node` and `flushed`, the issuers dropped |
 | `POST /listeners/:name/reload-tls` | reloads the certificate files of one TLS listener (§7.3); 404 `unknown_listener`, 409 `no_tls`, 422 `reload_failed` (the previous certificate keeps serving) |
 | `/cells` | for every node, the number of live cells; with `?node=NAME` one page of that node's cells (`limit` 1 to `:admin`'s `max_limit`, 1,000, default `default_limit`, 100, and `after=<cell id>` from the previous page's `next`) |
 | `/nodes` | how this node sees each peer: `state` (`alive`, `suspect`, `link_broken`, `down`), `phi`, `last_heartbeat_ms` and the `reason` of the last verdict (§8.8). Only this node's view; ask every node for the cluster's |

@@ -465,6 +465,27 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     ([configuration](configuration.md), design
     [§8.11](design.md#811-draining-and-stopping-gracefully)).
 
+14. Forget the OIDC keys of a node after a provider withdrew one. A node
+    caches the keys of each issuer for `oidc.jwks_max_age_ms` (1 hour), so a
+    withdrawn key keeps verifying until then. `POST /auth/keys/flush` drops the
+    cached discovery documents and keys of every issuer on the node that
+    answers; the next request that needs a key fetches it. Needs
+    `cluster:admin`. Call it on each node of the cluster. `flushed` is the
+    number of issuers the node held, 0 when it has no `auth:` rule.
+
+    ```sh
+    curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/auth/keys/flush
+    ```
+
+    ```json
+    {"flushed":1,"node":"nonode@nohost"}
+    ```
+
+    The action is logged and emits `[:atanor, :admin, :action]` with
+    `action: :flush_auth_keys`. The same from a remote shell:
+    `Atanor.Auth.Keys.flush(MyApp.Atanor)`. How the keys are cached is in
+    [how-to-protect-a-route-with-oidc.md](how-to-protect-a-route-with-oidc.md).
+
 ## Troubleshooting
 
 - **401 with the right token.** The header must be exactly `authorization:

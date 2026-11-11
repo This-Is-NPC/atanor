@@ -61,6 +61,33 @@ defmodule Atanor.AuthHTTPTest do
     Enum.join([header, payload, <<if(first == ?A, do: ?B, else: ?A), rest::binary>>], ".")
   end
 
+  test "the admin API flushes the key cache, so a withdrawn key stops verifying", %{provider: p} do
+    operator = "operator-secret"
+    rule = [host: "127.0.0.1", path: "/secure", issuer: p.issuer, audience: "api"]
+
+    node =
+      Node.start(
+        auth: [rule],
+        oidc: [allow_http: true],
+        admin: [token: operator, port: 0],
+        workers: [Manifests.probe("secure", routes: [{"127.0.0.1", "/secure"}])]
+      )
+
+    on_exit(fn -> Node.stop(node) end)
+    token = OIDCProvider.token(p, "k1")
+    flush = "http://127.0.0.1:#{Atanor.admin_port(node.name)}/auth/keys/flush"
+
+    assert get(node, "/secure", token).status == 200
+    OIDCProvider.remove_key(p, "k1")
+    OIDCProvider.add_key(p, "k2")
+    assert get(node, "/secure", token).status == 200, "cached until the age ends"
+
+    assert Req.post!(flush, retry: false).status == 401
+    assert %{status: 200, body: %{"flushed" => 1}} = Req.post!(flush, retry: false, auth: {:bearer, operator})
+    assert get(node, "/secure", token).status == 401
+    assert get(node, "/secure", OIDCProvider.token(p, "k2")).status == 200
+  end
+
   defp challenge(resp), do: resp.headers["www-authenticate"]
 
   test "a valid token reaches the worker with its claims", %{node: node, provider: p} do

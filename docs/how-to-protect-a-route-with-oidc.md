@@ -189,6 +189,11 @@ Every value is a positive integer in milliseconds unless noted.
 | `max_response_bytes` | 1000000 | Larger discovery documents and JWKS are refused; the read stops at the limit |
 | `allow_http` | false | Accept an `http:` issuer |
 
+To drop the cached keys of a node at once, for example after the provider
+withdrew a key, call `POST /auth/keys/flush` on the admin API of each node
+([step 14](how-to-use-the-admin-api.md)). The next request fetches the keys
+again.
+
 Concurrent requests never stampede the provider: one process makes the
 fetches, one at a time, and the requests that waited find the keys cached.
 
@@ -210,6 +215,9 @@ fetches, one at a time, and the requests that waited find the keys cached.
 - **A token signed with a freshly rotated key is rejected.** At most one
   refresh per `min_refresh_ms` happens. The token is accepted after the
   interval; lower the setting only if the provider tolerates it.
+- **A key the provider withdrew still verifies.** The node keeps the keys for
+  `jwks_max_age_ms`, and for `jwks_max_stale_ms` while the provider is
+  unreachable. Flush them with `POST /auth/keys/flush` on each node.
 - **A WebSocket closes with 1008 while frames flow.** The token of its
   upgrade expired (`exp`). The client connects again with a fresh token.
 - **403 where the token has the scope.** Atanor reads `scope` (a

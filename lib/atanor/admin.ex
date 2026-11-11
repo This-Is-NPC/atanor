@@ -17,7 +17,8 @@ defmodule Atanor.Admin do
   (1,000). The write endpoints are the node-gone hint, dead-letter
   retry/discard, operation create/pause/resume/continue/cancel/undo report and apply, migration
   rehearsal start/cancel, the TLS certificate
-  reload of one listener, unfreezing a cell and draining the node (`POST /drain`, `GET /drain`); each is logged and emits
+  reload of one listener, unfreezing a cell, flushing the OIDC key cache of the node (`POST /auth/keys/flush`) and draining the node
+  (`POST /drain`, `GET /drain`); each is logged and emits
   `[:atanor, :admin, :action]`.
   """
 
@@ -110,6 +111,8 @@ defmodule Atanor.Admin do
 
   defp route(%{method: "POST", path_info: ["drain"]} = conn, name), do: drain(conn, name)
 
+  defp route(%{method: "POST", path_info: ["auth", "keys", "flush"]} = conn, name), do: flush_keys(conn, name)
+
   defp route(%{method: "POST", path_info: ["listeners", listener, "reload-tls"]} = conn, name),
     do: reload_tls(conn, name, listener)
 
@@ -198,6 +201,12 @@ defmodule Atanor.Admin do
     action(conn, name, :drain, node())
     {:ok, status} = Atanor.drain(name)
     json(conn, 200, Overview.drain_body(status))
+  end
+
+  # Forgets the OIDC keys this node cached (design §7.5); the next request fetches them again.
+  defp flush_keys(conn, name) do
+    action(conn, name, :flush_auth_keys, node())
+    json(conn, 200, %{node: node(), flushed: Atanor.Auth.Keys.flush(name)})
   end
 
   # New certificates for one listener; a failed load keeps the previous one (design §7.3).
