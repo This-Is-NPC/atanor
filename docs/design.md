@@ -2056,7 +2056,11 @@ Decisions:
   cells early after a silent failure (a survivor is one of two; after a graceful
   stop or a platform hint it does), and a perfect split of four nodes takes
   nothing on either side; both fall back to the lease. `quorum: false` turns the
-  rule off. The result of a refusal is `:no_quorum` in the event.
+  rule off. The result of a refusal is `:no_quorum` in the event. Refusals come one per request, so the event is
+  rate-limited per node (`Atanor.Takeover.Throttle`, one ETS row replaced atomically): the first refusal
+  emits, the ones within `no_quorum_event_interval_ms` are counted, and the next event carries the count as
+  `suppressed`. The 503 `no_quorum` is unchanged. `test/atanor/takeover_throttle_test.exs` checks that
+  events are at most `ceil(span / interval) + 1` and that the counts add up.
 * **A slow node is safe.** If the verdict was wrong, the old owner is fenced:
   its next upload collides with the fence of the new epoch and its cell stops
   with `:fenced`. A write it acknowledged before is in the new owner's restore;
@@ -2077,6 +2081,7 @@ Options (`takeover:` of `{Atanor, opts}`):
 | `enabled` | true | take cells of confirmed-down nodes over |
 | `quorum` | true | only with a strict majority of the known nodes |
 | `settle_ms` | 2 000 | how long the majority must have held (with `quorum`) |
+| `no_quorum_event_interval_ms` | 10 000 | at most one `:no_quorum` takeover event per interval, with the count of refusals left out |
 | `attempts` | 3 | reads of the lease when a takeover loses a race |
 | `timeout_ms` | `nil` | per `Alambique.take_over/4` call; `nil` is Alambique's `call_timeout_ms` |
 | `routing: [attempts:, retry_ms:, remote_timeout_ms:, leave_wait_ms:]` | 3, 50, 60 000, 3 000 | retries of a call whose owner moved or was lost (§8.4), the longest a forwarded call may run, and how long a call waits for a leaving owner to hand off (§8.11) |
