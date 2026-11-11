@@ -142,7 +142,15 @@ defmodule Atanor.Config do
   }
 
   # Per-cell takeover of a node confirmed down (design §8.10). nil: Alambique's `call_timeout_ms`.
-  @takeover %{enabled: true, quorum: true, settle_ms: 2_000, attempts: 3, timeout_ms: nil}
+  # `no_quorum_event_interval_ms`: at most one `:no_quorum` take_over event per interval (design §8.10).
+  @takeover %{
+    enabled: true,
+    quorum: true,
+    settle_ms: 2_000,
+    attempts: 3,
+    timeout_ms: nil,
+    no_quorum_event_interval_ms: 10_000
+  }
   # Automatic placement of hot cells (design §8.15). Rates are calls per second, `queue` is calls waiting on
   # the cell, `cpu` and `margin` are percent of the node's schedulers. `tags` label this node and `affinity`
   # is `[{namespace, tag}]`: hot cells of the namespace go to a node with the tag. `move: false` keeps the
