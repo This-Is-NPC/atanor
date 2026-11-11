@@ -190,16 +190,67 @@ defmodule Atanor.Sweeps.Undo.Cell do
     end)
   end
 
-  # Row count and a hash of the rows ordered by all their columns. Alambique has no row cursor: the table is
-  # read whole, bounded by the deadline.
-  defp table(conn, name) do
+  # Rows read per statement while a table is hashed, so memory does not grow with the table.
+  @page_rows 1_000
+  @modulus Bitwise.bsl(1, 256)
+
+  defp table(conn, name), do: digest(conn, name, @page_rows)
+
+  @doc false
+  # Row count and an order-independent hash of the rows (the sum of the SHA-256 of each row, modulo 2^256),
+  # read in pages of `page` rows by keyset on the rowid, or on the primary key of a WITHOUT ROWID table.
+  @spec digest(Sqlite.conn(), String.t(), pos_integer) :: {:ok, {non_neg_integer, String.t()}} | {:error, term}
+  def digest(conn, name, page) do
     quoted = Restore.quote_identifier(name)
 
-    with {:ok, %{rows: columns}} <- Sqlite.run(conn, "PRAGMA table_info(#{quoted})", []),
-         order = Enum.join(1..max(length(columns), 1), ", "),
-         {:ok, %{rows: rows}} <- Sqlite.run(conn, "SELECT * FROM #{quoted} ORDER BY #{order}", []) do
-      hash = Enum.reduce(rows, :crypto.hash_init(:sha256), &:crypto.hash_update(&2, :erlang.term_to_binary(&1)))
-      {:ok, {length(rows), Base.encode16(:crypto.hash_final(hash), case: :lower)}}
+    with {:ok, keys} <- key_columns(conn, quoted) do
+      pages(conn, quoted, keys, page, nil, {0, 0})
+    end
+  end
+
+  defp key_columns(conn, quoted) do
+    case Sqlite.run(conn, "SELECT rowid FROM #{quoted} LIMIT 0", []) do
+      {:ok, _} ->
+        {:ok, ["rowid"]}
+
+      {:error, _} ->
+        with {:ok, %{rows: info}} <- Sqlite.run(conn, "PRAGMA table_info(#{quoted})", []) do
+          {:ok,
+           for(
+             [_, column, _, _, _, pk] <- Enum.sort_by(info, &List.last/1),
+             pk > 0,
+             do: Restore.quote_identifier(column)
+           )}
+        end
+    end
+  end
+
+  defp pages(conn, quoted, keys, page, after_key, {count, sum}) do
+    list = Enum.join(keys, ", ")
+    wanted = length(keys)
+
+    {where, params} =
+      case after_key do
+        nil -> {"", []}
+        key -> {" WHERE (#{list}) > (#{Enum.map_join(key, ", ", fn _ -> "?" end)})", key}
+      end
+
+    sql = "SELECT #{list}, * FROM #{quoted}#{where} ORDER BY #{list} LIMIT #{page}"
+
+    with {:ok, %{rows: rows}} <- Sqlite.run(conn, sql, params) do
+      sum =
+        Enum.reduce(rows, sum, fn [_ | _] = row, acc ->
+          row = Enum.drop(row, wanted)
+          rem(acc + :binary.decode_unsigned(:crypto.hash(:sha256, :erlang.term_to_binary(row))), @modulus)
+        end)
+
+      count = count + length(rows)
+
+      if length(rows) < page do
+        {:ok, {count, sum |> :binary.encode_unsigned() |> Base.encode16(case: :lower)}}
+      else
+        pages(conn, quoted, keys, page, rows |> List.last() |> Enum.take(wanted), {count, sum})
+      end
     end
   end
 

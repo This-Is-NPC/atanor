@@ -4427,8 +4427,10 @@ at a time, `Atanor.Sweeps.Undo.Cell`:
    (`Atanor.Restore`, over `Alambique.Ops.restore/5`), after finding the cell's
    location with `Alambique.list_cells/2` in each location of the placement;
 3. opens both with `Alambique.Sqlite`, read-only, and compares them table by
-   table: the row count and a SHA-256 over the rows ordered by all their
-   columns (each table is read whole: Alambique has no row cursor), plus a hash of the normalized `sqlite_master`
+   table: the row count and a hash of the rows, the
+   sum of the SHA-256 of each row, so it does not depend on their order (each table
+   is read in pages of 1 000 rows, by keyset on the rowid or on the primary key of
+   a `WITHOUT ROWID` table, so memory stays bounded), plus a hash of the normalized `sqlite_master`
    definitions. Tables named `_atanor_*` are reported in `host_tables` and
    left out of the schema hash; `_alambique_*` and `sqlite_*` are skipped;
 4. deletes both files, and the task deletes the directory when it ends,
