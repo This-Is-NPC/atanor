@@ -63,13 +63,25 @@ Ruled out, each measured by changing one thing on the master of that time:
 - The compile pool, the batch and message caps, the pinning of nested calls
   and the host reply split are in `c9b5281` and cost nothing in this path.
 
-Not isolated: which part of `36dc2e5` costs the 20 us. What it adds per call
-is the `Running` wrapper around the guest future (a boxed future, a permit
-acquire on every poll), the per-worker gate and slot, and a pool of
-`max_calls` threads (48 at 12 threads) instead of 12, so up to 32 threads are
-runnable at once where 0.2.0 kept the rest in the channel. The last is the
-likely one, because the extra voluntary switches are threads parking for a
-permit; it was not tested. This is the price of order 017's guarantee that a
-waiting guest does not hold the right to run. To reproduce, build each commit
-in its own worktree and run the command above alternately; the benchmark
-prints the CPU and switches per request.
+Cause, tested on master `28c8290` with a temporary local patch that starts
+`threads` (12) pool threads instead of `max_calls + max_waiting` (60) and
+changes nothing else (ABBA, 3 rounds, 8 s, load 1.6 to 3.0 at each start):
+
+| Pool threads | CPU per request | Voluntary switches | Requests/s |
+|---|---|---|---|
+| 60 (master) | 434, 407, 405, 408, 403, 408 us | 4.1 | 22,496 to 24,799 |
+| 12 (patch) | 393, 384, 391, 389, 386, 391 us | 3.6 | 25,484 to 26,270 |
+
+With 12 pool threads the CPU per request (384 to 393 us) and the switches (3.6)
+are in the range of v0.2.0 (364 to 391 us, 3.6), and the throughput is about
+26,000 requests/s. So the extra runnable pool threads cost about 17 us per
+request (4%) and all of the extra voluntary switches: with 32 clients, 32
+threads wake and park for the 12 permits where 0.2.0 kept 20 calls in the
+channel. The patch is not a fix: the pool has one thread per call in flight so
+that a waiting guest can give up its permit while its thread stays with its
+call (order 017, design §14.3), and with 12 threads a waiting guest would again
+hold a thread. The rest of the gap to `c9b5281` (about 20 us) is the per-call
+wrapper, gate and slot of `36dc2e5` and `max_waiting`; it was not split
+further. To reproduce, build each commit in its own worktree and run the
+command above alternately; the benchmark prints the CPU and switches per
+request.
