@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.3.0](https://github.com/This-Is-NPC/atanor/compare/v0.2.0...v0.3.0) (2026-11-11)
+
+
+### Features
+
+* **config:** accept the new alambique limit keys ([f8269ef](https://github.com/This-Is-NPC/atanor/commit/f8269ef873cc2c59fdc17a86ffadf0d7fc380d9f))
+
+
+### Bug Fixes
+
+* **admin:** limit failed token attempts per address ([a07c09c](https://github.com/This-Is-NPC/atanor/commit/a07c09cd3dcd7f8ed15b3bf5aa730709bed4f8b6))
+* **detector:** hear a peer through bytes on a busy link ([94d0299](https://github.com/This-Is-NPC/atanor/commit/94d02996c0cd1896a77563fed3acc44bdd3bc6ab))
+* **env:** pin nested worker calls to one deployment ([d79a18d](https://github.com/This-Is-NPC/atanor/commit/d79a18dde0403387cd8dde968284472dc2e3fcfb))
+* **feed:** report a feed read timeout as a store error ([5d333aa](https://github.com/This-Is-NPC/atanor/commit/5d333aa6fb3dcf7185e3caa831dfc6d14e80abbb))
+* **start:** log why a data_dir is refused ([ab6522e](https://github.com/This-Is-NPC/atanor/commit/ab6522eb6730efde835a3365c8a15c74330650f0))
+* **sweeps:** page the undo table hash ([4579ffc](https://github.com/This-Is-NPC/atanor/commit/4579ffccab3673fe4c0433c50149a54289683811))
+* **sweeps:** read undo tables without a row cursor ([d762fe4](https://github.com/This-Is-NPC/atanor/commit/d762fe4b9df80e7e271c4fd7408a241ee928c28c))
+* **takeover:** rate-limit no_quorum events ([46598fc](https://github.com/This-Is-NPC/atanor/commit/46598fc4b301c28eaf9b521c9277fa126dc3b4c4))
+* **wasm:** cap batch results and cell messages ([40a55b0](https://github.com/This-Is-NPC/atanor/commit/40a55b03a6fb8517cbb4d694c0a0783fb4d255ab))
+* **wasm:** compile off the dirty schedulers ([7d62aaa](https://github.com/This-Is-NPC/atanor/commit/7d62aaa14bd885eaf29069c43a1e135957bf6626))
+* **wasm:** decode large host replies on a dirty nif ([2fca06c](https://github.com/This-Is-NPC/atanor/commit/2fca06cd4c6c4234e016e429828bae65bf15f756))
+* **wasm:** free the right to run while a guest waits ([36dc2e5](https://github.com/This-Is-NPC/atanor/commit/36dc2e59215e8b6154a8298b2f0af3817a38c9b3))
+* **wasm:** name the settings when pooling fails ([623c5e5](https://github.com/This-Is-NPC/atanor/commit/623c5e5f9abe9e97e622dfb79ebf66afb2c8e432))
+
+
+### Performance Improvements
+
+* **env:** pin ids of nested callees, not deployments ([dc92858](https://github.com/This-Is-NPC/atanor/commit/dc928589515cd3ea33b4d9da2deecf3a3e9531c3))
+* **wasm:** wake one idle pool thread per job ([3c15a15](https://github.com/This-Is-NPC/atanor/commit/3c15a15c0f2b4d730ea866ce113a4dd568572d14))
+
 ## [0.2.0](https://github.com/This-Is-NPC/atanor/compare/v0.1.0...v0.2.0) (2026-11-11)
 
 
