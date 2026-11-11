@@ -118,13 +118,18 @@ and `atanor:worker/call@0.1.0`; outbound HTTP is the standard
    let rows = sql::query(&cell, "SELECT body FROM notes", &[])?;
    ```
 
-   `batch` runs several statements in one transaction. For a namespace that
+   `batch` runs several statements in one transaction. The results of all its
+   statements together may not pass the node's `wasm.max_batch_bytes` (64 MiB by
+   default): past it the batch is rolled back and fails with
+   `failed("batch_too_large: ...")`. For a namespace that
    declares `partitions`, `sql::partition(&logical, &partition_key)` returns the
    address to use ([how-to-partition-a-cell.md](how-to-partition-a-cell.md)).
    `sql::query_bounded(&cell, sql, &params, max_lag_ms)` is a read that accepts
    data up to that many milliseconds old and may be answered by a replica on the
    node ([how-to-read-from-replicas.md](how-to-read-from-replicas.md)); `query`
    is always strong. A guest built before `query-bounded` existed still loads.
+   `sockets::send_to_cell` takes messages up to `wasm.max_cell_message_bytes`
+   (1 MiB by default).
 3. Grant it in the manifest, with the same names as for a native worker:
 
    ```json

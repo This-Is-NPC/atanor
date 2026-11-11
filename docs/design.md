@@ -636,6 +636,23 @@ worker.
 | `feed: [other_tables:]` | `:capture` (Alambique's) | `:capture` or `:skip`: what happens to the tables `tables:` does not name |
 | `feed: [max_object_bytes:]` | 268 435 456 (256 MiB, Alambique's) | the most a feed object may inflate to when read (objects are always zlib-compressed); a larger one is rejected as `:too_large` |
 
+*Caps on the host calls of WASM workers.* A guest's calls cross the BEAM heap and
+the NIF before the guest's memory limit applies, so `Atanor.Wasm.Host` caps two
+of them with the node option `wasm:` (`Atanor.Config`):
+
+| Option under `wasm:` | Default | Meaning |
+| --- | --- | --- |
+| `max_batch_bytes` | 67 108 864 (64 MiB) | total size of the results of one `batch`, text and blobs by length, 8 bytes for other values, column names included. The sum is kept while the statements run, without copying a result; the statement that passes it rolls the transaction back and the guest gets `failed("batch_too_large: ...")`. A batch holds at most this much plus one statement's result (itself under `max_result_bytes`) |
+| `max_cell_message_bytes` | 1 048 576 (1 MiB) | largest message `send-to-cell` accepts from a guest; over it the guest gets `failed("message_too_large: ...")` and no socket receives it |
+
+The limit on `send-to-cell` is only on the WASM host path. A native worker runs
+inside the node, sends any term and shares the BEAM heap with the node, so it
+is trusted like the node code; its message is not copied across a boundary. The
+guest's message is bytes copied out of a sandbox, which is what the cap protects
+(`channels.max_message_bytes` is the matching limit for `publish`). The rule
+lives in one place, the `:send_to_cell` clause of `Atanor.Wasm.Host`; `Env`
+does not check it, so what native workers may send is unchanged.
+
 Snapshot, restore and lazy-restore defaults are Alambique's; Atanor keeps them and checks the keys above at start. They
 bound what the store receives and what a wake reads: Alambique's
 `docs/how-to-size-storage.md` and `docs/how-to-speed-up-a-wake.md` explain how

@@ -94,6 +94,13 @@ by default).
 
 ## WASM engine
 
+`wasm: [max_batch_bytes: ..., max_cell_message_bytes: ...]` caps what a guest
+can make the node hold: the total size of the results of one `batch` (default
+64 MiB) and the size of one `send-to-cell` message (default 1 MiB). Both are
+positive integers in bytes; see
+[design §4.3](design.md#43-limits-on-cell-calls-and-their-errors). Native workers
+are not limited by them.
+
 The node settings of the WASM engine (threads, queue, CPU limit) are in the
 `:atanor, :wasm` application environment, documented in `Atanor.Wasm`.
 

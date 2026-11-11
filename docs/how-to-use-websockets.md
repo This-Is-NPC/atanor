@@ -104,6 +104,7 @@ Operator options, all positive integers:
 | `websocket.max_frame_bytes` | 1 000 000 | A frame over it, or a message spread over several frames whose total is over it, closes the socket with 1009. |
 | `websocket.max_frames_per_s` | 100 | Frames one socket may send per second. |
 | `websocket.frame_burst` | 200 | Frames a socket may send at once before the rate applies. A socket over the rate is closed with 1008. |
+| `wasm.max_cell_message_bytes` | 1 048 576 | Largest message a WASM guest may `send-to-cell`. Over it: `failed("message_too_large: ...")`, and no socket receives it. Native workers are not limited. |
 | `sockets.max_attachments` | 16 | Cells one socket can be attached to. Over it: `{:error, :too_many_attachments}`. |
 
 A socket on a route with an `:auth` rule is closed with 1008 when the `exp` of
