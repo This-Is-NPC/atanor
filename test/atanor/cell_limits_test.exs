@@ -75,11 +75,33 @@ defmodule Atanor.CellLimitsTest do
       assert {:ok, %{rows: [[1]]}} = Env.query(env, {"notes", "a"}, "SELECT 1")
     end
 
-    test "a node at awake max_cells answers :overloaded, which the ingress reports as 503 overloaded" do
+    test "a node at awake max_cells hibernates an idle cell for the new one" do
       {_node, env} = native()
-      for key <- ["a", "b"], do: assert({:ok, _} = Env.query(env, {"notes", key}, "SELECT 1"))
+      for key <- ["a", "b", "c"], do: assert({:ok, _} = Env.query(env, {"notes", key}, "SELECT 1"))
+    end
+
+    test "a node at awake max_cells with every awake cell busy answers :overloaded" do
+      {_node, env} = native(Keyword.put(@alambique, :op_timeout_ms, 10_000))
+      parent = self()
+
+      busy =
+        for key <- ["a", "b"] do
+          Task.async(fn ->
+            Env.transaction(env, {"notes", key}, fn _tx ->
+              send(parent, {:in_transaction, self()})
+              receive do: (:finish -> :ok)
+            end)
+          end)
+        end
+
+      holders =
+        for _ <- busy, do: receive(do: ({:in_transaction, holder} -> holder), after: (5_000 -> flunk("no holder")))
+
       assert {:error, :overloaded} = Env.query(env, {"notes", "c"}, "SELECT 1")
       assert :overloaded = Unavailable.from_error({:error, :overloaded})
+      for holder <- holders, do: send(holder, :finish)
+      Task.await_many(busy)
+      Await.until(fn -> match?({:ok, _}, Env.query(env, {"notes", "c"}, "SELECT 1")) end)
     end
 
     test "a node at awake max_bytes with every awake cell busy answers :overloaded" do
@@ -154,14 +176,27 @@ defmodule Atanor.CellLimitsTest do
       assert %{status: 200, body: "[count(*)] 0"} = sql(node, "query", "SELECT count(*) FROM notes")
     end
 
-    test "a node at awake max_cells is a 503 overloaded with Retry-After" do
+    test "a read over sql max_concurrent_statements is a 503 overloaded" do
+      node =
+        wasm(
+          op_timeout_ms: 5_000,
+          sql: [statement_timeout_ms: 1_500, max_concurrent_statements: 1]
+        )
+
+      assert %{status: 200} = sql(node, "query", "SELECT 1", key: "b")
+      slow = Task.async(fn -> sql(node, "query", @forever, key: "a") end)
+
+      Await.until(fn ->
+        match?(%{status: 503, body: %{"error" => "overloaded"}}, sql(node, "query", "SELECT 1", key: "b"))
+      end)
+
+      assert %{status: 500, body: "failed: statement_timeout: " <> _} = Task.await(slow, 10_000)
+      Await.until(fn -> match?(%{status: 200}, sql(node, "query", "SELECT 1", key: "b")) end)
+    end
+
+    test "a node at awake max_cells serves another cell by hibernating an idle one" do
       node = wasm()
-      for key <- ["a", "b"], do: assert(%{status: 200} = sql(node, "query", "SELECT 1", key: key))
-
-      assert %{status: 503, headers: headers, body: %{"error" => "overloaded"}} =
-               sql(node, "query", "SELECT 1", key: "c")
-
-      assert headers["retry-after"]
+      for key <- ["a", "b", "c", "a"], do: assert(%{status: 200} = sql(node, "query", "SELECT 1", key: key))
     end
   end
 end
