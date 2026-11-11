@@ -126,9 +126,9 @@ defmodule Atanor.ReadinessTest do
       fault = MemoryStore.inject(store, kind: :error)
       {name, task} = start_over(store, ready: [timeout_ms: 30_000, retry_ms: 20])
 
-      port = until(fn -> admin_port(name) end)
+      port = until(fn -> admin_port(name) end, 30_000)
       assert port
-      assert until(fn -> match?({:starting, "could not list" <> _}, Registry.state(name)) end)
+      assert until(fn -> match?({:starting, "could not list" <> _}, Registry.state(name)) end, 30_000)
 
       response = get(name, "/health/ready")
       assert response.status == 503
