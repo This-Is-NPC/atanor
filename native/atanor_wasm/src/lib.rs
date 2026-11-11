@@ -1,6 +1,7 @@
 //! Wasmtime for Atanor (design section 14): components compiled and cached,
 //! guests run on a thread pool this crate owns, with limits and counters.
 
+mod compiler;
 mod component;
 mod engine;
 mod guest;
@@ -9,12 +10,11 @@ mod host;
 mod stats;
 mod wire;
 
-use std::path::Path;
 use std::time::Instant;
 
 use rustler::{Atom, Binary, Encoder, Env, LocalPid, NifResult, ResourceArc, Term};
 
-use component::{Compiled, Grants, PrepareError, Prepared, Source};
+use component::{Compiled, Grants, PrepareError, Prepared};
 use guest::{Call, Job, Limits};
 use wire::Wire;
 
@@ -24,7 +24,7 @@ static ALLOC: stats::Counted = stats::Counted;
 mod atoms {
     rustler::atoms! {
         ok, error, overloaded, not_configured, compiled, disk, recompiled,
-        not_granted, unsupported_import, missing_export, prepare_failed,
+        atanor_compile, not_granted, unsupported_import, missing_export, prepare_failed,
     }
 }
 
@@ -36,25 +36,38 @@ fn configure(env: Env, settings: engine::Settings) -> Term {
     }
 }
 
-/// Compiles `bytes`, using the disk cache in `dir` under `key` when given.
-#[rustler::nif(schedule = "DirtyCpu")]
+#[rustler::nif]
+fn configure_compile(env: Env, settings: compiler::Settings) -> Term {
+    match compiler::configure(settings) {
+        Ok(()) => atoms::ok().encode(env),
+        Err(message) => (atoms::error(), message).encode(env),
+    }
+}
+
+/// Queues the compile of `bytes` (using the disk cache in `dir` under `key`
+/// when given) and returns at once. The result arrives at `pid` as
+/// `{:atanor_compile, tag, {:ok, {compiled, source}} | {:error, message}}`;
+/// a full queue answers `:overloaded` instead.
+#[rustler::nif]
 fn compile(
     bytes: Binary,
     dir: Option<String>,
     key: Option<String>,
-) -> Result<(ResourceArc<Compiled>, Atom), String> {
-    let runtime = engine::runtime().ok_or("not configured")?;
-    let cache = dir
-        .as_deref()
-        .zip(key.as_deref())
-        .map(|(d, k)| (Path::new(d), k));
-    let (compiled, source) = component::compile(&runtime.engine, bytes.as_slice(), cache)?;
-    let source = match source {
-        Source::Compiled => atoms::compiled(),
-        Source::Disk => atoms::disk(),
-        Source::Recompiled => atoms::recompiled(),
+    pid: LocalPid,
+    tag: String,
+) -> Atom {
+    let request = compiler::Request {
+        bytes: bytes.as_slice().to_vec(),
+        dir,
+        key,
+        pid,
+        tag,
     };
-    Ok((ResourceArc::new(compiled), source))
+    if compiler::submit(request).is_ok() {
+        atoms::ok()
+    } else {
+        atoms::overloaded()
+    }
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]

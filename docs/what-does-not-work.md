@@ -11,11 +11,8 @@ side's consent ([design §3.3](design.md#33-what-a-manifest-may-grant)), but
 `hosts:`, a listener's `workers:`, `http_allow:` and `modules:` are ceilings that
 exist only when the operator sets them. Without them, a holder of a deploy and
 activate token for one worker can route any host, claim any configured listener,
-reach any host in `http.allow` and bind any module of the release. A WASM
-compile that has started cannot be interrupted: after `compile_timeout_ms` the
-deployment gives up waiting but the compile goes on using a dirty scheduler
-until it ends. Two workers that share a namespace (which the operator must
-allow) can still read and write each other's `_atanor_*` tables (jobs, alarms,
+reach any host in `http.allow` and bind any module of the release. Two
+workers that share a namespace (which the operator must allow) can still read and write each other's `_atanor_*` tables (jobs, alarms,
 cron, undo positions): a worker can insert a job row that runs another worker's
 `handle_job/2`, or rewrite an undo position. Sharing a namespace puts the
 workers in one trust domain. A check that a job's worker grants jobs and the

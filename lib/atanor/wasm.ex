@@ -53,7 +53,11 @@ defmodule Atanor.Wasm do
     * `:table_elements` - largest table a guest may grow to (default 100,000).
     * `:compile_timeout_ms` - longest a deployment waits for a component to
       compile (default 60,000). The compile itself cannot be interrupted: it
-      ends in the background and its result is cached.
+      ends on the compile pool and its result is cached.
+    * `:compile_threads` - components compiled at once, on threads of their
+      own that are not BEAM schedulers (default 2).
+    * `:compile_queue` - compiles that may wait for a thread; a deployment
+      that finds the queue full fails at once (default 16).
 
   A manifest's `limits` set `timeout_ms` and `memory_bytes` per call, up to the
   node's ceilings; `limits.cpu_ms` lowers the CPU time of epoch mode below the
@@ -83,7 +87,9 @@ defmodule Atanor.Wasm do
     grace_ms: 2_000,
     stderr_bytes: 4_096,
     table_elements: 100_000,
-    compile_timeout_ms: 60_000
+    compile_timeout_ms: 60_000,
+    compile_threads: 2,
+    compile_queue: 16
   ]
 
   @type limit :: :timeout | :memory | :cpu
@@ -154,7 +160,9 @@ defmodule Atanor.Wasm do
           :grace_ms,
           :stderr_bytes,
           :table_elements,
-          :compile_timeout_ms
+          :compile_timeout_ms,
+          :compile_threads,
+          :compile_queue
         ] do
       unless is_integer(settings[key]) and settings[key] > 0 do
         raise ArgumentError, ":atanor, :wasm #{inspect(key)} must be a positive integer"

@@ -2,8 +2,8 @@ defmodule Atanor.Wasm.Native do
   @moduledoc """
   The Rust NIF (design §14). Internal: use `Atanor.Wasm`.
 
-  `compile/3` and `prepare/2` run on dirty CPU schedulers. `invoke/5` only
-  queues the call: guests run on threads of the crate's own pool and never
+  `prepare/2` runs on a dirty CPU scheduler. `compile/5` and `invoke/5` only
+  queue the work: guests run on threads of the crate's own pool and never
   occupy a BEAM scheduler. Results and host calls arrive as messages to the
   pid given to `invoke/5`:
 
@@ -17,10 +17,19 @@ defmodule Atanor.Wasm.Native do
   @spec configure(map) :: :ok | {:error, String.t()}
   def configure(_settings), do: :erlang.nif_error(:nif_not_loaded)
 
-  @doc "Compiles `bytes`, or loads the compiled code cached under `key` in `dir`."
-  @spec compile(binary, String.t() | nil, String.t() | nil) ::
-          {:ok, {reference, :compiled | :disk | :recompiled}} | {:error, String.t()}
-  def compile(_bytes, _dir, _key), do: :erlang.nif_error(:nif_not_loaded)
+  @doc "Starts the compile pool once per VM (`:threads` and `:queue`)."
+  @spec configure_compile(map) :: :ok | {:error, String.t()}
+  def configure_compile(_settings), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Queues the compile of `bytes`, or the load of the compiled code cached under
+  `key` in `dir`, on the crate's compile pool; `:overloaded` when its queue is
+  full. The result arrives at `pid` as `{:atanor_compile, tag, result}`, where
+  `result` is `{:ok, {reference, :compiled | :disk | :recompiled}}` or
+  `{:error, message}`.
+  """
+  @spec compile(binary, String.t() | nil, String.t() | nil, pid, String.t()) :: :ok | :overloaded
+  def compile(_bytes, _dir, _key, _pid, _tag), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Links the granted imports of a compiled component; tells whether it exports
