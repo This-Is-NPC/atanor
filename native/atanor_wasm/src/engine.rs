@@ -94,7 +94,16 @@ fn engine(cpu: Cpu, settings: &Settings) -> Result<Engine, String> {
     if settings.pooling {
         config.allocation_strategy(InstanceAllocationStrategy::Pooling(pool(settings)));
     }
-    Engine::new(&config).map_err(|e| e.to_string())
+    Engine::new(&config).map_err(|e| {
+        if settings.pooling {
+            format!(
+                "{e}; the pooling allocator reserves address space for {} calls: lower max_calls and max_nested_calls, or set pooling: false",
+                settings.max_calls + settings.max_nested_calls
+            )
+        } else {
+            e.to_string()
+        }
+    })
 }
 
 /// Starts the engine, the pool and the ticker once per VM. Configuring again
