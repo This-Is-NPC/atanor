@@ -13,7 +13,7 @@ defmodule Atanor.AdminScopePropertyTest do
   @actions ~w(deploy activate rollback read)
 
   setup_all do
-    node = Node.start(admin: [token: @operator, port: 0])
+    node = Node.start(admin: [token: @operator, port: 0, max_failures: 1_000_000])
     on_exit(fn -> Node.stop(node) end)
 
     # Each worker has two versions deployed and a third one stored but inactive.
