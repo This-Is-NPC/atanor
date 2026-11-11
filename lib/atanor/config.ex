@@ -380,7 +380,13 @@ defmodule Atanor.Config do
   # The options of the `alambique:` groups that Atanor checks at start, with the kind of value each takes
   # (`limit?/2`). The other options of `feed:` are checked by Alambique; any other key of these groups is refused.
   @alambique_limits [
-    sql: [statement_timeout_ms: :positive, max_result_rows: :positive, max_result_bytes: :positive],
+    sql: [
+      statement_timeout_ms: :positive,
+      script_timeout_ms: :positive,
+      max_result_rows: :positive,
+      max_result_bytes: :positive,
+      max_concurrent_statements: :positive
+    ],
     awake: [
       max_cells: :positive,
       max_wakes: :positive,
@@ -399,7 +405,9 @@ defmodule Atanor.Config do
       snapshot_keep_ms: :non_negative,
       snapshot_interval_ms: :positive,
       delete_superseded: :boolean,
-      max_level: :positive
+      max_level: :positive,
+      moved_scan_ms: :positive,
+      moved_scan_page: :positive
     ]
   ]
 

@@ -647,9 +647,11 @@ worker.
 | Option under `alambique:` | Default | Meaning |
 | --- | --- | --- |
 | `sql: [statement_timeout_ms:]` | `op_timeout_ms` (10 000) | a statement of a worker that runs longer is interrupted; the cell keeps serving |
+| `sql: [script_timeout_ms:]` | 60 000 | the longest a migration, a script and Alambique's own statements may run; a migration over it fails the wake with `{:error, {:migration, version, :statement_timeout}}` |
 | `sql: [max_result_rows:]` | 100 000 | rows one statement may return (also `RETURNING`) |
 | `sql: [max_result_bytes:]` | 67 108 864 (64 MiB) | bytes one result may hold (text and blobs by length) |
-| `awake: [max_cells:]` | 20 000 | cells with a process on this node; a partition counts as a cell |
+| `sql: [max_concurrent_statements:]` | dirty IO schedulers minus two, at least 1 | the most reads (owner, replica and cross-cell) running on the node at once, so commits keep dirty IO schedulers; a read over it gets `{:error, :busy}` at once, a 503 `overloaded` at the ingress. The count is shared by every instance in the VM: give them the same value |
+| `awake: [max_cells:]` | 20 000 | cells with a process on this node; a partition counts as a cell. A call that would wake one more hibernates the least recently used cell with no caller waiting, and gets `{:error, :overloaded}` only when every awake cell has callers waiting |
 | `awake: [max_wakes:]` | 256 | cells waking at once on this node |
 | `awake: [max_pending:]` | 10 000 | calls queued, running or waiting for an upload on one cell (other messages do not count) |
 | `awake: [cache_kib:]` | 512 | SQLite page cache of each awake cell, in KiB (Alambique's `PRAGMA cache_size`; SQLite's own default is 2 000) |
@@ -664,7 +666,11 @@ worker.
 | `compaction: [snapshot_interval_ms:]` | 604 800 000 (7 days) | longest time between snapshots of a quiet cell |
 | `compaction: [snapshot_keep_ms:]` | 259 200 000 (3 days) | a new snapshot deletes the previous one unless that is at least this long after the one before it; 0 keeps every snapshot |
 | `compaction: [delete_superseded:]` | `true` | delete the merged files once the next level replaces them |
+| `compaction: [moved_scan_ms:]` | 60 000 | time between the scans of the store for the cleanups of moved cells that still wait |
+| `compaction: [moved_scan_page:]` | 100 | markers listed per request of that scan (one request per tick) |
 | `compaction: [max_level:]` | 2 | highest merge level (at most 8); a higher one keeps fewer, larger files for a restore |
+| `replicas: [poll_max_ms:]` | 5 000 (Alambique's) | longest time between refreshes of a replica nobody reads: the interval grows to a quarter of the idle time up to it. Passed through, not checked by Atanor |
+| `query: [reflink:]` | `true` (Alambique's) | refresh a cached replica from a copy-on-write clone where the file system has them; `false` always copies. Passed through, not checked by Atanor |
 | `restore: [edge_bytes:, fetch_concurrency:, prefetch_bytes:]` | 65 536, 16, 67 108 864 (64 MiB) | bytes read at each end of a file before the rest, files fetched at once, and bytes read ahead during a restore |
 | `lazy_restore: [min_bytes:]` | 4 194 304 (4 MiB) | a database smaller than this is restored whole; a larger one is restored lazily, page by page on the first queries. A cell of 5 MB whose first query reads most of it restores faster whole (166 against 215 ms in Alambique's bench): `16_777_216` does that. 0 is always lazy; `lazy_restore: false` turns lazy restore off. Its other keys are `concurrency` (4), `batch_bytes` (4 MiB) and `miss_pages` (16) |
 | `feed: [object_batches:]` | 16 (Atanor's default; Alambique's is 1) | replicated batches one feed object may carry; 1 is one object per batch |
@@ -4422,7 +4428,7 @@ at a time, `Atanor.Sweeps.Undo.Cell`:
    location with `Alambique.list_cells/2` in each location of the placement;
 3. opens both with `Alambique.Sqlite`, read-only, and compares them table by
    table: the row count and a SHA-256 over the rows ordered by all their
-   columns (streamed), plus a hash of the normalized `sqlite_master`
+   columns (each table is read whole: Alambique has no row cursor), plus a hash of the normalized `sqlite_master`
    definitions. Tables named `_atanor_*` are reported in `host_tables` and
    left out of the schema hash; `_alambique_*` and `sqlite_*` are skipped;
 4. deletes both files, and the task deletes the directory when it ends,
