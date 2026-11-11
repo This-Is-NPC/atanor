@@ -2818,6 +2818,26 @@ accuracy of their clocks) and `GET /audit` pages with `after` and `limit`
 (`:default_limit` and `:max_limit`). Atanor never deletes entries; expire them with a
 lifecycle rule of the bucket on `<prefix>/audit/`.
 
+**Attempt limit.** `Atanor.Admin.Throttle` limits failed bearer tokens (the
+operator's and scoped ones) per client address. The key is the peer address of
+the connection, an IPv6 client by its /64; `X-Forwarded-For` is never read,
+because Atanor has no trusted-proxy setting, so behind a proxy all clients share
+the proxy's address and are limited together (a proxy that limits per client
+remains the right place for a finer limit). A window opens at the address's first
+attempt after the previous one ended. Each attempt reserves a place in an ETS
+counter before the token is compared (`update_counter`, so parallel guesses cannot
+pass the limit) and gives it back when the token is right: the success path costs
+two table operations and no wait, and the comparison itself is unchanged. After
+`max_failures` failures the address gets 429 `too_many_attempts` with
+`Retry-After` until the window ends, with the right token too (otherwise the
+answer would tell a guess). A request without a bearer token is not counted. The
+table is bounded by `tracked_addresses`; at the bound a sixteenth of the entries
+goes, so a flood of addresses can release an address from its lockout. The state
+is per node and is lost on restart. `test/atanor/admin_throttle_property_test.exs`
+checks, against a window model, that an address has at most `max_failures`
+admitted failures per window and is never refused under it, and that the table
+keeps its cap.
+
 **Properties.** `test/atanor/admin_scope_property_test.exs` generates random
 scope sets and random (action, worker) requests and checks, against an
 independent string oracle, that every out-of-scope request is 403 and leaves
@@ -2830,6 +2850,8 @@ wrong-secret, revoked and expired tokens are 401 with no change.
 | `max_package_bytes` | 67,108,864 | largest package upload; 413 `package_too_large` beyond it |
 | `max_scopes` | 64 | scopes per token |
 | `default_limit`, `max_limit` | 100, 1,000 | page size of lists, including `/tokens` and `/audit` |
+| `max_failures`, `failure_window_ms` | 10, 60,000 | failed tokens per client address in a window (and, in `dashboard:`, failed `?token=`); past it the address is refused with 429 and `Retry-After` until the window ends, even with the right token |
+| `tracked_addresses` | 10,000 | client addresses kept; at the bound a sixteenth is dropped |
 | `unknown_token_ms`, `unknown_tokens` | 2,000, 1,000 | a well-formed token id that the store does not have is refused from memory for this long, and at most this many ids are kept, so random tokens do not each cost a store read; a token created meanwhile works after the time |
 
 ### 10.3 Dashboard
@@ -2856,7 +2878,9 @@ deployments, routes, cells, alarms, jobs) and the built-in Metrics page fed by
   the application environment, so the supervisor writes them there at start,
   with a random `secret_key_base` per start.
 * **Token before LiveView, on every path.** `?token=` on a `GET` is compared in
-  constant time and answered with a 303 to the same URL without it, setting a
+  constant time, limited per client address like the admin API's tokens (§10.2;
+  the dashboard has the same `max_failures`, `failure_window_ms` and
+  `tracked_addresses`, and answers 429 with `Retry-After`), and answered with a 303 to the same URL without it, setting a
   signed cookie (`SameSite=Strict`, `Max-Age` `cookie_max_age_s`, 86 400 s by
   default, and `Secure` when `secure_cookie: true`; the listener is plain http,
   so the option says that a proxy serves https) that says "signed in". Every other request

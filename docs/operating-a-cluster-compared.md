@@ -145,9 +145,9 @@ work to a vendor but do not remove the items.
     ([what-does-not-work.md](what-does-not-work.md#nodes-are-connected-by-the-operator));
     the cluster here does it with `ATANOR_NODE_PEERS` and a 24-line module, and builds
     the image with Alambique fetched at the pinned release, with Rust for both NIFs.
-11. **Operator tokens have no throttle or retention**, and a deploy token is still the
+11. **The audit log has no retention**, and a deploy token is still the
     authority of its manifest for some grants
-    ([throttle](what-does-not-work.md#operator-tokens-and-the-audit-log-have-no-throttle-or-retention),
+    ([audit log](what-does-not-work.md#the-audit-log-has-no-retention),
     [grants](what-does-not-work.md#a-deploy-token-is-still-the-authority-of-its-manifest-for-some-grants)).
 
 ## Missing in Atanor

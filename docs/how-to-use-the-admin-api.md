@@ -404,7 +404,11 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     token is 401, and the answer never repeats it. A well-formed token id that
     the store does not have is refused from memory for `admin.unknown_token_ms`
     (2 seconds), so a client that tries random tokens does not make a store
-    read each. A valid token without the
+    read each. Failed tokens are also limited per client address: after
+    `admin.max_failures` (10) in `admin.failure_window_ms` (60 seconds) the
+    address gets 429 `{"error":"too_many_attempts"}` with `Retry-After`, with
+    the right token too, until the window ends. The address is the peer of the
+    connection, so behind a proxy all clients share one limit. A valid token without the
     scope is 403 with `required`. The audit log lists events oldest first;
     page with `limit` and `after=<next>`. Each entry has the `actor` (the
     `operator` or a token `id` and `name`), `action` (`package.upload`,

@@ -91,6 +91,10 @@ The dashboard is read-only: no page changes a deployment. Use
 - **`ArgumentError: :dashboard needs a :token`** or **`... needs these
   dependencies`**: the option is invalid without a non-empty token, or Atanor
   was compiled without the dashboard (same fix).
+- **429 with the right token.** The client address made `max_failures` (10)
+  wrong tokens in `failure_window_ms` (60 seconds, options of `dashboard:`). The
+  answer has `Retry-After`; wait that long. The address is the peer of the
+  connection, so behind a proxy every client shares the limit.
 - **401 with the right token.** Only a `GET` with `?token=` signs in. A restart
   of the node signs everyone out, and so does the end of `cookie_max_age_s`:
   open the URL with the token again. With `secure_cookie: true` the browser
