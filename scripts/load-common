@@ -1,0 +1,24 @@
+# Shared settings of the load-test scripts; sourced, not run. The load tests use the container
+# cluster of scripts/cluster-* (project atanor-cluster, every container named atanor-cluster-*)
+# with one node and no peers; see docs/how-to-run-the-load-tests.md for every ATANOR_LOAD_* setting.
+source "$(dirname "${BASH_SOURCE[0]}")/cluster-common"
+
+LOAD_SCENARIO=${ATANOR_LOAD_SCENARIO:-A}
+# Scenario A: 1 CPU and 512 MB. Scenario B: 2 CPUs and 2 GB. Override with ATANOR_LOAD_CPUS and _MEMORY.
+case $LOAD_SCENARIO in
+  A) cpus=1; memory=512m ;;
+  B) cpus=2; memory=2g ;;
+  *) echo "ATANOR_LOAD_SCENARIO must be A or B" >&2; exit 1 ;;
+esac
+LOAD_CPUS=${ATANOR_LOAD_CPUS:-$cpus}
+LOAD_MEMORY=${ATANOR_LOAD_MEMORY:-$memory}
+LOAD_STORE_LATENCY_MS=${ATANOR_LOAD_STORE_LATENCY_MS:-25}   # added to every trip to the store
+LOAD_TMPFS_SIZE=${ATANOR_LOAD_TMPFS_SIZE:-256m}             # the node's data dir, inside its memory limit
+LOAD_STORE_TMPFS_SIZE=${ATANOR_LOAD_STORE_TMPFS_SIZE:-1g}   # the store's data, in the store's own limit
+
+# The cluster settings of the scenario: one node, no peers, data in tmpfs, a balancer that is not the limit.
+export ATANOR_CLUSTER_NODES=1 ATANOR_CLUSTER_PEERS= ATANOR_CLUSTER_TMPFS=1
+export ATANOR_CLUSTER_NODE_CPUS=$LOAD_CPUS ATANOR_CLUSTER_NODE_MEMORY=$LOAD_MEMORY
+export ATANOR_CLUSTER_TMPFS_SIZE=$LOAD_TMPFS_SIZE ATANOR_CLUSTER_STORE_TMPFS_SIZE=$LOAD_STORE_TMPFS_SIZE
+export ATANOR_CLUSTER_STORE_CPUS=${ATANOR_LOAD_STORE_CPUS:-2} ATANOR_CLUSTER_STORE_MEMORY=${ATANOR_LOAD_STORE_MEMORY:-2g}
+export ATANOR_CLUSTER_LB_CPUS=${ATANOR_LOAD_LB_CPUS:-2} ATANOR_CLUSTER_LB_MEMORY=${ATANOR_LOAD_LB_MEMORY:-512m}

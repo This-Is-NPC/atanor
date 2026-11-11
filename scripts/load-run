@@ -1,0 +1,568 @@
+#!/usr/bin/env python3
+"""Run one load measure as a ramp of steps against the scenario started by `mise run load:up`.
+
+  load-run MEASURE [--out DIR] [--step-s S] [--start N] [--factor F] [--max N] [--steps N,N,...]
+                   [--refine K] [--write-ratio W] [--cells N] [--rate R] ...   (every option: --help)
+
+MEASURE is one of
+  http-native  requests per second to the native worker, reads and writes in cells      (stop: p99, 5xx, errors)
+  http-wasm    the same to the WASM worker (the scoreboard)                              (stop: p99, 5xx, errors)
+  ws           open idle WebSocket connections with sparse messages                      (stop: memory, fds)
+  cells        cells kept hot at the same time                                           (stop: memory, p99)
+  swap         replace the node by another under load at the last approved http-wasm rate (stop: loss, duplication, errors)
+
+A step runs the generator (scripts/load-gen, one process per ~600 req/s) for --step-s seconds, samples the
+node's cgroup, the host and the store every --sample-s seconds, and writes one JSON file, atomically.
+Order of the verdicts of a step: host load too high (repeat, then stop), a criterion broken (the step
+fails), delivery under 95% of the plan (INVALID, the round stops: the generator or the host, not the node).
+After the first failing step the ramp refines between the last good value and the failing one (--refine
+bisections), then repeats the best good step once to confirm it. Environment: ATANOR_LOAD_* give defaults.
+"""
+import argparse
+import json
+import math
+import os
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+SCHEMA = "atanor-load-step-1"
+BUCKET = 10
+CLK = os.sysconf("SC_CLK_TCK")
+CORES = os.cpu_count()
+OK_STATUSES = {"200", "201", "message answered", "503 retry-after", "reconnected"}
+UNITS = {"http-native": "req/s", "http-wasm": "req/s", "ws": "connections", "cells": "cells", "swap": "req/s"}
+
+
+def env(name, default, cast=float):
+    return cast(os.environ.get(f"ATANOR_LOAD_{name}", default))
+
+
+def say(message):
+    print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def write_json(path, document):
+    temporary = f"{path}.tmp"
+    with open(temporary, "w") as file:
+        json.dump(document, file, indent=1)
+    os.replace(temporary, path)
+
+
+# ---- reading the machine -------------------------------------------------------------------------------
+
+def read(path):
+    with open(path) as file:
+        return file.read()
+
+
+def cgroup_dir(pid):
+    for line in read(f"/proc/{pid}/cgroup").splitlines():
+        if line.startswith("0::"):
+            return "/sys/fs/cgroup" + line[3:]
+    raise RuntimeError(f"no cgroup v2 for pid {pid}")
+
+
+def keyed(text):
+    return {k: int(v) for k, v in (line.split() for line in text.splitlines() if len(line.split()) == 2 and line.split()[1].isdigit())}
+
+
+def cgroup_sample(directory):
+    """memory.current, shmem, peak, limit (bytes or None) and cpu usage (seconds) of one cgroup; {} when it is gone."""
+    try:
+        stat = keyed(read(f"{directory}/memory.stat"))
+        limit = read(f"{directory}/memory.max").strip()
+        quota = read(f"{directory}/cpu.max").split()[0]
+        return {"memory_current": int(read(f"{directory}/memory.current")), "shmem": stat.get("shmem", 0),
+                "peak": int(read(f"{directory}/memory.peak")), "limit": None if limit == "max" else int(limit),
+                "cpu_s": keyed(read(f"{directory}/cpu.stat"))["usage_usec"] / 1e6,
+                "cpu_limit": None if quota == "max" else int(quota) / int(read(f"{directory}/cpu.max").split()[1])}
+    except (OSError, KeyError, ValueError):
+        return {}
+
+
+def process_cpu(pid):
+    try:
+        fields = read(f"/proc/{pid}/stat").rsplit(")", 1)[1].split()
+        return (int(fields[11]) + int(fields[12])) / CLK
+    except (OSError, IndexError):
+        return None
+
+
+def host_sample():
+    total = [int(x) for x in read("/proc/stat").splitlines()[0].split()[1:9]]
+    meminfo = keyed(read("/proc/meminfo").replace(" kB", "").replace(":", ""))
+    return {"cpu_total": sum(total), "cpu_idle": total[3] + total[4], "available_gb": meminfo["MemAvailable"] / 1048576,
+            "loadavg1": float(read("/proc/loadavg").split()[0])}
+
+
+def fds(node):
+    """(open file descriptors, limit) of the node's BEAM, or None."""
+    script = 'p=$(pidof beam.smp) || exit 1; ls /proc/$p/fd | wc -l; grep "open files" /proc/$p/limits'
+    out = subprocess.run(["docker", "exec", node, "sh", "-c", script], capture_output=True, text=True)
+    lines = out.stdout.split("\n")
+    if out.returncode or len(lines) < 2:
+        return None
+    return int(lines[0]), int(lines[1].split()[3])
+
+
+def s3_counters(store_ip):
+    """(trips, bytes) the store has served, from its Prometheus endpoint; None when it does not answer."""
+    try:
+        text = urllib.request.urlopen(f"http://{store_ip}:9327/metrics", timeout=3).read().decode()
+    except OSError:
+        return None
+    trips = traffic = 0.0
+    for line in text.splitlines():
+        if line.startswith("SeaweedFS_s3_request_seconds_count"):
+            trips += float(line.rsplit(" ", 1)[1])
+        elif line.startswith(("SeaweedFS_s3_bucket_traffic_received_bytes_total", "SeaweedFS_s3_bucket_traffic_sent_bytes_total")):
+            traffic += float(line.rsplit(" ", 1)[1])
+    return trips, traffic
+
+
+def cells_awake(info):
+    try:
+        request = urllib.request.Request(info["admin"] + "/cells", headers={"authorization": "Bearer " + read(f"{ROOT}/cluster/secrets/admin_token").strip()})
+        return json.load(urllib.request.urlopen(request, timeout=5)).get("total")
+    except (OSError, ValueError):
+        return None
+
+
+def load_env(*args):
+    return subprocess.run([f"{HERE}/load-env", *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+# ---- sampling during a step ----------------------------------------------------------------------------
+
+class Sampler(threading.Thread):
+    """Reads the node, the store, the host and the generators every `period` seconds until stopped."""
+
+    def __init__(self, info, period):
+        super().__init__(daemon=True)
+        self.info, self.period, self.pids, self.stop_flag = info, period, [], threading.Event()
+        self.dirs = {name: cgroup_dir(info[name]["pid"]) for name in ("node", "store", "lb")}
+        self.samples = []
+
+    def take(self):
+        sample = {"t": time.time(), "host": host_sample(), "gen_cpu_s": sum(process_cpu(p) or 0 for p in self.pids)}
+        for name, directory in self.dirs.items():
+            sample[name] = cgroup_sample(directory)
+        sample["fds"] = fds(self.info["node"]["id"])
+        return sample
+
+    def run(self):
+        while not self.stop_flag.is_set():
+            try:
+                self.samples.append(self.take())
+            except Exception as error:  # a sample is lost, not the step
+                say(f"sample failed: {error}")
+            self.stop_flag.wait(self.period)
+
+    def finish(self):
+        self.stop_flag.set()
+        self.join()
+        self.samples.append(self.take())
+        return self.samples
+
+
+def summarize(samples, gen_cpu_total):
+    """CPU, memory, fds and host load over the samples of one step."""
+    first, last = samples[0], samples[-1]
+    span = max(last["t"] - first["t"], 1e-9)
+
+    def cores(name):
+        a, b = first[name].get("cpu_s"), last[name].get("cpu_s")
+        return None if a is None or b is None else (b - a) / span
+
+    node, store, lb = cores("node"), cores("store"), cores("lb")
+    nets = []
+    for a, b in zip(samples, samples[1:]):
+        dt, total = b["t"] - a["t"], b["host"]["cpu_total"] - a["host"]["cpu_total"]
+        if dt <= 0 or total <= 0:
+            continue
+        busy = CORES * (1 - (b["host"]["cpu_idle"] - a["host"]["cpu_idle"]) / total)
+        own = sum(((b[n].get("cpu_s") or 0) - (a[n].get("cpu_s") or 0)) / dt for n in ("node", "store", "lb"))
+        own += (b["gen_cpu_s"] - a["gen_cpu_s"]) / dt
+        nets.append((busy, max(busy - own, 0)))
+    mem = [s["node"] for s in samples if s["node"]]
+    limit = next((m["limit"] for m in mem if m["limit"]), None)
+    current = [m["memory_current"] for m in mem]
+    service = [m["memory_current"] - m["shmem"] for m in mem]
+    fd = [s["fds"] for s in samples if s["fds"]]
+    mb = lambda n: round(n / 1048576, 1)
+    return {
+        "cpu": {"node_cores": round(node, 3) if node is not None else None, "store_cores": round(store or 0, 3), "lb_cores": round(lb or 0, 3),
+                "generator_cores": round(gen_cpu_total / span, 3), "node_limit_cores": mem[-1]["cpu_limit"] if mem else None},
+        "memory": {"service_mb": mb(service[-1]) if service else None, "service_max_mb": mb(max(service)) if service else None,
+                   "tmpfs_mb": mb(mem[-1]["shmem"]) if mem else None, "current_mb": mb(current[-1]) if current else None,
+                   "peak_mb": mb(mem[-1]["peak"]) if mem else None, "limit_mb": mb(limit) if limit else None,
+                   "max_pct_of_limit": round(100 * max(current) / limit, 1) if current and limit else None},
+        "fds": {"count": fd[-1][0] if fd else None, "max": max((f[0] for f in fd), default=None), "limit": fd[-1][1] if fd else None},
+        "host": {"busy_cores_mean": round(sum(b for b, _ in nets) / len(nets), 2) if nets else None,
+                 "net_load_mean": round(sum(n for _, n in nets) / len(nets), 2) if nets else None,
+                 "net_load_max": round(max((n for _, n in nets), default=0), 2),
+                 "loadavg1": last["host"]["loadavg1"], "available_gb_min": round(min(s["host"]["available_gb"] for s in samples), 1)},
+    }
+
+
+# ---- results of the generators -------------------------------------------------------------------------
+
+def merge(documents):
+    out = {"statuses": {}, "hist": {}, "max_ms": 0.0, "planned": 0, "sent": 0, "completed": 0, "cpu_s": 0.0, "lag_p99": 0.0}
+    for d in documents:
+        for key in ("planned", "sent", "completed", "cpu_s"):
+            out[key] += d.get(key, 0)
+        for key, n in d["statuses"].items():
+            out["statuses"][key] = out["statuses"].get(key, 0) + n
+        for key, n in d["hist"].items():
+            out["hist"][int(key)] = out["hist"].get(int(key), 0) + n
+        out["max_ms"] = max(out["max_ms"], d["max_ms"])
+        out["lag_p99"] = max(out["lag_p99"], d["lag_ms"].get("p99", 0))
+        for key in ("opened", "failed", "dropped", "held"):
+            if key in d:
+                out[key] = out.get(key, 0) + d[key]
+    return out
+
+
+def percentile(hist, p, max_ms):
+    total = sum(hist.values())
+    if not total:
+        return None
+    if p >= 100:
+        return round(max_ms, 1)
+    seen, target = 0, total * p / 100
+    for bucket in sorted(hist):
+        seen += hist[bucket]
+        if seen >= target:
+            return round((bucket + 1) / BUCKET, 1)
+    return round(max_ms, 1)
+
+
+# ---- one step ------------------------------------------------------------------------------------------
+
+class Round:
+    def __init__(self, args, info):
+        self.args, self.info, self.index = args, info, 0
+        self.scenario = info["scenario"]
+        self.tag = f"s{int(time.time()) % 100000}"  # one name space per run: the cells of a smaller step stay hot in a larger one
+
+    def gen_commands(self, value):
+        a, node = self.args, self.info["node"]["ip"]
+        common = ["--host", node, "--port", "4000", "--timeout", str(a.timeout), "--tag", self.tag]
+        kind = {"http-native": "native", "http-wasm": "wasm"}.get(a.measure, a.worker)
+        if a.measure.startswith("http"):
+            procs = max(1, math.ceil(value / a.rate_per_proc))
+            conns = max(16, min(1024, math.ceil(value * a.conns_per_rate / procs)))
+            return [[f"{HERE}/load-gen", "http", *common, "--kind", kind, "--rate", str(value / procs), "--duration", str(a.step_s),
+                     "--cells", str(a.cells), "--write-ratio", str(a.write_ratio), "--conns", str(conns), "--seed", str(i + 1)] for i in range(procs)]
+        if a.measure == "cells":
+            return [[f"{HERE}/load-gen", "cells", *common, "--kind", kind, "--cells", str(value), "--period", str(a.cell_period),
+                     "--duration", str(a.step_s), "--open-rate", str(a.open_rate), "--conns", str(a.cells_conns)]]
+        return [[f"{HERE}/load-gen", "ws", *common, "--kind", kind, "--connections", str(value), "--duration", str(a.step_s),
+                 "--open-rate", str(a.open_rate), "--interval", str(a.ws_interval)]]
+
+    def run_generators(self, value, sampler):
+        commands, procs, outs = self.gen_commands(value), [], []
+        for i, command in enumerate(commands):
+            out = os.path.join(self.args.out, f".gen-{os.getpid()}-{i}.json")
+            outs.append(out)
+            procs.append(subprocess.Popen([*command, "--out", out], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True))
+        sampler.pids = [p.pid for p in procs]
+        deadline = time.time() + self.args.step_s + self.args.gen_grace + value / max(self.args.open_rate, 1) * (self.args.measure in ("ws", "cells"))
+        cpu = [0.0] * len(procs)
+        try:
+            while any(p.poll() is None for p in procs):
+                if time.time() > deadline:
+                    raise TimeoutError("the generator did not finish in time")
+                for i, p in enumerate(procs):
+                    cpu[i] = max(cpu[i], process_cpu(p.pid) or 0)
+                time.sleep(0.5)
+            documents = []
+            for p, out in zip(procs, outs):
+                if p.returncode:
+                    raise RuntimeError(f"load-gen failed: {p.stderr.read()[-500:]}")
+                with open(out) as file:
+                    documents.append(json.load(file))
+            return documents
+        finally:
+            for p in procs:  # only our own processes, by PID
+                if p.poll() is None:
+                    p.terminate()
+                    p.wait(10)
+            for out in outs:
+                if os.path.exists(out):
+                    os.remove(out)
+
+    def step(self, value, phase):
+        a = self.args
+        self.index += 1
+        for attempt in range(a.repeat_invalid + 1):
+            record = self.attempt(value, phase)
+            if record["stop_reason"] != "host load" or attempt == a.repeat_invalid:
+                break
+            say(f"host busy (net load {record['host']['net_load_mean']} > {a.host_load_max}): repeating the step in {a.host_wait:.0f} s")
+            time.sleep(a.host_wait)
+        record["attempts"] = attempt + 1
+        path = os.path.join(a.out, f"{self.scenario}_{a.measure}_{self.index:02d}-{phase}-{value}.json")
+        write_json(path, record)
+        say(f"{a.measure} {value} {UNITS[a.measure]}: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")
+            + f"; planned {record['planned']}, achieved {record['achieved']}, p99 {record['latency_ms']['p99']} ms -> {os.path.basename(path)}")
+        return record
+
+    def attempt(self, value, phase):
+        a, info = self.args, self.info
+        available = host_sample()["available_gb"]
+        if available < a.min_available_gb:
+            return self.record(value, phase, None, None, None, "invalid", "host memory", valid=False,
+                               host_override={"available_gb_min": round(available, 1)})
+        sampler = Sampler(info, a.sample_s)
+        s3_before = s3_counters(info["store"]["ip"])
+        sampler.samples.append(sampler.take())
+        sampler.start()
+        began = time.time()
+        try:
+            documents = self.run_generators(value, sampler)
+        except Exception as error:
+            sampler.finish()
+            return self.record(value, phase, None, None, None, "invalid", f"generator: {error}", valid=False)
+        samples = sampler.finish()
+        s3_after = s3_counters(info["store"]["ip"])
+        return self.record(value, phase, merge(documents), samples, (s3_before, s3_after), None, None, began=began, gens=documents, sampler=sampler)
+
+    def record(self, value, phase, merged, samples, s3, status, reason, valid=True, host_override=None, began=None, gens=None, sampler=None):
+        a, info = self.args, self.info
+        record = {"schema": SCHEMA, "scenario": self.scenario, "measure": a.measure, "unit": UNITS[a.measure], "phase": phase, "step": self.index,
+                  "value": value, "duration_s": a.step_s, "store_latency_ms": info["store_latency_ms"], "command": a.command,
+                  "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
+                  "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
+                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "cells_awake": None, "store_rtt_ms": None,
+                  "valid": valid, "status": status, "stop_reason": reason, "started_at": began}
+        if merged is None:
+            return record
+        usage = summarize(samples, sampler_cpu(gens))
+        errors = {k: n for k, n in merged["statuses"].items() if k not in OK_STATUSES}
+        record.update(statuses=merged["statuses"], cpu=usage["cpu"], memory=usage["memory"], fds=usage["fds"], host=usage["host"],
+                      latency_ms={"p50": percentile(merged["hist"], 50, merged["max_ms"]), "p95": percentile(merged["hist"], 95, merged["max_ms"]),
+                                  "p99": percentile(merged["hist"], 99, merged["max_ms"]), "max": percentile(merged["hist"], 100, merged["max_ms"])},
+                      status_503={"with_retry_after": merged["statuses"].get("503 retry-after", 0), "without_retry_after": merged["statuses"].get("503 no retry-after", 0)},
+                      limits={"cpus": usage["cpu"]["node_limit_cores"], "memory_mb": usage["memory"]["limit_mb"]},
+                      generator={"sent": merged["sent"], "completed": merged["completed"], "lag_p99_ms": round(merged["lag_p99"], 1), "cpu_cores": usage["cpu"]["generator_cores"]},
+                      cells_awake=cells_awake(self.info), store_rtt_ms=float(load_env("rtt") or 0))
+        before, after = s3
+        if before and after:
+            requests = max(merged["completed"], 1)
+            record["s3"] = {"trips": int(after[0] - before[0]), "bytes": int(after[1] - before[1]),
+                            "trips_per_request": round((after[0] - before[0]) / requests, 2), "bytes_per_request": round((after[1] - before[1]) / requests)}
+        record["planned"] = merged["planned"]
+        record["achieved"] = merged.get("opened", merged["completed"])
+        record["achieved_ratio"] = round(record["achieved"] / merged["planned"], 3) if merged["planned"] else None
+        if a.measure != "ws":
+            record["achieved_rate"] = round(merged["completed"] / a.step_s, 1)
+        criteria = []
+        p99 = record["latency_ms"]["p99"]
+        if a.measure != "ws" and p99 is not None and p99 > a.p99_ms:
+            criteria.append(f"p99 {p99} ms > {a.p99_ms:g} ms")
+        bad = {k: n for k, n in errors.items() if k != "message answered"}
+        if bad and a.measure != "ws":
+            criteria.append("errors: " + ", ".join(f"{k} x{n}" for k, n in sorted(bad.items())))
+        if a.measure == "ws" and (merged.get("failed") or merged.get("dropped")):
+            criteria.append(f"connections failed {merged.get('failed', 0)}, dropped {merged.get('dropped', 0)}")
+        pct = usage["memory"]["max_pct_of_limit"]
+        if a.measure in ("ws", "cells") and pct is not None and pct >= a.memory_pct:
+            criteria.append(f"memory {pct}% of the limit >= {a.memory_pct:g}%")
+        fd_max, fd_limit = usage["fds"]["max"], usage["fds"]["limit"]
+        if a.measure == "ws" and fd_max and fd_limit and fd_max >= a.fd_pct / 100 * fd_limit:
+            criteria.append(f"file descriptors {fd_max} of {fd_limit}")
+        if usage["host"]["net_load_mean"] is not None and usage["host"]["net_load_mean"] > a.host_load_max:
+            return {**record, "valid": False, "status": "invalid", "stop_reason": "host load"}
+        if any("EMFILE" in k for k in merged["statuses"]):
+            return {**record, "valid": False, "status": "invalid", "stop_reason": "the generator ran out of file descriptors"}
+        if criteria:
+            return {**record, "status": "fail", "stop_reason": "; ".join(criteria)}
+        if record["achieved_ratio"] is not None and record["achieved_ratio"] < a.delivery:
+            return {**record, "valid": False, "status": "invalid", "stop_reason": f"delivery {record['achieved_ratio']:.0%} of the plan < {a.delivery:.0%}"}
+        return {**record, "status": "ok"}
+
+
+def sampler_cpu(documents):
+    return sum(d["cpu_s"] for d in documents)
+
+
+def ramp(round_, args):
+    """The ramp, the refinement and the confirmation; returns the summary."""
+    values = [int(x) for x in args.steps.split(",")] if args.steps else []
+    if not values:
+        v = args.start
+        while v <= args.max:
+            values.append(round(v))
+            v *= args.factor
+    steps, good, failed, stopped = [], None, None, None
+    for v in values:
+        r = round_.step(v, "ramp")
+        steps.append(r)
+        if r["status"] == "ok":
+            good = v
+        elif r["status"] == "fail":
+            failed = v
+            break
+        else:
+            stopped = r
+            break
+    if failed is not None and good is not None and not stopped:
+        lo, hi = good, failed
+        for _ in range(args.refine):
+            mid = round((lo + hi) / 2)
+            if mid in (lo, hi):
+                break
+            r = round_.step(mid, "refine")
+            steps.append(r)
+            if r["status"] == "ok":
+                lo = mid
+            elif r["status"] == "fail":
+                hi = mid
+            else:
+                stopped = r
+                break
+        good = lo
+    confirmed = None
+    if good is not None and not stopped:
+        r = round_.step(good, "confirm")
+        steps.append(r)
+        confirmed = r["status"] == "ok"
+        stopped = r if r["status"] == "invalid" else None
+    last_fail = next((s for s in reversed(steps) if s["status"] == "fail"), None)
+    return {"approved": good if confirmed else None, "confirmed": confirmed, "first_failure": failed,
+            "stopped_by": last_fail["stop_reason"] if last_fail else None, "invalid": stopped["stop_reason"] if stopped else None,
+            "ceiling_reached": failed is None and stopped is None and good is not None}
+
+
+# ---- the swap ------------------------------------------------------------------------------------------
+
+def swap(round_, args, info):
+    rate = args.rate
+    if not rate:
+        for name in sorted(os.listdir(args.out), reverse=True):
+            if name.endswith(".summary.json") and "_http-wasm" in name:
+                rate = json.load(open(os.path.join(args.out, name))).get("approved")
+                break
+    if not rate:
+        sys.exit("swap needs --rate: no approved http-wasm step in " + args.out)
+    round_.index += 1
+    sampler = Sampler(info, args.sample_s)
+    sampler.start()
+    began = time.time()
+    run_dir = os.path.join(args.out, f"swap-{int(began)}")
+    command = [f"{ROOT}/scripts/cluster-swap-run", "--trigger", args.trigger, "--rate", str(rate), "--workers", str(args.swap_workers),
+               "--warmup", str(args.swap_warmup), "--overlap", str(args.swap_overlap), "--settle", str(args.swap_settle), "--out", run_dir]
+    process = subprocess.Popen(command, stdout=open(f"{args.out}/swap-{int(began)}.log", "w"), stderr=subprocess.STDOUT)
+    sampler.pids = [process.pid]
+    try:
+        process.wait(args.swap_timeout)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(60)
+    samples = sampler.finish()
+    result_path = os.path.join(run_dir, "result.json")
+    result = json.load(open(result_path)) if os.path.exists(result_path) else {}
+    errors = result.get("errors", {})
+    other = {k: n for k, n in errors.items() if not (k.startswith("503 ") and "without" not in k) and k != "0 connection_refused"}
+    phases = result.get("phases", {})
+    p99_peak = max((p["p99"] for p in phases.values() if p.get("p99") is not None), default=None)
+    duration = result.get("duration_s") or 1
+    reasons = []
+    if result.get("lost"):
+        reasons.append(f"lost {result['lost']}")
+    if result.get("duplicated"):
+        reasons.append(f"duplicated {result['duplicated']}")
+    if other:
+        reasons.append(f"errors other than 503: {other}")
+    if not result or (process.returncode and not reasons):
+        reasons.append(f"cluster-swap-run exited {process.returncode}")
+    usage = summarize(samples, 0) if all(s.get("node") is not None for s in samples) else {"host": {}, "cpu": {}, "memory": {}, "fds": {}}
+    record = {"schema": SCHEMA, "scenario": round_.scenario, "measure": "swap", "unit": "req/s", "phase": "swap", "step": 1, "value": rate,
+              "duration_s": duration, "store_latency_ms": info["store_latency_ms"], "command": args.command, "planned": round(rate * duration),
+              "achieved": result.get("sent"), "achieved_rate": round(result.get("sent", 0) / duration, 1),
+              "achieved_ratio": round(result.get("sent", 0) / (rate * duration), 3), "latency_ms": {"p50": (result.get("latency_ms") or {}).get("p50"),
+              "p95": None, "p99": (result.get("latency_ms") or {}).get("p99"), "p99_peak": p99_peak,
+              "max": max((p["max"] for p in phases.values() if p.get("max") is not None), default=None)},
+              "statuses": errors, "status_503": {"with_retry_after": sum(n for k, n in errors.items() if k.startswith("503 ") and "without" not in k),
+              "without_retry_after": sum(n for k, n in errors.items() if "without Retry-After" in k)},
+              "swap": {"a_exit_s": result.get("a_exit_s"), "b_rotation_s": result.get("b_rotation_s"), "last_503_s": result.get("last_503_s"),
+                       "lost": result.get("lost"), "duplicated": result.get("duplicated"), "acked": result.get("acked"), "refused": result.get("refused"),
+                       "unknown": result.get("unknown"), "phases": phases, "a_exit_code": result.get("a_exit_code")},
+              "cpu": usage["cpu"], "memory": usage["memory"], "fds": usage["fds"], "s3": {}, "host": usage["host"], "limits": {},
+              "valid": bool(result), "status": "fail" if reasons else "ok", "stop_reason": "; ".join(reasons) or None, "started_at": began}
+    if not result:
+        record["status"] = "invalid"
+    write_json(os.path.join(args.out, f"{round_.scenario}_swap_01-swap-{rate}.json"), record)
+    say(f"swap at {rate} req/s: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")
+        + f"; swap {record['swap']['a_exit_s']} s, p99 peak {p99_peak} ms")
+    return {"approved": rate if record["status"] == "ok" else None, "confirmed": None, "stopped_by": record["stop_reason"], "invalid": None}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("measure", choices=list(UNITS))
+    add = parser.add_argument
+    add("--out", default=os.environ.get("ATANOR_LOAD_OUT", f"{ROOT}/load/results/{time.strftime('%Y%m%d-%H%M%S')}"), help="results directory (ATANOR_LOAD_OUT)")
+    add("--step-s", type=float, default=env("STEP_S", 180), help="seconds of load per step (ATANOR_LOAD_STEP_S, 180)")
+    add("--start", type=float, help="first value of the ramp (http: 25 req/s, ws: 100 connections, cells: 100)")
+    add("--factor", type=float, default=env("FACTOR", 2), help="growth between steps (ATANOR_LOAD_FACTOR, 2)")
+    add("--max", type=float, help="last value to try (default: no limit that a failure would not reach: http 20000, ws 60000, cells 100000)")
+    add("--steps", help="explicit values, comma separated; replaces --start/--factor/--max")
+    add("--refine", type=int, default=env("REFINE", 3, int), help="bisections between the last good and the failing step (ATANOR_LOAD_REFINE, 3)")
+    add("--p99-ms", type=float, default=env("P99_MS", 250), help="p99 above this fails a step (ATANOR_LOAD_P99_MS, 250)")
+    add("--memory-pct", type=float, default=env("MEMORY_PCT", 90), help="memory.current at this share of the limit fails ws and cells steps (ATANOR_LOAD_MEMORY_PCT, 90)")
+    add("--fd-pct", type=float, default=env("FD_PCT", 90), help="open descriptors at this share of the limit fail a ws step (ATANOR_LOAD_FD_PCT, 90)")
+    add("--delivery", type=float, default=env("DELIVERY", 0.95), help="achieved/planned below this makes a step INVALID (ATANOR_LOAD_DELIVERY, 0.95)")
+    add("--host-load-max", type=float, default=env("HOST_LOAD_MAX", 6), help="net host load (busy cores minus the test's own) above this repeats the step (ATANOR_LOAD_HOST_LOAD_MAX, 6)")
+    add("--repeat-invalid", type=int, default=env("REPEAT_INVALID", 2, int), help="repeats of a step invalidated by host load (ATANOR_LOAD_REPEAT_INVALID, 2)")
+    add("--host-wait", type=float, default=env("HOST_WAIT", 30), help="seconds before such a repeat")
+    add("--min-available-gb", type=float, default=env("MIN_AVAILABLE_GB", 6), help="host MemAvailable below this stops the round (ATANOR_LOAD_MIN_AVAILABLE_GB, 6)")
+    add("--sample-s", type=float, default=env("SAMPLE_S", 5), help="seconds between samples (ATANOR_LOAD_SAMPLE_S, 5)")
+    add("--timeout", type=float, default=env("TIMEOUT", 10), help="seconds before a request counts as unanswered")
+    add("--gen-grace", type=float, default=30, help="seconds the generator may take beyond the step")
+    add("--rate-per-proc", type=float, default=env("RATE_PER_PROC", 600), help="req/s one generator process takes (ATANOR_LOAD_RATE_PER_PROC, 600)")
+    add("--conns-per-rate", type=float, default=0.5, help="http: keep-alive connections per req/s")
+    add("--write-ratio", type=float, default=env("WRITE_RATIO", 0.5), help="http: share of writes (ATANOR_LOAD_WRITE_RATIO, 0.5)")
+    add("--cells", type=int, default=env("CELLS", 64, int), help="http: cells the requests spread over (ATANOR_LOAD_CELLS, 64)")
+    add("--worker", choices=["native", "wasm"], default="native", help="ws and cells: the worker to use (native)")
+    add("--cell-period", type=float, default=env("CELL_PERIOD", 10), help="cells: seconds between the writes to one cell (ATANOR_LOAD_CELL_PERIOD, 10)")
+    add("--cells-conns", type=int, default=env("CELLS_CONNS", 64, int), help="cells: keep-alive connections")
+    add("--open-rate", type=float, default=env("OPEN_RATE", 100), help="ws, cells: sockets opened or cells touched per second (ATANOR_LOAD_OPEN_RATE, 100)")
+    add("--ws-interval", type=float, default=env("WS_INTERVAL", 30), help="ws: seconds between the messages of a socket (ATANOR_LOAD_WS_INTERVAL, 30)")
+    add("--rate", type=float, help="swap: requests per second (default: the approved http-wasm rate in --out)")
+    add("--trigger", choices=["sigterm", "api"], default="sigterm")
+    add("--swap-workers", type=int, default=12)
+    add("--swap-warmup", type=float, default=env("SWAP_WARMUP", 25))
+    add("--swap-overlap", type=float, default=env("SWAP_OVERLAP", 5))
+    add("--swap-settle", type=float, default=env("SWAP_SETTLE", 30))
+    add("--swap-timeout", type=float, default=900)
+    args = parser.parse_args()
+    defaults = {"http-native": (25, 20000), "http-wasm": (25, 20000), "ws": (100, 60000), "cells": (100, 100000), "swap": (0, 0)}[args.measure]
+    args.start = args.start or defaults[0]
+    args.max = args.max or defaults[1]
+    args.command = "mise run load:" + args.measure + " -- " + " ".join(sys.argv[2:])
+    os.makedirs(args.out, exist_ok=True)
+    info = json.loads(load_env("info"))
+    round_ = Round(args, info)
+    say(f"{args.measure} on scenario {info['scenario']}, {args.step_s:g} s per step, results in {args.out}")
+    # Idle reference before any load: the fixed cost.
+    idle = Sampler(info, 1)
+    first = idle.take()
+    write_json(os.path.join(args.out, f"{info['scenario']}_{args.measure}.baseline.json"),
+               {"scenario": info["scenario"], "measure": args.measure, "service_mb": round((first["node"]["memory_current"] - first["node"]["shmem"]) / 1048576, 1),
+                "tmpfs_mb": round(first["node"]["shmem"] / 1048576, 1), "fds": first["fds"][0] if first["fds"] else None})
+    summary = swap(round_, args, info) if args.measure == "swap" else ramp(round_, args)
+    summary.update(scenario=info["scenario"], measure=args.measure, command=args.command)
+    write_json(os.path.join(args.out, f"{info['scenario']}_{args.measure}.summary.json"), summary)
+    say(f"summary: {json.dumps(summary)}")
+
+
+main()

@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""The load generator of the load tests: one process, open loop, results as one JSON document.
+
+  load-gen http  --host H --port P --kind native|wasm --rate R --duration S [--cells N] [--write-ratio W] [--conns C]
+  load-gen cells --host H --port P --kind native|wasm --cells N --period S --duration S [--conns C]
+  load-gen ws    --host H --port P --kind native|wasm --connections N --duration S [--open-rate R] [--interval S]
+
+Common: --timeout S (an unanswered request is an error), --tag TEXT (made part of the cell names, so
+rounds do not share cells) and --out FILE (default: standard output). All times are from the schedule,
+not from the moment a request was sent, so a slow server cannot hide behind a slow generator. Each
+document carries `planned`, `sent` and `completed` plus `lag_ms`, how late requests left against the
+schedule, and `cpu_s`, so a generator that is the limit shows itself.
+
+  http   requests at R per second for S seconds over N cells (a share W of them writes) on C keep-alive
+         connections. Native: POST|GET /native/CELL on load.localhost. WASM: POST /rooms/ROOM/scores,
+         GET /rooms/ROOM on scoreboard.localhost.
+  cells  every one of N cells is written once (opening, at --open-rate), then each gets one write
+         every --period seconds for --duration seconds: N cells stay hot together.
+  ws     N WebSocket connections opened at --open-rate per second, each attached to one of --rooms
+         rooms with `join ROOM` and repeating that frame every --interval seconds (the node closes a
+         socket that is silent for 60 s), held for --duration seconds after the last one opened.
+
+Statuses are counted as "200", "201", "503 retry-after", "503 no retry-after", "5xx" and
+"error: KIND" (connection refused or reset, timeout, EMFILE, bad answer).
+"""
+import argparse
+import asyncio
+import base64
+import json
+import os
+import random
+import resource
+import struct
+import time
+
+HOSTS = {"native": "load.localhost", "wasm": "scoreboard.localhost"}
+BUCKET = 10  # histogram buckets per millisecond
+
+
+def request_for(kind, tag, cell, write, n):
+    """(method, path, host header) of one request."""
+    if kind == "native":
+        return ("POST" if write else "GET"), f"/native/{tag}-{cell}", HOSTS[kind]
+    if write:
+        return "POST", f"/rooms/{tag}-{cell}/scores?id={tag}-{n}&player=ada&points=1", HOSTS[kind]
+    return "GET", f"/rooms/{tag}-{cell}", HOSTS[kind]
+
+
+class Recorder:
+    def __init__(self):
+        self.statuses, self.hist, self.max_ms, self.lags = {}, {}, 0.0, []
+
+    def status(self, key):
+        self.statuses[key] = self.statuses.get(key, 0) + 1
+
+    def latency(self, ms):
+        bucket = min(int(ms * BUCKET), 10 * 1000 * BUCKET)
+        self.hist[bucket] = self.hist.get(bucket, 0) + 1
+        self.max_ms = max(self.max_ms, ms)
+
+    def lag(self, ms):
+        self.lags.append(ms)
+
+    def document(self, **fields):
+        lags = sorted(self.lags)
+        lag = {"mean": round(sum(lags) / len(lags), 2), "p99": round(lags[int(len(lags) * 0.99)], 2), "max": round(lags[-1], 2)} if lags else {}
+        return {**fields, "statuses": self.statuses, "hist": self.hist, "max_ms": round(self.max_ms, 3), "lag_ms": lag,
+                "cpu_s": round(time.process_time(), 2)}
+
+
+def classify(status, headers):
+    if status == 503:
+        return "503 retry-after" if "retry-after" in headers else "503 no retry-after"
+    return str(status) if status < 500 else "5xx"
+
+
+def error_kind(error):
+    if isinstance(error, asyncio.TimeoutError):
+        return "timeout"
+    if isinstance(error, OSError) and error.errno == 24:
+        return "EMFILE"
+    return type(error).__name__
+
+
+async def read_response(reader):
+    head = await reader.readuntil(b"\r\n\r\n")
+    lines = head.decode("latin-1").split("\r\n")
+    status = int(lines[0].split(" ", 2)[1])
+    headers = {k.lower(): v for k, _, v in (line.partition(": ") for line in lines[1:] if line)}
+    if "content-length" in headers:
+        await reader.readexactly(int(headers["content-length"]))
+    elif headers.get("transfer-encoding") == "chunked":
+        while True:
+            size = int((await reader.readline()).strip() or b"0", 16)
+            await reader.readexactly(size + 2)
+            if size == 0:
+                break
+    return status, headers
+
+
+async def http_worker(args, queue, recorder, clock):
+    reader = writer = None
+    while True:
+        item = await queue.get()
+        if item is None:
+            break
+        due, method, path, host = item
+        for attempt in (1, 2):
+            reused = writer is not None
+            try:
+                if writer is None:
+                    reader, writer = await asyncio.wait_for(asyncio.open_connection(args.host, args.port), args.timeout)
+                body = b"x" * 32 if method == "POST" else b""
+                recorder.lag(max((clock() - due) * 1000, 0))
+                writer.write(f"{method} {path} HTTP/1.1\r\nhost: {host}\r\ncontent-length: {len(body)}\r\n\r\n".encode() + body)
+                status, headers = await asyncio.wait_for(read_response(reader), args.timeout)
+                recorder.latency((clock() - due) * 1000)
+                recorder.status(classify(status, headers))
+                if headers.get("connection") == "close":
+                    writer.close()
+                    writer = None
+                break
+            except Exception as error:  # refused, reset, timeout, EMFILE, a malformed answer
+                if writer is not None:
+                    writer.close()
+                writer = None
+                # The node closed an idle keep-alive connection before it saw this request: send it again once.
+                if attempt == 1 and reused and isinstance(error, (asyncio.IncompleteReadError, ConnectionError)):
+                    recorder.status("reconnected")
+                    continue
+                recorder.status(f"error: {error_kind(error)}")
+                break
+    if writer is not None:
+        writer.close()
+
+
+async def pace(schedule, queue, clock):
+    """Puts each (due, ...) item in the queue when it is due; returns the number put."""
+    count = 0
+    for due, *rest in schedule:
+        delay = due - clock()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        queue.put_nowait((due, *rest))
+        count += 1
+    return count
+
+
+def http_schedule(args, start):
+    rng = random.Random(args.seed)
+    n = 0
+    while n < int(args.rate * args.duration):
+        write = rng.random() < args.write_ratio
+        yield (start + n / args.rate, *request_for(args.kind, args.tag, rng.randrange(args.cells), write, n))
+        n += 1
+
+
+def cells_schedule(args, start):
+    n = 0
+    for cell in range(args.cells):  # opening: one write per cell
+        yield (start + cell / args.open_rate, *request_for(args.kind, args.tag, cell, True, n))
+        n += 1
+    hold = start + args.cells / args.open_rate + args.settle
+    rounds = int(args.duration / args.period)
+    for r in range(rounds):  # then one write per cell and period, spread over the period
+        for cell in range(args.cells):
+            yield (hold + r * args.period + cell * args.period / args.cells, *request_for(args.kind, args.tag, cell, True, n))
+            n += 1
+
+
+async def run_http(args):
+    clock = time.monotonic
+    recorder = Recorder()
+    queue = asyncio.Queue()
+    start = clock() + 0.5
+    if args.mode == "http":
+        schedule, planned, window = http_schedule(args, start), int(args.rate * args.duration), args.duration
+    else:
+        schedule, planned = cells_schedule(args, start), args.cells + args.cells * int(args.duration / args.period)
+        window = args.duration
+    workers = [asyncio.create_task(http_worker(args, queue, recorder, clock)) for _ in range(args.conns)]
+    wall = time.time()
+    sent = await pace(schedule, queue, clock)
+    for _ in workers:
+        queue.put_nowait(None)
+    await asyncio.wait_for(asyncio.gather(*workers), args.timeout + 5)
+    completed = sum(n for k, n in recorder.statuses.items() if k != "reconnected")
+    rate = args.rate if args.mode == "http" else planned / (args.cells / args.open_rate + args.settle + args.duration)
+    return recorder.document(mode=args.mode, kind=args.kind, planned=planned, sent=sent, completed=completed, window_s=window,
+                             planned_rate=round(rate, 2), conns=args.conns, started_at=wall, ended_at=time.time())
+
+
+def frame(opcode, payload):
+    """A masked client frame."""
+    mask = os.urandom(4)
+    n = len(payload)
+    head = bytes([0x80 | opcode]) + (bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack(">H", n))
+    return head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+
+async def read_frame(reader):
+    first, second = await reader.readexactly(2)
+    n = second & 0x7F
+    if n == 126:
+        n = struct.unpack(">H", await reader.readexactly(2))[0]
+    elif n == 127:
+        n = struct.unpack(">Q", await reader.readexactly(8))[0]
+    return first & 0x0F, await reader.readexactly(n)
+
+
+async def ws_connection(args, index, recorder, deadline_event, state):
+    room = f"{args.tag}-{index % args.rooms}"
+    text = f"join {room}".encode()
+    key = base64.b64encode(os.urandom(16)).decode()
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(args.host, args.port), args.timeout)
+        writer.write((f"GET {'/native' if args.kind == 'native' else f'/rooms/{room}/live'} HTTP/1.1\r\nhost: {HOSTS[args.kind]}\r\n"
+                      f"upgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: {key}\r\nsec-websocket-version: 13\r\n\r\n").encode())
+        status, _ = await asyncio.wait_for(read_response_upgrade(reader), args.timeout)
+        if status != 101:
+            raise ConnectionError(f"upgrade answered {status}")
+    except Exception as error:
+        recorder.status(f"error: {error_kind(error)}")
+        state["failed"] += 1
+        return
+    state["open"] += 1
+    sent_at = None
+    try:
+        await asyncio.sleep(random.random() * args.interval)  # spread the first messages
+        while not deadline_event.is_set():
+            sent_at = time.monotonic()
+            writer.write(frame(1, text))
+            while True:  # until the answer to this message; pings are answered on the way
+                opcode, payload = await asyncio.wait_for(read_frame(reader), args.timeout)
+                if opcode == 9:
+                    writer.write(frame(10, payload))
+                elif opcode == 8:
+                    raise ConnectionError("closed by the node")
+                elif opcode == 1:
+                    break
+            recorder.latency((time.monotonic() - sent_at) * 1000)
+            recorder.status("message answered")
+            try:
+                await asyncio.wait_for(deadline_event.wait(), args.interval)
+            except asyncio.TimeoutError:
+                pass
+    except Exception as error:
+        recorder.status(f"error: {error_kind(error)} (open socket)")
+        state["dropped"] += 1
+    finally:
+        writer.close()
+
+
+async def read_response_upgrade(reader):
+    head = await reader.readuntil(b"\r\n\r\n")
+    return int(head.split(b" ", 2)[1]), head
+
+
+async def run_ws(args):
+    recorder = Recorder()
+    state = {"open": 0, "failed": 0, "dropped": 0}
+    done = asyncio.Event()
+    started = time.time()
+    tasks = []
+    begin = time.monotonic()
+    for index in range(args.connections):
+        delay = begin + index / args.open_rate - time.monotonic()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        tasks.append(asyncio.create_task(ws_connection(args, index, recorder, done, state)))
+    opened_at = time.monotonic()
+    await asyncio.sleep(args.timeout)  # the last handshakes
+    state_open_peak = state["open"]
+    await asyncio.sleep(args.duration)
+    held = state["open"] - state["dropped"]
+    done.set()
+    await asyncio.gather(*tasks)
+    return recorder.document(mode="ws", kind=args.kind, planned=args.connections, sent=args.connections, completed=state_open_peak,
+                             opened=state_open_peak, failed=state["failed"], dropped=state["dropped"], held=held,
+                             open_s=round(opened_at - begin, 1), window_s=args.duration, started_at=started, ended_at=time.time())
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("mode", choices=["http", "cells", "ws"])
+    parser.add_argument("--host", required=True)
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--kind", choices=["native", "wasm"], required=True)
+    parser.add_argument("--rate", type=float, default=50, help="http: requests per second")
+    parser.add_argument("--duration", type=float, default=180)
+    parser.add_argument("--cells", type=int, default=64, help="http: cells the requests spread over; cells: cells kept hot")
+    parser.add_argument("--write-ratio", type=float, default=0.5)
+    parser.add_argument("--conns", type=int, default=32, help="keep-alive connections")
+    parser.add_argument("--period", type=float, default=10, help="cells: seconds between the writes to one cell")
+    parser.add_argument("--open-rate", type=float, default=100, help="cells touched or sockets opened per second")
+    parser.add_argument("--settle", type=float, default=2, help="cells: seconds between the opening and the first round")
+    parser.add_argument("--connections", type=int, default=100)
+    parser.add_argument("--interval", type=float, default=30, help="ws: seconds between the messages of a socket")
+    parser.add_argument("--rooms", type=int, default=16, help="ws: rooms the sockets attach to")
+    parser.add_argument("--timeout", type=float, default=10)
+    parser.add_argument("--tag", default="g")
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--out")
+    args = parser.parse_args()
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    document = asyncio.run(run_ws(args) if args.mode == "ws" else run_http(args))
+    text = json.dumps(document)
+    if args.out:
+        with open(args.out + ".tmp", "w") as file:
+            file.write(text)
+        os.replace(args.out + ".tmp", args.out)
+    else:
+        print(text)
+
+
+main()

@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Write the report of a load-test results directory as Markdown: load-report DIR [--out FILE]
+
+Reads every step JSON (schema atanor-load-step-1), the baselines and the summaries that scripts/load-run
+wrote in DIR and prints, per scenario and measure: the steps, the cost per unit at the approved step and
+the criterion that stopped the ramp. The file (default DIR/report.md) is written atomically.
+"""
+import argparse
+import glob
+import json
+import os
+import sys
+
+
+def load(directory):
+    steps, baselines, summaries = [], {}, {}
+    for path in sorted(glob.glob(os.path.join(directory, "*.json"))):
+        with open(path) as file:
+            document = json.load(file)
+        name = os.path.basename(path)
+        if name.endswith(".baseline.json"):
+            baselines[(document["scenario"], document["measure"])] = document
+        elif name.endswith(".summary.json"):
+            summaries[(document["scenario"], document["measure"])] = document
+        elif document.get("schema") == "atanor-load-step-1":
+            steps.append(document)
+    return steps, baselines, summaries
+
+
+def num(value, digits=1):
+    return "-" if value is None else (f"{value:,.{digits}f}" if isinstance(value, float) else f"{value:,}")
+
+
+def table(rows, header):
+    lines = ["| " + " | ".join(header) + " |", "|" + "|".join("---" for _ in header) + "|"]
+    lines += ["| " + " | ".join(str(c) for c in row) + " |" for row in rows]
+    return "\n".join(lines)
+
+
+def step_rows(steps):
+    rows = []
+    for s in steps:
+        lat, mem, cpu = s["latency_ms"], s.get("memory", {}), s.get("cpu", {})
+        rows.append([s["step"], s["phase"], f"{s['value']:g}", f"{num(s['planned'], 0)} / {num(s['achieved'], 0)}", num(lat["p50"]), num(lat["p95"]), num(lat["p99"]), num(lat["max"]),
+                     f"{s['status_503']['with_retry_after']} / {s['status_503']['without_retry_after']}", num(cpu.get("node_cores"), 2),
+                     f"{num(mem.get('service_mb'))} / {num(mem.get('tmpfs_mb'))} / {num(mem.get('peak_mb'))}", num(s.get("fds", {}).get("count"), 0),
+                     f"{num(s.get('s3', {}).get('bytes'), 0)} / {num(s.get('s3', {}).get('trips'), 0)}",
+                     f"{num(s.get('host', {}).get('net_load_mean'), 1)} ({num(s.get('host', {}).get('loadavg1'), 1)})",
+                     s["status"].upper() + ("" if s["valid"] else " (invalid)") + (f": {s['stop_reason']}" if s["stop_reason"] else "")])
+    return rows
+
+
+HEADER = ["step", "phase", "value", "planned / achieved", "p50 ms", "p95 ms", "p99 ms", "max ms", "503 with / without Retry-After", "CPU cores",
+          "MB service / tmpfs / peak", "fds", "S3 bytes / trips", "net host load (loadavg)", "status"]
+
+
+def cost(measure, steps, baseline, summary):
+    """The cost per unit at the approved value, as (label, value) pairs."""
+    approved = summary.get("approved") if summary else None
+    best = next((s for s in reversed(steps) if s["value"] == approved and s["status"] == "ok"), None)
+    if not best:
+        return []
+    mem, cpu, fds, s3 = best["memory"], best["cpu"], best["fds"], best.get("s3", {})
+    base = (baseline or {}).get("service_mb")
+    out = [("approved step", f"{approved:g} {best['unit']}")]
+    if measure.startswith("http"):
+        rate, cores = best.get("achieved_rate"), cpu.get("node_cores")
+        out += [("req/s per vCPU", num(rate / cores) if cores else "-"), ("fixed MB (idle, before the load)", num(base)),
+                ("marginal MB per req/s", num((mem["service_mb"] - base) / rate, 3) if base is not None and rate else "-")]
+    elif measure == "ws":
+        n = best["achieved"]
+        out += [("fixed MB (idle)", num(base)), ("MB per connection", num((mem["service_mb"] - base) / n, 4) if base is not None and n else "-"),
+                ("fd per connection", num((fds["count"] - baseline["fds"]) / n, 3) if baseline and baseline.get("fds") and fds.get("count") and n else "-")]
+    elif measure == "cells":
+        n = best["value"]
+        out += [("fixed MB (idle)", num(base)), ("MB per hot cell", num((mem["service_mb"] - base) / n, 4) if base is not None and n else "-"),
+                ("cells awake (admin API)", num(best.get("cells_awake"), 0))]
+    if s3:
+        out += [("S3 trips per request" if measure != "ws" else "S3 trips in the step", num(s3.get("trips_per_request") if measure != "ws" else s3.get("trips"), 2)),
+                ("S3 bytes per request" if measure != "ws" else "S3 bytes in the step", num(s3.get("bytes_per_request") if measure != "ws" else s3.get("bytes"), 0))]
+    out.append(("tmpfs data MB (counted apart)", num(mem.get("tmpfs_mb"))))
+    return out
+
+
+def swap_section(steps):
+    s = steps[-1]
+    w = s["swap"]
+    rows = [["planned / achieved requests", f"{num(s['planned'], 0)} / {num(s['achieved'], 0)}"], ["swap duration (drain of A to exit)", f"{num(w['a_exit_s'])} s"],
+            ["B in rotation after start", f"{num(w['b_rotation_s'])} s"], ["last 503 after the drain began", f"{num(w['last_503_s'])} s"],
+            ["p99 peak over the phases", f"{num(s['latency_ms']['p99_peak'])} ms"], ["max", f"{num(s['latency_ms']['max'])} ms"],
+            ["acknowledged / refused / unknown", f"{w['acked']} / {w['refused']} / {w['unknown']}"], ["LOST / DUPLICATED", f"{w['lost']} / {w['duplicated']}"],
+            ["answers", ", ".join(f"{k} x{n}" for k, n in s["statuses"].items()) or "none"], ["verdict", s["status"].upper() + (f": {s['stop_reason']}" if s["stop_reason"] else "")]]
+    return table(rows, ["swap", "value"])
+
+
+def report(directory):
+    steps, baselines, summaries = load(directory)
+    if not steps:
+        sys.exit(f"no step results in {directory}")
+    out = [f"# Load test report", "", f"Results directory: `{directory}`. Generated by `scripts/load-report` from the step JSON files.", ""]
+    for scenario in sorted({s["scenario"] for s in steps}):
+        limits = next((s["limits"] for s in steps if s["scenario"] == scenario and s["limits"].get("memory_mb")), {})
+        latency = next(s["store_latency_ms"] for s in steps if s["scenario"] == scenario)
+        out += [f"## Scenario {scenario}", "", f"Node limits: {num(limits.get('cpus'), 1)} CPU and {num(limits.get('memory_mb'), 0)} MB (cgroup); store in tmpfs with {latency} ms added per trip.", ""]
+        for measure in ("http-native", "http-wasm", "ws", "cells", "swap"):
+            mine = [s for s in steps if s["scenario"] == scenario and s["measure"] == measure]
+            if not mine:
+                continue
+            summary, baseline = summaries.get((scenario, measure)), baselines.get((scenario, measure))
+            out += [f"### {measure} ({mine[0]['unit']})", ""]
+            if measure == "swap":
+                out += [swap_section(mine), ""]
+            else:
+                out += [table(step_rows(mine), HEADER), ""]
+                pairs = cost(measure, mine, baseline, summary)
+                out += [table(pairs, ["cost per unit", "value"]), ""] if pairs else ["No approved step: the first step already failed or was invalid.", ""]
+            if summary:
+                stop = summary.get("stopped_by") or summary.get("invalid") or ("ceiling reached without a failure" if summary.get("ceiling_reached") else "none")
+                out += [f"Ramp stopped by: **{stop}**" + (f" (invalid: {summary['invalid']})" if summary.get("invalid") and summary.get("stopped_by") else "")
+                        + (f"; confirmation repeat: {'passed' if summary.get('confirmed') else 'failed'}" if summary.get("confirmed") is not None else ""), ""]
+            out += ["Reproduce:", "", "```sh", f"ATANOR_LOAD_SCENARIO={scenario} mise run load:up", summary["command"] if summary else mine[0]["command"], "```", ""]
+    return "\n".join(out)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("directory")
+    parser.add_argument("--out")
+    args = parser.parse_args()
+    text = report(args.directory)
+    path = args.out or os.path.join(args.directory, "report.md")
+    with open(path + ".tmp", "w") as file:
+        file.write(text + "\n")
+    os.replace(path + ".tmp", path)
+    print(text)
+
+
+main()
