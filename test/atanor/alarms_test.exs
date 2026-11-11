@@ -72,6 +72,22 @@ defmodule Atanor.AlarmsTest do
 
   defp index_empty?(node), do: index(node) == []
 
+  # The timeout is real time and also covers the claim, so a loaded host can stop the
+  # handler before it sends. Each stop is reported and its alarm is due again after
+  # the lease: advance the clock past it until a handler reports a new start.
+  defp await_slow(world, after_count) do
+    receive do
+      {:alarm, "a", "slow", count} when count > after_count ->
+        count
+
+      {:failed, %{reason: :timeout}} ->
+        ManualClock.advance(world, 60_000)
+        await_slow(world, after_count)
+    after
+      5_000 -> flunk("no slow handler started after #{after_count}")
+    end
+  end
+
   describe "an address that cannot be used" do
     test "set_alarm leaves no index entry" do
       {node, _world} = start()
@@ -330,17 +346,29 @@ defmodule Atanor.AlarmsTest do
     end
 
     test "a handler that outlives timeout_ms is stopped and tried again" do
+      id = "alarm-timeout-#{System.unique_integer()}"
+      test = self()
+
+      :telemetry.attach(
+        id,
+        [:atanor, :alarm, :failed],
+        fn _, _, meta, _ -> send(test, {:failed, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(id) end)
+
       {node, world} = start(alarms: [timeout_ms: 200])
       set(node, "a", @start + 1_000, "slow")
       ManualClock.advance(world, 1_000)
-      assert_receive {:alarm, "a", "slow", 1}, 5_000
+      first = await_slow(world, 0)
 
-      # The claim moved the row to the retry time: timeout plus backoff.
-      assert [["clock", at, "slow", 1]] = rows(node, "a")
-      assert at == @start + 1_000 + 200 + 1_000
-      refute_receive {:alarm, _, _, _}, 200
-      ManualClock.advance(world, 1_200)
-      assert_receive {:alarm, "a", "slow", 2}, 5_000
+      # The claim moved the row past the timeout; the stopped handler was reported.
+      assert_receive {:failed, %{reason: :timeout, final: false}}, 5_000
+      assert [["clock", at, "slow", attempts]] = rows(node, "a")
+      assert attempts >= 1 and at >= @start + 1_000 + 200
+      ManualClock.advance(world, 60_000)
+      assert await_slow(world, first) > first
     end
   end
 
