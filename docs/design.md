@@ -1850,12 +1850,20 @@ separate UDP socket. Reasons for distribution:
   of from the detector.
 
 The cost is head-of-line blocking: the connection is one TCP stream, so a large
-message (a big response forwarded between nodes) delays the heartbeats behind
-it, and a saturated link looks suspect. That is accepted because the forwarded
-calls are delayed by the same bytes: a link on which nothing arrives for
-`acceptable_pause_ms` plus a few deviations is not one the router should use. The
-pause and the probes of §8.8 (witnesses use their own connections) are what keep a slow
-link from becoming a dead node.
+message (a big response forwarded between nodes) keeps the heartbeats behind it.
+The detector therefore also counts the bytes that arrive from an `alive` peer: on
+each tick it reads `recv_oct` of the distribution socket of the peer
+(`inet:getstat/2` on the port in `erlang:system_info(:dist_ctrl)`), and if it grew
+since the last tick the peer was heard, so the silence phi measures starts over.
+The intervals between heartbeats are not touched, so the window still describes
+heartbeats. A link that is saturated but moving is not suspect, and a link on which
+nothing arrives for `acceptable_pause_ms` plus a few deviations (a stuck
+controller, a full buffer that does not drain, a stopped peer) still is: the
+detector stays on the path the forwarded calls use.
+Without this, a large message that took longer than the pause made the peer
+suspect, and the probes of §8.8 (witnesses use their own connections) were what
+kept the slow link from becoming a dead node. If the counter cannot be read (the
+controller of the connection is not a port), only heartbeats count, as before.
 
 Options (`detector:` of `{Atanor, opts}`), all optional:
 
@@ -3137,6 +3145,15 @@ acceptable pause 600 ms, minimum deviation 50 ms, threshold 8): a `SIGSTOP` of
 `down` or `link_broken` event on any node. A pause longer than the acceptable
 pause plus a few deviations is a failure by definition (§8.7), and a node that
 comes back from one returns to `alive`.
+
+**A saturated link.** On loopback a 1 GiB message delays the heartbeats behind it
+by about 2 s (plain Erlang nodes, heartbeats sent with `:nosuspend` every 100 ms
+while it crosses; one of them was refused). Local sockets are too fast to hold
+them for longer, so `test/cluster/detector_test.exs` (a saturated link) suspends
+the detector of one node, which holds its heartbeats back, while it sends 32 KiB
+messages to a peer for 4 s: the peer has no heartbeat for over 3 s and does not
+suspect it. Without the check of received bytes it suspects it after about 1.1 s;
+when the bytes stop, it suspects it with the check too.
 
 **Tests.** `test/cluster/detector_test.exs` covers a `SIGKILL` seen without phi,
 a `SIGSTOP` found by phi and the probes, `SIGCONT` returning the node to `alive`

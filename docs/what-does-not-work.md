@@ -204,18 +204,6 @@ at every request (safe, but slow). **Evidence.**
 [design.md §8.8](design.md#88-indirect-probes-and-states) and
 [§8.10](design.md#810-acting-on-a-confirmed-failure).
 
-## Heartbeats share the connection with calls
-
-**What happens.** A large message forwarded between two nodes delays the
-heartbeats behind it on the same TCP connection. A link that stays saturated for
-longer than `acceptable_pause_ms` plus a few deviations makes the peer suspect;
-the probes then usually find it alive through its own answer or `link_broken`
-through a witness, and calls are not forwarded to it until heartbeats return.
-
-**Workaround.** Raise `acceptable_pause_ms` for nodes that exchange large
-messages, and watch `[:atanor, :node, :suspect]` followed by `:alive`.
-**Evidence.** [design.md §8.7](design.md#87-the-phi-accrual-detector).
-
 ## A request that may have run is not repeated
 
 **What happens.** When the connection to the node that was running a `POST`, a
