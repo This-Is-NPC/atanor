@@ -3972,7 +3972,12 @@ chosen:
 * The cost is address space, not memory: each memory slot reserves the guard
   region of the bounds-check scheme. On the 12-thread laptop the VM went from
   2.4 GiB to 390 GiB of address space and from 207 to 284 MiB resident after a
-  run (`bench:wasm`). With `max_calls` and `max_nested_calls` at their defaults (4 and 1 per thread) the same laptop
+  run (`bench:wasm`). Each memory slot reserves 4 GiB of address space (the wasm32 range plus guard region), and
+  a pool has `(max_calls + max_nested_calls) * 8` of them, so the reservation scales with those two
+  settings. To lower it, lower `max_calls` and `max_nested_calls`, or set `pooling: false`. When the
+  host refuses the reservation the node does not start: the error ends with "the pooling allocator
+  reserves address space for N calls: lower max_calls and max_nested_calls, or set pooling: false".
+  With `max_calls` and `max_nested_calls` at their defaults (4 and 1 per thread) the same laptop
   reserves 1.98 TiB (5 times as many slots), and 324 MiB resident after the run. Pages are returned to the kernel when a call ends. A host
   with a limit on address space (`ulimit -v`, `vm.overcommit_memory=2`) must set
   `pooling: false` or fewer `threads` and `max_calls`.
