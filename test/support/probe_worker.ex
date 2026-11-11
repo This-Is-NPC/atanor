@@ -94,6 +94,18 @@ defmodule Atanor.Test.ProbeWorker do
     json(200, render(Env.call(env, worker, %Request{path: path})))
   end
 
+  # Calls `worker` twice, waiting for `:go` in between; returns both answers.
+  defp dispatch("pair", req, env) do
+    %{"worker" => worker, "path" => path} = URI.decode_query(req.query)
+    test = req |> Request.header("x-test-pid") |> Base.decode64!() |> :erlang.binary_to_term()
+    first = render(Env.call(env, worker, %Request{path: path}))
+    send(test, {:in_handler, self()})
+
+    receive do
+      :go -> json(200, %{first: first, second: render(Env.call(env, worker, %Request{path: path}))})
+    end
+  end
+
   # Calls itself until the depth limit stops it.
   defp dispatch("recurse", req, env), do: json(200, render(Env.call(env, Env.worker(env), req)))
 
