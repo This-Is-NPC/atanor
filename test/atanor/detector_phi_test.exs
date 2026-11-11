@@ -67,4 +67,17 @@ defmodule Atanor.Detector.PhiTest do
     assert touched.count == phi.count
     assert Phi.elapsed(touched, touched.last + 5 * @ms) == 5 * @ms
   end
+
+  test "seen resets the silence that phi measures, not the intervals" do
+    phi = window(List.duplicate(1_000 * @ms, 10))
+    late = phi.last + 10_000 * @ms
+    seen = Phi.seen(phi, late)
+
+    assert phi_at(phi, 10_000 * @ms) == 300.0
+    assert phi_at(seen, 10_100 * @ms) < 0.1
+    assert seen.count == phi.count and seen.sum == phi.sum
+    assert Phi.elapsed(seen, late) == 10_000 * @ms
+    # An older sign of life does not move it back.
+    assert Phi.seen(seen, late - 1).seen == late
+  end
 end

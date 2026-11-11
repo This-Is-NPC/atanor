@@ -197,4 +197,29 @@ defmodule Atanor.Cluster.DetectorTest do
       assert events_about(cluster, [:suspect, :down, :link_broken]) == []
     end
   end
+
+  describe "a saturated link" do
+    # A large message holds the heartbeats behind it on the connection while its own bytes arrive.
+    # Local sockets are too fast to hold them for seconds, so the heartbeats of n1 are held by
+    # suspending its detector while it keeps sending bytes to n2.
+    test "bytes arriving from a peer whose heartbeats are late keep it alive; silence does not" do
+      cluster = start()
+      Process.sleep(1_000)
+      target = Cluster.node(cluster, :n2)
+      server = Module.concat(Cluster.instance(cluster), Detector)
+      :ok = :erpc.call(Cluster.node(cluster, :n1), :sys, :suspend, [server])
+
+      t0 = now()
+      {:ok, :ok} = Cluster.call(cluster, :n1, Atanor.Test.Flood, :stream, [target, 4_000], 30_000)
+      waited = views(cluster, :n2)[:n1].last_heartbeat_ms
+
+      # Four seconds without a heartbeat is far beyond what suspects a peer (about 1.1 s here).
+      assert waited > 3_000
+      assert Enum.filter(events_about(cluster, [:suspect]), &(&1.node == :n2 and &1.at >= t0)) == []
+      assert state(cluster, :n2, :n1) == :alive
+
+      # Once the bytes stop, the silence is a failure.
+      assert await_event(cluster, :n2, :suspect, :n1)
+    end
+  end
 end

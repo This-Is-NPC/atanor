@@ -160,7 +160,7 @@ defmodule Atanor.Detector do
 
   defp handle(:tick, state) do
     Process.send_after(self(), :tick, state.d.interval_ms)
-    state |> discover() |> heartbeats() |> reconnect() |> evaluate() |> forget() |> track_majority()
+    state |> discover() |> heartbeats() |> reconnect() |> traffic() |> evaluate() |> forget() |> track_majority()
   end
 
   defp handle({:heartbeat, from}, state), do: heartbeat(state, from)
@@ -260,7 +260,8 @@ defmodule Atanor.Detector do
         round: nil,
         probed: 0,
         reconnect: nil,
-        reconnect_at: nil
+        reconnect_at: nil,
+        received: nil
       }
 
       put_in(state.peers[node], peer)
@@ -298,6 +299,35 @@ defmodule Atanor.Detector do
 
     %{state | peers: peers}
   end
+
+  # Bytes arriving on the distribution connection of an alive peer show that it is up even when
+  # a large message keeps its heartbeats waiting behind it (design §8.7). The connection of a
+  # peer that is silent receives none, so a stuck one is still suspected.
+  defp traffic(state) do
+    at = now()
+    ctrl = Map.new(:erlang.system_info(:dist_ctrl))
+
+    peers =
+      Map.new(state.peers, fn
+        {node, %{state: :alive} = peer} -> {node, received(peer, ctrl[node], at)}
+        other -> other
+      end)
+
+    %{state | peers: peers}
+  end
+
+  defp received(peer, port, at) when is_port(port) do
+    case :inet.getstat(port, [:recv_oct]) do
+      {:ok, [recv_oct: octets]} when octets != peer.received ->
+        phi = if peer.received, do: Phi.seen(peer.phi, at), else: peer.phi
+        %{peer | received: octets, phi: phi}
+
+      _ ->
+        peer
+    end
+  end
+
+  defp received(peer, _port, _at), do: %{peer | received: nil}
 
   # `nil` is never. Monotonic time can be negative, so 0 is not "long ago".
   defp recent?(nil, _at, _ms), do: false
