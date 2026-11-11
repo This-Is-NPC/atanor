@@ -223,3 +223,36 @@ run = "scripts/cluster-swap-run"
 [tasks."cluster:roll"]
 description = "Roll the cluster's nodes onto a rebuilt image one at a time: build|roll (used by cluster:chaos-run rollout-restart)"
 run = "scripts/cluster-roll"
+
+[tasks."load:up"]
+description = "Start the load-test scenario: one node with cgroup limits (env: ATANOR_LOAD_SCENARIO=A 1 CPU/512 MB or B 2 CPUs/2 GB), data and store in tmpfs, 25 ms added per store trip, both workers deployed (see docs/how-to-run-the-load-tests.md)"
+depends = ["build:cli", "build:scoreboard"]
+run = "scripts/load-env up"
+
+[tasks."load:down"]
+description = "Remove the load-test containers, network and volumes (project atanor-cluster, container atanor-load-tc)"
+run = "scripts/load-env down"
+
+[tasks."load:http-native"]
+description = "Ramp requests per second to the native worker until p99 > 250 ms, a 5xx other than 503 with Retry-After, or an error (arguments: --step-s, --start, --steps, ...; --help lists all)"
+run = "scripts/load-run http-native"
+
+[tasks."load:http-wasm"]
+description = "Ramp requests per second to the WASM worker (scoreboard) until p99 > 250 ms, a 5xx other than 503 with Retry-After, or an error (same arguments as load:http-native)"
+run = "scripts/load-run http-wasm"
+
+[tasks."load:ws"]
+description = "Ramp open idle WebSocket connections with sparse messages until memory reaches 90% or the file descriptors run out (arguments: --worker native|wasm, --ws-interval, ...)"
+run = "scripts/load-run ws"
+
+[tasks."load:cells"]
+description = "Ramp the cells kept hot at the same time until memory reaches 90% or p99 > 250 ms (arguments: --cell-period, --worker native|wasm, ...)"
+run = "scripts/load-run cells"
+
+[tasks."load:swap"]
+description = "Replace the node by another under load at the last approved http-wasm rate and report the swap duration and p99 peak (arguments: --rate, --trigger sigterm|api, ...); run it last: the old node is removed"
+run = "scripts/load-run swap"
+
+[tasks."load:report"]
+description = "Write report.md of a results directory (argument: DIR, e.g. load/results/STAMP): steps, cost per unit and the criterion that stopped each ramp"
+run = "scripts/load-report"

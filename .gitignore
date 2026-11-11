@@ -28,3 +28,4 @@ erl_crash.dump*
 # Environment files with secrets, should anyone add one beside cluster/secrets.
 .env
 .env.*
+/load/results

@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# The environment of the load tests: up | latency | deploy | rtt | info | down. Settings: ATANOR_LOAD_*
+# (docs/how-to-run-the-load-tests.md). Safe to rerun; touches only the project atanor-cluster
+# and the container atanor-load-tc, by id or exact name.
+#
+#   up       scenario A or B: build, start one node (cgroup limits, data in tmpfs) with the store
+#            (tmpfs, 25 ms added per trip), deploy the native and the WASM worker
+#   latency  (re)apply the added store latency, and print the round trip from the node to the store
+#   deploy   deploy the native worker (cluster/load) and the scoreboard (WASM) to the node
+#   rtt      print the round trip from the node to the store in ms (median of three)
+#   info     print the containers, addresses and cgroup directories as JSON
+#   down     remove the containers, network and volumes
+set -euo pipefail
+source "$(dirname "$0")/load-common"
+
+TC=atanor-load-tc
+# The running node (after a swap that is node-2, not node-1).
+node_id() { docker ps -q --filter "label=$label" --filter "name=^/?$CLUSTER-node-[0-9]+$" | head -n 1; }
+
+# Median of three round trips from the node to the store's S3 port, in ms.
+store_rtt() {
+  local node=$1 i
+  for i in 1 2 3; do
+    docker exec "$node" curl -s -o /dev/null -w '%{time_total}\n' http://store:8333/
+  done | sort -n | sed -n 2p | awk '{printf "%.1f", $1 * 1000}'
+}
+
+# netem on the store's side of its network: every answer it sends waits LATENCY ms, so each trip to
+# the store costs that much more. The qdisc lives in the store container's network namespace;
+# the node image brings tc, and a throwaway container joins that namespace with NET_ADMIN.
+latency() {
+  local store node qdisc before after
+  store=$(cluster_container store) node=$(node_id)
+  docker rm -f "$TC" >/dev/null 2>&1 || true
+  if [[ $LOAD_STORE_LATENCY_MS -gt 0 ]]; then qdisc=(replace dev eth0 root netem delay "${LOAD_STORE_LATENCY_MS}ms")
+  else qdisc=(del dev eth0 root); fi
+  before=$(store_rtt "$node")
+  docker run --rm --name "$TC" --net "container:$store" --cap-add NET_ADMIN --user root --entrypoint tc \
+    "${ATANOR_CLUSTER_IMAGE:-atanor-cluster-node:local}" qdisc "${qdisc[@]}" >/dev/null 2>&1 || true
+  after=$(store_rtt "$node")
+  echo "store round trip from the node: ${before} ms -> ${after} ms (added latency ${LOAD_STORE_LATENCY_MS} ms)"
+  if [[ $LOAD_STORE_LATENCY_MS -gt 0 ]]; then
+    awk -v b="$before" -v a="$after" -v m="$LOAD_STORE_LATENCY_MS" 'BEGIN { exit !(a - b >= m * 0.8) }' \
+      || { echo "the added latency is not visible" >&2; exit 1; }
+  fi
+}
+
+deploy() {
+  local node tmp url
+  node=$(node_id); url=$(published_url 4001)
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' RETURN
+  [[ -x $repo/_build/cli/atanor ]] || { echo "build the CLI first: mise run build:cli" >&2; exit 1; }
+  # The package holds the MD5 of the module as compiled into the release, so the beam comes from the node.
+  docker cp "$node:/opt/atanor/lib/atanor_node-0.1.0/ebin/Elixir.AtanorNode.LoadWorker.beam" "$tmp/"
+  (cd "$repo/cluster/load" && ATANOR_URL=$url ATANOR_TOKEN=$(admin_token) "$repo/_build/cli/atanor" deploy --ebin "$tmp" --activate)
+  "$repo/scripts/cluster-deploy-example"
+}
+
+info() {
+  local node store lb
+  node=$(node_id) store=$(cluster_container store) lb=$(cluster_container lb)
+  jq -n --arg scenario "$LOAD_SCENARIO" --arg latency "$LOAD_STORE_LATENCY_MS" \
+    --arg node "$node" --arg nodeip "$(container_ip "$node")" --arg nodepid "$(docker inspect -f '{{.State.Pid}}' "$node")" \
+    --arg store "$store" --arg storeip "$(container_ip "$store")" --arg storepid "$(docker inspect -f '{{.State.Pid}}' "$store")" \
+    --arg lb "$lb" --arg lbpid "$(docker inspect -f '{{.State.Pid}}' "$lb")" \
+    --arg http "$(published_url 4000)" --arg admin "$(published_url 4001)" \
+    '{scenario: $scenario, store_latency_ms: ($latency | tonumber),
+      node: {id: $node, ip: $nodeip, pid: ($nodepid | tonumber)},
+      store: {id: $store, ip: $storeip, pid: ($storepid | tonumber)},
+      lb: {id: $lb, pid: ($lbpid | tonumber)}, http: $http, admin: $admin}'
+}
+
+case ${1:-} in
+  up)
+    "$repo/scripts/cluster-up"
+    latency
+    deploy ;;
+  latency) latency ;;
+  deploy) deploy ;;
+  rtt) store_rtt "$(node_id)"; echo ;;
+  info) info ;;
+  down)
+    docker rm -f "$TC" >/dev/null 2>&1 || true
+    "$repo/scripts/cluster-down" ;;
+  *) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac
