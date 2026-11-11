@@ -173,6 +173,5 @@ keep no lease from it, are not woken, and the change feed does not move.
 
 - [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md) to activate the
   package and roll back.
-- [design.md §17.3](design.md#173-migration-rehearsal) for how it works and
-  what it does not cover.
-- [what-does-not-work.md](what-does-not-work.md) for the limits of the sample.
+- [design.md §17.3](design.md#173-migration-rehearsal) for how it works, what it
+  does not cover and the limits of the sample.

@@ -264,7 +264,7 @@ the first request for each takes it over (design
 means a node takes cells over only when it and the peers it still reaches are a
 majority of the nodes it knows, so a node cut off from the others takes nothing;
 in a cluster of two a silent failure then waits for the lease
-([what-does-not-work.md](what-does-not-work.md)).
+([design §8.10](design.md#810-acting-on-a-confirmed-failure)).
 
 ## Stop a node without errors
 
@@ -332,4 +332,4 @@ still gets the 503: the runtime keeps the availability reason of the cell call.
 - [how-to-place-hot-cells.md](how-to-place-hot-cells.md) to let a very busy cell move to a less loaded or a dedicated node.
 - [how-to-run-the-cluster-lab.md](how-to-run-the-cluster-lab.md) to run it on three VMs and break it on purpose.
 - [design.md §8](design.md#8-cluster) for how routing, retries and failures
-  work, and [what-does-not-work.md](what-does-not-work.md) for the limits.
+  work, including its limits.

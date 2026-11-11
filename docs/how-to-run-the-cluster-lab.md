@@ -276,4 +276,4 @@ on the host.
 
 - [how-to-run-a-cluster.md](how-to-run-a-cluster.md) and
   [design.md §8](design.md#8-cluster) for how routing and failover work.
-- [what-does-not-work.md](what-does-not-work.md) for the limits the lab found.
+- [design §8.10](design.md#810-acting-on-a-confirmed-failure) and [§8.13](design.md#813-a-handler-that-outlives-its-cell) for the limits the lab found.

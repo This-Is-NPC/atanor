@@ -116,7 +116,7 @@ in step 6.
 
    Each fire inserts a normal job; the cron row itself is the schedule. Times
    are UTC and there are no time zones yet (see
-   [what-does-not-work.md](what-does-not-work.md)).
+   [design §15.4](design.md#154-execution-retries-cron-and-timeouts)).
 
 8. Observe and recover. With the admin API:
 
