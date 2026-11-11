@@ -24,20 +24,23 @@ defmodule Atanor.WasmWaitTest do
     assert [%{status: 200, body: "slept 4000"} | _] = Task.await_many(sleepers, 30_000)
   end
 
-  test "one worker cannot take every call slot" do
+  test "waiting guests do not use up the call slots of their worker" do
     node = start([{"sleeper", "sleep", []}, {"hello", "hello", []}])
     settings = Atanor.Wasm.settings()
+    count = settings.worker_calls + 2
 
+    # Started in groups, so each group has parked (is waiting) before the next one is admitted.
     sleepers =
-      for _ <- 1..(settings.worker_calls + 2) do
-        Task.async(fn -> request(node, "sleeper", "/3000") end)
+      for group <- Enum.chunk_every(1..count, settings.threads) do
+        tasks = for _ <- group, do: Task.async(fn -> request(node, "sleeper", "/4000") end)
+        Process.sleep(300)
+        tasks
       end
 
-    Process.sleep(500)
     assert %{status: 200} = request(node, "hello")
-    statuses = sleepers |> Task.await_many(30_000) |> Enum.map(& &1.status) |> Enum.sort()
-    assert Enum.count(statuses, &(&1 == 503)) == 2
-    assert Enum.count(statuses, &(&1 == 200)) == settings.worker_calls
+    assert %{status: 200} = request(node, "sleeper", "/10")
+    statuses = sleepers |> List.flatten() |> Task.await_many(30_000) |> Enum.map(& &1.status)
+    assert statuses == List.duplicate(200, count)
   end
 
   test "nested calls complete when their callers hold every thread" do

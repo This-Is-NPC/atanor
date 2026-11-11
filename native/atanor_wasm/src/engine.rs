@@ -6,6 +6,7 @@
 //! limit stops it. The ticker is its own thread, so no guest can delay it.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::Semaphore;
@@ -13,7 +14,7 @@ use tokio::sync::Semaphore;
 use rustler::NifMap;
 use wasmtime::{Config, Engine, InstanceAllocationStrategy, OptLevel, PoolingAllocationConfig};
 
-use crate::admission::{Gate, Running};
+use crate::admission::{Gate, Parking, Running, Slot};
 use crate::guest::{self, Job};
 use crate::stats;
 
@@ -29,8 +30,11 @@ pub enum Cpu {
 pub struct Settings {
     /// Guests that run at once; a waiting guest does not count.
     pub threads: usize,
-    /// Pool threads: calls in flight, running or waiting.
+    /// Calls in flight that are not waiting: the pool threads that serve them.
     pub max_calls: usize,
+    /// Guests that wait without holding a call slot or a pool thread. Each has its own
+    /// thread and instance slot, so this adds to `max_calls` in the pool.
+    pub max_waiting: usize,
     /// Calls a worker's guests make to other workers, in flight at once.
     pub max_nested_calls: usize,
     /// Calls of one worker in flight at once, queued included.
@@ -57,6 +61,7 @@ pub struct Runtime {
     queue: Arc<Queue>,
     permits: Arc<Semaphore>,
     nested: Arc<Gate>,
+    waiting: Arc<Gate>,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -65,10 +70,15 @@ pub fn runtime() -> Option<&'static Runtime> {
     RUNTIME.get()
 }
 
+/// The calls that hold a store at once: running or queued ones, waiting ones and nested ones.
+fn instances(settings: &Settings) -> usize {
+    settings.max_calls + settings.max_waiting + settings.max_nested_calls
+}
+
 /// A call holds one store from its start to its end, waiting or not, so the pool has a slot
-/// for each call that may be in flight: the pool threads and the nested calls.
+/// for each call that may be in flight.
 fn pool(settings: &Settings) -> PoolingAllocationConfig {
-    let threads = (settings.max_calls + settings.max_nested_calls) as u32;
+    let threads = instances(settings) as u32;
     let mut pool = PoolingAllocationConfig::new();
     pool.total_component_instances(threads)
         .total_core_instances(threads * INSTANCES)
@@ -97,8 +107,8 @@ fn engine(cpu: Cpu, settings: &Settings) -> Result<Engine, String> {
     Engine::new(&config).map_err(|e| {
         if settings.pooling {
             format!(
-                "{e}; the pooling allocator reserves address space for {} calls: lower max_calls and max_nested_calls, or set pooling: false",
-                settings.max_calls + settings.max_nested_calls
+                "{e}; the pooling allocator reserves address space for {} calls: lower max_calls, max_waiting and max_nested_calls, or set pooling: false",
+                instances(settings)
             )
         } else {
             e.to_string()
@@ -117,6 +127,7 @@ pub fn configure(settings: Settings) -> Result<(), String> {
     if settings.threads == 0
         || settings.max_calls < settings.threads
         || settings.max_nested_calls == 0
+        || settings.max_waiting == 0
         || settings.worker_calls == 0
         || settings.queue == 0
         || settings.tick_ms == 0
@@ -124,7 +135,7 @@ pub fn configure(settings: Settings) -> Result<(), String> {
         || settings.table_elements == 0
     {
         return Err(
-            "threads, max_nested_calls, worker_calls, queue, tick_ms, max_memory_bytes and table_elements must be positive, and max_calls at least threads".into(),
+            "threads, max_nested_calls, max_waiting, worker_calls, queue, tick_ms, max_memory_bytes and table_elements must be positive, and max_calls at least threads".into(),
         );
     }
     if let Some(running) = RUNTIME.get() {
@@ -132,6 +143,7 @@ pub fn configure(settings: Settings) -> Result<(), String> {
         let same = s.threads == settings.threads
             && s.max_calls == settings.max_calls
             && s.max_nested_calls == settings.max_nested_calls
+            && s.max_waiting == settings.max_waiting
             && s.worker_calls == settings.worker_calls
             && s.queue == settings.queue
             && s.tick_ms == settings.tick_ms
@@ -147,7 +159,7 @@ pub fn configure(settings: Settings) -> Result<(), String> {
     }
 
     let engine = engine(cpu, &settings)?;
-    let queue = Arc::new(Queue::default());
+    let queue = Arc::new(Queue::new(settings.max_calls));
     let tick = Duration::from_millis(settings.tick_ms);
 
     let runtime = Runtime {
@@ -157,6 +169,7 @@ pub fn configure(settings: Settings) -> Result<(), String> {
         queue: queue.clone(),
         permits: Arc::new(Semaphore::new(settings.threads)),
         nested: Gate::new(settings.max_nested_calls),
+        waiting: Gate::new(settings.max_waiting),
     };
     if RUNTIME.set(runtime).is_err() {
         return Ok(());
@@ -171,7 +184,7 @@ pub fn configure(settings: Settings) -> Result<(), String> {
         })
         .map_err(|e| e.to_string())?;
 
-    for i in 0..settings.max_calls {
+    for i in 0..settings.max_calls + settings.max_waiting {
         let queue = queue.clone();
         std::thread::Builder::new()
             .name(format!("atanor-wasm-{i}"))
@@ -183,13 +196,31 @@ pub fn configure(settings: Settings) -> Result<(), String> {
 
 /// Jobs waiting for a pool thread. An idle thread sleeps on the condition and a new job wakes
 /// exactly one, so a pool far larger than its load costs no wake-up chain per job.
-#[derive(Default)]
-struct Queue {
+///
+/// The pool has `max_waiting` threads more than `max_calls`: a job is taken only while fewer than
+/// `max_calls` calls are busy, and a call that waits is not busy, so its thread is not
+/// counted and another call may use the pool in the meantime.
+pub struct Queue {
     jobs: Mutex<VecDeque<Job>>,
     ready: Condvar,
+    /// Calls on a pool thread that are not waiting.
+    busy: AtomicUsize,
+    /// Jobs in `jobs`, readable without the lock.
+    queued: AtomicUsize,
+    capacity: usize,
 }
 
 impl Queue {
+    pub fn new(capacity: usize) -> Self {
+        Queue {
+            jobs: Mutex::default(),
+            ready: Condvar::new(),
+            busy: AtomicUsize::new(0),
+            queued: AtomicUsize::new(0),
+            capacity,
+        }
+    }
+
     /// Adds a job unless `limit` are already waiting.
     fn push(&self, job: Job, limit: usize) -> bool {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
@@ -197,19 +228,45 @@ impl Queue {
             return false;
         }
         jobs.push_back(job);
+        self.queued.fetch_add(1, SeqCst);
         drop(jobs);
         self.ready.notify_one();
         true
     }
 
+    /// The next job, once fewer than `capacity` calls are busy. The call is busy from here.
     fn pop(&self) -> Job {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            if let Some(job) = jobs.pop_front() {
-                return job;
+            if self.busy.load(SeqCst) < self.capacity {
+                if let Some(job) = jobs.pop_front() {
+                    self.queued.fetch_sub(1, SeqCst);
+                    self.busy.fetch_add(1, SeqCst);
+                    return job;
+                }
             }
             jobs = self.ready.wait(jobs).unwrap_or_else(|e| e.into_inner());
         }
+    }
+
+    /// A busy call waits or ends: a queued job may take its place.
+    pub fn leave(&self) {
+        self.busy.fetch_sub(1, SeqCst);
+        if self.queued.load(SeqCst) > 0 {
+            // Taking the lock orders this wake-up after a thread that is about to sleep.
+            drop(self.jobs.lock().unwrap_or_else(|e| e.into_inner()));
+            self.ready.notify_one();
+        }
+    }
+
+    /// A waiting call runs again; it was admitted, so it is not refused.
+    pub fn enter(&self) {
+        self.busy.fetch_add(1, SeqCst);
+    }
+
+    #[cfg(test)]
+    pub fn busy(&self) -> usize {
+        self.busy.load(SeqCst)
     }
 }
 
@@ -219,6 +276,7 @@ fn worker(queue: Arc<Queue>) {
         let job = queue.pop();
         stats::QUEUED.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         serve(&rt, job);
+        queue.leave();
     }
 }
 
@@ -233,7 +291,8 @@ fn current_thread() -> tokio::runtime::Runtime {
 fn serve(rt: &tokio::runtime::Runtime, job: Job) {
     let permits = runtime().expect("configured").permits.clone();
     let (pid, tag) = (job.pid, job.tag);
-    if !survives(|| rt.block_on(Running::new(permits, guest::run(job)))) {
+    let parker = job.slot.as_ref().and_then(Slot::parker);
+    if !survives(|| rt.block_on(Running::new(permits, parker, guest::run(job)))) {
         guest::report_panic(&pid, tag);
     }
 }
@@ -249,12 +308,15 @@ fn survives(f: impl FnOnce()) -> bool {
 pub fn submit(mut job: Job) -> Result<(), ()> {
     let runtime = runtime().ok_or(())?;
     let nested = job.limits.nested;
-    let gate = if nested {
-        &runtime.nested
+    let slot = if nested {
+        runtime.nested.enter()
     } else {
-        &job.pre.calls
+        job.pre.calls.enter_parkable(Parking {
+            waiting: runtime.waiting.clone(),
+            pool: runtime.queue.clone(),
+        })
     };
-    let Some(slot) = gate.enter() else {
+    let Some(slot) = slot else {
         stats::bump(&stats::REJECTED);
         return Err(());
     };
@@ -289,6 +351,7 @@ pub fn test_settings() -> Settings {
         threads: 1,
         max_calls: 1,
         max_nested_calls: 1,
+        max_waiting: 1,
         worker_calls: 1,
         queue: 1,
         tick_ms: 10,
