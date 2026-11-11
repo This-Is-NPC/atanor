@@ -183,9 +183,8 @@ defmodule Atanor.FeedTest do
     defp identity(changes), do: Enum.map(changes, &{&1.id, &1.txid, &1.row["body"]})
 
     test "a group is one object: limit counts objects, and each change arrives once, in order, as without groups" do
-      # A window of 1 ms makes every batch late, and Alambique can then key a later batch before an earlier one
-      # (docs/what-does-not-work.md). The baseline needs on-time batches.
-      {_plain, plain_env} = start(alambique: [feed: [window_ms: 500, linger_ms: 0]])
+      # A window of 1 ms makes every batch late; Alambique still keys the objects in commit order.
+      {_plain, plain_env} = start()
       for i <- 1..16, do: execute(plain_env, "notes", "a", "notes", "b#{i}")
       {plain, _next} = await_changes(plain_env, "notes", nil, 16)
 
@@ -547,6 +546,18 @@ defmodule Atanor.FeedTest do
       assert_receive {:atanor_changes, ^ref, [%Change{cell: "a"}], _position}, 5_000
       assert_receive {[:atanor, :feed, :error], %{count: 1}, %{reason: _reason}}, 5_000
       refute_receive {:atanor_feed_dropped, ^ref, _position}, 100
+    end
+
+    test "a store that does not answer in time is an unavailable store" do
+      {node, env} = start()
+      execute(env, "notes", "a", "notes", "hi")
+      {MemoryStore, config} = node.store
+      fault = MemoryStore.inject(config, kind: :latency, ops: [:list], key: ~r{/feed/}, ms: 500)
+      on_exit(fn -> MemoryStore.remove(config, fault) end)
+
+      assert {:error, {:store, :timeout}} = Atanor.Feed.read_records(node.name, nil, 10)
+      assert {:error, {:store, :timeout}} = Env.changes(env, "notes", nil, 10)
+      assert Atanor.Unavailable.reason({:store, :timeout}) == :store_unavailable
     end
 
     test "a :now subscriber repeats changes inside the skew margin" do
