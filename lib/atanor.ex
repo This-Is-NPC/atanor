@@ -273,6 +273,12 @@ defmodule Atanor do
       `unavailable`, reason `owner_unreachable` (design §7.3, §8.4); and
       `:max_attachments` (16 cells one socket can be attached to, over it
       `{:error, :too_many_attachments}`).
+    * `:wasm` - limits of the host calls of WASM workers (design §4.3):
+      `:max_batch_bytes` (67 108 864, the largest total size of the results
+      of one `batch`, text and blobs by length and 8 bytes for other values;
+      over it the batch is rolled back and the guest gets `failed("batch_too_large: ...")`)
+      and `:max_cell_message_bytes` (1 048 576, the largest message
+      `send-to-cell` accepts; native workers are not limited).
     * `:channels` - limits of the ephemeral channels (design §7.6):
       `:max_message_bytes` (16 384, the largest message `publish` accepts),
       `:max_subscriptions` (16 channels one socket can be in) and

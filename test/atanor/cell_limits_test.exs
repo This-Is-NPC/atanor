@@ -144,6 +144,16 @@ defmodule Atanor.CellLimitsTest do
       assert %{status: 200, body: "[count(*)] 5"} = sql(node, "query", "SELECT count(*) FROM notes")
     end
 
+    test "a batch whose results pass wasm max_batch_bytes fails and applies nothing" do
+      node = WasmCase.start([{"cell", "cell", cells: %{"notes" => @notes}}], wasm: [max_batch_bytes: 55])
+      two = "SELECT '#{String.duplicate("x", 12)}'\nSELECT '#{String.duplicate("y", 12)}'"
+      three = two <> "\nINSERT INTO notes (body) VALUES ('z')\nSELECT 'w'"
+
+      assert %{status: 200} = sql(node, "batch", two)
+      assert %{status: 500, body: "failed: batch_too_large: " <> _} = sql(node, "batch", three)
+      assert %{status: 200, body: "[count(*)] 0"} = sql(node, "query", "SELECT count(*) FROM notes")
+    end
+
     test "a node at awake max_cells is a 503 overloaded with Retry-After" do
       node = wasm()
       for key <- ["a", "b"], do: assert(%{status: 200} = sql(node, "query", "SELECT 1", key: key))

@@ -10,7 +10,7 @@ defmodule Atanor.Wasm.Host do
   """
 
   alias Alambique.Tx
-  alias Atanor.{Env, Request}
+  alias Atanor.{Env, Registry, Request}
 
   # Errors of Alambique's limits reach the guest as `failed("<code>: <text>")`; the codes are documented
   # in wit/cell/sql.wit (design §4.3).
@@ -18,7 +18,9 @@ defmodule Atanor.Wasm.Host do
     statement_timeout: "the statement ran longer than the cell's sql statement_timeout_ms",
     result_too_large: "the result is over the cell's sql max_result_rows or max_result_bytes",
     overloaded: "this node is at its awake limits; retry later",
-    busy: "too many calls are waiting on this cell; retry later"
+    busy: "too many calls are waiting on this cell; retry later",
+    batch_too_large: "the results of the batch are over the wasm max_batch_bytes; nothing was applied",
+    message_too_large: "the message is over the wasm max_cell_message_bytes"
   }
   @limit_errors Map.keys(@limit_messages)
 
@@ -60,14 +62,22 @@ defmodule Atanor.Wasm.Host do
   end
 
   defp run(env, :batch, [ns, key, statements]) do
+    cap = Registry.config(env.instance).wasm.max_batch_bytes
+
     result =
       Env.transaction(env, {ns, key}, fn tx ->
-        for [sql, params] <- Enum.map(statements, &Tuple.to_list/1) do
-          case Tx.execute(tx, sql, Enum.map(params, &param/1)) do
-            {:ok, result} -> result
+        statements
+        |> Enum.map(&Tuple.to_list/1)
+        |> Enum.reduce({[], 0}, fn [sql, params], acc ->
+          with {:ok, result} <- Tx.execute(tx, sql, Enum.map(params, &param/1)),
+               {:ok, acc} <- add_result(acc, result, cap) do
+            acc
+          else
             {:error, reason} -> Tx.rollback(tx, reason)
           end
-        end
+        end)
+        |> elem(0)
+        |> Enum.reverse()
       end)
 
     case result do
@@ -122,7 +132,13 @@ defmodule Atanor.Wasm.Host do
   defp run(env, :set_alarm, [ns, key, at_ms, payload]), do: env |> Env.set_alarm({ns, key}, at_ms, payload) |> ok()
   defp run(env, :cancel_alarm, [ns, key]), do: env |> Env.cancel_alarm({ns, key}) |> ok()
   defp run(env, :attach, [ns, key]), do: env |> Env.attach({ns, key}) |> ok()
-  defp run(env, :send_to_cell, [ns, key, message]), do: env |> Env.send_to_cell({ns, key}, message) |> ok()
+
+  defp run(env, :send_to_cell, [ns, key, message]) do
+    if byte_size(message) > Registry.config(env.instance).wasm.max_cell_message_bytes,
+      do: error({:error, :message_too_large}),
+      else: env |> Env.send_to_cell({ns, key}, message) |> ok()
+  end
+
   defp run(env, :join_channel, [ns, key, id]), do: env |> Env.join_channel({ns, key}, id: id) |> ok()
   defp run(env, :leave_channel, [ns, key]), do: env |> Env.leave_channel({ns, key}) |> ok()
   defp run(env, :publish, [ns, key, frame]), do: env |> Env.publish({ns, key}, frame) |> ok()
@@ -172,6 +188,28 @@ defmodule Atanor.Wasm.Host do
 
   defp default_port("http"), do: 80
   defp default_port(_), do: 443
+
+  @doc false
+  # Adds a statement's result to the batch `{results, bytes}` (newest first), or `{:error, :batch_too_large}`
+  # as soon as the sum passes `cap`. It walks the rows and copies nothing.
+  @spec add_result({list, non_neg_integer}, map, pos_integer) ::
+          {:ok, {list, non_neg_integer}} | {:error, :batch_too_large}
+  def add_result({results, bytes}, result, cap) do
+    bytes = bytes + result_bytes(result)
+    if bytes > cap, do: {:error, :batch_too_large}, else: {:ok, {[result | results], bytes}}
+  end
+
+  @doc false
+  # Text and blobs count by length, any other value 8 bytes.
+  @spec result_bytes(%{columns: [binary], rows: [list]}) :: non_neg_integer
+  def result_bytes(%{columns: columns, rows: rows}) do
+    Enum.reduce(columns, 0, &(byte_size(&1) + &2)) +
+      Enum.reduce(rows, 0, fn row, acc -> Enum.reduce(row, acc, &(value_bytes(&1) + &2)) end)
+  end
+
+  defp value_bytes(value) when is_binary(value), do: byte_size(value)
+  defp value_bytes({:blob, value}) when is_binary(value), do: byte_size(value)
+  defp value_bytes(_), do: 8
 
   defp param({:blob, _} = blob), do: blob
   defp param(value), do: value
