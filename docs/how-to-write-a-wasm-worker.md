@@ -289,6 +289,17 @@ does not instantiate in either mode.
   retry after a moment. If the guest then answers 5xx, the client gets 503
   `overloaded` with `Retry-After`. The limits and their defaults are in
   [design §4.3](design.md#43-limits-on-cell-calls-and-their-errors).
+- **`batch` fails with `failed("batch_too_large: ...")`.** The results of all
+  its statements together passed the node's `wasm.max_batch_bytes` (64 MiB by
+  default). The batch was rolled back: nothing was applied. Split it into
+  several batches, select fewer rows or columns, or ask the operator to raise
+  `wasm: [max_batch_bytes: ...]`
+  ([configuration.md](configuration.md#wasm-engine)).
+- **`send-to-cell` fails with `failed("message_too_large: ...")`.** The message
+  is over `wasm.max_cell_message_bytes` (1 MiB by default) and no socket
+  received it. Send less (an id the client can fetch, or a diff), split it into
+  several messages, or ask the operator to raise
+  `wasm: [max_cell_message_bytes: ...]`. Native workers are not limited.
 - **A job call fails with `failed("store_unavailable: ...")` or
   `failed("sync_failed: ...")`.** The first means the store did not answer a
   request of the job's transaction, which was rolled back: nothing ran, retry
