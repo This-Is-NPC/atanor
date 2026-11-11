@@ -5,8 +5,8 @@
 //! runs one guest at a time, so a runaway guest costs one pool slot until its
 //! limit stops it. The ticker is its own thread, so no guest can delay it.
 
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::VecDeque;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
@@ -54,7 +54,7 @@ pub struct Runtime {
     pub engine: Engine,
     pub cpu: Cpu,
     settings: Settings,
-    tx: SyncSender<Job>,
+    queue: Arc<Queue>,
     permits: Arc<Semaphore>,
     nested: Arc<Gate>,
 }
@@ -147,15 +147,14 @@ pub fn configure(settings: Settings) -> Result<(), String> {
     }
 
     let engine = engine(cpu, &settings)?;
-    let (tx, rx) = sync_channel::<Job>(settings.queue);
-    let rx = Arc::new(Mutex::new(rx));
+    let queue = Arc::new(Queue::default());
     let tick = Duration::from_millis(settings.tick_ms);
 
     let runtime = Runtime {
         engine: engine.clone(),
         cpu,
         settings: settings.clone(),
-        tx,
+        queue: queue.clone(),
         permits: Arc::new(Semaphore::new(settings.threads)),
         nested: Gate::new(settings.max_nested_calls),
     };
@@ -173,22 +172,51 @@ pub fn configure(settings: Settings) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     for i in 0..settings.max_calls {
-        let rx = rx.clone();
+        let queue = queue.clone();
         std::thread::Builder::new()
             .name(format!("atanor-wasm-{i}"))
-            .spawn(move || worker(rx))
+            .spawn(move || worker(queue))
             .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-fn worker(rx: Arc<Mutex<Receiver<Job>>>) {
+/// Jobs waiting for a pool thread. An idle thread sleeps on the condition and a new job wakes
+/// exactly one, so a pool far larger than its load costs no wake-up chain per job.
+#[derive(Default)]
+struct Queue {
+    jobs: Mutex<VecDeque<Job>>,
+    ready: Condvar,
+}
+
+impl Queue {
+    /// Adds a job unless `limit` are already waiting.
+    fn push(&self, job: Job, limit: usize) -> bool {
+        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        if jobs.len() >= limit {
+            return false;
+        }
+        jobs.push_back(job);
+        drop(jobs);
+        self.ready.notify_one();
+        true
+    }
+
+    fn pop(&self) -> Job {
+        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(job) = jobs.pop_front() {
+                return job;
+            }
+            jobs = self.ready.wait(jobs).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
+fn worker(queue: Arc<Queue>) {
     let rt = current_thread();
     loop {
-        let job = match rx.lock().map(|rx| rx.recv()) {
-            Ok(Ok(job)) => job,
-            _ => return,
-        };
+        let job = queue.pop();
         stats::QUEUED.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         serve(&rt, job);
     }
@@ -240,13 +268,12 @@ pub fn submit(mut job: Job) -> Result<(), ()> {
             .map_err(|_| stats::bump(&stats::REJECTED));
     }
     stats::QUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    match runtime.tx.try_send(job) {
-        Ok(()) => Ok(()),
-        Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
-            stats::QUEUED.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            stats::bump(&stats::REJECTED);
-            Err(())
-        }
+    if runtime.queue.push(job, runtime.settings.queue) {
+        Ok(())
+    } else {
+        stats::QUEUED.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        stats::bump(&stats::REJECTED);
+        Err(())
     }
 }
 
