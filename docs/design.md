@@ -382,10 +382,15 @@ Native workers use them through `Atanor.Env`:
   host expect a round trip or two more per request.
 * **worker calls**: `call(env, worker, request)` runs the callee's
   `handle_request/2` in the same node, with the callee's own env and grants.
-  The callee's active deployment is resolved at call time (D1 pins the
-  worker that received the request; nested calls are not pinned, see
-  [what-does-not-work.md](what-does-not-work.md)). The depth is limited to 8;
-  deeper is `{:error, :max_call_depth}`.
+  The env pins the callee at ingress, with the deployment of the request
+  itself (D1): `Env.new/2` reads the active deployment of every worker reachable
+  through `workers` bindings from the registry (memory, no store read) and keeps
+  them in the env, so every call of one request to a worker reaches one version,
+  whatever is activated meanwhile. A pinned deployment that is no longer active
+  still runs: the env holds it (and a WASM module with it), so the old version
+  finishes the request and is released with it. A callee that was not active at
+  ingress is resolved at call time. The depth is limited to 8; deeper is
+  `{:error, :max_call_depth}`.
 For WASM the binding is the import. The WIT packages are in `wit/`:
 `atanor:cell/sql@0.1.0` (`query`, `execute`, `batch`), `atanor:cell/alarms@0.1.0`
 (`set-alarm`, `cancel-alarm`), `atanor:cell/jobs@0.1.0` (`enqueue`,
@@ -950,7 +955,10 @@ has no `workers:` option.
 **Guarantee D1.** A request resolves its deployment once, at ingress, and
 carries it to the end, including when it is forwarded to another node. A
 switch affects only requests that start after the node applied it. Nested
-worker calls (§4) resolve the callee at call time. The StreamData property in
+worker calls (§4) are pinned the same way, in the env, at ingress; the property
+in `test/atanor/call_pinning_test.exs` interleaves activations with requests
+that call a worker twice and checks that both calls see the version that was
+active at the start. The StreamData property in
 `test/atanor/deployments_property_test.exs` interleaves random activations and
 rollbacks with requests that are held in the handler, and checks that each
 request reports one deployment at its start and end, the one that was active

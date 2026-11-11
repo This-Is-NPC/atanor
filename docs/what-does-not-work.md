@@ -284,18 +284,6 @@ marker off by hand.
 `test/replica_properties_test.exs`; Atanor's
 `test/cluster/replica_bound_property_test.exs`.
 
-## Nested worker calls are not pinned to a deployment
-
-**What happens.** `Env.call/3` runs the callee on the node that runs the
-caller, with the callee's active deployment at the time of the call. If the
-callee's deployment changes during a request, two calls in the same request can
-reach two versions.
-
-**Workaround.** Do not depend on the two workers switching together within one
-request.
-
-**Evidence.** [design.md §4](design.md#4-bindings).
-
 ## A cell can run old schema until its owner applies a new worker version
 
 **What happens.** A node hibernates its own awake cells of a namespace when it
