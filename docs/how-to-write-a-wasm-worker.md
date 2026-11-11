@@ -315,6 +315,7 @@ does not instantiate in either mode.
   to run, or the worker already had `worker_calls` calls in flight (a guest that
   waits does not count against `threads`, but it counts against `worker_calls`). The body is `{"error":"overloaded","reason":"overloaded"}`
   and the response carries `Retry-After` (`http.retry_after_s`, 1 s by default).
+  A burst of one worker above `worker_calls` (36 with 12 threads) is refused on purpose; retry after `Retry-After`, or raise `worker_calls` and `max_calls`.
   See the node settings in `Atanor.Wasm`.
 
 ## Next steps

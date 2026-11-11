@@ -3785,6 +3785,28 @@ is refused only at the limit and that a release always makes room.
 `test/atanor/wasm_wait_test.exs` checks the effect with guests that sleep and
 that call each other.
 
+**Cost and limits (measured).** Fuel mode, `hello` over HTTP, 32 clients, 12
+threads, runs alternated in ABBA order with the load below 3 and no other test
+VM (`mise run bench:wasm`): master 25,940 requests/s (median of 3) against
+about 24,100 to 24,400 with this admission, about 5% less. One of three
+branch runs gave 12,888 and is left out as host noise. The cause is not
+proven. The thread count was one cause, and the queue of `engine.rs` now
+wakes one idle thread per job (12% before, 5% after). Pools of 24 threads
+(arms with `max_calls = 2 x threads`) did not close the rest. The suspect is
+the pooling allocator's 60 instance slots against 12 (§14.9).
+
+The refusal moved. Master queued up to 60 calls of one worker (12 running and
+48 waiting); one worker is now refused with 503 `overloaded` above
+`worker_calls` (36 at the defaults), so a burst of 64 clients against one
+worker got about 0.1% 503s per 5 s run (87 to 117 of about 120,000) against
+about 0.01% on master (4 to 13). The p99 of the accepted requests was the
+same, 4.1 to 4.7 ms. This is backpressure on purpose, not loss: the response
+carries `Retry-After` and a worker whose guests wait cannot take every thread.
+A node that serves bursts of one worker raises `worker_calls` and `max_calls`
+(each adds address space, §14.9). Lower values refuse more and were not
+faster: with `max_calls` and `worker_calls` at 24, the same burst got about
+0.5% 503s.
+
 ### 14.3 Allocator
 
 The library's global allocator counts bytes on the system allocator, per
