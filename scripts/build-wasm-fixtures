@@ -14,7 +14,7 @@ mkdir -p "$out"
 "$root/scripts/wasm-guest-deps" "$guests"
 
 cd "$guests"
-for feature in hello echo spin hog fieldhog crash outbound cell secret caller sneaky alarm socket channel job; do
+for feature in hello echo spin sleep hog fieldhog crash outbound cell secret caller sneaky alarm socket channel job; do
   cargo build --release --quiet --target wasm32-wasip2 --no-default-features --features "$feature"
   cp "target/wasm32-wasip2/release/guests.wasm" "$out/$feature.wasm"
   echo "built $feature.wasm ($(wc -c <"$out/$feature.wasm") bytes)"
