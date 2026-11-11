@@ -59,7 +59,12 @@ defmodule Atanor.Feed do
           | {:error, term}
   def read_records(instance, position, limit) do
     ctx = Alambique.Feed.ctx(Atanor.Registry.config(instance).alambique)
-    Alambique.Feed.read(ctx, position, limit)
+
+    case Alambique.Feed.read(ctx, position, limit) do
+      # The store did not answer within `op_timeout_ms`: an unavailable store, like any other read error.
+      {:error, :timeout} -> {:error, {:store, :timeout}}
+      result -> result
+    end
   rescue
     exception -> {:error, {:exception, Exception.message(exception)}}
   catch
