@@ -2815,6 +2815,7 @@ the node keeps serving.
 | CPU, epoch mode | manifest `limits.cpu_ms`, at most the node setting `cpu_ms` | node `cpu_ms`, 5000 ms | `:cpu`, 500 |
 | CPU, fuel mode | manifest `limits.fuel` (at most the node setting `max_fuel`), else the node setting `fuel` | 1,000,000,000 (ceiling 10,000,000,000) | `:cpu`, 500 |
 | response body | node setting `max_response_bytes` | 8,000,000 | 500 |
+| guests that wait without a call slot | node setting `max_waiting` | 2 per thread | none: a guest above it keeps its slot (§14.2) |
 
 The wall clock covers the wait for host calls (cells, secrets, worker calls,
 outbound HTTP). CPU time does not include it. Overload is separate: a call
@@ -3766,17 +3767,31 @@ Three bounds, all in Rust (`admission.rs`); Elixir does not count requests.
 * **Running.** At most `threads` guests (default: logical processors) run at
   once. A call polls its guest only while it holds one of `threads` permits and
   gives the permit back whenever the guest is pending: a sleep, `poll`, a host
-  call, an outbound response or a worker it called. A waiting guest holds a
-  call slot and an idle thread, not a CPU. Permits are served in order, and the
+  call, an outbound response or a worker it called. A waiting guest holds no
+  CPU, and while there is room among the `max_waiting` waiting guests it holds
+  no call slot and no pool thread either (see *In flight*). Permits are served in order, and the
   wait for the first one counts in `queue_wait_ms`. The CPU limit counts only
   the time the guest ran, as before: a call has a thread of its own.
 * **In flight.** The queue holds `queue` calls (default 4 per thread) for the
-  `max_calls` pool threads; a full queue refuses the call at once. A queued
+  pool threads; a full queue refuses the call at once. A queued
   call that waited more than `queue_wait_ms` is dropped when it gets the right
-  to run. One worker's prepared component has at most `worker_calls` calls in
-  flight, queued included (default three quarters of `max_calls`); one more is refused at
-  once. So a worker whose guests wait cannot take every thread, and another
-  worker is served. Both are `{:error, :overloaded}`, 503.
+  to run. At most `max_calls` calls are busy at once (default 4 per thread):
+  a pool thread takes a queued call only below that number. One worker's
+  prepared component has at most `worker_calls` busy calls, queued included
+  (default three quarters of `max_calls`); one more is refused at once. So a
+  busy worker cannot take every thread, and another worker is served. Both are
+  `{:error, :overloaded}`, 503.
+* **Waiting.** A call whose guest waits is not busy: it gives its call slot
+  back, and the pool thread it holds stops counting against `max_calls`, so
+  guests that wait do not cause `:overloaded` for new calls. At most
+  `max_waiting` guests do this at once (default 2 per thread). The pool has
+  `max_waiting` threads more than `max_calls` for them, and a store each
+  (§14.9). A guest that waits above that number keeps its slot and thread until
+  it runs again, as before. A guest that wakes is never refused: it takes its
+  slot back, above `worker_calls` if need be, and runs when it gets the right
+  to run. So busy calls can pass `max_calls` by at most `max_waiting` while
+  woken guests run, and the threads and stores in use never pass
+  `max_calls + max_waiting + max_nested_calls`.
 * **Nested.** A call a guest makes to another worker (`Env.depth > 0`) skips
   the queue and the per-worker bound: its caller is waiting for it, so it
   could wait behind its caller forever. It gets a thread of its own, up to
@@ -3784,10 +3799,12 @@ Three bounds, all in Rust (`admission.rs`); Elixir does not count requests.
   with `:overloaded`. A pool full of waiting callers cannot starve their
   callees, and a callee waits only for the right to run, like any call.
 
-`Gate` is the counting rule of the second and third bounds. Its property test
-(`a_gate_admits_exactly_up_to_its_limit`) checks over random sequences of
-entries and releases that the slots held never exceed the limit, that an entry
-is refused only at the limit and that a release always makes room.
+`Gate` is the counting rule of the second, third and fourth bounds. Its property
+tests check over random sequences that the slots held never exceed the limit,
+that an entry is refused only at the limit and that a release always makes room
+(`a_gate_admits_exactly_up_to_its_limit`), and that waiting, waking and ending
+a call, in any order, move the slot, the waiting count and the busy count
+together and return all of them at the end (`slots_follow_the_calls_that_wait`).
 `test/atanor/wasm_wait_test.exs` checks the effect with guests that sleep and
 that call each other.
 
@@ -3991,7 +4008,7 @@ as before. The pool is sized from the other settings, so no new size has to be
 chosen:
 
 * A call holds its store from start to end, waiting or not, so there are
-  `max_calls + max_nested_calls` component instances and stacks, and per thread the most one store may hold: 8 core
+  `max_calls + max_waiting + max_nested_calls` component instances and stacks, and per thread the most one store may hold: 8 core
   instances, 8 memories and 16 tables (`Limiter` refuses more, in both modes).
 * A memory slot holds up to `max_memory_bytes` (at most 4 GiB, the size of a
   wasm32 memory) and a table slot `table_elements`. The CPU, wall-clock and
@@ -4001,12 +4018,13 @@ chosen:
   region of the bounds-check scheme. On the 12-thread laptop the VM went from
   2.4 GiB to 390 GiB of address space and from 207 to 284 MiB resident after a
   run (`bench:wasm`). Each memory slot reserves 4 GiB of address space (the wasm32 range plus guard region), and
-  a pool has `(max_calls + max_nested_calls) * 8` of them, so the reservation scales with those two
-  settings. To lower it, lower `max_calls` and `max_nested_calls`, or set `pooling: false`. When the
+  a pool has `(max_calls + max_waiting + max_nested_calls) * 8` of them, so the reservation scales with those
+  settings. To lower it, lower `max_calls`, `max_waiting` and `max_nested_calls`, or set `pooling: false`. When the
   host refuses the reservation the node does not start: the error ends with "the pooling allocator
-  reserves address space for N calls: lower max_calls and max_nested_calls, or set pooling: false".
-  With `max_calls` and `max_nested_calls` at their defaults (4 and 1 per thread) the same laptop
-  reserves 1.98 TiB (5 times as many slots), and 324 MiB resident after the run. Pages are returned to the kernel when a call ends. A host
+  reserves address space for N calls: lower max_calls, max_waiting and max_nested_calls, or set pooling: false".
+  With `max_calls` and `max_nested_calls` at their defaults (4 and 1 per thread, before `max_waiting` existed) the same laptop
+  reserved 1.98 TiB (5 times as many slots), and 324 MiB resident after the run. With `max_waiting` at its default
+  (2 per thread) there are 7 slots per thread, so about 2.8 TiB (scaled, not measured). Pages are returned to the kernel when a call ends. A host
   with a limit on address space (`ulimit -v`, `vm.overcommit_memory=2`) must set
   `pooling: false` or fewer `threads` and `max_calls`.
 * A component that needs more than a slot (more than 8 memories, a table larger

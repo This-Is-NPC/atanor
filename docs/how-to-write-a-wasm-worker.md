@@ -261,8 +261,8 @@ The node keeps pre-mapped slots for the guests' memories and tables (the
 `:atanor, :wasm` setting `pooling`, `true` by default), which makes a call
 instantiate in 18 microseconds instead of 68 (design §14.9). The slots reserve
 address space: 4 GiB for each of 8 memory slots per call that may be in flight, so
-about 2 TiB for 12 threads with the default `max_calls` (4 per thread) and
-`max_nested_calls` (1 per thread); lower those two to reduce it (design §14.9); on a host that limits address space
+about 2.8 TiB for 12 threads with the default `max_calls` (4 per thread),
+`max_waiting` (2 per thread) and `max_nested_calls` (1 per thread); lower those three to reduce it (design §14.9); on a host that limits address space
 (`ulimit -v`, `vm.overcommit_memory=2`) set `pooling: false`. A component with
 more than 8 memories or 16 tables, or a table larger than `table_elements`,
 does not instantiate in either mode.
@@ -312,10 +312,10 @@ does not instantiate in either mode.
 - **The client gets 500 `internal_error` and the log shows `wasm trap`.** The
   guest panicked or trapped; its stderr, up to `stderr_bytes` (4 KiB by default), is logged just before.
 - **503 `overloaded`.** The queue was full, the call waited too long for the right
-  to run, or the worker already had `worker_calls` calls in flight (a guest that
-  waits does not count against `threads`, but it counts against `worker_calls`). The body is `{"error":"overloaded","reason":"overloaded"}`
+  to run, or the worker already had `worker_calls` busy calls in flight (a guest that
+  waits counts against neither `threads` nor `worker_calls`, up to `max_waiting` waiting guests on the node). The body is `{"error":"overloaded","reason":"overloaded"}`
   and the response carries `Retry-After` (`http.retry_after_s`, 1 s by default).
-  A burst of one worker above `worker_calls` (36 with 12 threads) is refused on purpose; retry after `Retry-After`, or raise `worker_calls` and `max_calls`.
+  A burst of one worker above `worker_calls` (36 with 12 threads) busy calls is refused on purpose; retry after `Retry-After`, or raise `worker_calls` and `max_calls`. If the guests mostly wait, raise `max_waiting`.
   See the node settings in `Atanor.Wasm`.
 
 ## Next steps
