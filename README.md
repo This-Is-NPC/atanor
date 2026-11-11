@@ -6,8 +6,9 @@ cluster of nodes, with compute and S3-compatible storage only. It is built on
 Alambique, which provides the cells, and it knows no product, organization,
 tenant or region.
 
-**Status:** 0.1.0 pre-release, not published on a package registry. Known defects and limits are in
-[docs/what-does-not-work.md](docs/what-does-not-work.md).
+**Status:** 0.1.0 pre-release, not published on a package registry. Open defects are in
+[docs/what-does-not-work.md](docs/what-does-not-work.md); the limits of the
+design are in [Limitations](#limitations) and in [docs/design.md](docs/design.md).
 
 ## What it is for
 
@@ -97,14 +98,26 @@ Atanor listening on http://127.0.0.1:4000
 
 ## Limitations
 
-- WASM workers cannot serve TCP yet.
+- WASM workers cannot serve TCP yet, and cannot read the change feed
+  ([design §14.8](docs/design.md#148-alarms-sockets-and-what-is-left-out)).
+- Atanor does not find other nodes: the operator connects them with a cluster
+  library, `Node.connect/1` or `mix atanor.dev --connect`. Nodes that are not
+  connected each serve the cells they can lease, and Alambique's fencing keeps
+  each cell's data safe ([run a cluster](docs/how-to-run-a-cluster.md)).
+- Cluster behavior was measured on one machine: three nodes and one SeaweedFS
+  process in VMs on one host, with injected latency and loss, not a real network
+  or a replicated bucket ([the lab](docs/how-to-run-the-cluster-lab.md)). Run the
+  scenarios on your own network before sizing.
+- Other limits of the design, each with its workaround, are in the "Limits"
+  paragraphs of [docs/design.md](docs/design.md) (for example the failover
+  window of [§8.10](docs/design.md#810-acting-on-a-confirmed-failure)).
 - The memory of a node grows with its awake cells ([configuration](docs/configuration.md#cells-limits-memory-and-store-requests)).
 - A file system that stalls writes slows the cells and the store; see
   [the container cluster guide](docs/how-to-run-a-cluster-in-containers.md#keeping-the-data-in-memory).
 - A new build of the nodes replaces the whole cluster at once: Atanor has no
   canary for node releases yet, and one returns once compatibility between
   releases is designed.
-- Open defects and known limits: [docs/what-does-not-work.md](docs/what-does-not-work.md).
+- Open defects: [docs/what-does-not-work.md](docs/what-does-not-work.md).
 
 ## Documentation
 
