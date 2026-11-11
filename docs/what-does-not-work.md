@@ -427,22 +427,6 @@ trusted code (design §3.2).
 Not fixed because a per-worker cap and running a callee on its caller's slot
 change how the queue admits calls and need their own design and measurement.
 
-## A batch of WASM statements, and a message to a cell, are not capped as a whole
-
-**What happens.** Each statement of a `batch` is limited by the cell's
-`max_result_rows` and `max_result_bytes`, but the results of all the statements
-are held together on the BEAM heap and again in the NIF before the guest's
-memory limit applies. `send-to-cell` has no size limit (`publish` has
-`channels.max_message_bytes`).
-
-**Workaround.** Grant `sockets` and `cells` only to packages you trust, and
-set the cells' `alambique: [sql: [max_result_bytes: ...]]` lower.
-
-**Evidence.** Review finding WASM-6 (read from the sources, not measured).
-Not fixed because a cap on the sum of a batch needs a size for each result
-without copying it, and the limit for `send-to-cell` would also change what
-native workers may send.
-
 ## The NIF decodes a large host reply on a BEAM scheduler
 
 **What happens.** `host_reply` copies the reply into Rust before the pool thread
