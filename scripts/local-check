@@ -12,10 +12,14 @@
 # request release-please opens, after its tree was checked out and gated by hand.
 #
 # The gate output also goes to _build/local-check.log (overwritten each run).
+# A failing run also keeps it as _build/local-check-failed-<UTC stamp>.log; only
+# the newest ATANOR_LOCAL_CHECK_KEEP_FAILED of those files are kept.
 #
 # Env:
 #   ATANOR_SKIP_LOCAL_CHECK=1   do nothing (a deliberate skip)
 #   ATANOR_LOCAL_CHECK_SHA=<s>  same as --sha=
+#   ATANOR_LOCAL_CHECK_KEEP_FAILED=<n>  failed-run logs to keep (default 10, 0 keeps
+#                               none; a non-number falls back to 10 with a warning)
 set -euo pipefail
 
 if [[ "${ATANOR_SKIP_LOCAL_CHECK:-0}" == 1 ]]; then
@@ -38,7 +42,7 @@ for arg in "$@"; do
     --state=*) STATE="${arg#--state=}" ;;
     --sha=*) SHA="${arg#--sha=}" ;;
     -h | --help)
-      sed -n '2,18p' "$0"
+      sed -n '2,22p' "$0"
       exit 0
       ;;
     *)
@@ -50,6 +54,26 @@ done
 SHA="${SHA:-$(git rev-parse HEAD)}"
 CONTEXT="local-check"
 LOG="$root/_build/local-check.log"
+KEEP_FAILED="${ATANOR_LOCAL_CHECK_KEEP_FAILED:-10}"
+if [[ ! "$KEEP_FAILED" =~ ^[0-9]+$ ]]; then
+  printf 'local-check: ATANOR_LOCAL_CHECK_KEEP_FAILED=%q is not a number, using 10\n' "$KEEP_FAILED" >&2
+  KEEP_FAILED=10
+fi
+
+# Copy the log of a red run to a timestamped file and prune the older ones.
+# The stamps sort by name, so the glob lists them oldest first.
+keep_failed_log() {
+  local kept="$root/_build/local-check-failed-$(date -u +%Y%m%dT%H%M%SZ).log"
+  local old
+  cp "$LOG" "$kept"
+  old=("$root"/_build/local-check-failed-????????T??????Z.log)
+  local drop=$((${#old[@]} - 10#$KEEP_FAILED))
+  ((drop > 0)) && rm -f -- "${old[@]:0:drop}"
+  if [[ -e "$kept" ]]; then
+    printf 'local-check: the gate output is kept in %s\n' "$kept" >&2
+  fi
+  return 0
+}
 
 post_now() {
   local state="$1" desc="$2"
@@ -135,6 +159,7 @@ else
   state=failure
   desc="mise run check - failed (rc=$rc) after ${elapsed}s"
   printf 'local-check: the gate output is in %s\n' "$LOG" >&2
+  if ((!DRY_RUN)); then keep_failed_log; fi
 fi
 
 if ((PRE_PUSH)); then

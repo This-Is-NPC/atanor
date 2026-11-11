@@ -120,6 +120,12 @@ The hook and `mise run local-check` also save the full gate output to
 gate prints its path. Read it to find the failing test after the terminal
 output is gone.
 
+A red gate also keeps its output as `_build/local-check-failed-<UTC stamp>.log`,
+so the next run does not overwrite it, and prints that path. Only the newest 10
+such files stay. Set `ATANOR_LOCAL_CHECK_KEEP_FAILED=<n>` to change the count;
+`0` keeps none, and a value that is not a number falls back to 10 with a
+warning.
+
 The status is posted with `gh`, so it needs `gh auth login`. Without it the
 gate still runs and the push goes through, but `master` will refuse the merge.
 The gate vouches only for a clean checkout of the pushed commit.
