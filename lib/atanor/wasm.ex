@@ -58,6 +58,9 @@ defmodule Atanor.Wasm do
       own that are not BEAM schedulers (default 2).
     * `:compile_queue` - compiles that may wait for a thread; a deployment
       that finds the queue full fails at once (default 16).
+    * `:host_reply_dirty_bytes` - size from which the reply to a host call is
+      copied into the native side on a dirty scheduler instead of a normal one
+      (default 262,144; a binary's `byte_size`, another term's external size).
 
   A manifest's `limits` set `timeout_ms` and `memory_bytes` per call, up to the
   node's ceilings; `limits.cpu_ms` lowers the CPU time of epoch mode below the
@@ -89,7 +92,8 @@ defmodule Atanor.Wasm do
     table_elements: 100_000,
     compile_timeout_ms: 60_000,
     compile_threads: 2,
-    compile_queue: 16
+    compile_queue: 16,
+    host_reply_dirty_bytes: 262_144
   ]
 
   @type limit :: :timeout | :memory | :cpu
@@ -162,7 +166,8 @@ defmodule Atanor.Wasm do
           :table_elements,
           :compile_timeout_ms,
           :compile_threads,
-          :compile_queue
+          :compile_queue,
+          :host_reply_dirty_bytes
         ] do
       unless is_integer(settings[key]) and settings[key] > 0 do
         raise ArgumentError, ":atanor, :wasm #{inspect(key)} must be a positive integer"

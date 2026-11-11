@@ -48,9 +48,31 @@ defmodule Atanor.Wasm.Native do
   @spec invoke(reference, tuple, map, pid, non_neg_integer) :: :ok | :overloaded
   def invoke(_prepared, _request, _limits, _pid, _tag), do: :erlang.nif_error(:nif_not_loaded)
 
-  @doc "Answers a host call."
+  @doc """
+  Answers a host call. A reply of `:host_reply_dirty_bytes` or more is copied
+  on a dirty scheduler, a smaller one on a normal scheduler.
+  """
   @spec host_reply(non_neg_integer, term) :: :ok
-  def host_reply(_id, _reply), do: :erlang.nif_error(:nif_not_loaded)
+  def host_reply(id, reply) do
+    case reply_entry(reply, Atanor.Wasm.settings().host_reply_dirty_bytes) do
+      :small -> host_reply_small(id, reply)
+      :large -> host_reply_large(id, reply)
+    end
+  end
+
+  @doc false
+  @spec reply_entry(term, pos_integer) :: :small | :large
+  def reply_entry(reply, threshold), do: if(size(reply) >= threshold, do: :large, else: :small)
+
+  # A binary's size is free; other terms cost a walk of the term, not of its binaries.
+  defp size(reply) when is_binary(reply), do: byte_size(reply)
+  defp size(reply), do: :erlang.external_size(reply)
+
+  @doc false
+  def host_reply_small(_id, _reply), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc false
+  def host_reply_large(_id, _reply), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc "Counters and gauges of the native library."
   @spec stats() :: %{atom => integer}
