@@ -260,7 +260,9 @@ handler that exceeds one fails its alarm attempt, or closes the socket with
 The node keeps pre-mapped slots for the guests' memories and tables (the
 `:atanor, :wasm` setting `pooling`, `true` by default), which makes a call
 instantiate in 18 microseconds instead of 68 (design §14.9). The slots reserve
-address space, about 2 TiB for 12 threads (it grows with `max_calls` and `max_nested_calls`); on a host that limits address space
+address space: 4 GiB for each of 8 memory slots per call that may be in flight, so
+about 2 TiB for 12 threads with the default `max_calls` (4 per thread) and
+`max_nested_calls` (1 per thread); lower those two to reduce it (design §14.9); on a host that limits address space
 (`ulimit -v`, `vm.overcommit_memory=2`) set `pooling: false`. A component with
 more than 8 memories or 16 tables, or a table larger than `table_elements`,
 does not instantiate in either mode.

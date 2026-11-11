@@ -102,7 +102,10 @@ positive integers in bytes; see
 are not limited by them.
 
 The node settings of the WASM engine (threads, calls in flight, queue, CPU limit) are in the
-`:atanor, :wasm` application environment, documented in `Atanor.Wasm`.
+`:atanor, :wasm` application environment, documented in `Atanor.Wasm`. The pooling allocator reserves address space for
+`max_calls + max_nested_calls` calls (about 2 TiB for 12 threads at the defaults). On a host with `ulimit -v`,
+`vm.overcommit_memory=2` or a container memory policy that refuses it, the node fails to start with an error
+naming those settings: lower them or set `pooling: false` (design §14.9).
 Component compiles run on their own pool: `compile_threads` (default 2) at
 once and `compile_queue` (default 16) waiting; a deployment that finds the
 queue full fails at once. `compile_timeout_ms` (default 60,000) is how long a
