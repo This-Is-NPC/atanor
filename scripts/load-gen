@@ -21,7 +21,9 @@ schedule, and `cpu_s`, so a generator that is the limit shows itself.
          socket that is silent for 60 s), held for --duration seconds after the last one opened.
 
 Statuses are counted as "200", "201", "503 retry-after", "503 no retry-after", "5xx" and
-"error: KIND" (connection refused or reset, timeout, EMFILE, bad answer).
+"error: KIND" (connection refused or reset, timeout, EMFILE, bad answer, or "not completed": a request
+that was due more than --timeout before a connection took it, or was still queued or in flight when the
+drain ended --timeout + 5 s after the last one was due; `completed` counts the requests that got an outcome, errors included, not these).
 """
 import argparse
 import asyncio
@@ -34,6 +36,7 @@ import struct
 import time
 
 HOSTS = {"native": "load.localhost", "wasm": "scoreboard.localhost"}
+NOT_COMPLETED = "error: not completed"  # planned, but no answer: late in the queue, in flight at the end, or never sent
 BUCKET = 10  # histogram buckets per millisecond
 
 
@@ -105,6 +108,9 @@ async def http_worker(args, queue, recorder, clock):
         if item is None:
             break
         due, method, path, host = item
+        if clock() - due > args.timeout:  # open loop: too late to measure, so it counts as failed and is not sent
+            recorder.status(NOT_COMPLETED)
+            continue
         for attempt in (1, 2):
             reused = writer is not None
             try:
@@ -183,8 +189,15 @@ async def run_http(args):
     sent = await pace(schedule, queue, clock)
     for _ in workers:
         queue.put_nowait(None)
-    await asyncio.wait_for(asyncio.gather(*workers), args.timeout + 5)
-    completed = sum(n for k, n in recorder.statuses.items() if k != "reconnected")
+    # Bounded drain: a saturated service leaves a backlog, which is a result and not a crash.
+    _, pending = await asyncio.wait(workers, timeout=args.timeout + 5)
+    for worker in pending:
+        worker.cancel()
+    await asyncio.gather(*workers, return_exceptions=True)
+    answered = sum(n for k, n in recorder.statuses.items() if k not in ("reconnected", NOT_COMPLETED))
+    for _ in range(planned - answered - recorder.statuses.get(NOT_COMPLETED, 0)):
+        recorder.status(NOT_COMPLETED)
+    completed = answered
     rate = args.rate if args.mode == "http" else planned / (args.cells / args.open_rate + args.settle + args.duration)
     return recorder.document(mode=args.mode, kind=args.kind, planned=planned, sent=sent, completed=completed, window_s=window,
                              planned_rate=round(rate, 2), conns=args.conns, started_at=wall, ended_at=time.time())
