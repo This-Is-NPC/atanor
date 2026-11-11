@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.0](https://github.com/This-Is-NPC/atanor/compare/v0.1.0...v0.2.0) (2026-11-11)
+
+
+### Features
+
+* **auth:** flush the OIDC key cache from the admin API ([dce59ab](https://github.com/This-Is-NPC/atanor/commit/dce59ab2de7c97c886f6db02c94c0afd614a78fa))
+* **cluster:** allow nodes with no peers ([4d95753](https://github.com/This-Is-NPC/atanor/commit/4d95753fa58ccdbe4e0a3d0c4dd556b2637b3c63))
+* **drain:** drain a node on demand or on sigterm ([ef82294](https://github.com/This-Is-NPC/atanor/commit/ef822945b612b81d5be3781eda653e563fe08cbc))
+* **drain:** report the progress of a running drain ([767379a](https://github.com/This-Is-NPC/atanor/commit/767379a2cda1b975cc3aeece75236358aea87da7))
+* **http:** answer draining and held_elsewhere 503s ([e49991c](https://github.com/This-Is-NPC/atanor/commit/e49991c159a914a189d98efa64aa294204aea384))
+* **jobs:** release claims when a node drains ([ca040db](https://github.com/This-Is-NPC/atanor/commit/ca040dbb7e90ff91f897c9950aa5a8cb873f4a01))
+
+
+### Bug Fixes
+
+* **cli:** read the login token without echo ([4ad86af](https://github.com/This-Is-NPC/atanor/commit/4ad86afed23a8be26f7b895d11dbeeac4a9693bf))
+* **dashboard:** add Max-Age and Secure to the cookie ([267d8ac](https://github.com/This-Is-NPC/atanor/commit/267d8ac200c0a063afe351478df178314794ea95))
+* **drain:** omit progress until alambique begins ([3257f76](https://github.com/This-Is-NPC/atanor/commit/3257f76d367e70c1aacc4ed825a3ea6be7a4a546))
+* **http:** use a fixed retry-after for held_elsewhere ([2ebdebf](https://github.com/This-Is-NPC/atanor/commit/2ebdebfd4a6a05cb12368f1dbe0caf852dc76eb0))
+
 ## 0.1.0 (2026-11-05)
 
 First release.
