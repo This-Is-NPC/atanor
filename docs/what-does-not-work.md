@@ -31,21 +31,45 @@ run (the benchmark's own load raises it to 3.5 to 6 by the end):
 
 Throughput varies by 15% between runs of one build on this host, so the CPU
 per request and the switches per request are the figures to compare: they
-separate the builds in every run. The change is therefore in the commits from
-`36dc2e5` (admission) to master, not before.
+separate the builds in every run.
 
-Ruled out, each measured by changing one thing on the master of that time
-(1-minute load 10 to 20, so CPU per request only):
+Bisect of the commits between `c9b5281` and master, ABBA over 3 rounds, 8 s
+runs, 1-minute load 2.4 to 3.0 at each start (CPU per request in us, voluntary
+switches per request; the first two rounds of `36dc2e5` and `3c15a15` had no
+CPU figure printed and are left out):
 
-- The number of instance slots of the pooling allocator: forcing 12 instead of
-  60 gave 460 to 472 us per request against 456 to 473 us with 60.
-- The right-to-run semaphore: skipping it removed about 0.3 of the 0.5 extra
-  switches and none of the extra CPU (456 to 475 us against 475 to 485 us).
+| Commit | CPU per request | Voluntary switches |
+|---|---|---|
+| `c9b5281`, before the admission change | 366, 367, 371 | 3.6 to 3.7 |
+| `36dc2e5`, right to run | 385, 392, 393 | 4.3 |
+| `3c15a15`, wake one idle pool thread | 392, 395, 401 | 3.9 to 4.0 |
+| `89360b9`, Alambique 0.3.0 | 389, 391, 392, 402 | 3.9 to 4.0 |
+| master at `28c8290`, `max_waiting` | 398, 399, 403, 408 | 4.1 |
+
+The step is `36dc2e5` (about +20 us, +0.65 switches); `3c15a15` removes 0.35
+switches but no CPU, and `max_waiting` adds about 10 us. Alambique 0.3.0 adds
+nothing.
+
+Ruled out, each measured by changing one thing on the master of that time:
+
+- The number of instance slots of the pooling allocator (1-minute load 10 to
+  20, so CPU per request only): forcing 12 instead of 60 gave 460 to 472 us
+  against 456 to 473 us with 60.
+- The right-to-run semaphore on master `28c8290` (load 2.5 to 3.0): skipping
+  it gave 394 to 410 us and 3.9 switches against 398 to 408 us and 4.1. It is
+  about 0.2 switches and no CPU, so it is not the cost (that run breaks the
+  guarantee that a waiting guest holds no right to run; it was an experiment
+  only).
 - The compile pool, the batch and message caps, the pinning of nested calls
   and the host reply split are in `c9b5281` and cost nothing in this path.
 
-Not yet isolated: the remaining extra CPU, between `36dc2e5` and master. The
-candidates are the per-call gate and slot, the condition-variable queue, and
-the update to Alambique 0.3.0. To reproduce, build each tag or commit in its
-own worktree and run the command above alternately; the benchmark prints the
-CPU and switches per request.
+Not isolated: which part of `36dc2e5` costs the 20 us. What it adds per call
+is the `Running` wrapper around the guest future (a boxed future, a permit
+acquire on every poll), the per-worker gate and slot, and a pool of
+`max_calls` threads (48 at 12 threads) instead of 12, so up to 32 threads are
+runnable at once where 0.2.0 kept the rest in the channel. The last is the
+likely one, because the extra voluntary switches are threads parking for a
+permit; it was not tested. This is the price of order 017's guarantee that a
+waiting guest does not hold the right to run. To reproduce, build each commit
+in its own worktree and run the command above alternately; the benchmark
+prints the CPU and switches per request.
