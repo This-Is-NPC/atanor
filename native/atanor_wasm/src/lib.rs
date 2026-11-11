@@ -1,6 +1,7 @@
 //! Wasmtime for Atanor (design section 14): components compiled and cached,
 //! guests run on a thread pool this crate owns, with limits and counters.
 
+mod admission;
 mod compiler;
 mod component;
 mod engine;
@@ -107,6 +108,7 @@ fn invoke(
         pid,
         tag,
         queued_at: Instant::now(),
+        slot: None,
     };
     Ok(if engine::submit(job).is_ok() {
         atoms::ok()

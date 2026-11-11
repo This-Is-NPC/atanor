@@ -6,6 +6,7 @@ use std::io::Write;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::Arc;
 
 use rustler::{NifMap, Resource};
 use sha2::{Digest, Sha256};
@@ -13,6 +14,7 @@ use wasmtime::component::{types::ComponentItem, Component, Linker};
 use wasmtime::Engine;
 use wasmtime_wasi_http::p2::bindings::ProxyPre;
 
+use crate::admission::Gate;
 use crate::engine;
 use crate::guest::State;
 use crate::handlers::{alarm, job, local, socket};
@@ -35,6 +37,8 @@ pub struct Prepared {
     pub socket: Option<AssertUnwindSafe<socket::SocketGuestPre<State>>>,
     pub local: Option<AssertUnwindSafe<local::LocalGuestPre<State>>>,
     pub job: Option<AssertUnwindSafe<job::JobGuestPre<State>>>,
+    /// The calls of this component in flight (`worker_calls`).
+    pub calls: Arc<Gate>,
 }
 
 #[rustler::resource_impl]
@@ -285,6 +289,7 @@ pub fn prepare(compiled: &Compiled, grants: Grants) -> Result<Prepared, PrepareE
         socket,
         local,
         job,
+        calls: engine::worker_gate(),
     })
 }
 

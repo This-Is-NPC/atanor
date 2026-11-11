@@ -19,6 +19,7 @@ use wasmtime_wasi_http::{
     Error as HttpError, WasiBody, WasiHttpCtx, WasiHttpCtxView, WasiHttpHooks, WasiHttpView,
 };
 
+use crate::admission::Slot;
 use crate::component::Prepared;
 use crate::engine::{self, Cpu, INSTANCES, MEMORIES, TABLES};
 use crate::handlers::local::atanor::worker::socket_handler::Frame as LocalFrame;
@@ -56,6 +57,8 @@ pub struct Limits {
     pub table_elements: u64,
     pub max_resources: u64,
     pub max_field_bytes: u64,
+    /// A guest of this node made the call: it is part of a call in flight.
+    pub nested: bool,
 }
 
 pub struct ReqData {
@@ -224,6 +227,8 @@ pub struct Job {
     pub pid: LocalPid,
     pub tag: u64,
     pub queued_at: Instant,
+    /// Held until the call is over; the call counts against its worker's `worker_calls`.
+    pub slot: Option<Slot>,
 }
 
 /// Memory cap that traps the guest with the memory limit. The cap is for
@@ -481,7 +486,7 @@ impl Timing {
 }
 
 /// Runs a job and sends the result to the process that submitted it.
-pub async fn run(job: Job) {
+pub async fn run(mut job: Job) {
     let runtime = engine::runtime().expect("configured");
     let started = tokio::time::Instant::now();
     let mut timing = Timing::default();
@@ -508,6 +513,8 @@ pub async fn run(job: Job) {
         Wire::Int(timing.memory_bytes as i64),
         Wire::Int(timing.fuel_used as i64),
     ]);
+    // Free the slot first: a caller that sees the result may call again at once.
+    drop(job.slot.take());
     report(&job.pid, job.tag, result, Wire::Bin(stderr), timing);
 }
 

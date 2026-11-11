@@ -17,10 +17,22 @@ defmodule Atanor.Wasm do
   Application environment `:atanor, :wasm`, read when the first instance
   starts and fixed for the VM:
 
-    * `:threads` - guest threads (default: the logical processors).
-    * `:queue` - calls that may wait for a thread (default: 4 per thread).
+    * `:threads` - guests that run at once (default: the logical processors).
+      A guest that waits (sleeps, polls, waits for a host call, an outbound
+      response or a worker it called) does not count.
+    * `:max_calls` - calls in flight, running or waiting: the threads of the
+      pool (default: 4 per thread, at least `:threads`).
+    * `:max_nested_calls` - calls that guests make to other workers, in flight
+      at once. They run on threads of their own, so they never wait for a pool
+      thread behind their callers (default: 1 per thread).
+    * `:worker_calls` - calls of one deployment in flight at once, queued
+      included; one more is refused with `{:error, :overloaded}`, so a worker
+      whose guests wait cannot take every thread (default: three quarters of
+      `:max_calls`, at least 1).
+    * `:queue` - calls that may wait for a pool thread (default: 4 per thread).
       A full queue refuses the call with `{:error, :overloaded}`.
-    * `:queue_wait_ms` - longest wait in the queue (default 1000).
+    * `:queue_wait_ms` - longest wait in the queue and for the right to run
+      (default 1000).
     * `:tick_ms` - epoch tick, the resolution of the time limits (default 10).
     * `:cpu` - `:epoch` or `:fuel`, how CPU is limited (default `:epoch`).
     * `:pooling` - `true` to reuse pre-mapped instance slots (Wasmtime's pooling
@@ -132,6 +144,14 @@ defmodule Atanor.Wasm do
       |> Keyword.put_new(:threads, threads)
       |> Keyword.put_new(:queue, 4 * threads)
 
+    max_calls = Keyword.get(config, :max_calls, 4 * threads)
+
+    config =
+      config
+      |> Keyword.put_new(:max_calls, max_calls)
+      |> Keyword.put_new(:max_nested_calls, threads)
+      |> Keyword.put_new(:worker_calls, max(max_calls - div(max_calls, 4), 1))
+
     settings = Map.new(Keyword.merge(@defaults, config))
     validate!(settings)
     settings
@@ -146,8 +166,15 @@ defmodule Atanor.Wasm do
       raise ArgumentError, ":atanor, :wasm :pooling must be true or false"
     end
 
+    unless settings.max_calls >= settings.threads do
+      raise ArgumentError, ":atanor, :wasm :max_calls must be at least :threads"
+    end
+
     for key <- [
           :threads,
+          :max_calls,
+          :max_nested_calls,
+          :worker_calls,
           :queue,
           :queue_wait_ms,
           :tick_ms,
@@ -328,7 +355,7 @@ defmodule Atanor.Wasm do
   # Runs one call and waits for its result, answering host calls meanwhile.
   defp run(%Deployment{wasm: prepared} = deployment, %Env{} = env, call) do
     settings = settings()
-    limits = limits(deployment.manifest, settings)
+    limits = Map.put(limits(deployment.manifest, settings), :nested, env.depth > 0)
     tag = :erlang.unique_integer([:positive])
     started = System.monotonic_time()
 
