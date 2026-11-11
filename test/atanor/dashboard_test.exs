@@ -102,6 +102,22 @@ defmodule Atanor.DashboardTest do
       assert response(post(build_conn(), "/workers?token=#{@token}"), 401)
     end
 
+    test "failed tokens are refused with 429 after the limit, and a session is kept" do
+      start([], dashboard: [token: @token, port: 0, max_failures: 2, failure_window_ms: 60_000])
+      cookie = signed_in()
+
+      for _ <- 1..2, do: assert(response(get(build_conn(), "/workers?token=wrong"), 401))
+
+      refused = get(build_conn(), "/workers?token=wrong")
+      assert response(refused, 429) =~ "Too many"
+      assert [seconds] = get_resp_header(refused, "retry-after")
+      assert String.to_integer(seconds) >= 1
+      assert response(get(build_conn(), "/workers?token=#{@token}"), 429)
+
+      # A browser that is signed in already is not asked for the token.
+      assert get(cookie, "/workers").status == 200
+    end
+
     test "the token opens a session and leaves the URL" do
       start()
       conn = get(build_conn(), "/cells?limit=5&token=#{@token}")

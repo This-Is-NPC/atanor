@@ -95,7 +95,10 @@ defmodule Atanor do
       `:acceptors`, 4), `:read_timeout_ms` (10 000) and `:http_2` (true), as
       in `:http`; `:unknown_token_ms` (2 000, how long a scoped token id that
       the store does not have is refused without asking the store again) and
-      `:unknown_tokens` (1 000 such ids kept). A token shorter than 32 bytes
+      `:unknown_tokens` (1 000 such ids kept); `:max_failures` (10) failed
+      tokens per client address in `:failure_window_ms` (60 000), after which
+      the address gets 429 until the window ends, and `:tracked_addresses`
+      (10 000 addresses kept; `:dashboard` takes the same three). A token shorter than 32 bytes
       needs `:ip` to be a loopback address, here and in `:dashboard`. Without this option there is no admin
       listener. It opens first: `GET /health/ready` answers 503 while the node
       loads its deployments and 200 when it serves (design §2.1).

@@ -93,6 +93,8 @@ defmodule Atanor.Config do
     max_host_labels: 16,
     http_2: true
   }
+  # The limit of failed token attempts per client address of the admin and the dashboard listeners.
+  @throttle %{max_failures: 10, failure_window_ms: 60_000, tracked_addresses: 10_000}
   # The connection settings of the admin listener.
   @admin_net %{
     max_connections: 128,
@@ -1072,13 +1074,21 @@ defmodule Atanor.Config do
     %{token: token, port: port, ip: ip}
   end
 
+  defp throttle!(opts, option), do: settings!(Keyword.take(opts, Map.keys(@throttle)), @throttle, option)
+
   defp admin!(nil), do: nil
 
   defp admin!(opts) do
     net_keys = Map.keys(@admin_net)
+    throttle_keys = Map.keys(@throttle)
 
     admin =
-      listener!(opts, :admin, @admin_port, [:default_limit, :max_limit, :max_package_bytes, :max_scopes] ++ net_keys)
+      listener!(
+        opts,
+        :admin,
+        @admin_port,
+        [:default_limit, :max_limit, :max_package_bytes, :max_scopes] ++ net_keys ++ throttle_keys
+      )
 
     net = settings!(Keyword.take(opts, net_keys), @admin_net, :admin)
     check!(net.acceptors <= net.max_connections, ":admin :acceptors must not exceed :max_connections")
@@ -1093,6 +1103,7 @@ defmodule Atanor.Config do
     check!(default_limit <= max_limit, ":admin :default_limit must not exceed :max_limit")
 
     Map.merge(admin, net)
+    |> Map.merge(throttle!(opts, :admin))
     |> Map.merge(%{
       default_limit: default_limit,
       max_limit: max_limit,
@@ -1105,13 +1116,18 @@ defmodule Atanor.Config do
 
   defp dashboard!(opts) do
     dashboard =
-      listener!(opts, :dashboard, @dashboard_port, [
-        :page_size,
-        :max_page_size,
-        :poll_ms,
-        :cookie_max_age_s,
-        :secure_cookie
-      ])
+      listener!(
+        opts,
+        :dashboard,
+        @dashboard_port,
+        [
+          :page_size,
+          :max_page_size,
+          :poll_ms,
+          :cookie_max_age_s,
+          :secure_cookie
+        ] ++ Map.keys(@throttle)
+      )
 
     page_size = Keyword.get(opts, :page_size, 50)
     max_page_size = Keyword.get(opts, :max_page_size, 500)
@@ -1131,7 +1147,8 @@ defmodule Atanor.Config do
         Atanor.Dashboard.dependencies()
     )
 
-    Map.merge(dashboard, %{
+    Map.merge(dashboard, throttle!(opts, :dashboard))
+    |> Map.merge(%{
       page_size: page_size,
       max_page_size: max_page_size,
       poll_ms: poll_ms,

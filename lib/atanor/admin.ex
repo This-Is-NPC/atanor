@@ -28,7 +28,7 @@ defmodule Atanor.Admin do
 
   require Logger
 
-  alias Atanor.Admin.{Audit, Scope, Tokens}
+  alias Atanor.Admin.{Audit, Scope, Throttle, Tokens}
   alias Atanor.Deployments.{Head, Service, Versions}
   alias Atanor.{Deployments, Jobs, Manifest, Overview, Registry, Rehearsal, Sweeps}
   alias Atanor.Sweeps.Undo
@@ -57,6 +57,9 @@ defmodule Atanor.Admin do
       {:error, :unauthorized} ->
         conn |> put_resp_header("www-authenticate", "Bearer") |> json(401, %{error: "unauthorized"})
 
+      {:error, {:throttled, seconds}} ->
+        conn |> put_resp_header("retry-after", Integer.to_string(seconds)) |> json(429, %{error: "too_many_attempts"})
+
       {:error, {:store, reason}} ->
         store_unavailable(conn, reason)
     end
@@ -64,8 +67,13 @@ defmodule Atanor.Admin do
 
   defp authenticate(conn, name) do
     case get_req_header(conn, "authorization") do
-      ["Bearer " <> given] -> Tokens.authenticate(name, given)
-      _ -> {:error, :unauthorized}
+      ["Bearer " <> given] ->
+        Throttle.run(name, :admin, conn.remote_ip, Registry.config(name).admin, fn ->
+          Tokens.authenticate(name, given)
+        end)
+
+      _ ->
+        {:error, :unauthorized}
     end
   end
 

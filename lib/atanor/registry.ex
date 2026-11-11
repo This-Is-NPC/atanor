@@ -14,7 +14,7 @@ defmodule Atanor.Registry do
 
   @tables [:state, :workers, :routes, :listeners, :namespaces, :partitions]
   # Public table written by any process; emptied when it reaches its limit.
-  @shared [:pinned, :verified, :fence, :holds, :unknown_tokens, :takeover_throttle]
+  @shared [:pinned, :verified, :fence, :holds, :unknown_tokens, :takeover_throttle, :attempts]
 
   def child_spec(%Config{} = config) do
     %{id: __MODULE__, start: {GenServer, :start_link, [__MODULE__, config, [name: server(config.name)]]}}
@@ -204,6 +204,10 @@ defmodule Atanor.Registry do
   def put_unknown_token(name, id, limit),
     do: insert(tables(name).unknown_tokens, limit, {id, System.monotonic_time(:millisecond)})
 
+  @doc "The table of failed token attempts per client address (`Atanor.Admin.Throttle`)."
+  @spec attempts(atom) :: :ets.table()
+  def attempts(name), do: tables(name).attempts
+
   @doc "The lease of cell `id` this node last read: `{id, :owned | :lost, epoch, deadline_ms, read_at}`, or nil."
   @spec fence_entry(atom, String.t()) :: tuple | nil
   def fence_entry(name, id) do
@@ -304,7 +308,8 @@ defmodule Atanor.Registry do
 
   # Other processes write the table meanwhile, so the objects are selected and deleted one by one: a walk with
   # `:ets.next/2` raises when its key has gone.
-  defp evict(table, count) do
+  @doc false
+  def evict(table, count) do
     case :ets.select(table, [{:"$1", [], [:"$1"]}], count) do
       {objects, _continuation} -> Enum.each(objects, &:ets.delete_object(table, &1))
       :"$end_of_table" -> :ok

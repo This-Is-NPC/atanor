@@ -100,7 +100,7 @@ defmodule Atanor.AdminTest do
           "tokens/"
         )
 
-      node = Node.start(store: store, admin: [token: @token, port: 0, unknown_token_ms: 60_000])
+      node = Node.start(store: store, admin: [token: @token, port: 0, unknown_token_ms: 60_000, max_failures: 1_000])
       on_exit(fn -> Node.stop(node) end)
       bearer = "atn_" <> String.duplicate("0", 24) <> "_" <> String.duplicate("A", 43)
 
@@ -114,6 +114,45 @@ defmodule Atanor.AdminTest do
       other = "atn_" <> String.duplicate("1", 24) <> "_" <> String.duplicate("A", 43)
       assert get(node, "/heads", headers: [{"authorization", "Bearer " <> other}]).status == 401
       assert Atanor.Test.CountingStore.reads(store) == 2
+    end
+  end
+
+  defp limited do
+    node = Node.start(admin: [token: @token, port: 0, max_failures: 3, failure_window_ms: 1_500])
+    on_exit(fn -> Node.stop(node) end)
+    node
+  end
+
+  describe "attempt limit" do
+    test "failed tokens are refused with 429 after the limit, and the right one works when the window ends" do
+      node = limited()
+      wrong = [{"authorization", "Bearer wrong"}]
+
+      for _ <- 1..3, do: assert(get(node, "/heads", headers: wrong).status == 401)
+
+      refused = get(node, "/heads", headers: wrong)
+      assert refused.status == 429
+      assert %{"error" => "too_many_attempts"} = json(refused)
+      assert String.to_integer(hd(refused.headers["retry-after"])) >= 1
+
+      # The right token is refused too while the address is locked out, then works.
+      assert get(node, "/heads").status == 429
+      assert until(fn -> get(node, "/heads").status == 200 end)
+    end
+
+    test "right tokens and requests without a token are not counted" do
+      node = limited()
+      for _ <- 1..10, do: assert(get(node, "/heads").status == 200)
+      for _ <- 1..10, do: assert(get(node, "/heads", headers: []).status == 401)
+      assert get(node, "/heads", headers: [{"authorization", "Bearer wrong"}]).status == 401
+    end
+
+    test "the options must be positive integers" do
+      for opts <- [[max_failures: 0], [failure_window_ms: -1], [tracked_addresses: "x"]] do
+        assert_raise ArgumentError, fn ->
+          Atanor.Config.build(data_dir: "/tmp/x", store: {Mod, nil}, admin: [token: "t"] ++ opts)
+        end
+      end
     end
   end
 
