@@ -115,6 +115,11 @@ The hooks:
   push. A green one posts `local-check` as `success` once GitHub has the commit.
   Tag pushes and deletions pass.
 
+The hook and `mise run local-check` also save the full gate output to
+`_build/local-check.log`, which git ignores. Each run overwrites it, and a red
+gate prints its path. Read it to find the failing test after the terminal
+output is gone.
+
 The status is posted with `gh`, so it needs `gh auth login`. Without it the
 gate still runs and the push goes through, but `master` will refuse the merge.
 The gate vouches only for a clean checkout of the pushed commit.
