@@ -6,23 +6,22 @@ are choices of the design are in the "Limits" paragraphs of
 [design.md](design.md) and in the README's
 [Limitations](../README.md#limitations).
 
-## A WASM guest can hold pool threads while it waits
+## A waiting WASM guest still holds a call slot
 
-**What happens.** A guest keeps its pool thread for the whole call, also while
-it sleeps (`wasi:clocks` and `poll`), waits for a slow host call or waits for a
-nested worker call. CPU limits do not fire during a wait, so guests that wait
-for `timeout_ms` (30 s by default) can occupy all `threads` and every other WASM
-worker then gets `:overloaded` after `queue_wait_ms`. Nested calls hold the
-caller's thread while the callee needs another one. Outbound HTTP now ends with
-the call's deadline, but the wait is still a held thread.
+**What happens.** A guest that waits (a sleep, `poll`, a host call, an outbound
+response, a nested call) no longer holds the right to run, so it cannot starve
+other workers of CPU (design §14.2). It still holds a pool thread, a store and
+a call slot until its deadline. One worker whose guests all wait reaches
+`worker_calls` and gets `:overloaded` for its own next calls; every worker
+together can reach `max_calls` the same way. Nested calls are capped by
+`max_nested_calls`, and one more is refused.
 
-**Workaround.** Lower `limits.timeout_ms` and the node's `max_timeout_ms`, and
-raise `threads`. Deploy only packages you trust: the manifest author is
-trusted code (design §3.2).
+**Workaround.** Raise `max_calls`, `worker_calls` and `max_nested_calls` (each
+adds address space to the pooling allocator, design §14.9), or lower
+`limits.timeout_ms` and the node's `max_timeout_ms`. The cap is per deployment,
+so two deployments of one worker during a rollout each get `worker_calls`.
 
-**Evidence.** Review finding WASM-5 (read from the sources, not measured).
-Not fixed because a per-worker cap and running a callee on its caller's slot
-change how the queue admits calls and need their own design and measurement.
+**Evidence.** `test/atanor/wasm_wait_test.exs`.
 
 ## A late feed batch can be read behind a later one
 
