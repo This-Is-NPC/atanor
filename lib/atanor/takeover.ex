@@ -14,6 +14,7 @@ defmodule Atanor.Takeover do
 
   alias Atanor.Deployments.Watcher
   alias Atanor.{Detector, Fence, Jobs, Registry}
+  alias Atanor.Takeover.Throttle
 
   @doc """
   Takes the cell with Alambique id `id` over on this node when its lease names
@@ -54,18 +55,39 @@ defmodule Atanor.Takeover do
             do: :no_quorum,
             else: attempt(config, id, owner, {node, reason}, config.takeover.attempts)
 
-        :telemetry.execute([:atanor, :cell, :take_over], %{duration: System.monotonic_time() - started}, %{
-          instance: instance,
-          cell: id,
-          node: node,
-          reason: reason,
-          result: outcome(result)
-        })
+        emit(instance, config, result, started, %{cell: id, node: node, reason: reason})
 
         result
 
       :error ->
         {:error, unreachable(instance, owner)}
+    end
+  end
+
+  # A refusal is emitted at most once per `takeover.no_quorum_event_interval_ms`; the event carries the
+  # refusals suppressed since the last one (`suppressed`), so a partition does not flood the handlers.
+  defp emit(instance, config, result, started, meta) do
+    extra =
+      case result do
+        :no_quorum ->
+          table = Registry.takeover_throttle(instance)
+          now = System.monotonic_time(:millisecond)
+
+          case Throttle.admit(table, now, config.takeover.no_quorum_event_interval_ms) do
+            {:emit, suppressed} -> %{suppressed: suppressed}
+            :suppress -> nil
+          end
+
+        _ ->
+          %{}
+      end
+
+    if extra do
+      :telemetry.execute(
+        [:atanor, :cell, :take_over],
+        %{duration: System.monotonic_time() - started},
+        meta |> Map.merge(extra) |> Map.merge(%{instance: instance, result: outcome(result)})
+      )
     end
   end
 

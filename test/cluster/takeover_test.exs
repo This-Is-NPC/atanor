@@ -273,6 +273,11 @@ defmodule Atanor.Cluster.TakeoverTest do
            |> Enum.filter(&(&1.node == :n1))
            |> Enum.all?(&(&1.meta.result == :no_quorum))
 
+    # Refusals are rate-limited: many requests, one event per interval (10 s by default).
+    for i <- 1..20, do: assert({503, _} = write(cluster, :n1, cell, i))
+    refused = cluster |> events([:atanor, :cell, :take_over]) |> Enum.filter(&(&1.node == :n1))
+    assert length(refused) <= 2
+
     assert lease(cluster, :n2, cell).epoch == before.epoch
     assert lease(cluster, :n2, cell).owner == Atom.to_string(Cluster.node(cluster, owner))
 

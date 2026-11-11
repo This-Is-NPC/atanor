@@ -14,11 +14,15 @@ defmodule Atanor.Registry do
 
   @tables [:state, :workers, :routes, :listeners, :namespaces, :partitions]
   # Public table written by any process; emptied when it reaches its limit.
-  @shared [:pinned, :verified, :fence, :holds, :unknown_tokens]
+  @shared [:pinned, :verified, :fence, :holds, :unknown_tokens, :takeover_throttle]
 
   def child_spec(%Config{} = config) do
     %{id: __MODULE__, start: {GenServer, :start_link, [__MODULE__, config, [name: server(config.name)]]}}
   end
+
+  @doc "The table of the `:no_quorum` event throttle (`Atanor.Takeover.Throttle`)."
+  @spec takeover_throttle(atom) :: :ets.table()
+  def takeover_throttle(name), do: tables(name).takeover_throttle
 
   @doc "The config of a running instance. It does not change, so it is kept in `:persistent_term` and not copied."
   @spec config(atom) :: Config.t()
