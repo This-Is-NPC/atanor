@@ -29,23 +29,16 @@ tenant its own namespaces and share one only between workers you trust.
 
 **Evidence.** `test/atanor/grants_test.exs`, `test/atanor/package_limits_test.exs`.
 
-## Operator tokens and the audit log have no throttle or retention
+## The audit log has no retention
 
-**What happens.** The operator token of `admin:` and `dashboard:` is compared in
-constant time, with no limit on the attempts. A token shorter than 32 bytes is
-refused only when the listener is not on loopback. Scoped tokens carry 256
-bits. A request with a well-formed but unknown scoped token costs one store
-read per `admin.unknown_token_ms` (2 s) and id. A forbidden call on an audited
-endpoint writes an audit object that Atanor never deletes: the log is immutable
-by design.
+**What happens.** A forbidden call on an audited endpoint writes an audit object
+that Atanor never deletes: the log is immutable by design.
 
-**Workaround.** Use a random operator token (`openssl rand -base64 32`), keep the
-listeners on loopback or behind a proxy that limits attempts per address, and
-give the `audit/` prefix of the bucket a lifecycle rule that expires old
-objects.
+**Workaround.** Give the `audit/` prefix of the bucket a lifecycle rule that
+expires old objects.
 
-**Evidence.** `test/atanor/admin_test.exs` ("a listener on a public address
-needs a token of 32 bytes", "unknown tokens").
+**Evidence.** `lib/atanor/admin/audit.ex` writes entries and lists them; nothing
+deletes them.
 
 ## A WebSocket costs a file descriptor and a marker file
 

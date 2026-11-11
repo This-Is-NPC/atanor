@@ -52,6 +52,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -137,6 +140,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -237,6 +243,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -331,6 +340,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -416,6 +428,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -493,6 +508,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -566,6 +584,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -628,6 +649,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -698,6 +722,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -757,6 +784,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -823,6 +853,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -882,6 +915,9 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -917,6 +953,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -954,6 +993,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyAttempts"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -1619,6 +1661,26 @@
             },
             "example": {
               "error": "unauthorized"
+            }
+          }
+        }
+      },
+      "TooManyAttempts": {
+        "description": "This client address made too many failed attempts in the window and is refused, whatever token it sends, until the window ends (`admin.max_failures` in `admin.failure_window_ms`). `Retry-After` is in seconds.",
+        "headers": {
+          "retry-after": {
+            "schema": {
+              "type": "integer"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "too_many_attempts"
             }
           }
         }
