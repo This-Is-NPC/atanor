@@ -209,6 +209,21 @@ defmodule Atanor.WasmHandlersTest do
       assert {:timeout, _} = WSClient.recv(c, 100)
     end
 
+    test "a message over wasm max_cell_message_bytes is refused and nobody receives it" do
+      node =
+        start(
+          [{"wchat", "socket", sockets: true, cells: %{"rooms" => @rooms}}],
+          wasm: [max_cell_message_bytes: 8]
+        )
+
+      client = connect(node, "/wchat")
+      assert {"ok", client} = call(client, "join r1")
+      assert {"ok", client} = call(client, "say r1 12345678")
+      assert {{:text, "cell:12345678"}, client} = WSClient.recv(client, 5_000)
+      assert {"failed: message_too_large: " <> _, client} = call(client, "say r1 123456789")
+      assert {:timeout, _} = WSClient.recv(client, 100)
+    end
+
     test "the host reaches an attached guest socket, and drops terms that are not bytes" do
       node = start_sockets()
       client = connect(node)

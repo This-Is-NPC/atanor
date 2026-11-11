@@ -119,6 +119,7 @@ defmodule Atanor.Config do
   @overview %{timeout_ms: 5_000}
   @metadata %{page_size: 1_000}
   @sockets %{attach_timeout_ms: 5_000, max_attachments: 16}
+  @wasm %{max_batch_bytes: 67_108_864, max_cell_message_bytes: 1_048_576}
   @channels %{
     max_message_bytes: 16_384,
     max_subscriptions: 16,
@@ -304,6 +305,7 @@ defmodule Atanor.Config do
     overview: @overview,
     metadata: @metadata,
     sockets: @sockets,
+    wasm: @wasm,
     channels: @channels,
     secrets: %{},
     listeners: %{},
@@ -366,6 +368,7 @@ defmodule Atanor.Config do
     :overview,
     :metadata,
     :sockets,
+    :wasm,
     :channels,
     :poll_interval_ms,
     :max_body_bytes,
@@ -523,6 +526,7 @@ defmodule Atanor.Config do
       overview: limits!(opts[:overview], @overview, :overview),
       metadata: limits!(opts[:metadata], @metadata, :metadata),
       sockets: limits!(opts[:sockets], @sockets, :sockets),
+      wasm: limits!(opts[:wasm], @wasm, :wasm),
       channels: limits!(opts[:channels], @channels, :channels),
       poll_interval_ms: poll_interval!(Keyword.get(opts, :poll_interval_ms, 5_000)),
       memory: Map.put(memory, :awake_source, awake_source),
