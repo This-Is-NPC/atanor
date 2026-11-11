@@ -21,6 +21,7 @@ world! {
     "hello" => "plain",
     "echo" => "plain",
     "spin" => "plain",
+    "sleep" => "plain",
     "hog" => "plain",
     "fieldhog" => "plain",
     "crash" => "plain",
@@ -97,6 +98,8 @@ mod job;
 mod outbound;
 #[cfg(feature = "secret")]
 mod secret;
+#[cfg(feature = "sleep")]
+mod sleep;
 #[cfg(feature = "sneaky")]
 mod sneaky;
 #[cfg(feature = "socket")]
@@ -128,6 +131,8 @@ use job::handle;
 use outbound::handle;
 #[cfg(feature = "secret")]
 use secret::handle;
+#[cfg(feature = "sleep")]
+use sleep::handle;
 #[cfg(feature = "sneaky")]
 use sneaky::handle;
 #[cfg(feature = "socket")]
