@@ -14,3 +14,5 @@ examples
 cluster/secrets
 cluster/.build
 cluster/node/mix.lock
+load
+.claude
