@@ -115,8 +115,20 @@ fn invoke(
     })
 }
 
+/// Answers a host call. Small replies decode on a normal scheduler.
 #[rustler::nif]
-fn host_reply(id: u64, reply: Wire) -> Atom {
+fn host_reply_small(id: u64, reply: Wire) -> Atom {
+    answer(id, reply)
+}
+
+/// The same for a large reply, whose copy would hold a normal scheduler for
+/// milliseconds. Elixir picks the entry point (`Native.host_reply/2`).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn host_reply_large(id: u64, reply: Wire) -> Atom {
+    answer(id, reply)
+}
+
+fn answer(id: u64, reply: Wire) -> Atom {
     host::reply(id, reply);
     atoms::ok()
 }
