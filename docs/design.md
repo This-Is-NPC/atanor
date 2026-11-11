@@ -2111,12 +2111,23 @@ The sequence of `Atanor.drain/2`:
    `%{state, hibernated, errors, duration_ms}`; `exit: false` or a function (`Atanor.drain(name, exit: fun)`)
    replaces it, which is how the tests and a drain that must not end the VM use it.
 
-A cell that the drain could not hibernate stays with its lease, which expires as after a crash (30 s plus the
-2 s skew margin by default); a client of the node that takes over gets 503 `held_elsewhere` until then (§8.4).
+A cell that the drain did not hibernate (`errors`) is still awake on the node when the drain ends. If the node
+then stops (SIGTERM, or `stop.exit`), the stop hands it back: the supervisor of Alambique stops
+`Alambique.Drain`, which runs a second drain with Alambique's own limits (60 s for the drain, 15 s per cell),
+then ends each cell still awake with `:shutdown` (at most 30 s each, in parallel), and the termination of a cell
+hibernates it like the drain does: it uploads what is pending, publishes the feed, checkpoints, and only then
+releases the lease (Alambique `Cell.hibernate/2` and `terminate/2`). Every write that was acknowledged is in the
+store before the lease is released, and a cell that cannot finish that (an upload that fails, or the 30 s end)
+keeps its lease, which expires as after a crash (30 s plus the 2 s skew margin by default); a client of the node
+that takes over gets 503 `held_elsewhere` until then (§8.4). So `errors` after the deadline does not mean the
+leases wait for their expiry: with a node that exits normally they were released by the stop, a few seconds
+later (1,300 cells were served by the other node 2.3 to 3.3 s after a drain that ended at its deadline). Only
+SIGKILL, or a stop that outlives the grace period, leaves them to expire. The exit status 1 still says that the
+drain itself did not finish.
 The drain is one way: the node does not take cells again until it restarts. A second call joins a drain that
 is running, or returns what the finished one did (`GET /drain`, `Atanor.drain_status/1`).
 While it runs the status adds the progress that `Alambique.drain_status/1` reports (`cells_at_start`, `done`,
-`left` and the `errors` so far); they read 0 until the jobs have finished and Alambique begins.
+`left` and the `errors` so far); they are absent until the jobs have finished and Alambique begins, so a status with only `state` means the node still waits for its jobs.
 
 **SIGTERM** (what `docker stop`, systemd and Kubernetes send) runs the same drain with the listeners still
 serving, then stops the VM. The application swaps `Atanor.Signal` in for OTP's `erl_signal_handler` on
@@ -2129,6 +2140,12 @@ it. A second SIGTERM during the drain joins it and forces nothing: the grace per
 unit (`docker stop --time`, `TimeoutStopSec`, `terminationGracePeriodSeconds`) must exceed
 `stop.shutdown_ms` (75 s by default), and SIGKILL is the way to force a stop; the leases then expire as
 after a crash.
+
+The VM stops as soon as the drain ends, and the listeners, the admin API among them, close with it, so a poll of
+`GET /drain` never reads the final `drained` of a SIGTERM; the last answer is a `draining` with the progress at
+that poll, then the connection is refused. The result is the exit status (1 when `errors` is not empty), the log
+line `atanor: drain left ... cells to their leases` and the telemetry event `[:atanor, :node, :drain]`. A drain
+asked for with `POST /drain` answers with the final status before the node stops.
 
 A cell that has to be handed back is still safe if the node dies half way: leases not released expire, and
 Alambique's fencing (§8.10) stops the old owner's writes after another node took over.

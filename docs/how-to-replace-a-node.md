@@ -153,7 +153,7 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    balancer (within about 2 s: `inter 1s fall 2`). A node with many cells
    stays in `draining` for the time they need (48 cells took 0.3 s here);
    poll it. While `draining` the answer also carries `cells_at_start`, `done`
-   and `left`:
+   and `left`, once the jobs have finished and the cells are being handed back:
 
    ```sh
    docker exec atanor-cluster-node-1 sh -c 'curl -s -H "authorization: Bearer $(cat /run/secrets/admin_token)" http://127.0.0.1:4001/drain'
@@ -184,7 +184,10 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    exited 0
    ```
 
-   Exit status 1 means some cell stayed with its lease (see Troubleshooting).
+   Exit status 1 means the drain left some cell awake (see Troubleshooting). The
+   admin port closes with the VM, so a poll of `GET /drain` during a SIGTERM
+   ends with a refused connection, not with `drained`; read the exit status and
+   the log.
 
 8. Do all of it under load and measure it:
 
@@ -243,12 +246,17 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
   grace period is shorter than the drain (not seen in our runs, which used 90 s). Set it above
   `stop.shutdown_ms` (`ATANOR_CLUSTER_STOP_GRACE`). The leases were not all
   released and expire as after a crash.
-- **Clients get 503 `held_elsewhere` for about 32 s.** The drain timed out or A
-  was killed: the cells it did not hand back keep their leases until the TTL
-  (`lease_ttl_ms`, 30 s) expires. B waits for the TTL plus the skew margin (2
-  s); `Retry-After` stays `http.retry_after_s` (1 s), so clients poll until the
-  lease ends. A that exits with status 1 lists the cells in `errors`. Raise
+- **A exits with status 1 and `errors` lists `:deadline`.** The drain ran out
+  of `stop.shutdown_ms` or `stop.drain_timeout_ms`. A still stops through the
+  supervisor, which hibernates each cell it holds (upload, then release of the
+  lease, up to 30 s per cell), so B usually serves them within seconds, as in
+  our runs (1,300 cells in 2.3 to 3.3 s with a 100 ms deadline). Raise
   `drain_timeout_ms` or `shutdown_ms` if cells are slow to upload, then repeat.
+- **Clients get 503 `held_elsewhere` for about 32 s.** A was killed (SIGKILL) or
+  a cell could not upload before it ended: that cell keeps its lease until the
+  TTL (`lease_ttl_ms`, 30 s) expires. B waits for the TTL plus the skew margin
+  (2 s); `Retry-After` stays `http.retry_after_s` (1 s), so clients poll until
+  the lease ends.
 - **Two nodes write the same cell.** Their `node_id` is the same. Give each
   node its own name or id before they share a store; there is no check at
   start.
