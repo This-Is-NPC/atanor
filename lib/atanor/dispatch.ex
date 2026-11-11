@@ -374,7 +374,7 @@ defmodule Atanor.Dispatch do
   def remote(instance, worker, id, socket, depth, cell, call, from, ref) do
     with {:ok, deployment} <- admit(instance, worker, id, cell) do
       send(from, {:atanor_started, ref})
-      env = %Env{instance: instance, deployment: deployment, socket: socket, depth: depth}
+      env = %{Env.new(instance, deployment) | socket: socket, depth: depth}
       handed_off(instance, call, local(env, cell, call, true))
     end
   end
