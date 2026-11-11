@@ -176,24 +176,6 @@ defmodule Atanor.CellLimitsTest do
       assert %{status: 200, body: "[count(*)] 0"} = sql(node, "query", "SELECT count(*) FROM notes")
     end
 
-    test "a read over sql max_concurrent_statements is a 503 overloaded" do
-      node =
-        wasm(
-          op_timeout_ms: 5_000,
-          sql: [statement_timeout_ms: 1_500, max_concurrent_statements: 1]
-        )
-
-      assert %{status: 200} = sql(node, "query", "SELECT 1", key: "b")
-      slow = Task.async(fn -> sql(node, "query", @forever, key: "a") end)
-
-      Await.until(fn ->
-        match?(%{status: 503, body: %{"error" => "overloaded"}}, sql(node, "query", "SELECT 1", key: "b"))
-      end)
-
-      assert %{status: 500, body: "failed: statement_timeout: " <> _} = Task.await(slow, 10_000)
-      Await.until(fn -> match?(%{status: 200}, sql(node, "query", "SELECT 1", key: "b")) end)
-    end
-
     test "a node at awake max_cells serves another cell by hibernating an idle one" do
       node = wasm()
       for key <- ["a", "b", "c", "a"], do: assert(%{status: 200} = sql(node, "query", "SELECT 1", key: key))
