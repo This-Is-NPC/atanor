@@ -25,3 +25,4 @@ sha2 = "0.10"
 [dev-dependencies]
 wat = "1"
 tempfile = "3.27.0"
+proptest = "1"

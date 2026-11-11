@@ -49,7 +49,18 @@ defmodule Atanor.Wasm.Cache do
     settings = Atanor.Wasm.settings()
 
     %{settings | cpu: Atom.to_string(settings.cpu)}
-    |> Map.take([:threads, :queue, :tick_ms, :cpu, :pooling, :max_memory_bytes, :table_elements])
+    |> Map.take([
+      :threads,
+      :max_calls,
+      :max_nested_calls,
+      :worker_calls,
+      :queue,
+      :tick_ms,
+      :cpu,
+      :pooling,
+      :max_memory_bytes,
+      :table_elements
+    ])
   end
 
   defp compile_settings do

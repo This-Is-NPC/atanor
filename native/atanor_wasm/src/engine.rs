@@ -8,10 +8,12 @@
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use tokio::sync::Semaphore;
 
 use rustler::NifMap;
 use wasmtime::{Config, Engine, InstanceAllocationStrategy, OptLevel, PoolingAllocationConfig};
 
+use crate::admission::{Gate, Running};
 use crate::guest::{self, Job};
 use crate::stats;
 
@@ -25,7 +27,14 @@ pub enum Cpu {
 
 #[derive(NifMap, Clone)]
 pub struct Settings {
+    /// Guests that run at once; a waiting guest does not count.
     pub threads: usize,
+    /// Pool threads: calls in flight, running or waiting.
+    pub max_calls: usize,
+    /// Calls a worker's guests make to other workers, in flight at once.
+    pub max_nested_calls: usize,
+    /// Calls of one worker in flight at once, queued included.
+    pub worker_calls: usize,
     pub queue: usize,
     pub tick_ms: u64,
     pub cpu: String,
@@ -46,6 +55,8 @@ pub struct Runtime {
     pub cpu: Cpu,
     settings: Settings,
     tx: SyncSender<Job>,
+    permits: Arc<Semaphore>,
+    nested: Arc<Gate>,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -54,9 +65,10 @@ pub fn runtime() -> Option<&'static Runtime> {
     RUNTIME.get()
 }
 
-/// A pool thread runs one guest at a time, so the slots for one store per thread are enough.
+/// A call holds one store from its start to its end, waiting or not, so the pool has a slot
+/// for each call that may be in flight: the pool threads and the nested calls.
 fn pool(settings: &Settings) -> PoolingAllocationConfig {
-    let threads = settings.threads as u32;
+    let threads = (settings.max_calls + settings.max_nested_calls) as u32;
     let mut pool = PoolingAllocationConfig::new();
     pool.total_component_instances(threads)
         .total_core_instances(threads * INSTANCES)
@@ -94,18 +106,24 @@ pub fn configure(settings: Settings) -> Result<(), String> {
         other => return Err(format!("unknown cpu mode {other:?}")),
     };
     if settings.threads == 0
+        || settings.max_calls < settings.threads
+        || settings.max_nested_calls == 0
+        || settings.worker_calls == 0
         || settings.queue == 0
         || settings.tick_ms == 0
         || settings.max_memory_bytes == 0
         || settings.table_elements == 0
     {
         return Err(
-            "threads, queue, tick_ms, max_memory_bytes and table_elements must be positive".into(),
+            "threads, max_nested_calls, worker_calls, queue, tick_ms, max_memory_bytes and table_elements must be positive, and max_calls at least threads".into(),
         );
     }
     if let Some(running) = RUNTIME.get() {
         let s = &running.settings;
         let same = s.threads == settings.threads
+            && s.max_calls == settings.max_calls
+            && s.max_nested_calls == settings.max_nested_calls
+            && s.worker_calls == settings.worker_calls
             && s.queue == settings.queue
             && s.tick_ms == settings.tick_ms
             && s.cpu == settings.cpu
@@ -129,6 +147,8 @@ pub fn configure(settings: Settings) -> Result<(), String> {
         cpu,
         settings: settings.clone(),
         tx,
+        permits: Arc::new(Semaphore::new(settings.threads)),
+        nested: Gate::new(settings.max_nested_calls),
     };
     if RUNTIME.set(runtime).is_err() {
         return Ok(());
@@ -143,7 +163,7 @@ pub fn configure(settings: Settings) -> Result<(), String> {
         })
         .map_err(|e| e.to_string())?;
 
-    for i in 0..settings.threads {
+    for i in 0..settings.max_calls {
         let rx = rx.clone();
         std::thread::Builder::new()
             .name(format!("atanor-wasm-{i}"))
@@ -154,20 +174,30 @@ pub fn configure(settings: Settings) -> Result<(), String> {
 }
 
 fn worker(rx: Arc<Mutex<Receiver<Job>>>) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
+    let rt = current_thread();
     loop {
         let job = match rx.lock().map(|rx| rx.recv()) {
             Ok(Ok(job)) => job,
             _ => return,
         };
         stats::QUEUED.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        let (pid, tag) = (job.pid, job.tag);
-        if !survives(|| rt.block_on(guest::run(job))) {
-            guest::report_panic(&pid, tag);
-        }
+        serve(&rt, job);
+    }
+}
+
+fn current_thread() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+}
+
+/// Runs one call to its end. The guest runs only while it holds one of the `threads` permits.
+fn serve(rt: &tokio::runtime::Runtime, job: Job) {
+    let permits = runtime().expect("configured").permits.clone();
+    let (pid, tag) = (job.pid, job.tag);
+    if !survives(|| rt.block_on(Running::new(permits, guest::run(job)))) {
+        guest::report_panic(&pid, tag);
     }
 }
 
@@ -176,9 +206,30 @@ fn survives(f: impl FnOnce()) -> bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_ok()
 }
 
-/// Queues a job; a full queue refuses it so overload is visible to callers.
-pub fn submit(job: Job) -> Result<(), ()> {
+/// Admits a call and queues it, or refuses it so overload is visible to callers. A call that
+/// a guest made to another worker gets a thread of its own, up to `max_nested_calls`: its caller
+/// is waiting for it, so it cannot wait for a pool thread behind its caller.
+pub fn submit(mut job: Job) -> Result<(), ()> {
     let runtime = runtime().ok_or(())?;
+    let nested = job.limits.nested;
+    let gate = if nested {
+        &runtime.nested
+    } else {
+        &job.pre.calls
+    };
+    let Some(slot) = gate.enter() else {
+        stats::bump(&stats::REJECTED);
+        return Err(());
+    };
+    job.slot = Some(slot);
+    if nested {
+        let spawned = std::thread::Builder::new()
+            .name("atanor-wasm-nested".into())
+            .spawn(move || serve(&current_thread(), job));
+        return spawned
+            .map(|_| ())
+            .map_err(|_| stats::bump(&stats::REJECTED));
+    }
     stats::QUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     match runtime.tx.try_send(job) {
         Ok(()) => Ok(()),
@@ -190,11 +241,19 @@ pub fn submit(job: Job) -> Result<(), ()> {
     }
 }
 
+/// The calls of one worker's prepared component, in flight at once.
+pub fn worker_gate() -> Arc<Gate> {
+    Gate::new(runtime().expect("configured").settings.worker_calls)
+}
+
 /// The settings the unit tests share, so that the first test to configure decides for all.
 #[cfg(test)]
 pub fn test_settings() -> Settings {
     Settings {
         threads: 1,
+        max_calls: 1,
+        max_nested_calls: 1,
+        worker_calls: 1,
         queue: 1,
         tick_ms: 10,
         cpu: "epoch".into(),
