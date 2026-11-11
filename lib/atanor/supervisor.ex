@@ -6,8 +6,28 @@ defmodule Atanor.Supervisor do
 
   alias Atanor.{Config, Registry}
 
-  def start_link(%Config{} = config),
-    do: Supervisor.start_link(__MODULE__, config, name: Module.concat(config.name, Supervisor))
+  @data_dir_errors [:data_dir_in_use, :data_dir_case_insensitive, :data_dir_unusable]
+
+  def start_link(%Config{} = config) do
+    case Supervisor.start_link(__MODULE__, config, name: Module.concat(config.name, Supervisor)) do
+      {:error, {:shutdown, {:failed_to_start_child, {Alambique, _}, reason}}}
+      when elem(reason, 0) in @data_dir_errors ->
+        Logger.error("atanor: #{data_dir_message(reason)}")
+        {:error, reason}
+
+      other ->
+        other
+    end
+  end
+
+  defp data_dir_message({:data_dir_in_use, path}),
+    do: "data_dir #{inspect(path)} is held by another running instance; give each instance its own data_dir"
+
+  defp data_dir_message({:data_dir_case_insensitive, path}),
+    do: "data_dir #{inspect(path)} is on a case-insensitive file system; use a case-sensitive one"
+
+  defp data_dir_message({:data_dir_unusable, path, reason}),
+    do: "data_dir #{inspect(path)} cannot be locked: #{inspect(reason)}"
 
   @impl true
   def init(config) do

@@ -74,6 +74,35 @@ defmodule Atanor.InstanceTest do
     assert message =~ "locations must be a non-empty list"
   end
 
+  describe "data_dir lock" do
+    test "a second instance on a held data_dir does not start and says so" do
+      node = Node.start()
+      on_exit(fn -> Node.stop(node) end)
+      Process.flag(:trap_exit, true)
+      opts = [name: :second_on_held_dir, store: node.store, data_dir: node.data_dir, port: 0, prefix: "second"]
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, {:shutdown, {:failed_to_start_child, _, {:data_dir_in_use, path}}}} =
+                   Supervisor.start_link([{Atanor, opts}], strategy: :one_for_one)
+
+          assert path == node.data_dir
+        end)
+
+      assert log =~ "is held by another running instance"
+      assert Process.alive?(node.pid)
+      assert Atanor.Registry.state(node.name) == :ready
+    end
+
+    test "the lock frees when the holder stops" do
+      node = Node.start()
+      :ok = Node.stop(node)
+      again = Node.start(data_dir: node.data_dir)
+      on_exit(fn -> Node.stop(again) end)
+      assert Atanor.Registry.state(again.name) == :ready
+    end
+  end
+
   test "stores metadata under the prefix" do
     node = Node.start(prefix: "meta")
     on_exit(fn -> Node.stop(node) end)
