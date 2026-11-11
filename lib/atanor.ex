@@ -17,6 +17,9 @@ defmodule Atanor do
     * `:name` - atom that names the instance (default `Atanor`). The Alambique
       instance is named `<name>.Cells`.
     * `:data_dir` - directory for the local copies of cells (required).
+      It belongs to one instance, on a case-sensitive file system: the start locks
+      `<data_dir>/lock` and fails with `{:data_dir_in_use, path}` or
+      `{:data_dir_case_insensitive, path}`.
     * `:store` - `{module, config}` implementing `Alambique.Store`, with
       `:prefix`: cells and Atanor's metadata share this store (design §5).
     * `:placement` - `{module, opts}` implementing the placement behaviour of Alambique, with
@@ -307,14 +310,19 @@ defmodule Atanor do
       Two are checked at start: `:pipeline_depth` (1 to 16; default 8, Alambique's:
       a cell encodes the next batch while earlier ones upload, and callers are
       answered in order, design §19.5) and `:replicas` (`false`, the default, or a keyword
-      list: `[]` turns the read replicas on with Alambique's limits, design §19).
+      list: `[]` turns the read replicas on with Alambique's limits, design §19;
+      `replicas: [poll_max_ms: 5_000]`, the longest time between refreshes of an idle
+      replica, and `query: [reflink: true]`, copy-on-write clones for cached
+      replicas, pass through unchecked).
       A request that reads with `consistency: {:bounded, ms}` is answered from a
       replica only when `:replicas` is on.
       The limits of Alambique are checked too (a known key, a positive integer)
       and keep Alambique's defaults: `sql: [statement_timeout_ms: 10_000,
-      max_result_rows: 100_000, max_result_bytes: 67_108_864]` (a statement over
+      script_timeout_ms: 60_000, max_result_rows: 100_000, max_result_bytes: 67_108_864,
+      max_concurrent_statements: dirty IO schedulers - 2, at least 1]` (a statement over
       one gives the worker `{:error, :statement_timeout}` or
-      `{:error, :result_too_large}`), `awake: [max_cells: 20_000, max_wakes: 256,
+      `{:error, :result_too_large}`; a read over the concurrent limit gets
+      `{:error, :busy}`; `script_timeout_ms` bounds migrations and scripts), `awake: [max_cells: 20_000, max_wakes: 256,
       max_pending: 10_000, cache_kib: 512, max_bytes: nil]` (`cache_kib` is the SQLite
       page cache of each awake cell; `max_bytes` hibernates the least used cells
       before the memory of the awake ones passes it, and is derived from `:memory`
@@ -324,9 +332,11 @@ defmodule Atanor do
       60_000]` (or `false`) and `wal: [checkpoint_bytes: 67_108_864]`. A wrong
       number of parameters is `{:error, {:bad_params, message}}`. Design §4.3.
       Two more groups are checked and passed through: `compaction: [hold_bytes:
-      33_554_432, hold_object_bytes: 1_048_576]` (memory per instance for the
+      33_554_432, hold_object_bytes: 1_048_576, moved_scan_ms: 60_000,
+      moved_scan_page: 100]` (memory per instance for the
       files a cell just replicated, so a compaction of an awake cell does not read
-      them back; 0 turns it off) and `feed: [object_batches: 16, linger_ms: 250,
+      them back, 0 turns it off; the time between scans of the store for the cleanups
+      of moved cells, and the markers listed per request) and `feed: [object_batches: 16, linger_ms: 250,
       stop_publish_ms: 5_000]` (Atanor sets the first two unless you do: one
       feed object carries up to 16 batches and a lone batch waits up to 250 ms
       for company; a cell that stops publishes what it holds, for up to

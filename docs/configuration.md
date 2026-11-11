@@ -27,7 +27,7 @@ children = [
 | Option | What it sets |
 | --- | --- |
 | `store:`, `prefix:` | The S3-compatible store that holds both the cells and Atanor's own metadata under `prefix:`. `placement:` with `meta_store:` replaces it when cells live in several places. |
-| `data_dir:` | The directory of the local copies of cells. |
+| `data_dir:` | The directory of the local copies of cells. One instance holds it (a lock on `data_dir/lock`) on a case-sensitive file system; a second instance, or another file system, fails to start with `data_dir_in_use` or `data_dir_case_insensitive`, logged by the node. |
 | `secrets:` | The values of the secrets the workers are granted. |
 | `hosts:`, `listeners:` | The routes a manifest may activate. `listeners: %{"smtp" => 2525}` opens that port while a worker claims it. The long form adds `tls_mode:` and `tls:`, `protocol: :ranch` and `ip:` (the address to bind); a Ranch protocol gets the listener name as `:atanor_listener`. |
 | `allow_private_hosts:` | Which private addresses outbound HTTP may reach. |
@@ -61,6 +61,17 @@ packages are trusted for those grants.
 The limits that bound a statement, an awake cell and the local files
 (`alambique: [sql:, awake:, wal:, local_cache:]`) keep Alambique's defaults.
 They are in [design §4.3](design.md#43-limits-on-cell-calls-and-their-errors).
+
+- `sql: [max_concurrent_statements:]` is the most reads that run on a node at
+  once (default: the dirty IO schedulers minus two, at least 1). A read over it
+  is a 503 `overloaded`.
+- `sql: [script_timeout_ms:]` (60,000) bounds a migration, a script and
+  Alambique's own statements.
+- `compaction: [moved_scan_ms:, moved_scan_page:]` (60,000 and 100) set how
+  often the store is scanned for the cleanups of moved cells, and the page of
+  that scan.
+- `replicas: [poll_max_ms:]` (5,000) and `query: [reflink:]` (`true`) pass
+  through to Alambique unchecked.
 
 **Memory.** The memory of a node grows with its awake cells. Atanor keeps
 512 KiB of SQLite page cache per cell. When the node has a memory limit (a

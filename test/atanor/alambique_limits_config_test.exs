@@ -25,6 +25,26 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
     for {key, value} <- alambique, do: assert(config.alambique_opts[key] == value)
   end
 
+  test "the statement slots, the script deadline and the moved-cell scan are passed through" do
+    alambique = [
+      sql: [script_timeout_ms: 5_000, max_concurrent_statements: 3],
+      compaction: [moved_scan_ms: 1_000, moved_scan_page: 10],
+      replicas: [poll_max_ms: 2_000],
+      query: [reflink: false]
+    ]
+
+    config = build(alambique)
+    for {key, value} <- alambique, do: assert(Keyword.take(config.alambique_opts[key], Keyword.keys(value)) == value)
+
+    for bad <- [
+          [sql: [max_concurrent_statements: 0]],
+          [compaction: [moved_scan_page: 1.5]],
+          [sql: [script_timeout_ms: -1]]
+        ] do
+      assert_raise ArgumentError, fn -> build(bad) end
+    end
+  end
+
   test "compaction and feed options are passed through, zero is allowed" do
     config =
       build(
