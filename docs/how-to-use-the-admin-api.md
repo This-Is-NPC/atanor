@@ -458,7 +458,8 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     `reason`; `:drain` with `:deadline` when the whole drain ran out of
     time), and the node then stops with status 1. A cell that another node
     still holds is 503 `held_elsewhere` on the node that asks. `GET /drain` reads `idle`,
-    `draining` or `drained`. The options are `stop: [drain_timeout_ms,
+    `draining` or `drained`; while `draining` it adds `cells_at_start`, `done`,
+    `left` and the `errors` so far, so a poll shows the progress. The options are `stop: [drain_timeout_ms,
     drain_concurrency, shutdown_ms, exit]`
     ([configuration](configuration.md), design
     [§8.11](design.md#811-draining-and-stopping-gracefully)).

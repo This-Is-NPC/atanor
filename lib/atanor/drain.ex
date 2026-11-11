@@ -36,7 +36,10 @@ defmodule Atanor.Drain do
     GenServer.call(name(instance), {:drain, exit}, :infinity)
   end
 
-  @doc "The state of the drain: `idle`, `draining` or `drained` (with what it did)."
+  @doc """
+  The state of the drain: `idle`, `draining` (with `cells_at_start`, `done`, `left` and the `errors` so far, from
+  Alambique; they read 0 until the jobs have finished) or `drained` (with what it did).
+  """
   @spec status(atom) :: map
   def status(instance), do: GenServer.call(name(instance), :status)
 
@@ -162,7 +165,12 @@ defmodule Atanor.Drain do
   defp options(stop), do: [timeout: stop.drain_timeout_ms, concurrency: stop.drain_concurrency]
 
   defp view(%{state: :idle}), do: %{state: :idle}
-  defp view(%{state: :draining}), do: %{state: :draining}
+
+  defp view(%{state: :draining, config: config}) do
+    progress = Map.take(Alambique.drain_status(config.alambique), [:cells_at_start, :done, :left, :errors])
+    Map.put(progress, :state, :draining)
+  end
+
   defp view(%{state: :drained, summary: summary}), do: Map.put(summary, :state, :drained)
 
   # What ends the node once the cells are handed back; only a drain that was asked for does it.

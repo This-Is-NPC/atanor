@@ -101,6 +101,17 @@ defmodule Atanor.DrainTest do
       assert {503, %{status: "draining"}} = Overview.ready(node.name)
     end
 
+    test "the status of a drain that runs reports the progress of the cells" do
+      {node, gate} = stuck(stop: [shutdown_ms: 5_000, drain_timeout_ms: 5_000])
+      drain = Task.async(fn -> Atanor.drain(node.name) end)
+
+      until(fn -> match?(%{state: :draining, cells_at_start: 1}, Atanor.drain_status(node.name)) end)
+      assert %{done: 0, left: 1, errors: []} = Atanor.drain_status(node.name)
+
+      GatedStore.open(gate)
+      assert {:ok, %{state: :drained, hibernated: 1}} = Task.await(drain)
+    end
+
     test "the alarm scheduler leaves its group, so the other nodes take the shards" do
       node = start(alarms: [tick_ms: 20])
       group = Atanor.Alarms.group(Registry.config(node.name).prefix)

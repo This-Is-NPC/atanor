@@ -2115,6 +2115,8 @@ A cell that the drain could not hibernate stays with its lease, which expires as
 2 s skew margin by default); a client of the node that takes over gets 503 `held_elsewhere` until then (§8.4).
 The drain is one way: the node does not take cells again until it restarts. A second call joins a drain that
 is running, or returns what the finished one did (`GET /drain`, `Atanor.drain_status/1`).
+While it runs the status adds the progress that `Alambique.drain_status/1` reports (`cells_at_start`, `done`,
+`left` and the `errors` so far); they read 0 until the jobs have finished and Alambique begins.
 
 **SIGTERM** (what `docker stop`, systemd and Kubernetes send) runs the same drain with the listeners still
 serving, then stops the VM. The application swaps `Atanor.Signal` in for OTP's `erl_signal_handler` on

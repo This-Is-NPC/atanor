@@ -152,7 +152,8 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    `/health/serving` answer 503 `draining`, which is what takes A out of the
    balancer (within about 2 s: `inter 1s fall 2`). A node with many cells
    stays in `draining` for the time they need (48 cells took 0.3 s here);
-   poll it:
+   poll it. While `draining` the answer also carries `cells_at_start`, `done`
+   and `left`:
 
    ```sh
    docker exec atanor-cluster-node-1 sh -c 'curl -s -H "authorization: Bearer $(cat /run/secrets/admin_token)" http://127.0.0.1:4001/drain'

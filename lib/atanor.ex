@@ -383,7 +383,10 @@ defmodule Atanor do
   @spec drain(atom, keyword) :: {:ok, map}
   def drain(name \\ __MODULE__, opts \\ []), do: Atanor.Drain.run(name, opts)
 
-  @doc "The state of the drain: `%{state: :idle | :draining | :drained}` and, once drained, what it did."
+  @doc """
+  The state of the drain: `%{state: :idle | :draining | :drained}`. While it runs it adds `cells_at_start`, `done`,
+  `left` and `errors`; once drained, what it did.
+  """
   @spec drain_status(atom) :: map
   def drain_status(name \\ __MODULE__), do: Atanor.Drain.status(name)
 

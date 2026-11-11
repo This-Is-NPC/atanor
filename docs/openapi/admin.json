@@ -1493,6 +1493,18 @@
             "type": "integer",
             "description": "How long the drain took. Absent until it ends."
           },
+          "cells_at_start": {
+            "type": "integer",
+            "description": "Cells with a process when Alambique began handing them back. Only while `draining`; 0 until the jobs have finished."
+          },
+          "done": {
+            "type": "integer",
+            "description": "Cells handed back so far. Only while `draining`."
+          },
+          "left": {
+            "type": "integer",
+            "description": "Cells with a process now. Only while `draining`."
+          },
           "errors": {
             "type": "array",
             "items": {
