@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The environment of the load tests: up | latency | deploy | rtt | info | down. Settings: ATANOR_LOAD_*
+# The environment of the load tests: up | latency | deploy | rtt | check-swap | info | down. Settings: ATANOR_LOAD_*
 # (docs/how-to-run-the-load-tests.md). Safe to rerun; touches only the project atanor-cluster
 # and the container atanor-load-tc, by id or exact name.
 #
@@ -8,6 +8,7 @@
 #   latency  (re)apply the added store latency, and print the round trip from the node to the store
 #   deploy   deploy the native worker (cluster/load) and the scoreboard (WASM) to the node
 #   rtt      print the round trip from the node to the store in ms (median of three)
+#   check-swap [ID...]  refuse (exit 1) a container that may swap; default: the cluster's containers
 #   info     print the containers, addresses and cgroup directories as JSON
 #   down     remove the containers, network and volumes
 set -euo pipefail
@@ -45,6 +46,23 @@ latency() {
   fi
 }
 
+# A measured container must not swap: its memory limit has to equal its memory+swap limit, and the
+# cgroup's memory.swap.max (cgroup v2, when readable) has to be 0. Otherwise the memory numbers are void.
+check_swap() {
+  local ids=("$@") id memory swap pid max bad=0
+  [[ ${#ids[@]} -gt 0 ]] || mapfile -t ids < <(cluster_ids)
+  [[ ${#ids[@]} -gt 0 ]] || { echo "no container to check" >&2; return 1; }
+  for id in "${ids[@]}"; do
+    read -r memory swap pid < <(docker inspect -f '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.State.Pid}}' "$id")
+    if [[ $memory -le 0 || $swap -ne $memory ]]; then
+      echo "$(container_name "$id") may swap: Memory=$memory MemorySwap=$swap (they must be equal and set); set memswap_limit equal to mem_limit" >&2; bad=1
+    elif max=$(cat "/sys/fs/cgroup$(sed -n 's/^0:://p' "/proc/$pid/cgroup" 2>/dev/null)/memory.swap.max" 2>/dev/null) && [[ $max != 0 ]]; then
+      echo "$(container_name "$id") may swap: memory.swap.max=$max (must be 0)" >&2; bad=1
+    fi
+  done
+  return $bad
+}
+
 deploy() {
   local node tmp url
   node=$(node_id); url=$(published_url 4001)
@@ -79,9 +97,10 @@ case ${1:-} in
   latency) latency ;;
   deploy) deploy ;;
   rtt) store_rtt "$(node_id)"; echo ;;
+  check-swap) shift; check_swap "$@" ;;
   info) info ;;
   down)
     docker rm -f "$TC" >/dev/null 2>&1 || true
     "$repo/scripts/cluster-down" ;;
-  *) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

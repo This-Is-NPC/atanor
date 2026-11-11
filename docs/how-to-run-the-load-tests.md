@@ -27,6 +27,7 @@ One container per service, all of the project `atanor-cluster` (`scripts/cluster
 | --- | --- |
 | Node | One container, `cpus` and `mem_limit` from the scenario (A: 1 and 512 MB; B: 2 and 2 GB), no peers. |
 | Service data | The node's data directory is a tmpfs inside its limit (`ATANOR_LOAD_TMPFS_SIZE`, 256 MB). Memory is reported as `memory.current - shmem` from the container's cgroup `memory.stat`; the tmpfs size is `shmem`, reported apart. The 90% criterion uses `memory.current`, the number the kernel enforces. |
+| No swap | Every measured container has `memswap_limit` equal to `mem_limit`, so it cannot swap (zram or disk swap on the host would void the memory numbers). `load-run` checks `docker inspect` (`Memory` set and `MemorySwap` equal to it) and, when readable, the cgroup's `memory.swap.max` (0) before the first step, and refuses to run otherwise (`scripts/load-env check-swap`). Recreate a cluster started before this limit existed with `load:down` and `load:up`. |
 | Store | SeaweedFS in its own container (2 CPUs, 2 GB, outside the node's limit), data in tmpfs. |
 | Store latency | `tc netem delay 25ms` on the store's network interface, so every answer the store sends waits 25 ms: each trip costs 25 ms more. The node image has `tc`; `atanor-load-tc` joins the store's network namespace with `NET_ADMIN`, applies the qdisc and exits. The qdisc needs no root on the host. A request on a warm connection pays the latency once; a `curl` that opens a connection pays it twice, because the handshake answer waits too. `load:up` checks that the round trip from the node to the store grew by at least 80% of the added latency (observed: 1.0 ms to 51.1 ms for a new connection) and every step records it (`store_rtt_ms`). |
 | Balancer | HAProxy (2 CPUs) is in the path only for `load:swap`. The other measures send to the node's address. |
@@ -44,8 +45,9 @@ and `/proc/meminfo`. Per step, in this order:
 2. **Host load.** Net host load is the cores busy on the host minus the cores the test itself used (node,
    store, balancer, generator), averaged over the step. Above 6, the step is invalid and is repeated (twice,
    after 30 s); then the round stops.
-3. **Criteria.** The step fails when any criterion of the table above broke.
-4. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
+3. **Host swap.** The host's swap used (`SwapTotal - SwapFree`) grew by more than 16 MB during the step (`ATANOR_LOAD_MAX_SWAP_GROWTH_MB`): the step is INVALID, not a failure of the node, and the round stops. The report shows the swap used at the start and the largest sampled value.
+4. **Criteria.** The step fails when any criterion of the table above broke.
+5. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
    failure of the node. A saturated node breaks p99 first, so it is a failure, not an invalid step.
 
 The ramp multiplies the value by 2 from a start (`--start`, `--factor`, or `--steps`) until a step fails;
@@ -73,6 +75,7 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_MEMORY_PCT`, `_FD_PCT` | 90, 90 | Share of the limits that fails a ws or cells step. |
 | `ATANOR_LOAD_DELIVERY` | 0.95 | Achieved/planned below which a step is invalid. |
 | `ATANOR_LOAD_HOST_LOAD_MAX`, `_MIN_AVAILABLE_GB` | 6, 6 | Net host load and free host memory limits. |
+| `ATANOR_LOAD_MAX_SWAP_GROWTH_MB` | 16 | Growth of host swap used during a step above which the step is invalid. |
 | `ATANOR_LOAD_WRITE_RATIO`, `_CELLS` | 0.5, 64 | http: share of writes, cells the requests spread over. |
 | `ATANOR_LOAD_CELL_PERIOD` | 10 | cells: seconds between the writes to one cell. |
 | `ATANOR_LOAD_OPEN_RATE`, `_WS_INTERVAL` | 100, 30 | Sockets opened or cells touched per second; seconds between messages of a socket (the node closes a silent socket after 60 s). |

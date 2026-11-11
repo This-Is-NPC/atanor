@@ -46,12 +46,13 @@ def step_rows(steps):
                      f"{num(mem.get('service_mb'))} / {num(mem.get('tmpfs_mb'))} / {num(mem.get('peak_mb'))}", num(s.get("fds", {}).get("count"), 0),
                      f"{num(s.get('s3', {}).get('bytes'), 0)} / {num(s.get('s3', {}).get('trips'), 0)}",
                      f"{num(s.get('host', {}).get('net_load_mean'), 1)} ({num(s.get('host', {}).get('loadavg1'), 1)})",
+                     f"{num(s.get('host', {}).get('swap_start_mb'), 0)} / {num(s.get('host', {}).get('swap_max_mb'), 0)}",
                      s["status"].upper() + ("" if s["valid"] else " (invalid)") + (f": {s['stop_reason']}" if s["stop_reason"] else "")])
     return rows
 
 
 HEADER = ["step", "phase", "value", "planned / achieved", "p50 ms", "p95 ms", "p99 ms", "max ms", "503 with / without Retry-After", "CPU cores",
-          "MB service / tmpfs / peak", "fds", "S3 bytes / trips", "net host load (loadavg)", "status"]
+          "MB service / tmpfs / peak", "fds", "S3 bytes / trips", "net host load (loadavg)", "host swap MB start / max", "status"]
 
 
 def cost(measure, steps, baseline, summary):
