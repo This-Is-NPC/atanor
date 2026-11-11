@@ -402,6 +402,8 @@ defmodule Atanor.WasmTest do
       assert settings.stderr_bytes == 4_096
       assert settings.table_elements == 100_000
       assert settings.pooling == true
+      assert settings.compile_threads == 2
+      assert settings.compile_queue == 16
     end
 
     test "take overrides and reject invalid values" do

@@ -3590,7 +3590,8 @@ The decisions below were taken in stage 4.
 
 ### 14.1 Own pool, not dirty schedulers
 
-`compile/3` and `prepare/2` are dirty-CPU NIFs: they are short and bounded.
+`prepare/2` is a dirty-CPU NIF: it is short and bounded. A compile is not
+(§14.5), so `compile/5` runs on a pool of its own.
 Guests are not: one holds a thread until its deadline (30 s by default). The
 BEAM has as many dirty CPU schedulers as cores, shared with every other
 dirty NIF (alambique's SQLite), so a burst of runaway guests would take them
@@ -3659,8 +3660,15 @@ it (atomic rename). The `[:atanor, :wasm, :load]` event reports the source:
 `:memory`, `:disk`, `:compiled` or `:recompiled`. Entries are not evicted
 while the instance runs. A deployment waits for a compile at most
 `compile_timeout_ms` (`:atanor, :wasm`, default 60,000) and the watcher goes on
-with the other heads; the compile cannot be interrupted, so it ends in the
-background and the next apply finds it cached. The component size is bounded
+with the other heads; the compile cannot be interrupted, so it ends on the
+compile pool and the next apply finds it cached. That pool is
+`compile_threads` OS threads (default 2) with a queue of `compile_queue`
+(default 16): `compile/5` queues the work and returns at once, the result
+arrives as a message, and a full queue answers `:overloaded` (the deployment
+fails with "compile queue is full"). An abandoned compile therefore holds no
+dirty scheduler, and repeated deployments cannot pile up more than
+`compile_threads + compile_queue` compiles. A queued compile is not
+cancelled when its caller gives up. The component size is bounded
 before the compile (§5.1).
 
 ### 14.6 Linking and WASI

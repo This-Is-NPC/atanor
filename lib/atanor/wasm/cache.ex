@@ -17,8 +17,10 @@ defmodule Atanor.Wasm.Cache do
   @doc """
   The compiled component of `bytes`, whose SHA-256 (hex) is `hash`. The caller
   waits at most `timeout` ms (the node setting `:compile_timeout_ms`) for a
-  compile; one that takes longer goes on in the background and is cached when
-  it ends, since a native compile cannot be interrupted.
+  compile; one that takes longer goes on in the compile pool and is cached when
+  it ends, since a native compile cannot be interrupted. The pool has
+  threads of its own and a bounded queue, so an abandoned compile holds no
+  BEAM scheduler and a full queue refuses the next one.
   """
   @spec fetch(atom, String.t(), binary, timeout) :: {:ok, reference} | {:error, String.t()}
   def fetch(instance, hash, bytes, timeout \\ Atanor.Wasm.settings().compile_timeout_ms) do
@@ -50,11 +52,17 @@ defmodule Atanor.Wasm.Cache do
     |> Map.take([:threads, :queue, :tick_ms, :cpu, :pooling, :max_memory_bytes, :table_elements])
   end
 
+  defp compile_settings do
+    settings = Atanor.Wasm.settings()
+    %{threads: settings.compile_threads, queue: settings.compile_queue}
+  end
+
   @impl true
   def init(config) do
-    with :ok <- Native.configure(engine_settings()) do
+    with :ok <- Native.configure(engine_settings()),
+         :ok <- Native.configure_compile(compile_settings()) do
       :ets.new(table(config.name), [:named_table, :set, :protected, read_concurrency: true])
-      {:ok, %{table: table(config.name), dir: Path.join(config.data_dir, "wasm"), waiting: %{}, tasks: %{}}}
+      {:ok, %{table: table(config.name), dir: Path.join(config.data_dir, "wasm"), waiting: %{}, started: %{}}}
     else
       {:error, reason} -> {:stop, {:wasm_not_configured, reason}}
     end
@@ -72,55 +80,41 @@ defmodule Atanor.Wasm.Cache do
         if Map.has_key?(state.waiting, hash) do
           {:noreply, %{state | waiting: waiting}}
         else
-          dir = state.dir
-          task = Task.async(fn -> load(bytes, dir, hash) end)
-          {:noreply, %{state | waiting: waiting, tasks: Map.put(state.tasks, task.ref, hash)}}
+          case Native.compile(bytes, state.dir, hash, self(), hash) do
+            :ok ->
+              started = Map.put(state.started, hash, {System.monotonic_time(), byte_size(bytes)})
+              {:noreply, %{state | waiting: waiting, started: started}}
+
+            :overloaded ->
+              {:reply, {:error, "compile queue is full"}, state}
+          end
         end
     end
   end
 
   @impl true
-  def handle_info({ref, result}, %{tasks: tasks} = state) when is_map_key(tasks, ref) do
-    Process.demonitor(ref, [:flush])
-    {hash, tasks} = Map.pop(tasks, ref)
-    {waiters, waiting} = Map.pop(state.waiting, hash)
+  def handle_info({:atanor_compile, hash, result}, state) do
+    {waiters, waiting} = Map.pop(state.waiting, hash, [])
+    {{started, bytes}, starts} = Map.pop(state.started, hash)
 
     reply =
       case result do
-        {:ok, compiled} ->
+        {:ok, {compiled, source}} ->
           :ets.insert(state.table, {hash, compiled})
+
+          :telemetry.execute(
+            [:atanor, :wasm, :load],
+            %{duration: System.monotonic_time() - started, bytes: bytes},
+            %{hash: hash, source: source}
+          )
+
           {:ok, compiled}
 
-        error ->
-          error
+        {:error, message} ->
+          {:error, message}
       end
 
     for from <- waiters, do: GenServer.reply(from, reply)
-    {:noreply, %{state | tasks: tasks, waiting: waiting}}
-  end
-
-  def handle_info({:DOWN, ref, :process, _, reason}, %{tasks: tasks} = state) when is_map_key(tasks, ref) do
-    {hash, tasks} = Map.pop(tasks, ref)
-    {waiters, waiting} = Map.pop(state.waiting, hash)
-    for from <- waiters, do: GenServer.reply(from, {:error, "compile crashed: #{inspect(reason)}"})
-    {:noreply, %{state | tasks: tasks, waiting: waiting}}
-  end
-
-  defp load(bytes, dir, hash) do
-    started = System.monotonic_time()
-
-    case Native.compile(bytes, dir, hash) do
-      {:ok, {compiled, source}} ->
-        :telemetry.execute(
-          [:atanor, :wasm, :load],
-          %{duration: System.monotonic_time() - started, bytes: byte_size(bytes)},
-          %{hash: hash, source: source}
-        )
-
-        {:ok, compiled}
-
-      {:error, message} ->
-        {:error, message}
-    end
+    {:noreply, %{state | waiting: waiting, started: starts}}
   end
 end
