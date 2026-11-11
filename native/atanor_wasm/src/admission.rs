@@ -88,21 +88,22 @@ impl<F: Future> Future for Running<F> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
         let this = self.get_mut();
+        // The semaphore is private to the engine and never closed, so acquiring cannot fail.
         let permit = match this.acquiring.as_mut() {
             Some(acquiring) => match acquiring.as_mut().poll(cx) {
                 Poll::Ready(permit) => {
                     this.acquiring = None;
-                    permit
+                    permit.expect("the permits are never closed")
                 }
                 Poll::Pending => return Poll::Pending,
             },
             None => match this.permits.clone().try_acquire_owned() {
-                Ok(permit) => Ok(permit),
-                Err(TryAcquireError::Closed) => return Poll::Pending,
+                Ok(permit) => permit,
+                Err(TryAcquireError::Closed) => unreachable!("the permits are never closed"),
                 Err(TryAcquireError::NoPermits) => {
                     let mut acquiring: Acquire = Box::pin(this.permits.clone().acquire_owned());
                     match acquiring.as_mut().poll(cx) {
-                        Poll::Ready(permit) => permit,
+                        Poll::Ready(permit) => permit.expect("the permits are never closed"),
                         Poll::Pending => {
                             this.acquiring = Some(acquiring);
                             return Poll::Pending;
