@@ -379,12 +379,18 @@ defmodule Atanor.AlarmsTest do
       for key <- keys, do: set(node, key, @start + 1_000, "once")
       ManualClock.advance(world, 61_000)
 
-      fired =
-        1..3
-        |> Enum.map(fn _ -> Task.async(fn -> Alarms.run(node.name, fn _ -> true end) end) end)
-        |> Task.await_many(30_000)
+      scan = fn -> Alarms.run(node.name, fn _ -> true end) end
+      1..3 |> Enum.map(fn _ -> Task.async(scan) end) |> Task.await_many(30_000)
 
-      assert Enum.sum(fired) == 20
+      # A scan skips an alarm whose cell is busy or still being taken, and a handler
+      # that finds its cell unavailable is retried after its backoff. So the first
+      # scans may fire fewer than 20 alarms; later scans fire the rest, none twice.
+      assert until(fn ->
+               ManualClock.advance(world, 60_000)
+               scan.()
+               Enum.all?(keys, &(fires(node, &1) != []))
+             end)
+
       for key <- keys, do: assert(fires(node, key) == ["once"])
       assert until(fn -> index_empty?(node) end)
     end
