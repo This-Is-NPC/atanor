@@ -190,26 +190,16 @@ defmodule Atanor.Sweeps.Undo.Cell do
     end)
   end
 
-  # Row count and a hash of the rows ordered by all their columns, streamed.
+  # Row count and a hash of the rows ordered by all their columns. Alambique has no row cursor: the table is
+  # read whole, bounded by the deadline.
   defp table(conn, name) do
     quoted = Restore.quote_identifier(name)
 
     with {:ok, %{rows: columns}} <- Sqlite.run(conn, "PRAGMA table_info(#{quoted})", []),
          order = Enum.join(1..max(length(columns), 1), ", "),
-         {:ok, stmt} <- Sqlite.prepare(conn, "SELECT * FROM #{quoted} ORDER BY #{order}") do
-      try do
-        digest(stmt, :crypto.hash_init(:sha256), 0)
-      after
-        Sqlite.release(stmt)
-      end
-    end
-  end
-
-  defp digest(stmt, hash, count) do
-    case Sqlite.step(stmt) do
-      {:row, row} -> digest(stmt, :crypto.hash_update(hash, :erlang.term_to_binary(row)), count + 1)
-      :done -> {:ok, {count, Base.encode16(:crypto.hash_final(hash), case: :lower)}}
-      {:error, _} = error -> error
+         {:ok, %{rows: rows}} <- Sqlite.run(conn, "SELECT * FROM #{quoted} ORDER BY #{order}", []) do
+      hash = Enum.reduce(rows, :crypto.hash_init(:sha256), &:crypto.hash_update(&2, :erlang.term_to_binary(&1)))
+      {:ok, {length(rows), Base.encode16(:crypto.hash_final(hash), case: :lower)}}
     end
   end
 
