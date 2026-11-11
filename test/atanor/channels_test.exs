@@ -272,8 +272,12 @@ defmodule Atanor.ChannelsTest do
 
           loop = fn loop, n ->
             receive do
-              :stop -> :ok
-              _ -> send(test, {:got, self(), n + 1}) && loop.(loop, n + 1)
+              :stop ->
+                :ok
+
+              _ ->
+                send(test, {:got, self(), n + 1})
+                loop.(loop, n + 1)
             end
           end
 
