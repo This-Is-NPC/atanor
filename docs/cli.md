@@ -50,7 +50,8 @@ usage. `atanor help COMMAND` prints the same options as this page.
 
 Checks the token against the node (`GET /heads`) and stores it in the profile.
 The token comes from `ATANOR_TOKEN` or, without it, one line on standard input
-(typed input is not hidden; pipe it from a secret store instead). A token the
+(at a terminal the prompt is on standard error and what you type is not
+shown; a pipe is read without a prompt). A token the
 node refuses is not stored. A plain `http://` URL to a host other than
 loopback is refused before the token is sent, because it would cross the
 network in clear; `--insecure` allows it and prints a warning.
