@@ -6,7 +6,8 @@
 # Run once per CPU limit mode (epoch, fuel) by scripts/bench-wasm; set
 # ATANOR_BENCH_CPU to run one. ATANOR_BENCH_POOLING=off maps memory on demand
 # instead of using the pooling allocator. Measures cold compile, loading the compiled
-# code from the disk cache, warm instantiation, requests per second for the
+# code from the disk cache, warm instantiation, requests per second (with the CPU
+# time and context switches per request) for the
 # hello guest over HTTP, and the time of a CPU-bound request.
 
 [seconds | _] = System.argv() ++ ["5"]
@@ -60,11 +61,18 @@ defmodule Bench do
     n = 2_000
     for _ <- 1..n, do: request(node, "hello")
     warm = for _ <- 1..n, do: elem(first([:atanor, :wasm, :invoke]), 0)
-    warm_instantiate = ms(Enum.sum(Enum.map(warm, & &1.instantiate)) / n |> round())
-    warm_duration = ms(Enum.sum(Enum.map(warm, & &1.duration)) / n |> round())
+    warm_instantiate = ms((Enum.sum(Enum.map(warm, & &1.instantiate)) / n) |> round())
+    warm_duration = ms((Enum.sum(Enum.map(warm, & &1.duration)) / n) |> round())
     flush()
 
+    c0 = proc()
     rps = throughput(node, seconds)
+    c1 = proc()
+
+    IO.puts(
+      "per request (VM and clients): cpu_us #{Float.round((c1.cpu - c0.cpu) * 10_000 / (rps * seconds), 1)} vol_cs #{Float.round((c1.vol - c0.vol) / (rps * seconds), 2)} invol_cs #{Float.round((c1.inv - c0.inv) / (rps * seconds), 2)}"
+    )
+
     flush()
 
     work = for _ <- 1..5, do: elem(work_request(node), 0)
@@ -85,6 +93,30 @@ defmodule Bench do
     VM address space / resident:        #{vm}
     CPU-bound request (200M iterations): #{Enum.map_join(work, ", ", &"#{Float.round(&1, 1)} ms")}; median #{work |> Enum.sort() |> Enum.at(2) |> Float.round(1)} ms
     """)
+  end
+
+  defp proc do
+    {:ok, tasks} = File.ls("/proc/self/task")
+    base = %{cpu: 0, vol: 0, inv: 0}
+
+    Enum.reduce(tasks, base, fn t, acc ->
+      st = File.read!("/proc/self/task/#{t}/status")
+
+      f = fn k ->
+        [_, v] = Regex.run(~r/#{k}:\s+(\d+)/, st)
+        String.to_integer(v)
+      end
+
+      [_ | rest] = String.split(File.read!("/proc/self/task/#{t}/stat"), ") ")
+      fields = String.split(hd(rest))
+      ticks = String.to_integer(Enum.at(fields, 11)) + String.to_integer(Enum.at(fields, 12))
+
+      %{
+        cpu: acc.cpu + ticks,
+        vol: acc.vol + f.("voluntary_ctxt_switches"),
+        inv: acc.inv + f.("nonvoluntary_ctxt_switches")
+      }
+    end)
   end
 
   defp vm_memory do
@@ -139,7 +171,12 @@ defmodule Bench do
   end
 
   defp cpu_model do
-    "/proc/cpuinfo" |> File.read!() |> String.split("\n") |> Enum.find(&String.starts_with?(&1, "model name")) |> String.split(": ") |> List.last()
+    "/proc/cpuinfo"
+    |> File.read!()
+    |> String.split("\n")
+    |> Enum.find(&String.starts_with?(&1, "model name"))
+    |> String.split(": ")
+    |> List.last()
   end
 end
 
