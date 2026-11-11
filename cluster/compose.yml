@@ -24,6 +24,7 @@ services:
     volumes: [store-data:/data]
     cpus: ${ATANOR_CLUSTER_STORE_CPUS:-1.5}
     mem_limit: ${ATANOR_CLUSTER_STORE_MEMORY:-2g}
+    memswap_limit: ${ATANOR_CLUSTER_STORE_MEMORY:-2g}
     pids_limit: 1024
     healthcheck:
       # Any HTTP answer (even 403) means the S3 gateway is listening.
@@ -65,6 +66,7 @@ services:
       default: {aliases: [node]}
     cpus: ${ATANOR_CLUSTER_NODE_CPUS:-1.5}
     mem_limit: ${ATANOR_CLUSTER_NODE_MEMORY:-2g}
+    memswap_limit: ${ATANOR_CLUSTER_NODE_MEMORY:-2g}
     pids_limit: 2048
     # NET_ADMIN lets `cluster:chaos partition` drop packets inside the node's own network
     # namespace; nothing on the host is touched.
@@ -165,6 +167,7 @@ services:
       - ${ATANOR_CLUSTER_BIND:-127.0.0.1}:${ATANOR_CLUSTER_STATS_PORT:-18083}:8404
     cpus: ${ATANOR_CLUSTER_LB_CPUS:-0.5}
     mem_limit: ${ATANOR_CLUSTER_LB_MEMORY:-256m}
+    memswap_limit: ${ATANOR_CLUSTER_LB_MEMORY:-256m}
     pids_limit: 256
     restart: "no"
     logging: *logging

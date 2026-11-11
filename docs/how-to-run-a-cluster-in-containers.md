@@ -52,7 +52,7 @@ Set these in the environment of `mise run`; the defaults are in `compose.yml`.
 | `ATANOR_CLUSTER_NODES` | 3 | Number of nodes, 1 to 10. |
 | `ATANOR_CLUSTER_NODE_CPUS`, `_NODE_MEMORY` | 1.5, 2g | Limits per node. |
 | `ATANOR_CLUSTER_STORE_CPUS`, `_STORE_MEMORY` | 1.5, 2g | Limits of SeaweedFS. |
-| `ATANOR_CLUSTER_LB_CPUS`, `_LB_MEMORY` | 0.5, 256m | Limits of HAProxy. |
+| `ATANOR_CLUSTER_LB_CPUS`, `_LB_MEMORY` | 0.5, 256m | Limits of HAProxy. Every memory limit also sets `memswap_limit` to the same value: no container uses swap. |
 | `ATANOR_CLUSTER_HTTP_PORT`, `_ADMIN_PORT`, `_DASHBOARD_PORT`, `_STATS_PORT` | 18080 to 18083 | Host ports of the load balancer. |
 | `ATANOR_CLUSTER_BIND` | 127.0.0.1 | Host address the ports bind to. Keep loopback. |
 | `ATANOR_CLUSTER_STORE_IMAGE`, `_LB_IMAGE` | pinned digests | Images. |
