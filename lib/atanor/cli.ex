@@ -173,17 +173,38 @@ defmodule Atanor.CLI do
     ctx = %{
       env: System.get_env(),
       cwd: File.cwd!(),
-      stdin: fn prompt ->
-        # Prompt only a person at a terminal, not a pipe.
-        if match?({:ok, _}, :io.columns()), do: IO.write(:stderr, prompt)
-        IO.gets("")
-      end
+      stdin: &read_line/1
     }
 
     {code, out, err} = run(argv, ctx)
     IO.write(out)
     IO.write(:stderr, err)
     System.halt(code)
+  end
+
+  @doc """
+  Reads one line from standard input. At a terminal it prompts on standard
+  error and reads with the echo off, so a token is not shown; a pipe is read
+  as it is, without a prompt.
+  """
+  @spec read_line(String.t()) :: String.t() | :eof | {:error, term}
+  def read_line(prompt) do
+    if :prim_tty.isatty(:stdin) == true, do: read_hidden(prompt), else: IO.gets("")
+  end
+
+  # The raw mode of the terminal is what lets the driver, not the line discipline, own the echo.
+  defp read_hidden(prompt) do
+    IO.write(:stderr, prompt)
+    :shell.start_interactive({:noshell, :raw})
+    :io.setopts(:standard_io, echo: false)
+
+    try do
+      IO.gets("")
+    after
+      :io.setopts(:standard_io, echo: true)
+      :shell.start_interactive({:noshell, :cooked})
+      IO.write(:stderr, "\n")
+    end
   end
 
   @doc "Runs the command and returns `{exit_code, stdout, stderr}`."
