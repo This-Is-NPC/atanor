@@ -11,6 +11,8 @@
 # --post-only is for a commit nobody pushed from here, such as the release pull
 # request release-please opens, after its tree was checked out and gated by hand.
 #
+# The gate output also goes to _build/local-check.log (overwritten each run).
+#
 # Env:
 #   ATANOR_SKIP_LOCAL_CHECK=1   do nothing (a deliberate skip)
 #   ATANOR_LOCAL_CHECK_SHA=<s>  same as --sha=
@@ -36,7 +38,7 @@ for arg in "$@"; do
     --state=*) STATE="${arg#--state=}" ;;
     --sha=*) SHA="${arg#--sha=}" ;;
     -h | --help)
-      sed -n '2,16p' "$0"
+      sed -n '2,18p' "$0"
       exit 0
       ;;
     *)
@@ -47,6 +49,7 @@ for arg in "$@"; do
 done
 SHA="${SHA:-$(git rev-parse HEAD)}"
 CONTEXT="local-check"
+LOG="$root/_build/local-check.log"
 
 post_now() {
   local state="$1" desc="$2"
@@ -120,7 +123,8 @@ rc=0
 if ((DRY_RUN)); then
   printf '[dry-run] would run: mise run check\n'
 else
-  mise run check || rc=$?
+  mkdir -p "$(dirname "$LOG")"
+  mise run check 2>&1 | tee "$LOG" || rc=${PIPESTATUS[0]}
 fi
 elapsed=$(($(date +%s) - start))
 
@@ -130,6 +134,7 @@ if ((rc == 0)); then
 else
   state=failure
   desc="mise run check - failed (rc=$rc) after ${elapsed}s"
+  printf 'local-check: the gate output is in %s\n' "$LOG" >&2
 fi
 
 if ((PRE_PUSH)); then
