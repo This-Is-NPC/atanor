@@ -99,7 +99,7 @@ that moment; 300 is the cap) and `instance` and `node` (the peer) in the metadat
 
 | Event | Measurements | Metadata |
 | --- | --- | --- |
-| `[:atanor, :cell, :take_over]` | `duration` (the whole step: quorum, lease read, `Alambique.take_over/4`) | `instance`, `cell` (the Alambique id, `<namespace>.<key>`), `node` (the lost owner), `reason` (why the detector has it down), `result`: `:ok` (the cell is served here now), `:moved` (another node won a concurrent takeover and serves it), `:stale` (the lease no longer named the lost owner), `:no_quorum` (this node is not in a majority, nothing was taken) or `{:error, reason}` (the cell stays unavailable until its lease expires) |
+| `[:atanor, :cell, :take_over]` | `duration` (the whole step: quorum, lease read, `Alambique.take_over/4`) | `instance`, `cell` (the Alambique id, `<namespace>.<key>`), `node` (the lost owner), `reason` (why the detector has it down), `result`: `:ok` (the cell is served here now), `:moved` (another node won a concurrent takeover and serves it), `:stale` (the lease no longer named the lost owner), `:no_quorum` (this node is not in a majority, nothing was taken; rate-limited, see below) or `{:error, reason}` (the cell stays unavailable until its lease expires) |
 | `[:atanor, :deployments, :loaded]` | `duration`, `workers` (heads read) | `instance`, `node` |
 | `[:atanor, :node, :ready]` | none | `instance`, `node` |
 | `[:atanor, :node, :drain, :start]` | `system_time` | `instance`, `node`, `trigger` (`:api`: `Atanor.drain/2`, the admin API or `atanor drain`; `:stop`: the instance stops) |
@@ -109,7 +109,11 @@ that moment; 300 is the cap) and `instance` and `node` (the peer) in the metadat
 is complete, and `:ready` when `/health/ready` turns 200 (design §2.1). The
 node joins the cluster between the two, so no cell wakes on it before
 `:loaded`. `:take_over` is emitted by the node that took the cell, once per call that needed
-it (design §8.10); a cell already awake here costs no event. `:drain` is the end of the
+it (design §8.10); a cell already awake here costs no event. A `:no_quorum` refusal is emitted at most once per
+`takeover.no_quorum_event_interval_ms` (10 s by default) on the node: the first refusal at once, then the
+next one after the interval, whose metadata `suppressed` counts the refusals left out since the last
+event (it is 0 on the first). A partition emits one event per interval, not one per request. The
+refusals after the last event stay uncounted when the partition ends before another interval. `:drain` is the end of the
 drain of the node that hands its cells back, on demand or because it stops
 (design §8.11); `:start` is its beginning. A non-empty `error_list` is also logged as
 a warning.

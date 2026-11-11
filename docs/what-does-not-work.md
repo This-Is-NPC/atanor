@@ -170,7 +170,7 @@ quicker takeover without a majority is worth more lease renewals.
 `test/cluster/takeover_test.exs` ("a node cut off from the others is a minority
 and takes nothing").
 
-## A partitioned node fails its requests for a few seconds, and refuses takeovers noisily
+## A partitioned node fails its requests for a few seconds
 
 **What happens.** When a node is cut off from its peers but not from the store,
 it keeps its leases until the peers declare it down (about 5 s) and take its
@@ -179,13 +179,10 @@ the cut wait or fail. The isolated node declares its peers down, is a minority,
 and takes nothing: its workers' cell calls for cells owned elsewhere fail at once
 with 503 `unavailable`, reason `no_quorum` (the runtime maps the error even when
 the worker answers 500), where before the detector they waited for the client's
-timeout. Every refused takeover emits
-`[:atanor, :cell, :take_over]` with `result: :no_quorum`, one per request: 3,400 to
-5,400 events in a 40 s partition under 430 writes/s.
+timeout.
 
 **Workaround.** A client timeout, and a load balancer that stops sending to a
-node that is not in the majority (`/nodes` shows what it sees). Sample or drop
-`:no_quorum` events in the handler.
+node that is not in the majority (`/nodes` shows what it sees).
 
 **Evidence.** `test/cluster/takeover_test.exs`.
 
