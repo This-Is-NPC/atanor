@@ -71,9 +71,6 @@ delete on every frame, which was judged worse for a busy socket.
 * A route's `types:` defaults to any `typ`, so an ID token that the same issuer
   signs for the same audience passes as an access token. Many providers issue
   access tokens with `typ: JWT`, so a stricter default would break them.
-* The dashboard session cookie has no `Secure` flag and no `Max-Age`: it lasts
-  until the browser closes or the node restarts (the signing key is random at
-  each start), and is sent over plain http when the dashboard is.
 * `atanor login` reads the token with the terminal echo on.
 * A key that a provider withdrew keeps verifying for up to `oidc.jwks_max_age_ms`
   (1 h), and for `oidc.jwks_max_stale_ms` (24 h) while the provider is
@@ -81,9 +78,7 @@ delete on every frame, which was judged worse for a busy socket.
 * A Ranch protocol that starts TLS itself gets the listener's private key in its
   start options (gen_smtp `STARTTLS` needs it), so it is in that process's state.
 
-**Workaround.** Set `types:` on every rule to what the provider issues. Terminate
-TLS in the proxy in front of the dashboard and let it add `Secure` and
-`Max-Age` (nginx `proxy_cookie_flags`), or keep the dashboard on loopback. Pipe
+**Workaround.** Set `types:` on every rule to what the provider issues. Pipe
 the token into `atanor login` or give `ATANOR_TOKEN`. Lower `jwks_max_age_ms` and
 `jwks_max_stale_ms` where the provider rotates keys often, and restart the
 nodes to drop the keys at once. Run only Ranch protocols you trust on a

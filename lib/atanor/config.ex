@@ -1096,14 +1096,26 @@ defmodule Atanor.Config do
   defp dashboard!(nil), do: nil
 
   defp dashboard!(opts) do
-    dashboard = listener!(opts, :dashboard, @dashboard_port, [:page_size, :max_page_size, :poll_ms])
+    dashboard =
+      listener!(opts, :dashboard, @dashboard_port, [
+        :page_size,
+        :max_page_size,
+        :poll_ms,
+        :cookie_max_age_s,
+        :secure_cookie
+      ])
+
     page_size = Keyword.get(opts, :page_size, 50)
     max_page_size = Keyword.get(opts, :max_page_size, 500)
     poll_ms = Keyword.get(opts, :poll_ms, 5_000)
+    cookie_max_age_s = Keyword.get(opts, :cookie_max_age_s, 86_400)
+    secure_cookie = Keyword.get(opts, :secure_cookie, false)
     check!(positive_integer?(page_size), ":dashboard :page_size must be a positive integer")
     check!(positive_integer?(max_page_size), ":dashboard :max_page_size must be a positive integer")
     check!(page_size <= max_page_size, ":dashboard :page_size must not exceed :max_page_size")
     check!(positive_integer?(poll_ms), ":dashboard :poll_ms must be a positive integer")
+    check!(positive_integer?(cookie_max_age_s), ":dashboard :cookie_max_age_s must be a positive integer")
+    check!(is_boolean(secure_cookie), ":dashboard :secure_cookie must be true or false")
 
     check!(
       Atanor.Dashboard.available?(),
@@ -1111,7 +1123,13 @@ defmodule Atanor.Config do
         Atanor.Dashboard.dependencies()
     )
 
-    Map.merge(dashboard, %{page_size: page_size, max_page_size: max_page_size, poll_ms: poll_ms})
+    Map.merge(dashboard, %{
+      page_size: page_size,
+      max_page_size: max_page_size,
+      poll_ms: poll_ms,
+      cookie_max_age_s: cookie_max_age_s,
+      secure_cookie: secure_cookie
+    })
   end
 
   defp private_hosts!(entries) do

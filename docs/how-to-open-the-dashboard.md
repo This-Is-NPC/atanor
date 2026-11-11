@@ -50,6 +50,12 @@ shows is in [screens.md](screens.md).
     dashboard: [token: System.fetch_env!("ATANOR_DASHBOARD_TOKEN"), port: 4002]}
    ```
 
+   The cookie lasts `cookie_max_age_s` seconds (86 400, one day by default).
+   The dashboard listens on plain http, so it cannot tell that a proxy in front
+   of it serves https: pass `secure_cookie: true` then, and the cookie gets
+   `Secure`. Leave it `false` for a loopback dashboard, which a browser
+   reaches over http and would not send a `Secure` cookie to.
+
 2. Open the URL, with the token. The browser is sent to the same page without
    the token in the address and keeps a cookie that says it is signed in.
    Without the token the answer is 401:
@@ -86,7 +92,9 @@ The dashboard is read-only: no page changes a deployment. Use
   dependencies`**: the option is invalid without a non-empty token, or Atanor
   was compiled without the dashboard (same fix).
 - **401 with the right token.** Only a `GET` with `?token=` signs in. A restart
-  of the node signs everyone out: open the new URL.
+  of the node signs everyone out, and so does the end of `cookie_max_age_s`:
+  open the URL with the token again. With `secure_cookie: true` the browser
+  keeps the cookie only over https.
 - **The page loads but stays empty or disconnected.** The socket accepts only
   the origin the page was served from. Open the address the node listens on
   (for example `127.0.0.1`, not a name that points to it through a proxy).

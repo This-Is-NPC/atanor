@@ -21,7 +21,9 @@ if Code.ensure_loaded?(Phoenix.LiveDashboard) do
         pubsub_server: Atanor.Dashboard.PubSub,
         render_errors: [formats: [html: Atanor.Dashboard.Errors], layout: false],
         atanor_instance: name,
-        atanor_token: dashboard.token
+        atanor_token: dashboard.token,
+        atanor_cookie_max_age_s: dashboard.cookie_max_age_s,
+        atanor_cookie_secure: dashboard.secure_cookie
       ]
 
       # The options go to the endpoint's start, not the application environment, which anyone in the

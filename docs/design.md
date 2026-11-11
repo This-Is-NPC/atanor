@@ -2838,7 +2838,9 @@ deployments, routes, cells, alarms, jobs) and the built-in Metrics page fed by
   with a random `secret_key_base` per start.
 * **Token before LiveView, on every path.** `?token=` on a `GET` is compared in
   constant time and answered with a 303 to the same URL without it, setting a
-  signed cookie (`SameSite=Strict`) that says "signed in". Every other request
+  signed cookie (`SameSite=Strict`, `Max-Age` `cookie_max_age_s`, 86 400 s by
+  default, and `Secure` when `secure_cookie: true`; the listener is plain http,
+  so the option says that a proxy serves https) that says "signed in". Every other request
   without that cookie gets 401, assets included. The socket
   (`Atanor.Dashboard.Socket`) refuses a connection whose cookie lacks the
   sign-in, on top of Phoenix's origin check (`:conn`: the origin must be the

@@ -17,7 +17,7 @@ defmodule Atanor.DashboardTest do
   @token "dash-token"
 
   defp start(workers \\ [], opts \\ []) do
-    node = Node.start([workers: workers, dashboard: [token: @token, port: 0]] ++ opts)
+    node = Node.start(Keyword.merge([workers: workers, dashboard: [token: @token, port: 0]], opts))
     on_exit(fn -> Node.stop(node) end)
     node
   end
@@ -108,6 +108,28 @@ defmodule Atanor.DashboardTest do
       assert redirected_to(conn, 303) == "/cells?limit=5"
       assert [_] = get_resp_header(conn, "set-cookie")
       assert html_response(get(recycle(conn), "/workers"), 200) =~ "Workers"
+    end
+
+    defp session_cookie(conn), do: conn |> get_resp_header("set-cookie") |> hd() |> String.downcase()
+
+    test "the session cookie expires after a day and is not Secure by default" do
+      start()
+      cookie = session_cookie(get(build_conn(), "/workers?token=#{@token}"))
+      assert cookie =~ "max-age=86400"
+      refute cookie =~ "secure"
+    end
+
+    test "the cookie lifetime and Secure are options" do
+      start([], dashboard: [token: @token, port: 0, cookie_max_age_s: 600, secure_cookie: true])
+      cookie = session_cookie(get(build_conn(), "/workers?token=#{@token}"))
+      assert cookie =~ "max-age=600"
+      assert cookie =~ "secure"
+
+      for bad <- [[cookie_max_age_s: 0], [cookie_max_age_s: 1.5], [secure_cookie: "yes"]] do
+        assert_raise ArgumentError, fn ->
+          Atanor.Config.build(data_dir: "/tmp/x", store: {Mod, nil}, dashboard: [token: @token] ++ bad)
+        end
+      end
     end
 
     test "a forged cookie is refused" do
