@@ -238,9 +238,8 @@ object carries up to 16 commits of a cell, a cell that stops publishes what it
 holds first, a lone change is delivered up to 250 ms later, and
 `page_size` still counts objects, so a page can hold more changes than
 `page_size`. Order per cell, the position and `Atanor.Change.id`
-are unchanged. The order per cell is the order of the `txid`; a batch published late
-can be read behind a later one ([a known limit](what-does-not-work.md#a-late-feed-batch-can-be-read-behind-a-later-one)), so a consumer
-that needs the commit order sorts a cell's changes by `txid`. A consumer outside Atanor must use the same Alambique as the nodes.
+are unchanged. The order per cell is the order of the `txid`, also for a batch
+published late (Alambique 0.3.0 keeps the object keys in commit order). A consumer outside Atanor must use the same Alambique as the nodes.
 
 Alambique's feed options stay under `:alambique`: `window_ms`, `retention_ms`,
 `prune_interval_ms`, `publish_retry_ms` and `shards`. `skew_margin_ms` is an

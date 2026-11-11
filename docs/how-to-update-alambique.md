@@ -62,7 +62,11 @@ on `:alambique` too. With the override both resolve to the pinned release.
    the telemetry: Atanor's checks in `test/support/c1.ex` read
    `[:alambique, :cell, :commit]`, and the cluster testkit forwards the events
    listed in `testkit/lib/atanor_testkit/cluster.ex`. Fix the callers; compile
-   with warnings as errors: `mix compile --warnings-as-errors`.
+   with warnings as errors: `mix compile --warnings-as-errors`. A function
+   Atanor calls that Alambique removed shows up there as "is undefined or
+   private" (0.3.0 dropped the prepared-statement API of `Alambique.Sqlite`).
+   Add the new keys of the checked option groups to `@alambique_limits` in
+   `lib/atanor/config.ex`: Atanor refuses a key it does not list.
 
 5. Run the suites, in this order. All must pass:
 
@@ -100,6 +104,10 @@ local to each node.
   `override: true` on its own `:alambique`.
 - **The lock file names an old tag after the edit.** `mix deps.get` keeps
   the lock; use `mix deps.update alambique alambique_testkit` (step 2).
+- **`{:error, {:data_dir_in_use, path}}` when a test starts a node.** Since
+  Alambique 0.3.0 an instance holds an exclusive lock on `<data_dir>/lock`
+  until it stops. Give each instance its own `data_dir`, or stop the first
+  one before the second starts.
 - **Tests fail with `Alambique.Replication.Native ... is not available`.** The
   native library of Alambique was not built for this release. Run `mix
   deps.compile alambique --force`.
