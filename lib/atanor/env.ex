@@ -10,7 +10,7 @@ defmodule Atanor.Env do
   (design §16). The feed is native-only: WASM workers have no import for it.
 
   The env carries the deployment resolved at ingress for the whole request,
-  and the deployments of the workers it can call, resolved with it (`new/2`).
+  and the ids of the deployments of the workers it can call, resolved with it (`new/2`).
   In a WebSocket callback it also carries the socket process. In the local
   WebSocket callback (`c:Atanor.Worker.handle_ws_local/3`) the cells are not
   granted: every cell function returns `{:error, {:not_granted, {:cell, ns}}}`,
@@ -49,26 +49,29 @@ defmodule Atanor.Env do
           depth: non_neg_integer,
           local: boolean,
           consistency: consistency,
-          pins: %{String.t() => Atanor.Deployment.t()}
+          pins: %{String.t() => String.t()}
         }
   @type not_granted :: {:error, {:not_granted, term}}
 
   @doc """
-  The env of a request served by `deployment`. The active deployment of every worker
-  reachable through `workers` bindings is pinned now, from the registry (no store
-  read), so nested calls (`call/3`) reach the same versions to the end of the request.
+  The env of a request served by `deployment`. The id of the active deployment of
+  every worker reachable through `workers` bindings is pinned now (memory, no
+  store read, only the id and the worker names are copied), so nested calls
+  (`call/3`) reach the same versions to the end of the request.
   """
   @spec new(atom, Atanor.Deployment.t()) :: t
   def new(instance, deployment) do
-    pins = pin(instance, deployment.manifest.workers, %{Atanor.Deployment.worker(deployment) => deployment})
+    pins = pin(instance, deployment.manifest.workers, %{Atanor.Deployment.worker(deployment) => deployment.id})
     %__MODULE__{instance: instance, deployment: deployment, pins: pins}
   end
+
+  defp pin(_instance, [], pins), do: pins
 
   defp pin(instance, names, pins) do
     Enum.reduce(names, pins, fn name, pins ->
       with false <- is_map_key(pins, name),
-           {:ok, deployment} <- Registry.deployment(instance, name) do
-        pin(instance, deployment.manifest.workers, Map.put(pins, name, deployment))
+           {:ok, id, workers} <- Registry.pin(instance, name) do
+        pin(instance, workers, Map.put(pins, name, id))
       else
         _ -> pins
       end
@@ -438,8 +441,9 @@ defmodule Atanor.Env do
   Calls another worker the manifest grants, in this node, on the deployment
   that was active when the request began (`new/2`): every call of one request to
   a worker reaches one version, even if another is activated meanwhile, and a
-  deployment that is no longer active still runs the rest of the request. A
-  worker that was not active at that moment is resolved at the time of the call.
+  deployment that is no longer active is rebuilt from its package by id, as for
+  a forwarded request (`Atanor.Workers.pinned/3`, design §8.3), and
+  `{:error, reason}` when that fails. A worker that was not active at that moment is resolved at the time of the call.
 
   Both sides must agree (design §3.3): the caller's manifest lists the callee in
   `workers`, and the callee lists the caller in `callable_by` or the operator in
@@ -474,7 +478,7 @@ defmodule Atanor.Env do
 
   defp callee(%__MODULE__{pins: pins} = env, worker) do
     case pins do
-      %{^worker => deployment} -> {:ok, deployment}
+      %{^worker => id} -> Workers.pinned(env.instance, worker, id)
       _ -> active(env.instance, worker)
     end
   end
