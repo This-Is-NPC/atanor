@@ -45,7 +45,12 @@ and `/proc/meminfo`. Per step, in this order:
 2. **Host load.** Net host load is the cores busy on the host minus the cores the test itself used (node,
    store, balancer, generator), averaged over the step. Above 6, the step is invalid and is repeated (twice,
    after 30 s); then the round stops.
-3. **Host swap.** The host's swap used (`SwapTotal - SwapFree`) grew by more than 16 MB during the step (`ATANOR_LOAD_MAX_SWAP_GROWTH_MB`): the step is INVALID, not a failure of the node, and the round stops. The report shows the swap used at the start and the largest sampled value.
+3. **Swap.** The step is INVALID (not a failure of the node; the round stops) when any of these holds:
+   - a measured container (node, store or balancer) swapped: its cgroup `memory.swap.current` was above 0 at any sample. It is read from the host through the cgroup of the container's init PID, with the other cgroup reads. When it is unreadable it is recorded as null and not judged;
+   - the `VmSwap` of the load generators (`/proc/PID/status`, summed over the processes `load-run` started and their children) grew by more than 16 MB (`ATANOR_LOAD_MAX_GENERATOR_SWAP_MB`);
+   - the host's swap used (`SwapTotal - SwapFree`) was above 512 MB at any sample (`ATANOR_LOAD_MAX_HOST_SWAP_MB`).
+
+   Host swap below that limit, and its growth, are only recorded: idle host processes swap a few tens of MB on their own. Each step file records host swap start, max and growth, generator swap start, max and growth, and the largest swap of each measured container; the report shows the generator swap growth and the largest host swap. `load:swap` applies the same rule (the node A container is removed during that run, so its swap reads as null afterwards).
 4. **Criteria.** The step fails when any criterion of the table above broke.
 5. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
    failure of the node. A saturated node breaks p99 first, so it is a failure, not an invalid step.
@@ -75,7 +80,8 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_MEMORY_PCT`, `_FD_PCT` | 90, 90 | Share of the limits that fails a ws or cells step. |
 | `ATANOR_LOAD_DELIVERY` | 0.95 | Achieved/planned below which a step is invalid. |
 | `ATANOR_LOAD_HOST_LOAD_MAX`, `_MIN_AVAILABLE_GB` | 6, 6 | Net host load and free host memory limits. |
-| `ATANOR_LOAD_MAX_SWAP_GROWTH_MB` | 16 | Growth of host swap used during a step above which the step is invalid. |
+| `ATANOR_LOAD_MAX_GENERATOR_SWAP_MB` | 16 | Growth of the load generators' `VmSwap` during a step above which the step is invalid. |
+| `ATANOR_LOAD_MAX_HOST_SWAP_MB` | 512 | Host swap used (absolute) above which the step is invalid; below it, only recorded. |
 | `ATANOR_LOAD_WRITE_RATIO`, `_CELLS` | 0.5, 64 | http: share of writes, cells the requests spread over. |
 | `ATANOR_LOAD_CELL_PERIOD` | 10 | cells: seconds between the writes to one cell. |
 | `ATANOR_LOAD_OPEN_RATE`, `_WS_INTERVAL` | 100, 30 | Sockets opened or cells touched per second; seconds between messages of a socket (the node closes a silent socket after 60 s). |
