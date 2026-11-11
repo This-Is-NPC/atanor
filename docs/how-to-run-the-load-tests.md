@@ -54,6 +54,12 @@ and `/proc/meminfo`. Per step, in this order:
 4. **Criteria.** The step fails when any criterion of the table above broke.
 5. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
    failure of the node. A saturated node breaks p99 first, so it is a failure, not an invalid step.
+   A saturated node that answers too slowly leaves a backlog in the generator. The generator keeps the
+   backlog bounded: a request picked up more than `--timeout` (10 s) after it was due, and any request
+   still queued or in flight `--timeout + 5` s after the last one was due, is counted as
+   `error: not completed`. That is an error, so the step fails (step 4), as a measured saturation; the
+   generator still writes its document. INVALID stays for real generator problems: a crash, no file
+   descriptors, CPU or swap.
 
 The ramp multiplies the value by 2 from a start (`--start`, `--factor`, or `--steps`) until a step fails;
 it then bisects `--refine` times (3) between the last good and the failing value and repeats the best good
