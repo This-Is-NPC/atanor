@@ -101,7 +101,7 @@ positive integers in bytes; see
 [design §4.3](design.md#43-limits-on-cell-calls-and-their-errors). Native workers
 are not limited by them.
 
-The node settings of the WASM engine (threads, queue, CPU limit) are in the
+The node settings of the WASM engine (threads, calls in flight, queue, CPU limit) are in the
 `:atanor, :wasm` application environment, documented in `Atanor.Wasm`.
 Component compiles run on their own pool: `compile_threads` (default 2) at
 once and `compile_queue` (default 16) waiting; a deployment that finds the

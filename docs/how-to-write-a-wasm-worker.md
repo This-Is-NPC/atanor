@@ -253,14 +253,14 @@ host resources, and each `wasi:http` field set at most `max_field_bytes` (16,384
 bytes. An outbound HTTP request ends with the call's deadline, and its response
 is read up to `calls.fetch_max_bytes` (8,000,000). A guest that exceeds one is stopped and the client gets 504
 (timeout) or 500 (`limit_exceeded`). A node that is out of guest threads
-answers 503. The same limits apply to each alarm and WebSocket call: a
+or calls in flight answers 503. The same limits apply to each alarm and WebSocket call: a
 handler that exceeds one fails its alarm attempt, or closes the socket with
 1011.
 
 The node keeps pre-mapped slots for the guests' memories and tables (the
 `:atanor, :wasm` setting `pooling`, `true` by default), which makes a call
 instantiate in 18 microseconds instead of 68 (design §14.9). The slots reserve
-address space, about 390 GiB for 12 threads; on a host that limits address space
+address space, about 2 TiB for 12 threads (it grows with `max_calls` and `max_nested_calls`); on a host that limits address space
 (`ulimit -v`, `vm.overcommit_memory=2`) set `pooling: false`. A component with
 more than 8 memories or 16 tables, or a table larger than `table_elements`,
 does not instantiate in either mode.
@@ -309,8 +309,9 @@ does not instantiate in either mode.
   before repeating a write that is not idempotent.
 - **The client gets 500 `internal_error` and the log shows `wasm trap`.** The
   guest panicked or trapped; its stderr, up to `stderr_bytes` (4 KiB by default), is logged just before.
-- **503 `overloaded`.** All guest threads were busy and the queue was full or
-  the call waited too long. The body is `{"error":"overloaded","reason":"overloaded"}`
+- **503 `overloaded`.** The queue was full, the call waited too long for the right
+  to run, or the worker already had `worker_calls` calls in flight (a guest that
+  waits does not count against `threads`, but it counts against `worker_calls`). The body is `{"error":"overloaded","reason":"overloaded"}`
   and the response carries `Retry-After` (`http.retry_after_s`, 1 s by default).
   See the node settings in `Atanor.Wasm`.
 
