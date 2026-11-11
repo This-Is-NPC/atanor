@@ -5,7 +5,7 @@ namespace, or subscribe to changes without waking the cells?
 
 This guide stands alone. It assumes a native worker with a cell namespace;
 [how-to-write-a-native-worker.md](how-to-write-a-native-worker.md) creates one.
-WASM workers cannot follow the feed (see [what-does-not-work.md](what-does-not-work.md)).
+WASM workers cannot follow the feed (see [design §16.5](design.md#165-limits-and-options)).
 
 ## Prerequisites
 

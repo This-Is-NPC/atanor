@@ -123,32 +123,32 @@ work to a vendor but do not remove the items.
    native Elixir worker avoids it but runs in the node's image.
 4. **A cell comes back about 19 s after a pause.** Observed: 18.8 and 19.4 s for a
    frozen node, 13 s for a partition, from the detector's decision, not the 30 s lease
-   ([what-does-not-work.md](what-does-not-work.md#a-lost-owners-cells-wait-for-the-detector-and-without-a-majority-for-the-lease)).
+   ([the design](design.md#810-acting-on-a-confirmed-failure)).
    A failover that promotes a replica takes seconds to a minute in the classic stack
    (inference); the difference is not measured.
 5. **A store restart pauses all writes for about 30 s.** Observed: cells were served
    again 32 and 34 s after the restart began. The store is one SeaweedFS process here,
-   not a replicated bucket ([what-does-not-work.md](what-does-not-work.md#cluster-behavior-was-measured-on-one-machine)).
+   not a replicated bucket ([the README](../README.md#limitations)).
 6. **The client must handle two kinds of failed answer.** A refused call (503 `unavailable`,
    including `fenced`) did not run; 503 `unknown_outcome` may have run and is not repeated by Atanor
-   ([what-does-not-work.md](what-does-not-work.md#a-request-that-may-have-run-is-not-repeated)).
+   ([the design](design.md#84-when-the-node-is-lost)).
    With Alambique's current behavior a write is `fenced` only when it did not run.
    The scoreboard needs ids on writes (`once=1`) to be safe to retry. Observed: all
    12 unknown writes of the `pause` run 1 were stored.
 7. **Effects outside the cell can happen twice around a takeover.** A handler that
-   started before a takeover runs to the end ([what-does-not-work.md](what-does-not-work.md#a-handler-can-run-on-two-nodes-at-once-around-a-takeover)).
+   started before a takeover runs to the end ([the design](design.md#813-a-handler-that-outlives-its-cell)).
 8. **A cell may run the old schema for seconds after a deploy.** Migrations must be
-   additive ([what-does-not-work.md](what-does-not-work.md#a-cell-can-run-old-schema-until-its-owner-applies-a-new-worker-version)).
+   additive ([the design](design.md#41-cells-and-schemas)).
 9. **WASM workers pay a network hop per cell call.** They do not run on the owner
-   ([what-does-not-work.md](what-does-not-work.md#plug-and-wasm-workers-do-not-run-on-the-owner-of-the-cell)).
+   ([the design](design.md#814-ingress-and-owner-what-runs-where)).
 10. **The operator builds the image and the mesh.** Atanor does not find nodes
-    ([what-does-not-work.md](what-does-not-work.md#nodes-are-connected-by-the-operator));
+    ([the README](../README.md#limitations));
     the cluster here does it with `ATANOR_NODE_PEERS` and a 24-line module, and builds
     the image with Alambique fetched at the pinned release, with Rust for both NIFs.
 11. **The audit log has no retention**, and a deploy token is still the
     authority of its manifest for some grants
-    ([audit log](what-does-not-work.md#the-audit-log-has-no-retention),
-    [grants](what-does-not-work.md#a-deploy-token-is-still-the-authority-of-its-manifest-for-some-grants)).
+    ([audit log](design.md#102-admin-api),
+    [grants](design.md#33-what-a-manifest-may-grant)).
 
 ## Missing in Atanor
 
@@ -178,7 +178,7 @@ work to a vendor but do not remove the items.
    documents no backup of it, and no recovery from the loss of the bucket. Alambique
    can rewind a cell to a recorded position ([design §15](design.md#15-jobs-per-cell-and-bulk-operations)),
    which is not a backup. A crash report does not survive a machine that never
-   returns ([what-does-not-work.md](what-does-not-work.md#a-crash-report-does-not-survive-a-machine-that-never-returns)).
+   returns ([the design](design.md#172-crash-diagnostics)).
 6. **Observability is telemetry events and a dashboard, not a stack.** There is
    [telemetry.md](telemetry.md), an admin API and a read-only dashboard
    ([design §10](design.md#10-observability)). The documentation describes no metrics exporter, alert rules or log
@@ -189,7 +189,7 @@ work to a vendor but do not remove the items.
    operator's.
 8. **Not measured beyond one machine.** All numbers come from 12 cores, one Docker host,
    one SeaweedFS process; a real network, a replicated bucket, long runs and more than 3
-   nodes were not tried ([what-does-not-work.md](what-does-not-work.md#cluster-behavior-was-measured-on-one-machine)).
+   nodes were not tried ([the README](../README.md#limitations)).
 
 ## Reading the result
 
@@ -203,4 +203,5 @@ the data on tmpfs or on a file system that does not stall.
 ## Next steps
 
 - [how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md) to repeat the runs.
-- [what-does-not-work.md](what-does-not-work.md) before relying on a guarantee.
+- The "Limits" paragraphs of [design.md](design.md) and
+  [what-does-not-work.md](what-does-not-work.md) (open defects) before relying on a guarantee.

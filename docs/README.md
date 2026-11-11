@@ -32,7 +32,7 @@
 | [how-to-open-the-dashboard.md](how-to-open-the-dashboard.md) | How do I open the read-only dashboard and see workers, deployments, routes, cells, alarms and metrics? |
 | [screens.md](screens.md) | What does each dashboard page show, and how do I move between them? |
 | [telemetry.md](telemetry.md) | Which telemetry events and native counters does Atanor emit? |
-| [what-does-not-work.md](what-does-not-work.md) | Which defects and limits are known and still open, and what do I do about them? |
+| [what-does-not-work.md](what-does-not-work.md) | Which defects are known and still open, and what do I do about them? |
 | [properties.md](properties.md) | Which rules have property tests, what does each prove, and which rules are left to example tests? |
 | [how-to-build-and-test.md](how-to-build-and-test.md) | How do I build Atanor from source, run a local node, and run the tests and benchmarks? |
 | [how-to-measure-test-coverage.md](how-to-measure-test-coverage.md) | How do I measure which production lines the tests run, in Elixir and Rust, and what is left out of the count? |
@@ -41,4 +41,4 @@
 
 Recommended path: the [README](../README.md), the worker how-tos (native or WASM) and `configuration.md`, then TCP, WebSockets (and ephemeral messages for them), alarms, the change feed, jobs and bulk operations, then protecting a route with OIDC, deploying a worker with the `atanor` command (reference in `cli.md`; and rehearsing its migrations), running a cluster (placing its hot cells, reading them from replicas, partitioning a cell that one writer cannot serve, the cluster in containers, what operating it takes compared with a classic stack, and the cluster lab), then the admin API, the dashboard and `telemetry.md`.
 
-Contributors continue with `how-to-build-and-test.md`, then `design.md` sections 1 to 5, then 7, 8, 15, 16, 17, 18 and 19, and `prior-art.md` before reading the worker and binding formats. Read `what-does-not-work.md` before relying on a guarantee.
+Contributors continue with `how-to-build-and-test.md`, then `design.md` sections 1 to 5, then 7, 8, 15, 16, 17, 18 and 19, and `prior-art.md` before reading the worker and binding formats. Read the "Limits" paragraphs of `design.md` and `what-does-not-work.md` before relying on a guarantee.
