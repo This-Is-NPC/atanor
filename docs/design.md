@@ -300,6 +300,26 @@ A manifest that does not set `callable_by` has the canonical form, and the
 package id, it had before. A node that does not know `callable_by` refuses
 manifests that set it, so roll the nodes before you use it.
 
+#### Limits
+
+**A deploy token is still the authority of its manifest for some grants.**
+Cell namespaces and calls between workers need the other side's consent, but
+`hosts:`, a listener's `workers:`, `http_allow:` and `modules:` are ceilings
+that exist only when the operator sets them. Without them, a holder of a deploy
+and activate token for one worker can route any host, claim any configured
+listener, reach any host in `http.allow` and bind any module of the release.
+Two workers that share a namespace (which the operator must allow) can read and
+write each other's `_atanor_*` tables (jobs, alarms, cron, undo positions): a
+worker can insert a job row that runs another worker's `handle_job/2`, or
+rewrite an undo position. Sharing a namespace puts the workers in one trust
+domain. A check that a job's worker grants jobs and the namespace was tried and
+not kept: a worker that has both still runs a planted row, and a refused row at
+the head of a cell with `cell_concurrency` 1 blocks the jobs behind it.
+Workaround: set the four ceilings on every node where several teams deploy, cap
+the component with `package: [max_component_bytes: ...]`, give each tenant its
+own namespaces and share one only between workers you trust. Evidence:
+`test/atanor/grants_test.exs`, `test/atanor/package_limits_test.exs`.
+
 ## 4. Bindings
 
 A binding is granted by the manifest. `env` (native) and the component's
@@ -475,6 +495,18 @@ many cells are migrated at once, how many are listed per page and how long each
 may take. Every node does this for its own cells when it applies the head, so a
 cell owned by a node that applies later keeps the old schema until then.
 `[:atanor, :cells, :migrate]` reports the counts ([telemetry.md](telemetry.md)).
+
+#### Limits
+
+**A cell can run old schema until its owner applies a new worker version.** A
+node hibernates its own awake cells of a namespace when it applies a worker with
+more migrations for it, so the cells wake migrated. Until the node that owns a
+cell has applied the head (seconds, set by the poll interval), a request that
+reaches it on the new version, from a node that applied first, runs against the
+old schema and can fail (`no such column`). Workaround: roll out additive
+migrations and code that tolerates the old schema for the seconds a rollout
+takes. Evidence: the cluster test "its cells wake migrated on the node that
+owns them" in `test/cluster/routing_test.exs`.
 
 ### 4.2 Partitioned cells
 
@@ -1044,6 +1076,21 @@ a
 worker that raises, exits or returns something other than a valid
 `Atanor.Response` is 500, logged with the worker and the deployment id.
 
+#### Limits
+
+**Slow and many clients are bounded per read and per listener, not per
+client.** `http.read_timeout_ms` (10 s by default) is the wait for the next
+bytes of one read. A client that sends one byte of a header, or one chunk of a
+chunked body, before each timeout keeps its connection for as long as it keeps
+doing so; Bandit offers no deadline for the whole request. Connections are
+capped for the listener (`http.max_connections`, `admin.max_connections`) but
+not per client address, so one address can use the whole cap. The dashboard
+listener has no cap. Workaround: put a reverse proxy or a firewall in front of
+the node; it enforces header and body deadlines and per-address limits (nginx
+`client_header_timeout`, `limit_conn`; `nft meter`). Keep the dashboard on
+loopback. Evidence: `test/atanor/http_ingress_test.exs` (the cap and the read
+timeout hold).
+
 ### 7.2 Routing keys and dispatch
 
 `Atanor.Dispatch` is the one path to a worker:
@@ -1275,6 +1322,13 @@ test dependencies: a real LiveView mount needs an endpoint, a JavaScript client
 or a hand-written socket protocol, which costs more than it proves beyond what
 the Plug test does; this is a decision, not a limitation of the ingress.
 
+#### Limits
+
+**A Ranch protocol that starts TLS itself holds the listener's private key.**
+Its start options carry the key (gen_smtp `STARTTLS` needs it), so the key is
+in that process's state. Workaround: run only Ranch protocols you trust on a
+listener with a key.
+
 ### 7.4 Alarms
 
 A worker has at most one alarm per cell, like Durable Objects: `Env.set_alarm(env,
@@ -1466,6 +1520,14 @@ Atanor applies no provider-specific rule. `org_ids`, `act`, `sub == client_id`,
 the meaning of a scope or of a `typ` beyond the configured list: those belong
 to the worker, which reads the claims.
 
+#### Limits
+
+**A route's `types:` defaults to any `typ`.** An ID token that the same issuer
+signs for the same audience passes as an access token. Many providers issue
+access tokens with `typ: JWT`, so a stricter default would break them.
+Workaround: set `types:` on every rule to what the provider issues
+([how-to-protect-a-route-with-oidc.md](how-to-protect-a-route-with-oidc.md)).
+
 ### 7.6 Ephemeral channels
 
 A cell has an ephemeral channel: messages for the sockets that joined it, on any
@@ -1654,7 +1716,7 @@ Alambique's fencing still guarantees that no cell effect is applied by a node
 that does not hold the lease, so such a callback fails on its first cell call;
 only effects outside the cell (outbound HTTP, a message to a socket) can happen
 on a node that has just lost it. This is a limit, not a proof of C1 for those
-effects ([what-does-not-work.md](what-does-not-work.md)); §8.13 bounds the window
+effects (limits of §8.13); §8.13 bounds the window
 and says what to do about such effects.
 
 The exception is a request that the worker declared bounded (`route_key/2`
@@ -1684,6 +1746,17 @@ Properties of a switch, tested in `test/cluster/properties_test.exs`: random
 switches on the ingress node only, the owner only or both, random rollbacks,
 and requests held in the handler while this happens; every request reports one
 deployment at start and end, the one the ingress had applied when it arrived.
+
+#### Limits
+
+**A forwarded request needs the node to be able to build its deployment.** A
+forwarded request runs on the deployment the ingress node pinned. A node that
+does not have it fetches and builds the package; for a native worker whose code
+it does not have (the release was not rolled to it) that is
+`{:code_mismatch, ...}` and the request is 503 `unavailable`, in both
+directions, while the two versions run side by side. Workaround: roll the
+release to every node before the deployment switch, as
+[how-to-deploy-a-worker.md](how-to-deploy-a-worker.md) says.
 
 ### 8.4 When the node is lost
 
@@ -1780,6 +1853,17 @@ a WASM guest sees `:outcome_unknown` as `failed("unknown_outcome: ...")`.
 A write whose cell stopped on a failed upload (`{:error, {:sync_failed, reason}}`) may have reached the store, so it is an
 `unknown_outcome` too; a WASM guest sees it as `failed("sync_failed: ...")`, and a store
 request that failed inside a job's transaction as `failed("store_unavailable: ...")`.
+
+#### Limits
+
+**A request that may have run is not repeated.** When the connection to the node
+that was running a `POST`, a TCP chunk or a WebSocket frame fails after the
+callback started, Atanor cannot know whether the effect happened and answers 503
+`{"error": "unknown_outcome", "reason": "unknown_outcome"}` (HTTP) or closes the
+connection. An HTTP `GET`, `HEAD`, `OPTIONS` or an alarm is repeated instead.
+Workaround: give the client a way to ask (an idempotency key stored in the cell,
+or a read of the state) before it repeats a write. Evidence:
+`test/cluster/routing_test.exs`, "a request that may have run is not run again".
 
 ### 8.5 TCP, WebSockets, alarms
 
@@ -1987,6 +2071,18 @@ each other down are alive again within a bound") failed in 5 of 5 runs
 before the fix, and the frozen-node scenario ended in mutual `down` in 4 of
 about 18 runs. The time of the last attempt is now `nil` until the first one.
 
+#### Limits
+
+**With two nodes, the detector cannot tell a cut from a death.** With no third
+node to ask, two nodes that lose each other declare each other down, disconnect
+and each go on serving the cells it holds. Nothing is corrupted, because leases
+are fenced by their epoch. Neither takes the other's cells early, because one of
+two nodes is not a majority (`takeover.quorum`), so a really dead peer's cells
+wait for the lease. Workaround: run three nodes, or set
+`detector: [indirect: [k: 0]]` and `takeover: [quorum: false]` knowingly: then
+each side of a cut takes the other's cells as requests arrive, and a cell that
+both sides use changes owner at every request (safe, but slow).
+
 ### 8.9 The platform hint
 
 The infrastructure often knows before any detector: `virsh destroy`, an instance
@@ -2127,6 +2223,44 @@ The fence (§8.13) and the release of claims (§15.11) are unchanged.
 Because the takeover bumps the epoch, the detector being wrong costs
 availability and never correctness. Telemetry for each transition and takeover:
 [telemetry.md](telemetry.md).
+
+#### Limits
+
+**A lost owner's cells wait for the detector, and without a majority for the
+lease.** When a node is lost, the requests for its cells get 503
+`{"error": "unavailable", "reason": "owner_unreachable"}` (or `owner_down` once
+the detector confirms it) until the detector confirms it down (about 5 s for a
+lost machine with the defaults, milliseconds for a killed process, a graceful
+stop or a platform hint). Then the first request for each cell takes it over. The
+cell waits for the lease (30 s by default, `lease_ttl_ms`) instead when:
+
+* the failure is not detected (the detector settings are too slack, or the
+  failure is a slow node that never goes silent);
+* this node and the peers it reaches are not a majority of the nodes it knows
+  (`takeover.quorum`): a node cut off from the others, any survivor of a
+  two-node cluster after a silent failure, and both halves of an even split. A
+  platform hint or a graceful stop takes the peer out of the count, so those
+  survive a two-node cluster; otherwise set `takeover: [quorum: false]`
+  knowingly;
+* the peer is only `link_broken`: it is alive and keeps its cells;
+* `takeover: [enabled: false]`.
+
+Workaround: give clients a timeout and retries for 503 `unavailable`, which means
+the call did not run; run three or more nodes; shorten `lease_ttl_ms` when
+quicker takeover without a majority is worth more lease renewals. Evidence:
+§12.7, §12.8 and `test/cluster/takeover_test.exs` ("a node cut off from the
+others is a minority and takes nothing").
+
+**A partitioned node fails its requests for a few seconds.** When a node is cut
+off from its peers but not from the store, it keeps its leases until the peers
+declare it down (about 5 s) and take its cells (about 6 s after the cut in the
+lab). During that time requests that need the cut wait or fail. The isolated
+node declares its peers down, is a minority, and takes nothing: its workers'
+cell calls for cells owned elsewhere fail at once with 503 `unavailable`, reason
+`no_quorum` (the runtime maps the error even when the worker answers 500).
+Workaround: a client timeout, and a load balancer that stops sending to a node
+that is not in the majority (`/nodes` shows what it sees). Evidence:
+`test/cluster/takeover_test.exs`.
 
 ### 8.11 Draining and stopping gracefully
 
@@ -2442,6 +2576,27 @@ rule "the handler ran where the batch committed" and the no-overlap rule do not
 apply; they apply to every other acknowledged request. In the runs recorded here
 the latest start on an old owner was 3 ms after the takeover.
 
+#### Limits
+
+**A handler can run on two nodes at once around a takeover.** A handler that
+started on a node before it lost a cell (a takeover, a false positive, a move)
+runs to the end, and the new owner starts others for the cell meanwhile.
+Alambique's fencing keeps every cell write correct: the old handler's write is
+refused or goes to the new owner. Effects outside the cell, such as outbound
+HTTP, e-mail or a message to a socket, can happen twice. Atanor starts no new
+handler on a cell this node lost later than `routing.owner_check_ms` (1 s by
+default) after the takeover. A job or alarm handler is killed when the lease of
+its node on the cell ends (minus the skew margin), or at once when a read shows
+the cell lost. Request, WebSocket and TCP handlers are not interrupted. After an
+early takeover the new owner starts no job or alarm handler until the old lease
+has ended plus the margin (`routing.fence_defer_after_takeover`, default true),
+so those do not overlap while clock skew stays below the margin. With the option
+off the overlap is bounded by the lease the old owner has left. The deferral is
+in memory: a new owner that restarts within it forgets it. Workaround: make
+effects outside the cell idempotent (an idempotency key the receiver checks), or
+do them from a cell job (§15), which runs on the current owner and carries a
+stable job id. Evidence: the C1 property and `test/cluster/takeover_test.exs`.
+
 ### 8.14 Ingress and owner: what runs where
 
 HTTP, WebSocket and TCP connections end on whichever node the client reaches;
@@ -2503,6 +2658,15 @@ faster.
 What can change is which node that is: §8.15 moves a hot cell to a less loaded
 or a dedicated node, so the writer has a core of its own, and the ceiling
 stays one writer.
+
+#### Limits
+
+**Plug and WASM workers do not run on the owner of the cell.** A Plug worker has
+no routing key and runs on the node that received the request, as do WASM
+workers, which have no routing key. Their cell calls are still routed to the
+owner by Alambique, so they are correct, but they pay one network hop per call
+instead of one per request. Workaround: use `handle_request/2` in a native
+worker for latency-sensitive paths. Evidence: §8.5.
 
 ### 8.15 Placement of hot cells
 
@@ -2881,6 +3045,14 @@ wrong-secret, revoked and expired tokens are 401 with no change.
 | `max_failures`, `failure_window_ms` | 10, 60,000 | failed tokens per client address in a window (and, in `dashboard:`, failed `?token=`); past it the address is refused with 429 and `Retry-After` until the window ends, even with the right token |
 | `tracked_addresses` | 10,000 | client addresses kept; at the bound a sixteenth is dropped |
 | `unknown_token_ms`, `unknown_tokens` | 2,000, 1,000 | a well-formed token id that the store does not have is refused from memory for this long, and at most this many ids are kept, so random tokens do not each cost a store read; a token created meanwhile works after the time |
+
+#### Limits
+
+**The audit log has no retention.** A forbidden call on an audited endpoint
+writes an audit object that Atanor never deletes: the log is immutable by
+design. Workaround: give the `audit/` prefix of the bucket a lifecycle rule that
+expires old objects. Evidence: `lib/atanor/admin/audit.ex` writes entries and
+lists them; nothing deletes them.
 
 ### 10.3 Dashboard
 
@@ -3682,6 +3854,18 @@ dirty scheduler, and repeated deployments cannot pile up more than
 cancelled when its caller gives up. The component size is bounded
 before the compile (§5.1).
 
+#### Limits
+
+**The compiled-code cache is checked, not authenticated.**
+`<data_dir>/wasm/*.cwasm` files carry a SHA-256 of their content, which detects
+damage but not tampering. Whoever can write that directory can have the node
+load native code of their choosing. Compiled components are not evicted while
+the instance runs. The data directory is trusted: it also holds the cells.
+Authenticating the files would need a per-node key kept outside the data
+directory, which Atanor does not manage. Workaround: keep the data directory
+writable only by the node's user, and restart nodes that deploy many distinct
+packages.
+
 ### 14.6 Linking and WASI
 
 Every component gets the full WASI preview 2 interfaces with an empty
@@ -3765,6 +3949,18 @@ Decisions of the stage that gave WASM workers alarms and WebSockets:
   `test/fixtures/guests/wit/deps` (not committed) from `wit/` and from the
   WASI 0.2.12 packages in the `wasmtime-wasi-http` crate source, then builds
   one component per feature, including `alarm`, `socket` and `job`.
+
+#### Limits
+
+**WASM workers do not serve TCP, TLS or STARTTLS.** WASM workers have no
+`handle_tcp/3` and no `ranch_protocol/1`. A `tcp` route in a WASM manifest is
+refused with `{:unsupported_for_wasm, :tcp}`. Implicit TLS and STARTTLS are
+properties of a TCP listener the worker serves, so a guest cannot use them
+either: the host never intercepts a guest socket to upgrade it. Workaround: keep
+the TCP/TLS edge in a native worker and call the WASM worker from it with
+`Atanor.Env.call/3` (for example for parsing or a cell write), or terminate TLS
+in a proxy in front of an HTTP route. Evidence: §3.2, §7.3 and
+`test/atanor/tcp_test.exs` ("WASM manifests cannot claim listeners yet").
 
 ### 14.9 Pooled instance slots
 
@@ -3953,6 +4149,15 @@ cannot match, so an expression that never fires (`0 0 31 2 *`) is refused in
 microseconds. The native callback is `Atanor.Worker.handle_job/2`; the manifest must
 export it when it grants `jobs: true`. `Dispatch` routes `{:job, job}` to the
 cell owner, and a WASM job runs in a fresh instance under its limits.
+
+#### Limits
+
+**Cron has no time zones.** Recurring jobs use five-field cron expressions
+evaluated in UTC. A schedule such as `0 3 * * *` runs at 03:00 UTC, not in the
+operator's local time, and there is no daylight-saving handling. A time-zone
+option would need a tz database, which is not a dependency. Workaround: write
+the expression in UTC, or enqueue a one-off job with an explicit
+`scheduled_at_ms`. Evidence: `test/atanor/jobs_test.exs`.
 
 ### 15.5 Concurrency
 
@@ -4644,6 +4849,17 @@ Atanor's `:feed` options are validated by `Atanor.Config`:
 | `:max_backoff_ms` | 30 000 | longest wait after repeated read errors |
 | `:max_backlog` | 1 000 | messages in a subscriber's mailbox before it is dropped |
 
+#### Limits
+
+**WASM workers cannot read the change feed.** `Atanor.Env.changes/4`,
+`Atanor.Env.feed_position/2` and `Atanor.Env.subscribe/3` are native-only. The
+WIT packages in `wit/` have no change feed import, so a WASM component cannot
+read changes directly and its manifest cannot grant them. Workaround: keep the
+subscription in a native worker and call the WASM worker with
+`Atanor.Env.call/3`, or query a cell from the guest on a timer; a native worker
+can also maintain the cache and pass the result to the guest. Evidence: `wit/`,
+`test/atanor/feed_test.exs`.
+
 ### 16.6 Rewind markers
 
 `Alambique.rewind/4` (used by the undo of an operation, §15.10) puts a cell
@@ -4725,8 +4941,7 @@ alarms, sweep driver pages, migration tasks, deployment activation and
 WebSocket connections) or `:all` (every HTTP and TCP callback too). A WASM
 HTTP request is not covered under `:durable`; a WASM job, alarm or WebSocket
 runs inside the corresponding durable unit. A WebSocket keeps its marker file open
-for its whole life, so it costs two descriptors (see
-[what-does-not-work.md](what-does-not-work.md)); raise `LimitNOFILE` to at
+for its whole life, so it costs two descriptors (see the limits below); raise `LimitNOFILE` to at
 least twice `http.max_connections`. `:all` writes one file per
 request and is for incident reproduction; §12 measures both.
 
@@ -4767,6 +4982,48 @@ unit to report; use Alambique's counter and `mix alambique.inspect` for it.
 
 `Atanor.Diagnostics` owns the tracker, scan, pending retries and cleaner. It
 starts after the Alambique instance and before the workload children.
+
+#### Limits
+
+**A WebSocket costs a file descriptor and a marker file.** With
+`diagnostics: [breadcrumbs: :durable]` (the default) each WebSocket opens a
+marker file for its whole life, so it holds two descriptors (the connection and
+the marker) and one file in `data_dir/diagnostics/units/`. A node at the default
+`http.max_connections` (16 384) can need more than the 1 024 descriptors that a
+service manager often allows. Opening the marker for the length of a frame
+instead puts a file create and delete on every frame, which was judged worse for
+a busy socket. Workaround: raise the limit (`LimitNOFILE=65536` in the unit, or
+`ulimit -n`) to at least twice `http.max_connections` plus the cells' files, or
+lower `http.max_connections`; `diagnostics: [breadcrumbs: :off]` removes the
+marker at the price of the crash reports of WebSocket handlers.
+
+**A crash report does not survive a machine that never returns.** The
+breadcrumb file is not fsynced: a VM crash keeps the page cache and the next
+start reports it, but a whole-machine crash or a lost disk may lose it. A node
+that never restarts writes no report. Alambique's own quarantine has the same
+page-cache limit and is shown in the report when its counter is readable.
+Workaround: treat `/crashes` as a best-effort record, not an audit log; keep the
+OS core and `erl_crash.dump` as described in
+[how-to-diagnose-a-crash.md](how-to-diagnose-a-crash.md), and use
+`mix alambique.inspect` for the cell's stored crash counter.
+
+**`:durable` breadcrumbs do not cover HTTP requests.** A crash in an ordinary
+HTTP or TCP callback, native or WASM, may name only the cell (from Alambique) or
+nothing. `:all` records every callback, at the cost of one marker file per
+request; the measured cost is in §12. Workaround: use
+`diagnostics: [breadcrumbs: :all]` while reproducing an HTTP crash, then return
+to `:durable`. A WASM job or alarm is still covered by its job/alarm unit.
+Evidence: `test/atanor/diagnostics_test.exs`.
+
+**A crash with no Atanor unit writes no `/crashes` report.** A VM crash inside a
+cell wake, a restore, a compaction or a queries-only cell call has no durable
+unit; Alambique still records the cell in its quarantine counter and
+`[:alambique, :cell, :crash_recorded]`, but Atanor does not know the cell list to
+enrich, so `/crashes` stays empty for that death. Workaround: use
+`mix alambique.inspect CELL` for the stored crash counter and the quarantine
+events in the node log; the next job, alarm or other durable unit that touches
+the cell produces a report. Evidence for these limits:
+`test/cluster/diagnostics_test.exs`.
 
 ### 17.3 Migration rehearsal
 
@@ -4873,6 +5130,23 @@ Public Alambique API used: `Alambique.list_cells/2`, `Alambique.Feed.ctx/1`
 optional worker-provided check, a Mix wrapper and a dashboard page are not
 built. [how-to-run-a-migration-rehearsal.md](how-to-run-a-migration-rehearsal.md)
 shows the use.
+
+#### Limits
+
+**A migration rehearsal checks a sample, and a killed one is not resumed.** A
+rehearsal applies the migrations to `sample_size` cells per namespace (10 by
+default, 100 in total), not to every cell, so a cell with unusual data can still
+fail when the package is activated. The sample comes from Alambique's schema
+index: a cell that has not woken since the index exists is never listed, and a
+cell created after the listing is missed. The copies are restored from the
+store, so writes a live cell has not uploaded yet are not in them. The
+rehearsal runs on one node; if that node dies, the record stays `running` and
+reads as `stale` after `rehearsal.stale_ms` (10 minutes by default), and no
+other node resumes it. Workaround: raise `sample_size` and `max_cells` on the
+node for a package that changes a lot, rehearse again with another `seed`, and
+start a new rehearsal after a `stale` one. A migration that cannot be undone
+still needs a backup or Alambique's point-in-time restore. Evidence:
+`test/atanor/rehearsal_test.exs`, `test/cluster/rehearsal_test.exs`.
 
 ## 18. Node releases
 
@@ -5108,4 +5382,26 @@ reads, at Alambique's default pipeline depth and at depth 1
   caller that alternates between a bounded and a strong read can see time go
   back. There is no monotonic read across them (Alambique's list).
 * A replica is a full copy; the first read after the switch goes to the owner
-  while it is built (Alambique's list, [what-does-not-work.md](what-does-not-work.md)).
+  while it is built (Alambique's list; the limits are below).
+
+
+#### Limits
+
+**A bounded read can be older than the last write, and a replica is a full
+copy.** A `consistency: {:bounded, ms}` read (§19) can miss writes acknowledged
+less than `ms` before it, and two reads of one caller, one served by a replica
+and one by the owner, can see time go back by up to the bound. A replica
+downloads the whole database before it serves, so the first bounded reads of a
+node go to the owner, and each node that reads the cell keeps a full copy (at
+most `max_bytes` of Alambique's `replicas:` per node, 1 GiB by default). A
+request whose `route_key/2` declares a bound runs on the node that received it
+and cannot write; only HTTP requests of native workers can be bounded
+(WebSocket frames, TCP chunks, jobs and alarms run on the owner). The owner of a
+cell that Atanor switched on moves it to another node: the marker stays on in
+the store and the new owner decides again, so a cell that cooled down meanwhile
+keeps its marker until somebody turns it off (`Atanor.Cell.replicas/3`).
+Workaround: use `:strong` (or `verify_lease: true`) for reads that must not go
+back in time, keep replicas for cells that fit `max_bytes`, and turn a stale
+marker off by hand. Evidence: Alambique's `docs/what-does-not-work.md` and
+`test/replica_properties_test.exs`; Atanor's
+`test/cluster/replica_bound_property_test.exs`.
