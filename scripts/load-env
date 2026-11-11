@@ -8,7 +8,7 @@
 #   latency  (re)apply the added store latency, and print the round trip from the node to the store
 #   deploy   deploy the native worker (cluster/load) and the scoreboard (WASM) to the node
 #   rtt      print the round trip from the node to the store in ms (median of three)
-#   check-swap [ID...]  refuse (exit 1) a container that may swap; default: the cluster's containers
+#   check-swap [ID...]  refuse (exit 1) a container that may swap; default: the running nodes, store and lb
 #   info     print the containers, addresses and cgroup directories as JSON
 #   down     remove the containers, network and volumes
 set -euo pipefail
@@ -46,11 +46,17 @@ latency() {
   fi
 }
 
+# Running containers of the measured services: the nodes, the store and the balancer (not the one-shot bucket).
+measured_ids() {
+  docker ps --filter "label=$label" --filter status=running --format '{{.ID}} {{.Label "com.docker.compose.service"}}' |
+    awk '$2 ~ /^(store|lb|node-[0-9]+)$/ { print $1 }'
+}
+
 # A measured container must not swap: its memory limit has to equal its memory+swap limit, and the
 # cgroup's memory.swap.max (cgroup v2, when readable) has to be 0. Otherwise the memory numbers are void.
 check_swap() {
   local ids=("$@") id memory swap pid max bad=0
-  [[ ${#ids[@]} -gt 0 ]] || mapfile -t ids < <(cluster_ids)
+  [[ ${#ids[@]} -gt 0 ]] || mapfile -t ids < <(measured_ids)
   [[ ${#ids[@]} -gt 0 ]] || { echo "no container to check" >&2; return 1; }
   for id in "${ids[@]}"; do
     read -r memory swap pid < <(docker inspect -f '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.State.Pid}}' "$id")
