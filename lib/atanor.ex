@@ -102,8 +102,10 @@ defmodule Atanor do
     * `:dashboard` - serves the read-only dashboard (design §10.1) with the
       options of `:admin` (`:token` required, `:port` default 4002, `:ip`
       default loopback) and `:page_size` (50 rows), `:max_page_size` (500) and
-      `:poll_ms` (5000, how often the native counters are emitted). It needs the
-      optional dependencies listed by `Atanor.Dashboard.dependencies/0` and
+      `:poll_ms` (5000, how often the native counters are emitted),
+      `:cookie_max_age_s` (86 400, the `Max-Age` of the session cookie) and
+      `:secure_cookie` (false; `true` adds `Secure`, for a dashboard served
+      over https by a proxy). It needs the optional dependencies listed by `Atanor.Dashboard.dependencies/0` and
       runs once per VM.
     * `:detector` - the failure detector between nodes (design §8.7):
       `:interval_ms` (heartbeats, 1000), `:phi_threshold` (8), `:min_std_ms`
