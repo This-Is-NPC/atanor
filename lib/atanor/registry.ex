@@ -12,7 +12,7 @@ defmodule Atanor.Registry do
 
   alias Atanor.{Config, Deployment, Manifest, Route}
 
-  @tables [:state, :workers, :routes, :listeners, :namespaces, :partitions]
+  @tables [:state, :workers, :pins, :routes, :listeners, :namespaces, :partitions]
   # Public table written by any process; emptied when it reaches its limit.
   @shared [:pinned, :verified, :fence, :holds, :unknown_tokens, :takeover_throttle, :attempts]
 
@@ -57,6 +57,15 @@ defmodule Atanor.Registry do
   def deployment(name, worker) do
     case :ets.lookup(tables(name).workers, worker) do
       [{_, deployment}] -> {:ok, deployment}
+      [] -> :error
+    end
+  end
+
+  @doc "The id and the `workers` bindings of the active deployment of a worker; only these are copied."
+  @spec pin(atom, String.t()) :: {:ok, String.t(), [String.t()]} | :error
+  def pin(name, worker) do
+    case :ets.lookup(tables(name).pins, worker) do
+      [{_, id, workers}] -> {:ok, id, workers}
       [] -> :error
     end
   end
@@ -351,6 +360,7 @@ defmodule Atanor.Registry do
       case :ets.lookup(tables.workers, worker) do
         [{_, deployment}] ->
           :ets.delete(tables.workers, worker)
+          :ets.delete(tables.pins, worker)
           for key <- route_keys(deployment), do: :ets.delete(tables.routes, key)
           for listener <- listener_names(deployment), do: :ets.delete(tables.listeners, listener)
           with {:ok, _} <- refresh_namespaces(tables), do: :ok
@@ -387,6 +397,7 @@ defmodule Atanor.Registry do
       listeners = listener_names(deployment)
       for listener <- listeners, do: :ets.insert(tables.listeners, {listener, deployment})
       :ets.insert(tables.workers, {manifest.name, deployment})
+      :ets.insert(tables.pins, {manifest.name, deployment.id, manifest.workers})
 
       if previous do
         for key <- route_keys(previous) -- keys, do: :ets.delete(tables.routes, key)

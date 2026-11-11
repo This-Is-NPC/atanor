@@ -383,12 +383,15 @@ Native workers use them through `Atanor.Env`:
 * **worker calls**: `call(env, worker, request)` runs the callee's
   `handle_request/2` in the same node, with the callee's own env and grants.
   The env pins the callee at ingress, with the deployment of the request
-  itself (D1): `Env.new/2` reads the active deployment of every worker reachable
-  through `workers` bindings from the registry (memory, no store read) and keeps
-  them in the env, so every call of one request to a worker reaches one version,
-  whatever is activated meanwhile. A pinned deployment that is no longer active
-  still runs: the env holds it (and a WASM module with it), so the old version
-  finishes the request and is released with it. A callee that was not active at
+  itself (D1): `Env.new/2` reads the id of the active deployment of every worker
+  reachable through `workers` bindings from a small registry table (`pins`; only
+  ids and worker names are copied, no store read), so every call of one request
+  to a worker reaches one version, whatever is activated meanwhile. A call uses
+  the active deployment when its id is the pinned one. Otherwise the deployment
+  is no longer active and is rebuilt from its package by id, as for a forwarded
+  request (`Workers.pinned/3`, §8.3): one store read, then it is kept in the
+  pinned table. If that fails (package gone, code mismatch) the call returns the
+  error and does not run another version. A callee that was not active at
   ingress is resolved at call time. The depth is limited to 8; deeper is
   `{:error, :max_call_depth}`.
 For WASM the binding is the import. The WIT packages are in `wit/`:
