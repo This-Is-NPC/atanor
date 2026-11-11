@@ -8,7 +8,7 @@ defmodule Atanor.OpenAPITest do
   @spec_path "docs/openapi/admin.json"
   @document @spec_path |> File.read!() |> Jason.decode!()
   # The endpoints the document describes: the first segment, and for workers the last one.
-  @family ~w(heads tokens audit drain)
+  @family ~w(heads tokens audit drain auth)
   @worker_endpoints ~w(packages activate rollback versions status)
 
   defp operations do
@@ -65,7 +65,7 @@ defmodule Atanor.OpenAPITest do
     from_spec = operations() |> Enum.map(fn {method, template, _} -> {method, normalize(template)} end) |> Enum.sort()
 
     assert from_code == from_spec
-    assert length(from_code) == 13
+    assert length(from_code) == 14
   end
 
   test "every example validates against its schema" do
@@ -202,6 +202,11 @@ defmodule Atanor.OpenAPITest do
       assert {200, %{"workers" => [_]}} = c.({"GET", "/heads"}, [], token: secret)
       assert {401, _} = c.({"GET", "/heads"}, [], token: nil)
       assert {403, _} = c.({"GET", "/tokens"}, [], token: secret)
+
+      flush = {"POST", "/auth/keys/flush"}
+      assert {401, _} = c.(flush, [], token: nil)
+      assert {403, _} = c.(flush, [], token: secret)
+      assert {200, %{"flushed" => 0}} = c.(flush, [], [])
 
       assert {200, %{"revoked_at" => revoked}} = c.({"POST", "/tokens/{id}/revoke"}, [id: id], [])
       assert is_binary(revoked)

@@ -90,6 +90,26 @@ defmodule Atanor.AuthKeysTest do
     assert OIDCProvider.hits(p) == {1, 1}
   end
 
+  test "flush forgets a withdrawn key, so the next request fetches again", %{provider: p} do
+    {name, _advance} = start_keys()
+    {:ok, _} = Keys.fetch(name, p.issuer, "k1")
+    OIDCProvider.add_key(p, "k2")
+    OIDCProvider.remove_key(p, "k1")
+
+    assert {:ok, keys} = Keys.fetch(name, p.issuer, "k1")
+    assert kids(keys) == ["k1"], "the withdrawn key still verifies from the cache"
+
+    assert Keys.flush(name) == 1
+    assert {:ok, keys} = Keys.fetch(name, p.issuer, "k2")
+    assert kids(keys) == ["k2"]
+    assert OIDCProvider.hits(p) == {2, 2}, "discovery and the JWKS were fetched again"
+    assert Keys.flush(name) == 1
+  end
+
+  test "flush on an instance without an OIDC rule drops nothing" do
+    assert Keys.flush(Module.concat(__MODULE__, "NoRules")) == 0
+  end
+
   test "concurrent first requests fetch once", %{provider: p} do
     {name, _advance} = start_keys()
 
