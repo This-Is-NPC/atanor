@@ -1,0 +1,17 @@
+{
+  "manifest_version": 1,
+  "name": "load",
+  "kind": "native",
+  "module": "Elixir.AtanorNode.LoadWorker",
+  "bindings": {
+    "cells": {
+      "load": {
+        "migrations": [
+          [1, "CREATE TABLE log (n INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT NOT NULL)"]
+        ]
+      }
+    },
+    "sockets": true
+  },
+  "routes": [{"http": {"host": "load.localhost", "path": "/native"}}]
+}
