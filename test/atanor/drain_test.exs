@@ -112,6 +112,19 @@ defmodule Atanor.DrainTest do
       assert {:ok, %{state: :drained, hibernated: 1}} = Task.await(drain)
     end
 
+    test "the status carries no progress while the jobs finish, before Alambique begins" do
+      node = start()
+      slots = Process.whereis(Atanor.Jobs.Slots.name(node.name))
+      :sys.suspend(slots)
+      drain = Task.async(fn -> Atanor.drain(node.name) end)
+
+      until(fn -> Registry.state(node.name) == :draining end)
+      assert Atanor.drain_status(node.name) == %{state: :draining}
+
+      :sys.resume(slots)
+      assert {:ok, %{state: :drained}} = Task.await(drain)
+    end
+
     test "the alarm scheduler leaves its group, so the other nodes take the shards" do
       node = start(alarms: [tick_ms: 20])
       group = Atanor.Alarms.group(Registry.config(node.name).prefix)

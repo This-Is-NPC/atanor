@@ -38,7 +38,7 @@ defmodule Atanor.Drain do
 
   @doc """
   The state of the drain: `idle`, `draining` (with `cells_at_start`, `done`, `left` and the `errors` so far, from
-  Alambique; they read 0 until the jobs have finished) or `drained` (with what it did).
+  Alambique; they are absent until the jobs have finished and Alambique's drain begins) or `drained` (with what it did).
   """
   @spec status(atom) :: map
   def status(instance), do: GenServer.call(name(instance), :status)
@@ -166,8 +166,13 @@ defmodule Atanor.Drain do
 
   defp view(%{state: :idle}), do: %{state: :idle}
 
+  # Alambique's progress exists once its drain began; before, the jobs are still finishing.
   defp view(%{state: :draining, config: config}) do
-    progress = Map.take(Alambique.drain_status(config.alambique), [:cells_at_start, :done, :left, :errors])
+    status = Alambique.drain_status(config.alambique)
+
+    progress =
+      if status.started_at_ms, do: Map.take(status, [:cells_at_start, :done, :left, :errors]), else: %{}
+
     Map.put(progress, :state, :draining)
   end
 

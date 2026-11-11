@@ -385,7 +385,7 @@ defmodule Atanor do
 
   @doc """
   The state of the drain: `%{state: :idle | :draining | :drained}`. While it runs it adds `cells_at_start`, `done`,
-  `left` and `errors`; once drained, what it did.
+  `left` and `errors` (absent until the jobs have finished and Alambique's drain begins); once drained, what it did.
   """
   @spec drain_status(atom) :: map
   def drain_status(name \\ __MODULE__), do: Atanor.Drain.status(name)
