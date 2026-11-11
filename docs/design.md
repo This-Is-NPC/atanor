@@ -3707,6 +3707,17 @@ redirects are therefore the single implementation in `Atanor.Env` and
 response body are buffered in full, within `max_body_bytes` and
 `max_response_bytes`.
 
+`Native.host_reply/2` has two entry points that share one decode. Copying a
+64 MiB reply (the cells' `max_result_bytes` allows it) into Rust held a normal
+scheduler for 7 to 14 ms, so a reply of `host_reply_dirty_bytes` or more
+(`:atanor, :wasm`, default 262,144) goes to a `DirtyCpu` NIF and a smaller one
+to a normal NIF, which avoids the hop to the dirty schedulers (about 1 us) for
+the frequent small replies. The size is `byte_size` for a binary and
+`:erlang.external_size/1` for any other term. The default is where the copy
+on a normal scheduler (about 3 us for 256 KiB, 116 us for 1 MiB) starts to cost
+more than the hop. Large replies do not wait behind compiles, which no longer run on
+the dirty schedulers (§14.5); `prepare` is the only other dirty NIF.
+
 The cell host calls are the `Atanor.Env` functions with the same names. The
 cell interface also has `partition`, which runs `Env.partition/3` and returns the
 physical address of a partition key (§4.2); the guest then uses that address with

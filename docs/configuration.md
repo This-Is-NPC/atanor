@@ -107,6 +107,10 @@ Component compiles run on their own pool: `compile_threads` (default 2) at
 once and `compile_queue` (default 16) waiting; a deployment that finds the
 queue full fails at once. `compile_timeout_ms` (default 60,000) is how long a
 deployment waits for one.
+`host_reply_dirty_bytes` (default 262,144, a positive integer) is the size from
+which the reply to a guest's host call is copied into the native side on a
+dirty scheduler; smaller replies use a normal one
+([design §14.7](design.md#147-host-calls-and-outbound-http)).
 
 ## Local node settings
 

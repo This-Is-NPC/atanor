@@ -412,22 +412,6 @@ trusted code (design §3.2).
 Not fixed because a per-worker cap and running a callee on its caller's slot
 change how the queue admits calls and need their own design and measurement.
 
-## The NIF decodes a large host reply on a BEAM scheduler
-
-**What happens.** `host_reply` copies the reply into Rust before the pool thread
-sees it, on a normal scheduler. A 64 MB reply took 15 to 20 ms (three runs of
-`Atanor.Wasm.Native.host_reply/2` with an unknown call id), above the 1 ms
-that a NIF should take, and the cost grows with the size of the reply. The
-size is bounded by the cells' `max_result_bytes` (64 MiB).
-
-**Workaround.** Set `alambique: [sql: [max_result_bytes: ...]]` lower where
-guests read large results.
-
-**Evidence.** The measurement above, with `MIX_ENV=test mix run --no-start`.
-Not fixed because marking the NIF as dirty makes every reply wait behind
-compiles on the dirty schedulers; a fix that hands the term to the pool thread
-without a copy needs a redesign of `Wire`.
-
 ## The compiled-code cache is checked, not authenticated
 
 **What happens.** `<data_dir>/wasm/*.cwasm` files carry a SHA-256 of their
