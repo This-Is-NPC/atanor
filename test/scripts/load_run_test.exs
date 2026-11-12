@@ -58,6 +58,10 @@ defmodule Atanor.LoadRunTest do
              "limit_mb" => 512.0
            }
 
+    # host swap: a high, flat level is valid; growth over the limit is not
+    assert r["host_swap"]["flat"] == :null
+    assert r["host_swap"]["grows"] == "host swap grew 300 MB > 256 MB"
+
     assert [%{"name" => "high"}] = r["peak"]["at_peak"]["ets"]
     assert r["peak"]["samples"] == 2
 

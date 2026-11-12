@@ -14,9 +14,9 @@ MEASURE is one of
 A step runs the generator (scripts/load-gen, one process per ~600 req/s) for --step-s seconds, samples the
 node's cgroup, the host and the store every --sample-s seconds, and writes one JSON file, atomically.
 Order of the verdicts of a step: host load too high (repeat, then stop), a criterion broken (the step
-fails), swap in a measured container or generator swap growing over --max-generator-swap-mb, or host swap used over
---max-host-swap-mb (INVALID), delivery under 95% of the plan (INVALID, the round stops: the generator or the host,
-not the node). Host swap growth is only recorded. A container that may swap refuses the run before the first step.
+fails), swap in a measured container or generator swap growing over --max-generator-swap-mb, or host swap growing over
+--max-host-swap-growth-mb (INVALID), delivery under 95% of the plan (INVALID, the round stops: the generator or the host,
+not the node). The host swap used is only recorded. A container that may swap refuses the run before the first step.
 After the first failing step the ramp refines between the last good value and the failing one (--refine
 bisections), then repeats the best good step once to confirm it. Environment: ATANOR_LOAD_* give defaults.
 """
@@ -287,17 +287,17 @@ def container_swap_max_mb(samples, name):
     return round(max(seen) / 1048576, 2) if seen else None
 
 
-def judge_swap(usage, generator_max_mb, host_max_mb):
-    """Why a step is INVALID by swap, or None: a measured container swapped, the generators' VmSwap grew too much, host swap used is too high."""
+def judge_swap(usage, generator_max_mb, host_growth_max_mb):
+    """Why a step is INVALID by swap, or None: a measured container swapped, the generators' VmSwap grew too much, host swap used grew too much during the step (its level is only recorded)."""
     swapped = {n: mb for n, mb in usage["swap_usage"]["containers_max_mb"].items() if mb}
     if swapped:
         return "measured container swapped: " + ", ".join(f"{n} {mb} MB" for n, mb in swapped.items())
     growth = usage["swap_usage"]["generator_growth_mb"]
     if growth > generator_max_mb:
         return f"load generator swap grew {growth} MB > {generator_max_mb:g} MB"
-    used = usage["host"]["swap_max_mb"]
-    if used > host_max_mb:
-        return f"host swap used {used} MB > {host_max_mb:g} MB"
+    host_growth = usage["host"]["swap_growth_mb"]
+    if host_growth > host_growth_max_mb:
+        return f"host swap grew {host_growth} MB > {host_growth_max_mb:g} MB"
     return None
 
 
@@ -565,7 +565,7 @@ class Round:
             return {**record, "status": "fail", "stop_reason": "; ".join(criteria)}
         if usage["host"]["net_load_mean"] is not None and usage["host"]["net_load_mean"] > a.host_load_max:
             return {**record, "valid": False, "status": "invalid", "stop_reason": "host load"}
-        swapped = judge_swap(usage, a.max_generator_swap_mb, a.max_host_swap_mb)
+        swapped = judge_swap(usage, a.max_generator_swap_mb, a.max_host_swap_growth_mb)
         if swapped:
             return {**record, "valid": False, "status": "invalid", "stop_reason": swapped}
         if any("EMFILE" in k for k in merged["statuses"]):
@@ -693,7 +693,7 @@ def swap(round_, args, info):
                        "unknown": result.get("unknown"), "phases": phases, "a_exit_code": result.get("a_exit_code")},
               "cpu": usage["cpu"], "memory": usage["memory"], "fds": usage["fds"], "s3": {}, "host": usage["host"], "swap_usage": usage["swap_usage"], "limits": {},
               "valid": bool(result), "status": "fail" if reasons else "ok", "stop_reason": "; ".join(reasons) or None, "started_at": began}
-    swapped = judge_swap(usage, args.max_generator_swap_mb, args.max_host_swap_mb) if usage["swap_usage"] else None
+    swapped = judge_swap(usage, args.max_generator_swap_mb, args.max_host_swap_growth_mb) if usage["swap_usage"] else None
     if swapped:
         record.update(valid=False, status="invalid", stop_reason=swapped)
     if not result:
@@ -721,7 +721,7 @@ def main():
     add("--delivery", type=float, default=env("DELIVERY", 0.95), help="achieved/planned below this makes a step INVALID (ATANOR_LOAD_DELIVERY, 0.95)")
     add("--host-load-max", type=float, default=env("HOST_LOAD_MAX", 6), help="net host load (busy cores minus the test's own) above this repeats the step (ATANOR_LOAD_HOST_LOAD_MAX, 6)")
     add("--max-generator-swap-mb", type=float, default=env("MAX_GENERATOR_SWAP_MB", 16), help="VmSwap of the load generators growing by more than this in a step makes it INVALID (ATANOR_LOAD_MAX_GENERATOR_SWAP_MB, 16)")
-    add("--max-host-swap-mb", type=float, default=env("MAX_HOST_SWAP_MB", 512), help="host swap used above this at any sample makes a step INVALID; below it, only recorded (ATANOR_LOAD_MAX_HOST_SWAP_MB, 512)")
+    add("--max-host-swap-growth-mb", type=float, default=env("MAX_HOST_SWAP_GROWTH_MB", 256), help="host swap used growing by more than this during a step (largest sample minus the start) makes it INVALID; the level is only recorded (ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB, 256)")
     add("--repeat-invalid", type=int, default=env("REPEAT_INVALID", 2, int), help="repeats of a step invalidated by host load (ATANOR_LOAD_REPEAT_INVALID, 2)")
     add("--host-wait", type=float, default=env("HOST_WAIT", 30), help="seconds before such a repeat")
     add("--min-available-gb", type=float, default=env("MIN_AVAILABLE_GB", 6), help="host MemAvailable below this stops the round (ATANOR_LOAD_MIN_AVAILABLE_GB, 6)")

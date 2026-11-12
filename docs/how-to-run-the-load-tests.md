@@ -48,9 +48,9 @@ and `/proc/meminfo`. Per step, in this order:
 3. **Swap.** The step is INVALID (not a failure of the node; the round stops) when any of these holds:
    - a measured container (node, store or balancer) swapped: its cgroup `memory.swap.current` was above 0 at any sample. It is read from the host through the cgroup of the container's init PID, with the other cgroup reads. When it is unreadable it is recorded as null and not judged;
    - the `VmSwap` of the load generators (`/proc/PID/status`, summed over the processes `load-run` started and their children) grew by more than 16 MB (`ATANOR_LOAD_MAX_GENERATOR_SWAP_MB`);
-   - the host's swap used (`SwapTotal - SwapFree`) was above 512 MB at any sample (`ATANOR_LOAD_MAX_HOST_SWAP_MB`).
+   - the host's swap used (`SwapTotal - SwapFree`) grew by more than 256 MB during the step: the largest sample minus the value at the start (`ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB`).
 
-   Host swap below that limit, and its growth, are only recorded: idle host processes swap a few tens of MB on their own. Each step file records host swap start, max and growth, generator swap start, max and growth, and the largest swap of each measured container; the report shows the generator swap growth and the largest host swap. `load:swap` applies the same rule (the node A container is removed during that run, so its swap reads as null afterwards).
+   The level of host swap is only recorded, never judged: a host may hold gigabytes of old swap that the step does not touch. Each step file records host swap start, max and growth, generator swap start, max and growth, and the largest swap of each measured container; the report shows the generator swap growth and the largest host swap. `load:swap` applies the same rule (the node A container is removed during that run, so its swap reads as null afterwards).
 4. **Node stopped.** A node that breaks at its limit is a result, not a crash of the runner. After the
    step, and when the generator fails, `load-run` runs `docker inspect` on the node container and compares
    it with its state at the start of the step. The step FAILS, and the ramp bisects or stops as for any other
@@ -114,7 +114,7 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_DELIVERY` | 0.95 | Achieved/planned below which a step is invalid. |
 | `ATANOR_LOAD_HOST_LOAD_MAX`, `_MIN_AVAILABLE_GB` | 6, 6 | Net host load and free host memory limits. |
 | `ATANOR_LOAD_MAX_GENERATOR_SWAP_MB` | 16 | Growth of the load generators' `VmSwap` during a step above which the step is invalid. |
-| `ATANOR_LOAD_MAX_HOST_SWAP_MB` | 512 | Host swap used (absolute) above which the step is invalid; below it, only recorded. |
+| `ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB` | 256 | Growth of the host swap used during a step above which the step is invalid; its level is only recorded. |
 | `ATANOR_LOAD_WRITE_RATIO`, `_CELLS` | 0.5, 64 | http: share of writes, cells the requests spread over. |
 | `ATANOR_LOAD_CELL_PERIOD` | 10 | cells: seconds between the writes to one cell. |
 | `ATANOR_LOAD_OPEN_RATE`, `_WS_INTERVAL` | 100, 30 | Sockets opened or cells touched per second; seconds between messages of a socket (the node closes a silent socket after 60 s). |
