@@ -99,19 +99,24 @@ results["restarted"] = scenario("restarted", during=lambda: container(started="2
 results["gone"] = scenario("gone", during=lambda: open(os.path.join(fake, "gone"), "w").close())
 # A failing generator with a healthy node is still invalid, as before.
 results["generator_only"] = scenario("generator_only", error="load-gen failed")
-# A ramp whose second step breaks the node ends in a summary, not a crash.
-container()
-hook.update(during=lambda: None, error=None)
-round_, args = new_round("ramp")
-calls = []
+# A ramp whose second step breaks the node ends there: a summary, no bisection, no confirmation.
+def ramp_scenario(name, dies_at, before=None):
+    container(**(before or {}))
+    calls = []
+
+    def during():
+        calls.append(1)
+        if len(calls) == dies_at:
+            container(running=False, oom=True, exit_code=137)
+
+    hook.update(during=during, error=None)
+    round_, args = new_round(name)
+    args.steps, args.refine = "10,20,40", 2
+    summary = m.ramp(round_, args)
+    return {"summary": summary, "generator_runs": len(calls), "files": sorted(f for f in os.listdir(args.out) if f.endswith(".json"))}
 
 
-def die_on_second():
-    calls.append(1)
-    if len(calls) == 2:
-        container(running=False, oom=True, exit_code=137)
-
-
-hook["during"] = die_on_second
-results["ramp"] = m.ramp(round_, args)
+results["ramp"] = ramp_scenario("ramp", dies_at=2)
+# A step that starts with a dead node is invalid, runs no generator and ends the round.
+results["dead_at_start"] = ramp_scenario("dead_at_start", dies_at=0, before={"running": False, "exit_code": 137})
 print(json.dumps(results))

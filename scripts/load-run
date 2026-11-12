@@ -456,6 +456,8 @@ class Round:
             return self.record(value, phase, None, None, None, "invalid", "host memory", valid=False,
                                host_override={"available_gb_min": round(available, 1)})
         node_before = node_state(info["node"]["id"])
+        if node_before and (node_before.get("gone") or not node_before["running"]):  # nothing to measure; the nodes do not restart
+            return self.record(value, phase, None, None, None, "invalid", "node not running at step start", valid=False, dead="node not running at step start")
         sampler = Sampler(info, a.sample_s)
         s3_before = s3_counters(info["store"]["ip"])
         sampler.samples.append(sampler.take())
@@ -467,7 +469,7 @@ class Round:
             sampler.finish()
             dead, files = self.node_stop(value, phase, node_before)
             if dead:  # the node broke under the load: a stop of the node, not of the runner
-                return self.record(value, phase, None, None, None, "fail", f"{dead} (generator: {error})", began=began, diagnostics=files)
+                return self.record(value, phase, None, None, None, "fail", f"{dead} (generator: {error})", began=began, diagnostics=files, dead=dead)
             return self.record(value, phase, None, None, None, "invalid", f"generator: {error}", valid=False)
         samples = sampler.finish()
         s3_after = s3_counters(info["store"]["ip"])
@@ -483,7 +485,7 @@ class Round:
                   "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
                   "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "cells_awake": None, "store_rtt_ms": None,
-                  "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "notes": [], "diagnostics": list(diagnostics)}
+                  "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "node_stopped": bool(dead), "notes": [], "diagnostics": list(diagnostics)}
         if merged is None:
             return record
         usage = summarize(samples, sampler_cpu(gens))
@@ -552,7 +554,7 @@ def ramp(round_, args):
         while v <= args.max:
             values.append(round(v))
             v *= args.factor
-    steps, good, failed, stopped = [], None, None, None
+    steps, good, failed, stopped, node_stopped = [], None, None, None, False
     for v in values:
         r = round_.step(v, "ramp")
         steps.append(r)
@@ -560,11 +562,14 @@ def ramp(round_, args):
             good = v
         elif r["status"] == "fail":
             failed = v
+            node_stopped = r["node_stopped"]
             break
         else:
             stopped = r
+            node_stopped = r["node_stopped"]
             break
-    if failed is not None and good is not None and not stopped:
+    # A stopped node stays stopped (restart: "no"): the round ends, with no bisection and no confirmation.
+    if failed is not None and good is not None and not stopped and not node_stopped:
         lo, hi = good, failed
         for _ in range(args.refine):
             mid = round((lo + hi) / 2)
@@ -576,18 +581,22 @@ def ramp(round_, args):
                 lo = mid
             elif r["status"] == "fail":
                 hi = mid
+                if r["node_stopped"]:
+                    failed, node_stopped = mid, True
+                    break
             else:
                 stopped = r
+                node_stopped = r["node_stopped"]
                 break
         good = lo
     confirmed = None
-    if good is not None and not stopped:
+    if good is not None and not stopped and not node_stopped:
         r = round_.step(good, "confirm")
         steps.append(r)
         confirmed = r["status"] == "ok"
         stopped = r if r["status"] == "invalid" else None
     last_fail = next((s for s in reversed(steps) if s["status"] == "fail"), None)
-    return {"approved": good if confirmed else None, "confirmed": confirmed, "first_failure": failed,
+    return {"approved": good if confirmed or node_stopped else None, "confirmed": confirmed, "node_stopped": node_stopped or any(x["node_stopped"] for x in steps), "first_failure": failed,
             "stopped_by": last_fail["stop_reason"] if last_fail else None, "invalid": stopped["stop_reason"] if stopped else None,
             "ceiling_reached": failed is None and stopped is None and good is not None}
 

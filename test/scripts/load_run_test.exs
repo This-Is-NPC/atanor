@@ -44,9 +44,22 @@ defmodule Atanor.LoadRunTest do
     assert r["generator_only"]["record"]["status"] == "invalid"
     assert r["generator_only"]["record"]["diagnostics"] == []
 
-    # the ramp ends with a summary: the node's death is its first failure
-    assert r["ramp"]["first_failure"] == 20
-    assert r["ramp"]["stopped_by"] =~ "node OOM-killed"
+    # the node's death ends the round: first failure there, the last good value approved, no bisection or confirmation
+    ramp = r["ramp"]
+    assert ramp["summary"]["first_failure"] == 20
+    assert ramp["summary"]["approved"] == 10
+    assert ramp["summary"]["node_stopped"]
+    assert ramp["summary"]["stopped_by"] =~ "node OOM-killed"
+    assert ramp["generator_runs"] == 2
+    assert length(ramp["files"]) == 2
+
+    # a step that starts with a dead node is invalid, runs no generator and ends the round
+    start = r["dead_at_start"]
+    assert start["generator_runs"] == 0
+    assert start["summary"]["invalid"] == "node not running at step start"
+    assert start["summary"]["node_stopped"]
+    assert start["summary"]["approved"] == nil or start["summary"]["approved"] == :null
+    assert length(start["files"]) == 1
   end
 
   describe "load-env rtt" do

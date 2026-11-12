@@ -118,6 +118,7 @@ def report(directory):
             if summary:
                 stop = summary.get("stopped_by") or summary.get("invalid") or ("ceiling reached without a failure" if summary.get("ceiling_reached") else "none")
                 out += [f"Ramp stopped by: **{stop}**" + (f" (invalid: {summary['invalid']})" if summary.get("invalid") and summary.get("stopped_by") else "")
+                        + ("; the round ended there: the node stopped" if summary.get("node_stopped") else "")
                         + (f"; confirmation repeat: {'passed' if summary.get('confirmed') else 'failed'}" if summary.get("confirmed") is not None else ""), ""]
             out += ["Reproduce:", "", "```sh", f"ATANOR_LOAD_SCENARIO={scenario} mise run load:up", summary["command"] if summary else mine[0]["command"], "```", ""]
     return "\n".join(out)
