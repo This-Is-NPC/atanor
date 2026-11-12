@@ -19,6 +19,10 @@ defmodule Atanor.Admission do
   A request is an ETS row keyed by its process: the in-flight count is the table size. A handler that is
   killed does not run `after`, so the sampler also drops the rows of dead processes on every tick.
 
+  A cell call that would wake a cell (it has no process on this node) is refused with `overloaded` while the
+  memory gate refuses (`Atanor.Cell`): a request already in flight can still start a wake, and a burst of
+  wakes of admitted requests is what the gate at the ingress cannot see.
+
   A sample older than 10 sample periods is ignored (the gates fail open). A dead sampler restarts the
   node (the supervisor is `one_for_all`), and a live one that stalls under CPU starvation must not refuse
   forever on a stale reading; the in-flight gate still bounds the node then.
@@ -41,6 +45,7 @@ defmodule Atanor.Admission do
   @disk_used 7
   @disk_refusing 8
   @disk_sampled_at 9
+  @refused_wake 10
 
   @doc "The gap, as a fraction of the limit, between the refuse and the resume marks."
   def hysteresis, do: @hysteresis
@@ -152,6 +157,19 @@ defmodule Atanor.Admission do
   end
 
   @doc false
+  # Whether the memory gate is refusing now. A cell call that would wake a cell asks it: the wake is the
+  # work the gate cannot stop at the ingress once the request is in.
+  @spec memory_refusing?(atom) :: boolean
+  def memory_refusing?(name), do: refusing?(handle(name))
+
+  @doc false
+  @spec refuse_wake(atom) :: :ok
+  def refuse_wake(name) do
+    :atomics.add(handle(name).counters, @refused_wake, 1)
+    :ok
+  end
+
+  @doc false
   # The disk use of `data_dir`, from `Atanor.Disk`.
   @spec disk_sample(atom, non_neg_integer) :: :ok
   def disk_sample(name, bytes), do: GenServer.cast(handle(name).pid, {:disk, bytes})
@@ -182,7 +200,8 @@ defmodule Atanor.Admission do
   @doc """
   What the admission of a running node has done: the requests in flight now, the refusals by reason, the
   last working set and the limit it is judged against (`nil` when the memory gate is off), the disk use and
-  budget (`nil` when the disk gate is off), and whether the gates are refusing now.
+  budget (`nil` when the disk gate is off), whether the gates are refusing now, and `wake_refused`: the cell
+  calls refused because they would have woken a cell while the memory gate was refusing.
   """
   @spec stats(atom) :: map
   def stats(name) do
@@ -201,6 +220,7 @@ defmodule Atanor.Admission do
       limit_bytes: handle.limit,
       refuse_at_bytes: handle.memory && trunc(handle.model.refuse_at),
       refusing: refusing?(handle),
+      wake_refused: :atomics.get(counters, @refused_wake),
       disk_used_bytes: if(handle.disk, do: :atomics.get(counters, @disk_used)),
       disk_budget_bytes: handle.disk_budget,
       disk_refusing: disk_refusing?(handle)
@@ -225,7 +245,7 @@ defmodule Atanor.Admission do
     handle = %{
       pid: self(),
       table: :ets.new(__MODULE__, [:set, :public, write_concurrency: true]),
-      counters: :atomics.new(9, []),
+      counters: :atomics.new(10, []),
       max_in_flight: config.http.max_in_flight,
       memory: memory?,
       limit: limit,

@@ -8,7 +8,7 @@ defmodule Atanor.Cell do
   call on an awake cell is one Alambique call.
   """
 
-  alias Atanor.{Detector, Dispatch, HotCells, Partition, Registry, Takeover, Unavailable}
+  alias Atanor.{Admission, Detector, Dispatch, HotCells, Partition, Registry, Takeover, Unavailable}
 
   @type address :: {namespace :: String.t(), key :: String.t()}
 
@@ -93,8 +93,23 @@ defmodule Atanor.Cell do
   def owner(instance, address) do
     with {:ok, id} <- id(address) do
       config = Registry.config(instance)
-      if config.hot_cells.enabled, do: HotCells.hold(instance, id, config.hot_cells.move_timeout_ms)
-      Alambique.touch(config.alambique, id)
+
+      with :ok <- wake_gate(instance, config, id) do
+        if config.hot_cells.enabled, do: HotCells.hold(instance, id, config.hot_cells.move_timeout_ms)
+        Alambique.touch(config.alambique, id)
+      end
+    end
+  end
+
+  # While the node is over its memory mark, a call for a cell with no process here would wake it (or be
+  # forwarded, which this node cannot tell apart without a lease read): it gets `overloaded` instead.
+  # `Alambique.load/2` reads the registry only; it never wakes a cell.
+  defp wake_gate(instance, config, id) do
+    if Admission.memory_refusing?(instance) and Alambique.load(config.alambique, id) == :none do
+      Admission.refuse_wake(instance)
+      unavailable(:overloaded)
+    else
+      :ok
     end
   end
 
@@ -127,8 +142,11 @@ defmodule Atanor.Cell do
   defp call(instance, address, kind, fun) do
     with {:ok, id} <- id(address), :ok <- granted(instance, address) do
       config = Registry.config(instance)
-      if config.hot_cells.enabled and kind != :admin, do: hot_cells(instance, config, id, kind)
-      instance |> run(id, fun, config.takeover.attempts, nil) |> wrote(kind)
+      # An admin call (hibernate, move, position) is how a node sheds cells: it is not gated.
+      with :ok <- if(kind == :admin, do: :ok, else: wake_gate(instance, config, id)) do
+        if config.hot_cells.enabled and kind != :admin, do: hot_cells(instance, config, id, kind)
+        instance |> run(id, fun, config.takeover.attempts, nil) |> wrote(kind)
+      end
     end
   end
 
