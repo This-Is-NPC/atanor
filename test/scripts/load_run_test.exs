@@ -38,6 +38,21 @@ defmodule Atanor.LoadRunTest do
     assert [%{"initial_call" => "erlang.apply/2"}] = runtime["at_peak"]["top_memory"]
     assert [%{"name" => "t"}] = runtime["at_peak"]["ets"]
     assert r["runtime_ok"]["record"]["status"] == "ok"
+
+    # the store's tmpfs at 93% with a failing p99: INVALID for the store, not a fail; at 50% the p99 fails the step as usual
+    full = r["store_full"]
+    assert full["status"] == "invalid" and full["valid"] == false
+    assert full["stop_reason"] == "store tmpfs 93.1% > 90%"
+    assert full["store"]["tmpfs_max_pct"] == 93.1
+    half = r["store_half"]
+    assert half["status"] == "fail" and half["valid"] == true
+    assert half["stop_reason"] =~ "p99"
+    assert half["store"]["tmpfs_max_pct"] == 50.0
+
+    # a node that stopped is still the result; the store's share is noted
+    dead = r["store_full_dead"]
+    assert dead["status"] == "fail" and dead["node_stopped"] == true
+    assert "store tmpfs 93.1% > 90%" in dead["notes"]
     assert runtime["cgroup_memory_max_bytes"] == 2
 
     # the time series: one entry per sample, with the admission and the store fields

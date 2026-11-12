@@ -65,13 +65,20 @@ and `/proc/meminfo`. Per step, in this order:
    `approved` is the last good value (no confirmation repeat); `load-run` still exits 0. A step that finds the
    node not running at its start runs no generator: it is INVALID ("node not running at step start") and ends
    the round the same way.
-5. **Criteria.** The step fails when any criterion of the table above broke.
-6. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
+5. **Store tmpfs.** The step is INVALID (the round stops) when the store's tmpfs passed 90% of its size at any
+   sample (`ATANOR_LOAD_MAX_STORE_TMPFS_PCT`), for example `store tmpfs 93% > 90%`. A full tmpfs makes the store
+   answer S3 500s, which measure the lab, not the node, so this verdict wins over the criteria: a p99 or 5xx
+   failure on a full store is not recorded as a failure of the node. It applies to ramp, refine and confirm steps
+   and to `load:swap`. A node that stopped (step 4) is still judged first; the store's share is then added to the
+   `notes` of the step. The step file records it as `store.tmpfs_max_pct` of `store.tmpfs_size_mb`. Size the
+   tmpfs with `ATANOR_LOAD_STORE_TMPFS_SIZE`.
+6. **Criteria.** The step fails when any criterion of the table above broke.
+7. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
    failure of the node. A saturated node breaks p99 first, so it is a failure, not an invalid step.
    A saturated node that answers too slowly leaves a backlog in the generator. The generator keeps the
    backlog bounded: a request picked up more than `--timeout` (10 s) after it was due, and any request
    still queued or in flight `--timeout + 5` s after the last one was due, is counted as
-   `error: not completed`. That is an error, so the step fails (step 5), as a measured saturation; the
+   `error: not completed`. That is an error, so the step fails (step 6), as a measured saturation; the
    generator still writes its document. INVALID stays for real generator problems: a crash, no file
    descriptors, CPU or swap.
 
@@ -132,6 +139,7 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_HOST_LOAD_MAX`, `_MIN_AVAILABLE_GB` | 6, 6 | Net host load and free host memory limits. |
 | `ATANOR_LOAD_MAX_GENERATOR_SWAP_MB` | 16 | Growth of the load generators' `VmSwap` during a step above which the step is invalid. |
 | `ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB` | 256 | Growth of the host swap used during a step above which the step is invalid; its level is only recorded. |
+| `ATANOR_LOAD_MAX_STORE_TMPFS_PCT` | 90 | Share of the store's tmpfs size, at any sample, above which the step is invalid (before the criteria). |
 | `ATANOR_LOAD_WRITE_RATIO`, `_CELLS` | 0.5, 64 | http: share of writes, cells the requests spread over. |
 | `ATANOR_LOAD_CELL_PERIOD` | 10 | cells: seconds between the writes to one cell. |
 | `ATANOR_LOAD_OPEN_RATE`, `_WS_INTERVAL` | 100, 30 | Sockets opened or cells touched per second; seconds between messages of a socket (the node closes a silent socket after 60 s). |

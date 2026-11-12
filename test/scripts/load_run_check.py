@@ -57,6 +57,7 @@ m.cgroup_dir = lambda pid: work + "/no-cgroup"  # the samples of the cgroups are
 
 DOCUMENT = {"statuses": {"message answered": 10}, "hist": {"5": 10}, "max_ms": 1.0, "planned": 10, "sent": 10, "completed": 10,
             "cpu_s": 0.1, "lag_ms": {"p99": 1}, "opened": 10}
+measure = ["ws"]
 hook = {"during": lambda: None, "error": None}
 
 
@@ -73,9 +74,9 @@ m.Round.run_generators = run_generators
 def new_round(name):
     out = os.path.join(work, name)
     os.makedirs(out)
-    args = argparse.Namespace(out=out, measure="ws", step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1e9, min_available_gb=0.0,
+    args = argparse.Namespace(out=out, measure=measure[0], step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1e9, min_available_gb=0.0,
                               sample_s=0.05, repeat_invalid=0, host_wait=0.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
-                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, command="test", steps="10,20", start=10, max=20, factor=2, refine=0)
+                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, max_store_tmpfs_pct=90.0)
     pid = os.getpid()
     info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"ip": "127.0.0.1", "pid": pid},
             "lb": {"pid": pid}, "admin": "http://127.0.0.1:1"}
@@ -140,6 +141,26 @@ low, high = fake_runtime(None, "/runtime", 1), fake_runtime(None, "/runtime", 1)
 low["ets"], high["ets"] = [{"name": "low", "bytes": 1}], [{"name": "high", "bytes": 2}]
 results["peak"] = m.runtime_summary([{"node": {"memory_current": 5}, "runtime": low}, {"node": {"memory_current": 9}, "runtime": high},
                                      {"node": {"memory_current": 7}, "runtime": None}])
+# The store's tmpfs: over 90% of its size the step is INVALID, before a failing p99; under it the step is judged as usual.
+def store_scenario(name, tmpfs_mb, die=False):
+    real = (m.cgroup_sample, m.cgroup_dir, m.Round.run_generators)
+    m.cgroup_sample = lambda d: {"memory_current": 300 * MB, "shmem": 256 * MB if "store" in d else 1, "peak": 300 * MB, "limit": 1280 * MB, "cpu_s": time.time(), "cpu_limit": 1.0}
+    m.cgroup_dir = lambda pid: work + ("/store" if pid == "store" else "/no-cgroup")
+    m.Round.run_generators = lambda self, value, sampler: hook["during"]() or [{**DOCUMENT, "statuses": {"200": 10}, "hist": {"9000": 10}}]
+    measure[0] = "http-native"
+    try:
+        result = scenario(name, during=(lambda: container(running=False, oom=True, exit_code=137)) if die else (lambda: None),
+                          info={"store_tmpfs_bytes": tmpfs_mb * MB, "store": {"ip": "127.0.0.1", "pid": "store"}})
+    finally:
+        measure[0] = "ws"
+        m.cgroup_sample, m.cgroup_dir, m.Round.run_generators = real
+    result["record"].pop("series", None)
+    return result["record"]
+
+
+for name, args in (("store_full", (275,)), ("store_half", (512,)), ("store_full_dead", (275, True))):
+    results[name] = store_scenario(name, *args)
+
 # A ramp whose second step breaks the node ends there: a summary, no bisection, no confirmation.
 def ramp_scenario(name, dies_at, before=None):
     container(**(before or {}))

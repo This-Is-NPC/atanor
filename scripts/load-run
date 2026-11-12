@@ -15,8 +15,10 @@ A step runs the generator (scripts/load-gen, one process per ~600 req/s) for --s
 node's cgroup, the host and the store every --sample-s seconds, and writes one JSON file, atomically.
 Order of the verdicts of a step: host load too high (repeat, then stop), a criterion broken (the step
 fails), swap in a measured container or generator swap growing over --max-generator-swap-mb, or host swap growing over
---max-host-swap-growth-mb (INVALID), delivery under 95% of the plan (INVALID, the round stops: the generator or the host,
-not the node). The host swap used is only recorded. A container that may swap refuses the run before the first step.
+--max-host-swap-growth-mb (INVALID), the store's tmpfs over --max-store-tmpfs-pct (default 90%) of its size at any sample (INVALID: a full
+store answers S3 500s, which measure the lab; it wins over a criterion, so a p99 or 5xx failure on a full store is not
+the node's), delivery under 95% of the plan (INVALID, the round stops: the generator or the host, not the node). A node
+that stopped is judged first and still records the store's tmpfs share. The host swap used is only recorded. A container that may swap refuses the run before the first step.
 After the first failing step the ramp refines between the last good value and the failing one (--refine
 bisections, each on a fresh node and store), then repeats the best good step once to confirm it, also fresh. Environment: ATANOR_LOAD_* give defaults.
 """
@@ -366,6 +368,12 @@ def admission_summary(samples):
             **{k: last.get(k) for k in ("limit_bytes", "refuse_at_bytes", "max_in_flight", "disk_budget_bytes")}}
 
 
+def judge_store(store, max_pct):
+    """The INVALID reason when the store's tmpfs passed `max_pct` of its size at any sample, else None."""
+    pct = (store or {}).get("tmpfs_max_pct")
+    return f"store tmpfs {pct:g}% > {max_pct:g}%" if pct is not None and pct > max_pct else None
+
+
 def store_summary(samples, tmpfs_bytes):
     """The store container's memory, its tmpfs (shmem) against the tmpfs size and the S3 5xx answered during the step."""
     mem = [s["store"] for s in samples if s.get("store")]
@@ -632,7 +640,10 @@ class Round:
         fd_max, fd_limit = usage["fds"]["max"], usage["fds"]["limit"]
         if a.measure == "ws" and fd_max and fd_limit and fd_max >= a.fd_pct / 100 * fd_limit:
             criteria.append(f"file descriptors {fd_max} of {fd_limit}")
+        full = judge_store(record["store"], a.max_store_tmpfs_pct)
         if dead:  # before any invalid judgement: a node that stopped is the result
+            if full:
+                record["notes"].append(full)
             return {**record, "status": "fail", "stop_reason": "; ".join(criteria)}
         if usage["host"]["net_load_mean"] is not None and usage["host"]["net_load_mean"] > a.host_load_max:
             return {**record, "valid": False, "status": "invalid", "stop_reason": "host load"}
@@ -641,6 +652,8 @@ class Round:
             return {**record, "valid": False, "status": "invalid", "stop_reason": swapped}
         if any("EMFILE" in k for k in merged["statuses"]):
             return {**record, "valid": False, "status": "invalid", "stop_reason": "the generator ran out of file descriptors"}
+        if full:  # before the criteria: on a full store a failure of the node is caused by the lab
+            return {**record, "valid": False, "status": "invalid", "stop_reason": full}
         if criteria:
             return {**record, "status": "fail", "stop_reason": "; ".join(criteria)}
         if record["achieved_ratio"] is not None and record["achieved_ratio"] < a.delivery:
@@ -764,9 +777,11 @@ def swap(round_, args, info):
                        "unknown": result.get("unknown"), "phases": phases, "a_exit_code": result.get("a_exit_code")},
               "cpu": usage["cpu"], "memory": usage["memory"], "fds": usage["fds"], "s3": {}, "host": usage["host"], "swap_usage": usage["swap_usage"], "limits": {},
               "valid": bool(result), "status": "fail" if reasons else "ok", "stop_reason": "; ".join(reasons) or None, "started_at": began}
+    record["store"] = store_summary(samples, info.get("store_tmpfs_bytes"))
     swapped = judge_swap(usage, args.max_generator_swap_mb, args.max_host_swap_growth_mb) if usage["swap_usage"] else None
-    if swapped:
-        record.update(valid=False, status="invalid", stop_reason=swapped)
+    full = judge_store(record["store"], args.max_store_tmpfs_pct)
+    if swapped or full:
+        record.update(valid=False, status="invalid", stop_reason=swapped or full)
     if not result:
         record["status"] = "invalid"
     write_json(os.path.join(args.out, f"{round_.scenario}_swap_01-swap-{rate}.json"), record)
@@ -793,6 +808,7 @@ def main():
     add("--host-load-max", type=float, default=env("HOST_LOAD_MAX", 6), help="net host load (busy cores minus the test's own) above this repeats the step (ATANOR_LOAD_HOST_LOAD_MAX, 6)")
     add("--max-generator-swap-mb", type=float, default=env("MAX_GENERATOR_SWAP_MB", 16), help="VmSwap of the load generators growing by more than this in a step makes it INVALID (ATANOR_LOAD_MAX_GENERATOR_SWAP_MB, 16)")
     add("--max-host-swap-growth-mb", type=float, default=env("MAX_HOST_SWAP_GROWTH_MB", 256), help="host swap used growing by more than this during a step (largest sample minus the start) makes it INVALID; the level is only recorded (ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB, 256)")
+    add("--max-store-tmpfs-pct", type=float, default=env("MAX_STORE_TMPFS_PCT", 90), help="the store's tmpfs above this share of its size at any sample makes a step INVALID, before the criteria (ATANOR_LOAD_MAX_STORE_TMPFS_PCT, 90)")
     add("--repeat-invalid", type=int, default=env("REPEAT_INVALID", 2, int), help="repeats of a step invalidated by host load (ATANOR_LOAD_REPEAT_INVALID, 2)")
     add("--host-wait", type=float, default=env("HOST_WAIT", 30), help="seconds before such a repeat")
     add("--min-available-gb", type=float, default=env("MIN_AVAILABLE_GB", 6), help="host MemAvailable below this stops the round (ATANOR_LOAD_MIN_AVAILABLE_GB, 6)")
