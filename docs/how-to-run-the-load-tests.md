@@ -51,13 +51,22 @@ and `/proc/meminfo`. Per step, in this order:
    - the host's swap used (`SwapTotal - SwapFree`) was above 512 MB at any sample (`ATANOR_LOAD_MAX_HOST_SWAP_MB`).
 
    Host swap below that limit, and its growth, are only recorded: idle host processes swap a few tens of MB on their own. Each step file records host swap start, max and growth, generator swap start, max and growth, and the largest swap of each measured container; the report shows the generator swap growth and the largest host swap. `load:swap` applies the same rule (the node A container is removed during that run, so its swap reads as null afterwards).
-4. **Criteria.** The step fails when any criterion of the table above broke.
-5. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
+4. **Node stopped.** A node that breaks at its limit is a result, not a crash of the runner. After the
+   step, and when the generator fails, `load-run` runs `docker inspect` on the node container and compares
+   it with its state at the start of the step. The step FAILS, and the ramp bisects or stops as for any other
+   failure, with the reason `node OOM-killed`, `node exited CODE` (for example 137), `node restarted` (same
+   container started again, or a new one) or `node container gone`. It is judged before the invalid checks
+   (host load, swap, delivery). It saves `NAME.node-state.txt` (the container state) and `NAME.node.log` (the
+   last 200 log lines) next to the step file, before `load:down` removes the container. A node that is fine
+   while a side measurement fails (the store round trip, the awake cells, the descriptors) keeps its step as
+   measured: the value is null and `notes` in the step file says what was not measured.
+5. **Criteria.** The step fails when any criterion of the table above broke.
+6. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
    failure of the node. A saturated node breaks p99 first, so it is a failure, not an invalid step.
    A saturated node that answers too slowly leaves a backlog in the generator. The generator keeps the
    backlog bounded: a request picked up more than `--timeout` (10 s) after it was due, and any request
    still queued or in flight `--timeout + 5` s after the last one was due, is counted as
-   `error: not completed`. That is an error, so the step fails (step 4), as a measured saturation; the
+   `error: not completed`. That is an error, so the step fails (step 5), as a measured saturation; the
    generator still writes its document. INVALID stays for real generator problems: a crash, no file
    descriptors, CPU or swap.
 

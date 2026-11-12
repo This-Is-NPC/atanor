@@ -21,6 +21,7 @@ After the first failing step the ramp refines between the last good value and th
 bisections), then repeats the best good step once to confirm it. Environment: ATANOR_LOAD_* give defaults.
 """
 import argparse
+import http.client
 import json
 import math
 import os
@@ -34,6 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SCHEMA = "atanor-load-step-1"
 BUCKET = 10
+SIDE_TIMEOUT_S = 30  # a side measurement of a node at its limits may hang
 CLK = os.sysconf("SC_CLK_TCK")
 CORES = os.cpu_count()
 OK_STATUSES = {"200", "201", "message answered", "503 retry-after", "reconnected"}
@@ -128,27 +130,30 @@ def host_sample():
 
 
 def fds(node):
-    """(open file descriptors, limit) of the node's BEAM, or None."""
+    """(open file descriptors, limit) of the node's BEAM, or None (also when the node cannot be reached)."""
     script = 'p=$(pidof beam.smp) || exit 1; ls /proc/$p/fd | wc -l; grep "open files" /proc/$p/limits'
-    out = subprocess.run(["docker", "exec", node, "sh", "-c", script], capture_output=True, text=True)
-    lines = out.stdout.split("\n")
-    if out.returncode or len(lines) < 2:
+    try:
+        out = subprocess.run(["docker", "exec", node, "sh", "-c", script], capture_output=True, text=True, timeout=SIDE_TIMEOUT_S)
+        lines = out.stdout.split("\n")
+        if out.returncode or len(lines) < 2:
+            return None
+        return int(lines[0]), int(lines[1].split()[3])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         return None
-    return int(lines[0]), int(lines[1].split()[3])
 
 
 def s3_counters(store_ip):
     """(trips, bytes) the store has served, from its Prometheus endpoint; None when it does not answer."""
     try:
         text = urllib.request.urlopen(f"http://{store_ip}:9327/metrics", timeout=3).read().decode()
-    except OSError:
+        trips = traffic = 0.0
+        for line in text.splitlines():
+            if line.startswith("SeaweedFS_s3_request_seconds_count"):
+                trips += float(line.rsplit(" ", 1)[1])
+            elif line.startswith(("SeaweedFS_s3_bucket_traffic_received_bytes_total", "SeaweedFS_s3_bucket_traffic_sent_bytes_total")):
+                traffic += float(line.rsplit(" ", 1)[1])
+    except (OSError, http.client.HTTPException, ValueError):
         return None
-    trips = traffic = 0.0
-    for line in text.splitlines():
-        if line.startswith("SeaweedFS_s3_request_seconds_count"):
-            trips += float(line.rsplit(" ", 1)[1])
-        elif line.startswith(("SeaweedFS_s3_bucket_traffic_received_bytes_total", "SeaweedFS_s3_bucket_traffic_sent_bytes_total")):
-            traffic += float(line.rsplit(" ", 1)[1])
     return trips, traffic
 
 
@@ -156,12 +161,74 @@ def cells_awake(info):
     try:
         request = urllib.request.Request(info["admin"] + "/cells", headers={"authorization": "Bearer " + read(f"{ROOT}/cluster/secrets/admin_token").strip()})
         return json.load(urllib.request.urlopen(request, timeout=5)).get("total")
-    except (OSError, ValueError):
+    except (OSError, http.client.HTTPException, ValueError, AttributeError):
         return None
 
 
 def load_env(*args):
     return subprocess.run([f"{HERE}/load-env", *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def side_env(*args):
+    """load_env for a side measurement: its output, or None when it fails (a limit of the node is a result, not a crash)."""
+    try:
+        return subprocess.run([f"{HERE}/load-env", *args], check=True, capture_output=True, text=True, timeout=SIDE_TIMEOUT_S).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def store_rtt():
+    """Round trip from the node to the store in ms; None when it cannot be measured."""
+    try:
+        return float(side_env("rtt"))
+    except (TypeError, ValueError):
+        return None
+
+
+def node_state(node):
+    """What `docker inspect` says about the node container; {"gone": True} when it no longer exists, None when unknown."""
+    try:
+        out = subprocess.run(["docker", "inspect", node], capture_output=True, text=True, timeout=SIDE_TIMEOUT_S)
+        if out.returncode and "No such" in out.stderr:
+            return {"gone": True}
+        document = json.loads(out.stdout)[0]
+        state = document["State"]
+        return {"id": document["Id"], "running": state["Running"], "oom_killed": state["OOMKilled"], "exit_code": state["ExitCode"],
+                "started_at": state["StartedAt"], "restarts": document.get("RestartCount", 0), "inspect": document}
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError, TypeError):
+        return None
+
+
+def node_death(before, after):
+    """Why the node stopped during a step (it is a result of the step, not a crash of the runner), or None."""
+    if not after:
+        return None
+    if after.get("gone"):
+        return "node container gone"
+    if after["oom_killed"]:
+        return "node OOM-killed"
+    if not after["running"]:
+        return f"node exited {after['exit_code']}"
+    if before and not before.get("gone") and (after["id"] != before["id"] or after["started_at"] != before["started_at"] or after["restarts"] > before["restarts"]):
+        return "node restarted"
+    return None
+
+
+def save_node_diagnostics(base, node, state):
+    """The node's inspect state and the last 200 log lines, next to the step file; the logs are gone after load:down."""
+    files = []
+    try:
+        shown = state.get("inspect", {}).get("State", state)
+        with open(f"{base}.node-state.txt", "w") as file:
+            json.dump({"state": shown, "restart_count": state.get("restarts")}, file, indent=1)
+        files.append(os.path.basename(f"{base}.node-state.txt"))
+        out = subprocess.run(["docker", "logs", "--tail", "200", node], capture_output=True, text=True, timeout=60)
+        with open(f"{base}.node.log", "w") as file:
+            file.write(out.stdout + out.stderr)
+        files.append(os.path.basename(f"{base}.node.log"))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return files
 
 
 # ---- sampling during a step ----------------------------------------------------------------------------
@@ -194,7 +261,10 @@ class Sampler(threading.Thread):
     def finish(self):
         self.stop_flag.set()
         self.join()
-        self.samples.append(self.take())
+        try:
+            self.samples.append(self.take())
+        except Exception as error:
+            say(f"last sample failed: {error}")
         return self.samples
 
 
@@ -364,11 +434,20 @@ class Round:
             say(f"host busy (net load {record['host']['net_load_mean']} > {a.host_load_max}): repeating the step in {a.host_wait:.0f} s")
             time.sleep(a.host_wait)
         record["attempts"] = attempt + 1
-        path = os.path.join(a.out, f"{self.scenario}_{a.measure}_{self.index:02d}-{phase}-{value}.json")
+        path = self.base(value, phase) + ".json"
         write_json(path, record)
         say(f"{a.measure} {value} {UNITS[a.measure]}: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")
             + f"; planned {record['planned']}, achieved {record['achieved']}, p99 {record['latency_ms']['p99']} ms -> {os.path.basename(path)}")
         return record
+
+    def base(self, value, phase):
+        return os.path.join(self.args.out, f"{self.scenario}_{self.args.measure}_{self.index:02d}-{phase}-{value}")
+
+    def node_stop(self, value, phase, before):
+        """(reason, diagnostics files) when the node died, restarted or was OOM-killed since `before`; else (None, [])."""
+        node, after = self.info["node"]["id"], node_state(self.info["node"]["id"])
+        reason = node_death(before, after)
+        return (reason, save_node_diagnostics(self.base(value, phase), node, after)) if reason else (None, [])
 
     def attempt(self, value, phase):
         a, info = self.args, self.info
@@ -376,6 +455,7 @@ class Round:
         if available < a.min_available_gb:
             return self.record(value, phase, None, None, None, "invalid", "host memory", valid=False,
                                host_override={"available_gb_min": round(available, 1)})
+        node_before = node_state(info["node"]["id"])
         sampler = Sampler(info, a.sample_s)
         s3_before = s3_counters(info["store"]["ip"])
         sampler.samples.append(sampler.take())
@@ -385,19 +465,25 @@ class Round:
             documents = self.run_generators(value, sampler)
         except Exception as error:
             sampler.finish()
+            dead, files = self.node_stop(value, phase, node_before)
+            if dead:  # the node broke under the load: a stop of the node, not of the runner
+                return self.record(value, phase, None, None, None, "fail", f"{dead} (generator: {error})", began=began, diagnostics=files)
             return self.record(value, phase, None, None, None, "invalid", f"generator: {error}", valid=False)
         samples = sampler.finish()
         s3_after = s3_counters(info["store"]["ip"])
-        return self.record(value, phase, merge(documents), samples, (s3_before, s3_after), None, None, began=began, gens=documents, sampler=sampler)
+        dead, files = self.node_stop(value, phase, node_before)
+        return self.record(value, phase, merge(documents), samples, (s3_before, s3_after), None, None, began=began, gens=documents, sampler=sampler,
+                           dead=dead, diagnostics=files)
 
-    def record(self, value, phase, merged, samples, s3, status, reason, valid=True, host_override=None, began=None, gens=None, sampler=None):
+    def record(self, value, phase, merged, samples, s3, status, reason, valid=True, host_override=None, began=None, gens=None, sampler=None,
+               dead=None, diagnostics=()):
         a, info = self.args, self.info
         record = {"schema": SCHEMA, "scenario": self.scenario, "measure": a.measure, "unit": UNITS[a.measure], "phase": phase, "step": self.index,
                   "value": value, "duration_s": a.step_s, "store_latency_ms": info["store_latency_ms"], "command": a.command,
                   "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
                   "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "cells_awake": None, "store_rtt_ms": None,
-                  "valid": valid, "status": status, "stop_reason": reason, "started_at": began}
+                  "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "notes": [], "diagnostics": list(diagnostics)}
         if merged is None:
             return record
         usage = summarize(samples, sampler_cpu(gens))
@@ -408,7 +494,11 @@ class Round:
                       status_503={"with_retry_after": merged["statuses"].get("503 retry-after", 0), "without_retry_after": merged["statuses"].get("503 no retry-after", 0)},
                       limits={"cpus": usage["cpu"]["node_limit_cores"], "memory_mb": usage["memory"]["limit_mb"]},
                       generator={"sent": merged["sent"], "completed": merged["completed"], "lag_p99_ms": round(merged["lag_p99"], 1), "cpu_cores": usage["cpu"]["generator_cores"]},
-                      cells_awake=cells_awake(self.info), store_rtt_ms=float(load_env("rtt") or 0))
+                      cells_awake=None if dead else cells_awake(self.info), store_rtt_ms=None if dead else store_rtt())
+        if record["store_rtt_ms"] is None:
+            record["notes"].append("store rtt not measured" + (": the node stopped" if dead else ""))
+        if record["cells_awake"] is None:
+            record["notes"].append("cells awake not measured")
         before, after = s3
         if before and after:
             requests = max(merged["completed"], 1)
@@ -419,7 +509,7 @@ class Round:
         record["achieved_ratio"] = round(record["achieved"] / merged["planned"], 3) if merged["planned"] else None
         if a.measure != "ws":
             record["achieved_rate"] = round(merged["completed"] / a.step_s, 1)
-        criteria = []
+        criteria = [dead] if dead else []
         p99 = record["latency_ms"]["p99"]
         if a.measure != "ws" and p99 is not None and p99 > a.p99_ms:
             criteria.append(f"p99 {p99} ms > {a.p99_ms:g} ms")
@@ -434,6 +524,8 @@ class Round:
         fd_max, fd_limit = usage["fds"]["max"], usage["fds"]["limit"]
         if a.measure == "ws" and fd_max and fd_limit and fd_max >= a.fd_pct / 100 * fd_limit:
             criteria.append(f"file descriptors {fd_max} of {fd_limit}")
+        if dead:  # before any invalid judgement: a node that stopped is the result
+            return {**record, "status": "fail", "stop_reason": "; ".join(criteria)}
         if usage["host"]["net_load_mean"] is not None and usage["host"]["net_load_mean"] > a.host_load_max:
             return {**record, "valid": False, "status": "invalid", "stop_reason": "host load"}
         swapped = judge_swap(usage, a.max_generator_swap_mb, a.max_host_swap_mb)
@@ -633,4 +725,5 @@ def main():
     say(f"summary: {json.dumps(summary)}")
 
 
-main()
+if __name__ == "__main__":
+    main()
