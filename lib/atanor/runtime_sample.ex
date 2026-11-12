@@ -49,16 +49,17 @@ defmodule Atanor.RuntimeSample do
         do: {pid, Map.new(info)}
   end
 
-  defp top(infos, key) do
+  @doc false
+  def top(infos, key) do
     infos
     |> Enum.sort_by(fn {_pid, info} -> info[key] end, :desc)
-    |> Enum.take(@top_processes)
-    |> Enum.flat_map(fn {pid, info} ->
+    |> Stream.flat_map(fn {pid, info} ->
       case Process.info(pid, [:registered_name, :initial_call, :current_function]) do
         nil -> []
         details -> [describe(pid, info, Map.new(details))]
       end
     end)
+    |> Enum.take(@top_processes)
   end
 
   defp describe(pid, info, details) do
