@@ -73,6 +73,7 @@ defmodule Atanor.Config do
   @memory %{
     limit_bytes: nil,
     awake_fraction: 0.5,
+    wake_fraction: 0.5,
     cgroup_path: "/sys/fs/cgroup/memory.max",
     refuse_fraction: 0.85,
     sample_ms: 100,
@@ -493,6 +494,7 @@ defmodule Atanor.Config do
     alambique_opts!(Keyword.get(opts, :alambique, []))
     memory = memory!(opts[:memory])
     {alambique, awake_source} = awake_budget(Keyword.get(opts, :alambique, []), memory)
+    alambique = wake_budget(alambique, memory)
     disk = disk!(opts[:disk], opts[:data_dir])
     alambique = Atanor.Disk.alambique_options(alambique, disk.budget, disk.sample_ms)
     user_feed = Keyword.get(Keyword.get(opts, :alambique, []), :feed, [])
@@ -601,6 +603,11 @@ defmodule Atanor.Config do
     )
 
     check!(
+      is_number(memory.wake_fraction) and memory.wake_fraction > 0 and memory.wake_fraction <= 1,
+      ":memory :wake_fraction must be a number above 0 and at most 1"
+    )
+
+    check!(
       is_nil(memory.refuse_fraction) or
         (is_number(memory.refuse_fraction) and memory.refuse_fraction > Atanor.Admission.hysteresis() and
            memory.refuse_fraction <= 1),
@@ -663,6 +670,28 @@ defmodule Atanor.Config do
       {_, source} ->
         {alambique, source}
     end
+  end
+
+  # The wakes in flight are bounded by the headroom above the refuse mark (`Atanor.Memory.wake_limits/1`);
+  # each option the operator gave stays.
+  defp wake_budget(alambique, memory) do
+    case Atanor.Memory.wake_budget(memory) do
+      nil ->
+        alambique
+
+      budget ->
+        limits = Atanor.Memory.wake_limits(budget)
+
+        alambique
+        |> put_missing(:awake, :max_wakes, limits.max_wakes)
+        |> put_missing(:restore, :fetch_concurrency, limits.fetch_concurrency)
+        |> put_missing(:restore, :prefetch_bytes, limits.prefetch_bytes)
+    end
+  end
+
+  defp put_missing(alambique, group, key, value) do
+    opts = Keyword.get(alambique, group, [])
+    Keyword.put(alambique, group, Keyword.put_new(opts, key, value))
   end
 
   defp storage!(opts, prefix) do

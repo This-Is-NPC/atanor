@@ -56,7 +56,7 @@ defmodule Atanor.MemoryTest do
   test "an explicit awake max_bytes wins, and nil keeps no ceiling", %{tmp_dir: dir} do
     memory = cgroup(dir, "1000\n")
     config = build(memory, awake: [max_bytes: 77, max_cells: 5])
-    assert config.alambique_opts[:awake] == [max_bytes: 77, max_cells: 5]
+    assert Keyword.take(config.alambique_opts[:awake], [:max_bytes, :max_cells]) == [max_bytes: 77, max_cells: 5]
     assert config.memory.awake_source == :option
 
     assert max_bytes(build(memory, awake: [max_bytes: nil])) == nil
@@ -68,6 +68,44 @@ defmodule Atanor.MemoryTest do
     assert max_bytes(config) == 500
   end
 
+  defp wakes(config) do
+    {config.alambique_opts[:awake][:max_wakes], config.alambique_opts[:restore][:fetch_concurrency],
+     config.alambique_opts[:restore][:prefetch_bytes]}
+  end
+
+  @mib 1_048_576
+
+  test "the wakes in flight are derived from the headroom above the refuse mark", %{tmp_dir: dir} do
+    # 15% of the limit is headroom, half of it is for wakes: 38.4 MiB on 512 MiB, 153.6 MiB on 2 GiB.
+    assert wakes(build(cgroup(dir, "#{512 * @mib}\n"))) == {11, 1, 2_516_582}
+    assert wakes(build(cgroup(dir, "#{2048 * @mib}\n"))) == {11, 4, 10_066_329}
+
+    # The limit may be the option's, and the refuse mark and the share move the headroom.
+    assert wakes(build(limit_bytes: 2048 * @mib)) == {11, 4, 10_066_329}
+    assert {w, _, _} = wakes(build(limit_bytes: 2048 * @mib, refuse_fraction: 0.5))
+    assert w == 10
+    assert {_, _, p} = wakes(build(limit_bytes: 2048 * @mib, refuse_fraction: 0.5))
+    assert p == 33_554_432
+    assert {_, _, p} = wakes(build(limit_bytes: 2048 * @mib, wake_fraction: 1))
+    assert p == 20_132_659
+  end
+
+  test "an operator's wake limits win one by one", %{tmp_dir: dir} do
+    memory = cgroup(dir, "#{512 * @mib}\n")
+    assert wakes(build(memory, awake: [max_wakes: 100])) == {100, 1, 2_516_582}
+    assert wakes(build(memory, restore: [fetch_concurrency: 8])) == {11, 8, 2_516_582}
+    assert wakes(build(memory, restore: [prefetch_bytes: 1_000])) == {11, 1, 1_000}
+
+    assert wakes(build(memory, awake: [max_wakes: 256], restore: [fetch_concurrency: 16, prefetch_bytes: 67_108_864])) ==
+             {256, 16, 67_108_864}
+  end
+
+  test "a node without a limit keeps Alambique's wake limits", %{tmp_dir: dir} do
+    config = build(cgroup(dir, "max\n"))
+    assert wakes(config) == {nil, nil, nil}
+    refute Keyword.has_key?(config.alambique_opts, :restore)
+  end
+
   test "the defaults read the cgroup of the machine" do
     config = Config.build(name: :memory_defaults, store: {AlambiqueTestkit.MemoryStore, %{}}, data_dir: "/tmp", port: 0)
 
@@ -75,6 +113,7 @@ defmodule Atanor.MemoryTest do
              %{
                limit_bytes: nil,
                awake_fraction: 0.5,
+               wake_fraction: 0.5,
                cgroup_path: "/sys/fs/cgroup/memory.max",
                refuse_fraction: 0.85,
                sample_ms: 100,
@@ -90,6 +129,9 @@ defmodule Atanor.MemoryTest do
           [awake_fraction: 0],
           [awake_fraction: 1.5],
           [awake_fraction: "half"],
+          [wake_fraction: 0],
+          [wake_fraction: 1.5],
+          [wake_fraction: "most"],
           [cgroup_path: nil],
           [refuse_fraction: 0.05],
           [refuse_fraction: 1.5],
