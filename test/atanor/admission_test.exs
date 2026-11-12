@@ -60,7 +60,7 @@ defmodule Atanor.AdmissionTest do
 
       refute_receive {:in_handler, _}, 200
       assert in_flight(node) == 20
-      assert Admission.stats(node.name).refused == %{memory: 0, in_flight: 180}
+      assert Admission.stats(node.name).refused == %{memory: 0, disk: 0, in_flight: 180}
 
       Enum.each(handlers, &send(&1, :go))
       for _ <- 1..20, do: assert_receive({:response, {200, _, _}}, 5_000)

@@ -21,6 +21,7 @@ the `cell` (`{namespace, key}`), so the dashboards of the three questions
 | Limits hit and WASM instantiation | `[:atanor, :wasm, :limit]`, `[:atanor, :wasm, :invoke]`, `[:atanor, :wasm, :load]` |
 | Cells hibernated to stay under `awake: [max_bytes:]` (Alambique's) | `[:alambique, :admission, :evict]` (`bytes`: memory of the awake cells after it; `cell`, `max_bytes`); documented in Alambique's `docs/telemetry.md` |
 | Reads from replicas (Alambique's, design §19) | `[:alambique, :replica, :read]` (`source`: `:replica` or `:owner`, and `reason` for the owner), `:build`, `:refresh`, `:stop`; documented in Alambique's `docs/telemetry.md` |
+| Disk use of `data_dir` against its budget | `[:atanor, :disk, :sample]`, `[:atanor, :disk, :reclaim]` |
 | Ephemeral channels | `[:atanor, :channel, :publish]`, `[:atanor, :channel, :rejected]`, `[:atanor, :channel, :dropped]` |
 | TCP, TLS, WebSockets, alarms | `[:atanor, :tcp, ...]`, `[:atanor, :tls, ...]`, `[:atanor, :ws, ...]`, `[:atanor, :alarm, ...]` |
 | Jobs and bulk operations | `[:atanor, :job, ...]`, `[:atanor, :sweep, ...]` |
@@ -45,7 +46,7 @@ the owner, with `forwarded: true`.
 | `[:atanor, :call]` | `duration` (the callback, without routing and without the network) | `worker`, `deployment`, `cell` (`{namespace, key}`, or `nil` when the work has no routing key), `kind`, `node` (the node that ran it), `instance`, `forwarded` (it came from another node), `release` (the node's release id), `result`: `:ok` or `:error`, `reason` (with `:error`: `:crashed`, `:bad_return`, `:bad_response`, `:overloaded`, `{:limit, :timeout \| :memory \| :cpu}`, ...), `status` (HTTP kinds, when a response was sent) |
 | `[:atanor, :forward]` | `duration` (the whole round trip) | `worker`, `deployment`, `cell`, `target` (the node), `result`: `:ok`, `:moved` (it no longer owns the cell), `:rejected` (it cannot run the deployment), `:lost` (the connection failed before the callback started) or `:unknown_outcome` (it started, then the connection failed or the call timed out) |
 | `[:atanor, :cells, :migrate]` | `count` (cells migrated), `errors` (cells whose migration failed) | `namespace`, `node`. Emitted by the node that applied a worker with new or more migrations for the namespace, once it finished migrating its awake cells of it (design §4.1) |
-| `[:atanor, :http, :reject]` | `count` (1) | `reason`: `:no_route`, `:no_handler`, `:payload_too_large`, `:bad_request`, `:bad_host` or `:bad_path` (the last two before any route is looked up), or `:memory` / `:in_flight` (a 503 `overloaded` from admission control, before anything else; design §7.1), `status`, `host`, `worker` (`nil` when no route matched) |
+| `[:atanor, :http, :reject]` | `count` (1) | `reason`: `:no_route`, `:no_handler`, `:payload_too_large`, `:bad_request`, `:bad_host` or `:bad_path` (the last two before any route is looked up), or `:memory` / `:disk` / `:in_flight` (a 503 `overloaded` from admission control, before anything else; design §7.1), `status`, `host`, `worker` (`nil` when no route matched) |
 
 | `[:atanor, :auth, :reject]` | `count` (1) | `reason` (an atom: `:missing`, `:bad_request`, `:malformed`, `:algorithm`, `:type`, `:no_key`, `:signature`, `:claims`, `:issuer`, `:audience`, `:no_expiry`, `:expired`, `:not_yet_valid`, `:issued_in_future`, `:insufficient_scope`, `:keys_unavailable`), `status` (400, 401, 403 or 503), `host`, `worker`. A request that failed the `auth:` rule of its route and did not reach the worker ([how to protect a route](how-to-protect-a-route-with-oidc.md)). Never carries the token or a claim |
 | `[:atanor, :auth, :fetch]` | `duration` | `issuer`, `kind` (`:discovery` or `:jwks`), `result` (`:ok` or `:error`), `reason` (with `:error`: `:unreachable`, `{:status, code}`, `:invalid_json`, `:too_large`). One fetch of the OIDC discovery document or the JWKS, at most one JWKS fetch per `oidc.min_refresh_ms` per issuer |
@@ -121,6 +122,16 @@ a warning.
 Alert on `:down` and `:link_broken`; a `:suspect` that is followed by `:alive`
 within seconds is a late heartbeat, and many of them say the settings are too
 tight for the network.
+
+## Disk events
+
+Emitted by the disk monitor of a node that has a disk budget (design §4.4,
+[configuration](configuration.md#cells-limits-memory-and-store-requests)).
+
+| Event | Measurements | Metadata |
+| --- | --- | --- |
+| `[:atanor, :disk, :sample]` | `used_bytes` (the files under `data_dir`), `budget_bytes` | `instance`, `level`: `:ok`, `:reclaim` (the use is at `evict_fraction` of the budget or above, until 5 points below) or `:refuse` (at `refuse_fraction`: the ingress answers 503 `overloaded`, counted by `[:atanor, :http, :reject]` with reason `:disk`). Every `disk: [sample_ms:]`, every second or less while the level is not `:ok` |
+| `[:atanor, :disk, :reclaim]` | `candidates` (idle cells chosen for their `-wal` size), `hibernated` (the ones that went to sleep) | `instance`. One per sample at `:reclaim` or `:refuse` |
 
 ## WASM events
 

@@ -310,6 +310,18 @@ defmodule Atanor do
       resumes 5 points below; `sample_ms` (100) is the sampling period, and
       `current_path` and `stat_path` (`/sys/fs/cgroup/memory.current` and
       `memory.stat`) are the files it reads.
+    * `:disk` - the disk budget of `data_dir` (design §4.4): `max_bytes` (default
+      `nil`: `fraction`, 0.8, of the size of the file system that holds
+      `data_dir`, read with `df -Pk`; the node logs it and its source at start, and
+      has no budget when the size cannot be read). Unless you give them, it
+      derives `alambique: [wal: [checkpoint_bytes:]]` (`budget / max_cells / 2`
+      between 1 MiB and 64 MiB) and `[local_cache: [max_bytes:, interval_ms:]]`.
+      Every `sample_ms` (5 000) the node measures `data_dir`; from `evict_fraction`
+      (0.7) of the budget it hibernates idle cells with the biggest WALs, and from
+      `refuse_fraction` (0.95; `nil` turns it off) the ingress refuses with 503
+      `overloaded`, resuming 5 points below. `probe` is a function of a path that
+      returns `{:ok, file_system_bytes}` or `:error`, for tests. A write that finds
+      the disk full is a 503 `overloaded`.
     * `:max_body_bytes` - largest request body the ingress reads for
       `handle_request/2` workers, 413 above it (default 1,000,000).
     * `:alambique` - extra options for the Alambique instance, passed through

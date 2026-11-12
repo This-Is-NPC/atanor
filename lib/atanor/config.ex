@@ -80,6 +80,18 @@ defmodule Atanor.Config do
     stat_path: "/sys/fs/cgroup/memory.stat"
   }
 
+  # The disk budget of `data_dir` (`Atanor.Disk`, design §4.4): `max_bytes` nil derives it as `fraction` of
+  # the file system, read with `probe` (path -> {:ok, bytes} | :error). The monitor hibernates idle cells at
+  # `evict_fraction` of the budget and the ingress refuses at `refuse_fraction` (`Atanor.Admission`).
+  @disk %{
+    max_bytes: nil,
+    fraction: 0.8,
+    evict_fraction: 0.7,
+    refuse_fraction: 0.95,
+    sample_ms: 5_000,
+    probe: &Atanor.Disk.filesystem_bytes/1
+  }
+
   # The prefix of Atanor's own tables in a cell (`Atanor.Jobs.Schema`).
   @internal_prefix "_atanor_"
 
@@ -333,6 +345,7 @@ defmodule Atanor.Config do
     rehearsal: @rehearsal,
     poll_interval_ms: 5_000,
     memory: Map.put(@memory, :awake_source, :none),
+    disk: Map.merge(@disk, %{budget: nil, budget_source: :none}),
     alambique_opts: []
   ]
 
@@ -385,6 +398,7 @@ defmodule Atanor.Config do
     :poll_interval_ms,
     :max_body_bytes,
     :memory,
+    :disk,
     :alambique
   ]
   @prefix ~r/\A[a-z0-9_-]+(\/[a-z0-9_-]+)*\z/
@@ -479,6 +493,8 @@ defmodule Atanor.Config do
     alambique_opts!(Keyword.get(opts, :alambique, []))
     memory = memory!(opts[:memory])
     {alambique, awake_source} = awake_budget(Keyword.get(opts, :alambique, []), memory)
+    disk = disk!(opts[:disk], opts[:data_dir])
+    alambique = Atanor.Disk.alambique_options(alambique, disk.budget, disk.sample_ms)
     user_feed = Keyword.get(Keyword.get(opts, :alambique, []), :feed, [])
 
     check!(
@@ -550,6 +566,7 @@ defmodule Atanor.Config do
       channels: limits!(opts[:channels], @channels, :channels),
       poll_interval_ms: poll_interval!(Keyword.get(opts, :poll_interval_ms, 5_000)),
       memory: Map.put(memory, :awake_source, awake_source),
+      disk: disk,
       alambique_opts:
         Keyword.merge(
           alambique,
@@ -597,6 +614,42 @@ defmodule Atanor.Config do
     end
 
     memory
+  end
+
+  defp disk!(opts, data_dir) do
+    opts = opts || []
+    check!(Keyword.keyword?(opts), ":disk must be a keyword list")
+    check!(Keyword.keys(opts) -- Map.keys(@disk) == [], ":disk has only #{inspect(Map.keys(@disk))}")
+    disk = Map.merge(@disk, Map.new(opts))
+    gap = Atanor.Admission.hysteresis()
+
+    check!(
+      is_nil(disk.max_bytes) or positive_integer?(disk.max_bytes),
+      ":disk :max_bytes must be nil or a positive integer"
+    )
+
+    check!(
+      is_number(disk.fraction) and disk.fraction > 0 and disk.fraction <= 1,
+      ":disk :fraction must be a number above 0 and at most 1"
+    )
+
+    check!(
+      is_number(disk.evict_fraction) and disk.evict_fraction > gap and disk.evict_fraction <= 1,
+      ":disk :evict_fraction must be a number above #{gap} and at most 1"
+    )
+
+    check!(
+      is_nil(disk.refuse_fraction) or
+        (is_number(disk.refuse_fraction) and disk.refuse_fraction > disk.evict_fraction and
+           disk.refuse_fraction <= 1),
+      ":disk :refuse_fraction must be nil or a number above :evict_fraction and at most 1"
+    )
+
+    check!(positive_integer?(disk.sample_ms), ":disk :sample_ms must be a positive integer")
+    check!(is_function(disk.probe, 1), ":disk :probe must be a function of one argument")
+
+    {budget, source} = Atanor.Disk.budget(disk, data_dir)
+    Map.merge(disk, %{budget: budget, budget_source: source})
   end
 
   # `awake: [max_bytes:]` is the operator's when given (nil: no ceiling); else it follows the memory limit.

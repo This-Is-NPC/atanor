@@ -3,11 +3,13 @@ defmodule Atanor.Admission do
   Admission control of the HTTP ingress (design §7.1): a node refuses with 503
   `overloaded` before it dies of memory.
 
-  Two gates, checked first in `Atanor.HTTP.call/2`:
+  Three gates, checked first in `Atanor.HTTP.call/2`:
 
     * the memory gate refuses while the working set of the cgroup (`memory.current` minus the
       `inactive_file` of `memory.stat`, so reclaimable page cache never counts) is at least
       `memory: [refuse_fraction:]` of the limit, and resumes below that fraction minus 5 points;
+    * the disk gate refuses while `data_dir` holds at least `disk: [refuse_fraction:]` of the disk budget
+      (`Atanor.Disk` samples it and calls `disk_sample/2`), and resumes 5 points below;
     * the in-flight gate refuses at once when `http: [max_in_flight:]` requests are being served.
 
   `step/2` is the pure model (state and event to decision), which the property tests check. The node runs
@@ -17,7 +19,7 @@ defmodule Atanor.Admission do
   A request is an ETS row keyed by its process: the in-flight count is the table size. A handler that is
   killed does not run `after`, so the sampler also drops the rows of dead processes on every tick.
 
-  A sample older than 10 sample periods is ignored (the gate fails open). A dead sampler restarts the
+  A sample older than 10 sample periods is ignored (the gates fail open). A dead sampler restarts the
   node (the supervisor is `one_for_all`), and a live one that stalls under CPU starvation must not refuse
   forever on a stale reading; the in-flight gate still bounds the node then.
   """
@@ -25,7 +27,7 @@ defmodule Atanor.Admission do
 
   require Logger
 
-  alias Atanor.Memory
+  alias Atanor.{Disk, Memory}
 
   @hysteresis 0.05
   @stale_periods 10
@@ -35,6 +37,10 @@ defmodule Atanor.Admission do
   @working_set 3
   @refusing 4
   @sampled_at 5
+  @refused_disk 6
+  @disk_used 7
+  @disk_refusing 8
+  @disk_sampled_at 9
 
   @doc "The gap, as a fraction of the limit, between the refuse and the resume marks."
   def hysteresis, do: @hysteresis
@@ -47,14 +53,27 @@ defmodule Atanor.Admission do
           resume_at: number | nil,
           in_flight: non_neg_integer,
           refusing: boolean,
-          working_set: non_neg_integer
+          working_set: non_neg_integer,
+          disk_refuse_at: number | nil,
+          disk_resume_at: number | nil,
+          disk_refusing: boolean,
+          disk_used: non_neg_integer
         }
-  @type event :: {:sample, non_neg_integer} | :enter | :leave
-  @type decision :: :ok | :admit | {:refuse, :memory | :in_flight}
+  @type event :: {:sample, non_neg_integer} | {:disk, non_neg_integer} | :enter | :leave
+  @type decision :: :ok | :admit | {:refuse, :memory | :disk | :in_flight}
 
-  @doc "The state of a node. `limit` is the memory limit in bytes, `nil` when the memory gate is off."
-  @spec new(pos_integer | nil, number | nil, pos_integer) :: state
-  def new(limit, refuse_fraction, max_in_flight) do
+  @doc """
+  The state of a node. `limit` is the memory limit in bytes, `nil` when the memory gate is off. `disk` is
+  `{budget_bytes, refuse_fraction}` of the disk gate, `nil` when it is off.
+  """
+  @spec new(pos_integer | nil, number | nil, pos_integer, {pos_integer, number} | nil) :: state
+  def new(limit, refuse_fraction, max_in_flight, disk \\ nil) do
+    {disk_refuse_at, disk_resume_at} =
+      case disk do
+        {budget, fraction} -> {budget * fraction, budget * (fraction - @hysteresis)}
+        nil -> {nil, nil}
+      end
+
     {refuse_at, resume_at} =
       if limit && refuse_fraction,
         do: {limit * refuse_fraction, limit * (refuse_fraction - @hysteresis)},
@@ -66,12 +85,23 @@ defmodule Atanor.Admission do
       resume_at: resume_at,
       in_flight: 0,
       refusing: false,
-      working_set: 0
+      working_set: 0,
+      disk_refuse_at: disk_refuse_at,
+      disk_resume_at: disk_resume_at,
+      disk_refusing: false,
+      disk_used: 0
     }
   end
 
-  @doc "One event: a sample of the working set, a request that enters, or one that leaves."
+  @doc "One event: a sample of the working set or of the disk use, a request that enters, or one that leaves."
   @spec step(state, event) :: {decision, state}
+  def step(%{disk_refuse_at: nil} = state, {:disk, bytes}), do: {:ok, %{state | disk_used: bytes}}
+
+  def step(state, {:disk, bytes}) do
+    refusing = Disk.hold(state.disk_refusing, bytes, state.disk_refuse_at, state.disk_resume_at)
+    {:ok, %{state | disk_used: bytes, disk_refusing: refusing}}
+  end
+
   def step(%{refuse_at: nil} = state, {:sample, bytes}), do: {:ok, %{state | working_set: bytes}}
 
   def step(state, {:sample, bytes}) do
@@ -86,6 +116,7 @@ defmodule Atanor.Admission do
   end
 
   def step(%{refusing: true} = state, :enter), do: {{:refuse, :memory}, state}
+  def step(%{disk_refusing: true} = state, :enter), do: {{:refuse, :disk}, state}
 
   def step(%{in_flight: n, max_in_flight: max} = state, :enter) when n >= max, do: {{:refuse, :in_flight}, state}
 
@@ -96,24 +127,34 @@ defmodule Atanor.Admission do
   ## Ingress
 
   @doc false
-  @spec enter(atom) :: :ok | {:refuse, :memory | :in_flight}
+  @spec enter(atom) :: :ok | {:refuse, :memory | :disk | :in_flight}
   def enter(name) do
     handle = handle(name)
 
-    if refusing?(handle) do
-      :atomics.add(handle.counters, @refused_memory, 1)
-      {:refuse, :memory}
-    else
+    cond do
+      refusing?(handle) ->
+        :atomics.add(handle.counters, @refused_memory, 1)
+        {:refuse, :memory}
+
+      disk_refusing?(handle) ->
+        :atomics.add(handle.counters, @refused_disk, 1)
+        {:refuse, :disk}
+
       # A row that exists is the same process entering again: it holds one slot.
-      if :ets.insert_new(handle.table, {self()}) and :ets.info(handle.table, :size) > handle.max_in_flight do
+      :ets.insert_new(handle.table, {self()}) and :ets.info(handle.table, :size) > handle.max_in_flight ->
         :ets.delete(handle.table, self())
         :atomics.add(handle.counters, @refused_in_flight, 1)
         {:refuse, :in_flight}
-      else
+
+      true ->
         :ok
-      end
     end
   end
+
+  @doc false
+  # The disk use of `data_dir`, from `Atanor.Disk`.
+  @spec disk_sample(atom, non_neg_integer) :: :ok
+  def disk_sample(name, bytes), do: GenServer.cast(handle(name).pid, {:disk, bytes})
 
   @doc false
   @spec leave(atom) :: :ok
@@ -129,12 +170,19 @@ defmodule Atanor.Admission do
       System.monotonic_time(:millisecond) - :atomics.get(counters, @sampled_at) <= stale_ms
   end
 
+  defp disk_refusing?(%{disk: false}), do: false
+
+  defp disk_refusing?(%{counters: counters, disk_stale_ms: stale_ms}) do
+    :atomics.get(counters, @disk_refusing) == 1 and
+      System.monotonic_time(:millisecond) - :atomics.get(counters, @disk_sampled_at) <= stale_ms
+  end
+
   defp handle(name), do: :persistent_term.get({__MODULE__, name})
 
   @doc """
   What the admission of a running node has done: the requests in flight now, the refusals by reason, the
-  last working set and the limit it is judged against (`nil` when the memory gate is off), and whether the
-  gate is refusing now.
+  last working set and the limit it is judged against (`nil` when the memory gate is off), the disk use and
+  budget (`nil` when the disk gate is off), and whether the gates are refusing now.
   """
   @spec stats(atom) :: map
   def stats(name) do
@@ -144,11 +192,18 @@ defmodule Atanor.Admission do
     %{
       in_flight: :ets.info(handle.table, :size),
       max_in_flight: handle.max_in_flight,
-      refused: %{memory: :atomics.get(counters, @refused_memory), in_flight: :atomics.get(counters, @refused_in_flight)},
+      refused: %{
+        memory: :atomics.get(counters, @refused_memory),
+        disk: :atomics.get(counters, @refused_disk),
+        in_flight: :atomics.get(counters, @refused_in_flight)
+      },
       working_set_bytes: if(handle.memory, do: :atomics.get(counters, @working_set)),
       limit_bytes: handle.limit,
       refuse_at_bytes: handle.memory && trunc(handle.model.refuse_at),
-      refusing: refusing?(handle)
+      refusing: refusing?(handle),
+      disk_used_bytes: if(handle.disk, do: :atomics.get(counters, @disk_used)),
+      disk_budget_bytes: handle.disk_budget,
+      disk_refusing: disk_refusing?(handle)
     }
   end
 
@@ -163,16 +218,22 @@ defmodule Atanor.Admission do
     {limit, source} = Memory.limit(config.memory)
     fraction = config.memory.refuse_fraction
     memory? = not is_nil(limit) and not is_nil(fraction)
-    model = new(limit, fraction, config.http.max_in_flight)
+    disk = config.disk
+    disk? = not is_nil(disk.budget) and not is_nil(disk.refuse_fraction)
+    model = new(limit, fraction, config.http.max_in_flight, if(disk?, do: {disk.budget, disk.refuse_fraction}))
 
     handle = %{
+      pid: self(),
       table: :ets.new(__MODULE__, [:set, :public, write_concurrency: true]),
-      counters: :atomics.new(5, []),
+      counters: :atomics.new(9, []),
       max_in_flight: config.http.max_in_flight,
       memory: memory?,
       limit: limit,
       model: model,
-      stale_ms: @stale_periods * config.memory.sample_ms
+      stale_ms: @stale_periods * config.memory.sample_ms,
+      disk: disk?,
+      disk_budget: disk.budget,
+      disk_stale_ms: @stale_periods * disk.sample_ms
     }
 
     :persistent_term.put({__MODULE__, config.name}, handle)
@@ -190,6 +251,15 @@ defmodule Atanor.Admission do
   @impl true
   def handle_info(:tick, state), do: {:noreply, tick(state, true)}
   def handle_info(_message, state), do: {:noreply, state}
+
+  @impl true
+  def handle_cast({:disk, bytes}, %{handle: %{counters: counters}} = state) do
+    {:ok, model} = step(state.model, {:disk, bytes})
+    :atomics.put(counters, @disk_used, bytes)
+    :atomics.put(counters, @disk_refusing, if(model.disk_refusing, do: 1, else: 0))
+    :atomics.put(counters, @disk_sampled_at, System.monotonic_time(:millisecond))
+    {:noreply, %{state | model: model}}
+  end
 
   @impl true
   def terminate(_reason, %{name: name}), do: :persistent_term.erase({__MODULE__, name})
