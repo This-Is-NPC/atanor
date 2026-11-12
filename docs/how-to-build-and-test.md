@@ -71,6 +71,7 @@ mise run bench:detector  # time to detect a lost node and to serve its cells aga
 mise run lab:up          # cluster lab: three KVM VMs and a SeaweedFS VM (needs libvirt; see the lab guide)
 mise run lab:test        # every lab scenario, about 90 minutes; results in lab/results/
 mise run lab:down        # remove the lab VMs, disks and network
+mise run load:up         # load-test scenario in containers; then load:http-native, load:ws, ... (how-to-run-the-load-tests.md)
 mise run dev             # single local node
 mise run test:seaweedfs  # tests tagged seaweedfs, against a disposable SeaweedFS
 mise run seaweedfs:down  # remove the SeaweedFS container

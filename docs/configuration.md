@@ -163,7 +163,8 @@ positive integers in bytes; see
 are not limited by them.
 
 The node settings of the WASM engine (threads, calls in flight, queue, CPU limit) are in the
-`:atanor, :wasm` application environment, documented in `Atanor.Wasm`. The pooling allocator reserves address space for
+`:atanor, :wasm` application environment, documented in `Atanor.Wasm`. `threads` defaults to the
+logical processors, at most the CPU quota of the container (cgroup `cpu.max`, rounded up). The pooling allocator reserves address space for
 `max_calls + max_waiting + max_nested_calls` calls (about 2.8 TiB for 12 threads at the defaults).
 `max_waiting` (default 2 per thread) is how many guests that wait (a sleep, a host call, an outbound response, a
 worker they called) stop counting against `max_calls` and `worker_calls` (design §14.2). On a host with `ulimit -v`,
