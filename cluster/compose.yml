@@ -39,10 +39,13 @@ services:
     entrypoint:
       - /bin/sh
       - -c
-      - >-
-        curl -sS -f -o /dev/null -w 'bucket ${ATANOR_CLUSTER_BUCKET:-atanor}: HTTP %{http_code}\n'
-        --aws-sigv4 aws:amz:us-east-1:s3 --user "$$(cat /run/secrets/s3_access_key):$$(cat /run/secrets/s3_secret_key)"
-        -X PUT http://store:8333/${ATANOR_CLUSTER_BUCKET:-atanor}
+      # A rerun finds the bucket: the store answers 409, which counts as created.
+      - |
+        code=$$(curl -sS -o /dev/null -w '%{http_code}' \
+          --aws-sigv4 aws:amz:us-east-1:s3 --user "$$(cat /run/secrets/s3_access_key):$$(cat /run/secrets/s3_secret_key)" \
+          -X PUT http://store:8333/${ATANOR_CLUSTER_BUCKET:-atanor}) || exit
+        echo "bucket ${ATANOR_CLUSTER_BUCKET:-atanor}: HTTP $$code"
+        case $$code in 2??|409) ;; *) exit 1 ;; esac
     secrets: [s3_access_key, s3_secret_key]
     depends_on:
       store: {condition: service_healthy}

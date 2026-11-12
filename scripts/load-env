@@ -31,18 +31,25 @@ store_rtt() {
   printf '%s\n' "${times[@]}" | sort -n | sed -n "$(((${#times[@]} + 1) / 2))p" | awk '{printf "%.1f", $1 * 1000}'
 }
 
+# Run `tc qdisc ARGS` in the store container's network namespace. A failure (no qdisc to delete) is
+# ignored: the round-trip check in latency() judges the result.
+tc_store() {
+  local store=$1; shift
+  docker run --rm --name "$TC" --net "container:$store" --cap-add NET_ADMIN --user root --entrypoint tc \
+    "${ATANOR_CLUSTER_IMAGE:-atanor-cluster-node:local}" qdisc "$@" >/dev/null 2>&1 || true
+}
+
 # netem on the store's side of its network: every answer it sends waits LATENCY ms, so each trip to
 # the store costs that much more. The qdisc lives in the store container's network namespace;
 # the node image brings tc, and a throwaway container joins that namespace with NET_ADMIN.
 latency() {
-  local store node qdisc before after
+  local store node before after
   store=$(cluster_container store) node=$(node_id)
   docker rm -f "$TC" >/dev/null 2>&1 || true
-  if [[ $LOAD_STORE_LATENCY_MS -gt 0 ]]; then qdisc=(replace dev eth0 root netem delay "${LOAD_STORE_LATENCY_MS}ms")
-  else qdisc=(del dev eth0 root); fi
+  # Clear the qdisc of an earlier run first, so "before" is the bare round trip and a rerun passes.
+  tc_store "$store" del dev eth0 root
   before=$(store_rtt "$node")
-  docker run --rm --name "$TC" --net "container:$store" --cap-add NET_ADMIN --user root --entrypoint tc \
-    "${ATANOR_CLUSTER_IMAGE:-atanor-cluster-node:local}" qdisc "${qdisc[@]}" >/dev/null 2>&1 || true
+  [[ $LOAD_STORE_LATENCY_MS -le 0 ]] || tc_store "$store" add dev eth0 root netem delay "${LOAD_STORE_LATENCY_MS}ms"
   after=$(store_rtt "$node")
   [[ -n $before && -n $after ]] || { echo "the store round trip could not be measured (before: '${before}', after: '${after}')" >&2; exit 1; }
   echo "store round trip from the node: ${before} ms -> ${after} ms (added latency ${LOAD_STORE_LATENCY_MS} ms)"

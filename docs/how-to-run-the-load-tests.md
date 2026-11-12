@@ -136,8 +136,10 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
    mise run load:up
    ```
 
-2. Run a ramp. The first run of a measure on a fresh node gives its fixed (idle) memory; start each measure
-   from a fresh `load:up` when you need that number. Use one results directory for the whole session.
+2. Run a ramp. The first run of a measure on a fresh node gives its fixed (idle) memory. Rerunning `load:up`
+   on a running cluster is safe, but it keeps the node container (same tmpfs, same BEAM): it reapplies the
+   latency and redeploys the workers only. For a fresh node, run `mise run load:down` and then
+   `mise run load:up` before each measure. Use one results directory for the whole session.
 
    ```sh
    export ATANOR_LOAD_OUT=load/results/$(date +%Y%m%d-%H%M%S)
