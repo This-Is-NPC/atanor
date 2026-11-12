@@ -75,7 +75,7 @@ def new_round(name):
     os.makedirs(out)
     args = argparse.Namespace(out=out, measure="ws", step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1e9, min_available_gb=0.0,
                               sample_s=0.05, repeat_invalid=0, host_wait=0.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
-                              max_generator_swap_mb=1e9, max_host_swap_mb=1e12, command="test", steps="10,20", start=10, max=20, factor=2, refine=0)
+                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, command="test", steps="10,20", start=10, max=20, factor=2, refine=0)
     pid = os.getpid()
     info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"ip": "127.0.0.1", "pid": pid},
             "lb": {"pid": pid}, "admin": "http://127.0.0.1:1"}
@@ -180,5 +180,12 @@ with open(os.path.join(swap_args.out, "A_swap_01-swap-10.json")) as file:
     swap_record = json.load(file)
 results["swap"] = {k: swap_record[k] for k in ("status", "valid", "stop_reason")} | {"service_max_mb": swap_record["memory"]["service_max_mb"],
                                                                                     "limit_mb": swap_record["memory"]["limit_mb"]}
+
+# Host swap is judged by its growth during the step; a high but flat level is valid.
+def swap_usage(start, peak):
+    return {"swap_usage": {"containers_max_mb": {}, "generator_growth_mb": 0}, "host": dict(zip(("swap_start_mb", "swap_max_mb", "swap_growth_mb"), m.swap_growth_mb([start, peak])))}
+
+
+results["host_swap"] = {"flat": m.judge_swap(swap_usage(3380, 3380), 16, 256), "grows": m.judge_swap(swap_usage(3380, 3680), 16, 256)}
 
 print(json.dumps(results))
