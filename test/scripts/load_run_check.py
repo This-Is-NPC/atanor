@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import sys
+import time
 
 sys.dont_write_bytecode = True  # do not leave scripts/__pycache__
 work = sys.argv[1]
@@ -161,5 +162,23 @@ def memory_sample(t, current_mb, shmem_mb):
 # 700 MB current, 300 of it tmpfs: the service uses 400 MB of the 512 MB scenario, not 700 of 1280.
 usage = m.summarize([memory_sample(0, 650, 256), memory_sample(1, 700, 300)], 0, 512 * MB)["memory"]
 results["memory_criterion"] = {k: usage[k] for k in ("service_max_mb", "tmpfs_start_mb", "tmpfs_max_mb", "tmpfs_growth_mb", "limit_mb", "max_pct_of_limit")}
+
+# The swap record: a stub cluster-swap-run writes result.json; the node is measured, so the usage is summarized against the scenario memory.
+os.makedirs(os.path.join(work, "scripts"))
+stub = os.path.join(work, "scripts", "cluster-swap-run")
+with open(stub, "w") as file:
+    file.write("#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --out ] && out=$2; shift; done\nmkdir -p \"$out\"\n"
+               "echo '{\"sent\": 100, \"duration_s\": 10, \"a_exit_s\": 1.5, \"lost\": 0, \"duplicated\": 0, \"errors\": {}, \"phases\": {\"warmup\": {\"p99\": 20, \"max\": 30}}}' > \"$out/result.json\"\n")
+os.chmod(stub, os.stat(stub).st_mode | stat.S_IXUSR)
+m.Sampler.take = lambda self: memory_sample(time.time(), 650, 256)
+swap_round, swap_args = new_round("swap")
+swap_args.rate, swap_args.trigger, swap_args.swap_workers = 10, "sigterm", 1
+swap_args.swap_warmup = swap_args.swap_overlap = swap_args.swap_settle = 1
+swap_args.swap_timeout = 30
+m.swap(swap_round, swap_args, swap_round.info)
+with open(os.path.join(swap_args.out, "A_swap_01-swap-10.json")) as file:
+    swap_record = json.load(file)
+results["swap"] = {k: swap_record[k] for k in ("status", "valid", "stop_reason")} | {"service_max_mb": swap_record["memory"]["service_max_mb"],
+                                                                                    "limit_mb": swap_record["memory"]["limit_mb"]}
 
 print(json.dumps(results))

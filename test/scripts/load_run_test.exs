@@ -49,6 +49,15 @@ defmodule Atanor.LoadRunTest do
              "max_pct_of_limit" => 78.1
            }
 
+    # the swap record is written with the usage against the scenario memory (swap() crashed on a name that did not exist)
+    assert r["swap"] == %{
+             "status" => "ok",
+             "valid" => true,
+             "stop_reason" => :null,
+             "service_max_mb" => 394.0,
+             "limit_mb" => 512.0
+           }
+
     assert [%{"name" => "high"}] = r["peak"]["at_peak"]["ets"]
     assert r["peak"]["samples"] == 2
 
