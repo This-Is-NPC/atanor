@@ -165,6 +165,52 @@ defmodule Atanor.AdminTest do
     end
   end
 
+  describe "runtime" do
+    @describetag :tmp_dir
+
+    test "needs the token", %{tmp_dir: dir} do
+      node = start([], memory: [cgroup_path: Path.join(dir, "memory.max")])
+      assert get(node, "/runtime", headers: []).status == 401
+    end
+
+    test "the VM and the cgroup read from the configured directory", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "memory.max"), "536870912\n")
+      File.write!(Path.join(dir, "memory.current"), "123456\n")
+      File.write!(Path.join(dir, "memory.stat"), "anon 100\nfile 200\nshmem 3\nsock 4\nslab 5\nfile_mapped 9\n")
+      File.write!(Path.join(dir, "memory.events"), "low 0\nhigh 0\nmax 7\noom 2\noom_kill 1\n")
+      node = start([], memory: [cgroup_path: Path.join(dir, "memory.max")])
+
+      runtime = node |> get("/runtime") |> json()
+      assert runtime["memory"]["total"] > 0
+      assert runtime["process_count"] > 0 and is_integer(runtime["port_count"])
+      assert [_ | _] = runtime["run_queues"]
+      assert length(runtime["ets"]) == 5
+      assert [%{"name" => _, "bytes" => bytes} | _] = runtime["ets"]
+      assert bytes > 0
+
+      for key <- ["top_message_queue", "top_memory"] do
+        assert length(runtime[key]) == 10
+        assert %{"pid" => "#PID" <> _, "initial_call" => _, "current_function" => _, "memory" => _} = hd(runtime[key])
+      end
+
+      assert runtime["cgroup"]["memory_current"] == 123_456
+      assert runtime["cgroup"]["memory_max"] == 536_870_912
+      assert %{"anon" => 100, "file" => 200, "shmem" => 3, "sock" => 4, "slab" => 5} = runtime["cgroup"]["stat"]
+      assert runtime["cgroup"]["stat"]["kernel_stack"] == nil
+      assert runtime["cgroup"]["events"] == %{"oom" => 2, "oom_kill" => 1}
+    end
+
+    test "cgroup fields are null when the files are missing or say max", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "memory.max"), "max\n")
+      node = start([], memory: [cgroup_path: Path.join(dir, "memory.max")])
+
+      cgroup = node |> get("/runtime") |> json() |> Map.fetch!("cgroup")
+      assert cgroup["memory_current"] == nil and cgroup["memory_max"] == nil
+      assert Enum.all?(Map.values(cgroup["stat"]), &is_nil/1)
+      assert cgroup["events"] == %{"oom" => nil, "oom_kill" => nil}
+    end
+  end
+
   describe "authentication" do
     test "every request needs the bearer token" do
       node = start()

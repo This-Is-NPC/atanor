@@ -43,7 +43,8 @@ def step_rows(steps):
         lat, mem, cpu = s["latency_ms"], s.get("memory", {}), s.get("cpu", {})
         rows.append([s["step"], s["phase"], f"{s['value']:g}", f"{num(s['planned'], 0)} / {num(s['achieved'], 0)}", num(lat["p50"]), num(lat["p95"]), num(lat["p99"]), num(lat["max"]),
                      f"{s['status_503']['with_retry_after']} / {s['status_503']['without_retry_after']}", num(cpu.get("node_cores"), 2),
-                     f"{num(mem.get('service_mb'))} / {num(mem.get('tmpfs_mb'))} / {num(mem.get('peak_mb'))}", num(s.get("fds", {}).get("count"), 0),
+                     f"{num(mem.get('service_mb'))} / {num(mem.get('tmpfs_mb'))} / {num(mem.get('peak_mb'))}", num(mem.get("current_max_mb")),
+                     num((s.get("runtime") or {}).get("oom_kill"), 0), num(s.get("fds", {}).get("count"), 0),
                      f"{num(s.get('s3', {}).get('bytes'), 0)} / {num(s.get('s3', {}).get('trips'), 0)}",
                      f"{num(s.get('host', {}).get('net_load_mean'), 1)} ({num(s.get('host', {}).get('loadavg1'), 1)})",
                      num(s.get("swap_usage", {}).get("generator_growth_mb"), 1), num(s.get("host", {}).get("swap_max_mb"), 0),
@@ -52,7 +53,7 @@ def step_rows(steps):
 
 
 HEADER = ["step", "phase", "value", "planned / achieved", "p50 ms", "p95 ms", "p99 ms", "max ms", "503 with / without Retry-After", "CPU cores",
-          "MB service / tmpfs / peak", "fds", "S3 bytes / trips", "net host load (loadavg)", "generator swap growth MB", "host swap max MB", "status"]
+          "MB service / tmpfs / peak", "MB cgroup max", "oom kills", "fds", "S3 bytes / trips", "net host load (loadavg)", "generator swap growth MB", "host swap max MB", "status"]
 
 
 def cost(measure, steps, baseline, summary):

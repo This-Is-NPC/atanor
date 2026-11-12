@@ -86,6 +86,11 @@ defmodule Atanor.Overview do
   defp status(:draining), do: "draining"
   defp status(:stopping), do: "stopping"
 
+  @doc "What this node's memory is made of (`GET /runtime`); the cgroup is the one of `:memory` `:cgroup_path`."
+  def runtime(name) do
+    Atanor.RuntimeSample.read(Path.dirname(Registry.config(name).memory.cgroup_path))
+  end
+
   @doc "The HTTP and TCP routes this node serves."
   def routes(name) do
     tcp =

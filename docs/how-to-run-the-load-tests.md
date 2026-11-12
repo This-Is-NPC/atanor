@@ -80,8 +80,15 @@ it then bisects `--refine` times (3) between the last good and the failing value
 value once to confirm it. Every step writes one JSON file, atomically (temporary file, then rename), named
 `SCENARIO_MEASURE_NN-PHASE-VALUE.json`, with: scenario and limits, measure, value, planned and achieved,
 p50/p95/p99/max, status counts (503 with and without `Retry-After`), node CPU cores, memory (service,
-tmpfs, peak since the container started), descriptors, S3 bytes and trips, host load, validity and the
-criterion that stopped it.
+tmpfs, peak since the container started, and the largest `memory.current` of the node's cgroup,
+`current_max_mb`), descriptors, S3 bytes and trips, host load, validity and the criterion that stopped it.
+
+Each sample also reads the node's `GET /runtime` ([admin API](how-to-use-the-admin-api.md)) with a 3 second
+timeout. The step file keeps `runtime`: the largest of each VM memory type (`memory_max_bytes`), of the
+process count and of the cgroup `anon`, `shmem`, `file` and `sock`; `oom_kill` at the end; and, in `at_peak`,
+the top processes (by memory and by message queue) and ETS tables of the sample where `memory.current` was
+highest. It is `null` when no sample answered (a saturated or dead node), and the step is judged as before.
+The report shows the largest cgroup memory and the oom kills of each step.
 
 ## Settings
 

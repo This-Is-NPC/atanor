@@ -99,6 +99,34 @@ results["restarted"] = scenario("restarted", during=lambda: container(started="2
 results["gone"] = scenario("gone", during=lambda: open(os.path.join(fake, "gone"), "w").close())
 # A failing generator with a healthy node is still invalid, as before.
 results["generator_only"] = scenario("generator_only", error="load-gen failed")
+# The admin API answers /runtime: the step keeps the maxima and the top lists of the biggest sample.
+calls = []
+
+
+def fake_runtime(info, path, timeout):
+    if path != "/runtime":
+        return None
+    calls.append(1)
+    n = len(calls)
+    top = [{"pid": f"#PID<0.{n}.0>", "name": None, "initial_call": "erlang.apply/2", "current_function": "gen_server.loop/7", "message_queue_len": n, "memory": 1000 * n}]
+    return {"memory": {"total": 100 * n, "binary": 10 * (3 - n % 3)}, "process_count": 50 + n, "port_count": 1, "run_queues": [0], "ets": [{"name": "t", "bytes": n}],
+            "top_memory": top, "top_message_queue": top, "wasm": None,
+            "cgroup": {"memory_current": 1, "memory_max": 2, "stat": {"anon": 7 * n, "shmem": 1, "file": None, "sock": 2 * n}, "events": {"oom": 0, "oom_kill": n}}}
+
+
+real_admin_json = m.admin_json
+m.admin_json = fake_runtime
+results["runtime_ok"] = scenario("runtime_ok")
+results["runtime_ok"]["calls"] = len(calls)
+# A /runtime that answers something else than an object is not a sample either.
+m.admin_json = lambda info, path, timeout: ["unexpected"] if path == "/runtime" else None
+results["runtime_garbage"] = scenario("runtime_garbage")
+m.admin_json = real_admin_json
+# The lists kept are those of the sample where the node's cgroup used most.
+low, high = fake_runtime(None, "/runtime", 1), fake_runtime(None, "/runtime", 1)
+low["ets"], high["ets"] = [{"name": "low", "bytes": 1}], [{"name": "high", "bytes": 2}]
+results["peak"] = m.runtime_summary([{"node": {"memory_current": 5}, "runtime": low}, {"node": {"memory_current": 9}, "runtime": high},
+                                     {"node": {"memory_current": 7}, "runtime": None}])
 # A ramp whose second step breaks the node ends there: a summary, no bisection, no confirmation.
 def ramp_scenario(name, dies_at, before=None):
     container(**(before or {}))

@@ -22,6 +22,29 @@ defmodule Atanor.LoadRunTest do
     assert "store rtt not measured" in ok["notes"]
     assert ok["diagnostics"] == []
 
+    # the admin API is unreachable: the runtime is unknown, the step is not
+    assert ok["runtime"] == :null
+    assert ok["memory"]["current_max_mb"] == :null
+
+    # the admin API answers: maxima over the samples, the oom kills of the last one, the lists of the sample at the peak
+    runtime = r["runtime_ok"]["record"]["runtime"]
+    n = r["runtime_ok"]["calls"]
+    assert runtime["samples"] == n and n >= 2
+    assert runtime["memory_max_bytes"]["total"] == 100 * n
+    assert runtime["memory_max_bytes"]["binary"] == 30
+    assert runtime["process_count_max"] == 50 + n
+    assert runtime["cgroup_max_bytes"] == %{"anon" => 7 * n, "shmem" => 1, "file" => :null, "sock" => 2 * n}
+    assert runtime["oom_kill"] == n
+    assert [%{"initial_call" => "erlang.apply/2"}] = runtime["at_peak"]["top_memory"]
+    assert [%{"name" => "t"}] = runtime["at_peak"]["ets"]
+    assert r["runtime_ok"]["record"]["status"] == "ok"
+
+    assert [%{"name" => "high"}] = r["peak"]["at_peak"]["ets"]
+    assert r["peak"]["samples"] == 2
+
+    assert r["runtime_garbage"]["record"]["runtime"] == :null
+    assert r["runtime_garbage"]["record"]["status"] == "ok"
+
     for {name, reason} <- [
           {"oom", "node OOM-killed"},
           {"exit_generator", "node exited 137"},
