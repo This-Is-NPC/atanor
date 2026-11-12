@@ -26,9 +26,9 @@ One container per service, all of the project `atanor-cluster` (`scripts/cluster
 | Piece | How |
 | --- | --- |
 | Node | One container, `cpus` and `mem_limit` from the scenario (A: 1 and 512 MB; B: 2 and 2 GB), no peers. |
-| Service data | The node's data directory is a tmpfs inside its limit (`ATANOR_LOAD_TMPFS_SIZE`, 256 MB). Memory is reported as `memory.current - shmem` from the container's cgroup `memory.stat`; the tmpfs size is `shmem`, reported apart. The 90% criterion uses `memory.current`, the number the kernel enforces. |
+| Service data | The node's data directory is a tmpfs (`ATANOR_LOAD_TMPFS_SIZE`, 256 MB). A tmpfs counts against its container's memory limit, so the container's limit (`mem_limit` and `memswap_limit`) is the scenario memory **plus** the tmpfs size (scenario A: 512 + 256 = 768 MB); the tmpfs is a lab artifact and does not take memory from the service. Service memory is `memory.current - shmem` from the container's cgroup `memory.stat`, and the 90% criterion compares it with the scenario memory, not the container limit. `shmem`, the tmpfs, is reported apart. |
 | No swap | Every measured container has `memswap_limit` equal to `mem_limit`, so it cannot swap (zram or disk swap on the host would void the memory numbers). `load-run` checks `docker inspect` (`Memory` set and `MemorySwap` equal to it) and, when readable, the cgroup's `memory.swap.max` (0) before the first step, and refuses to run otherwise (`scripts/load-env check-swap`). Recreate a cluster started before this limit existed with `load:down` and `load:up`. |
-| Store | SeaweedFS in its own container (2 CPUs, 2 GB, outside the node's limit), data in tmpfs. |
+| Store | SeaweedFS in its own container (2 CPUs, 2 GB plus its tmpfs of 1 GB, outside the node's limit), data in tmpfs. |
 | Store latency | `tc netem delay 25ms` on the store's network interface, so every answer the store sends waits 25 ms: each trip costs 25 ms more. The node image has `tc`; `atanor-load-tc` joins the store's network namespace with `NET_ADMIN`, applies the qdisc and exits. The qdisc needs no root on the host. A request on a warm connection pays the latency once; a `curl` that opens a connection pays it twice, because the handshake answer waits too. `load:up` checks that the round trip from the node to the store grew by at least 80% of the added latency (observed: 1.0 ms to 51.1 ms for a new connection) and every step records it (`store_rtt_ms`). |
 | Balancer | HAProxy (2 CPUs) is in the path only for `load:swap`. The other measures send to the node's address. |
 | Generator | `scripts/load-gen`, outside the node's limit: Python `asyncio`, open loop, keep-alive connections, one process per about 600 req/s. Latency counts from the scheduled time of a request. |
@@ -81,7 +81,13 @@ value once to confirm it. Every step writes one JSON file, atomically (temporary
 `SCENARIO_MEASURE_NN-PHASE-VALUE.json`, with: scenario and limits, measure, value, planned and achieved,
 p50/p95/p99/max, status counts (503 with and without `Retry-After`), node CPU cores, memory (service,
 tmpfs, peak since the container started, and the largest `memory.current` of the node's cgroup,
-`current_max_mb`), descriptors, S3 bytes and trips, host load, validity and the criterion that stopped it.
+`current_max_mb`; `service_max_mb` and `max_pct_of_limit` are `memory.current - shmem` and its share of the scenario
+memory; `tmpfs_start_mb`, `tmpfs_max_mb` and `tmpfs_growth_mb` are the tmpfs at the first sample, its largest size and the growth in the step), descriptors, S3 bytes and trips, host load, validity and the criterion that stopped it.
+
+The tmpfs is not reset between steps: the criterion already excludes it (`memory.current - shmem`), and
+the container limit has room for the whole tmpfs, so data left by earlier steps can fill the tmpfs (writes then fail
+with a full disk) but cannot get the node OOM-killed. Restarting the node between steps would instead
+lose the warm state the steps are meant to measure. Each step records the tmpfs at its start and its growth.
 
 Each sample also reads the node's `GET /runtime` ([admin API](how-to-use-the-admin-api.md)) with a 3 second
 timeout. The step file keeps `runtime`: the largest of each VM memory type (`memory_max_bytes`), of the
@@ -98,7 +104,7 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | --- | --- | --- |
 | `ATANOR_LOAD_SCENARIO` | `A` | `A`: 1 CPU, 512 MB; `B`: 2 CPUs, 2 GB. `ATANOR_LOAD_CPUS`, `ATANOR_LOAD_MEMORY` override the limits. |
 | `ATANOR_LOAD_STORE_LATENCY_MS` | 25 | Latency added per trip to the store; 0 removes it. |
-| `ATANOR_LOAD_TMPFS_SIZE`, `ATANOR_LOAD_STORE_TMPFS_SIZE` | 256m, 1g | Size of the node's and the store's tmpfs. |
+| `ATANOR_LOAD_TMPFS_SIZE`, `ATANOR_LOAD_STORE_TMPFS_SIZE` | 256m, 1g | Size of the node's and the store's tmpfs. Added to the memory limit of its container: `ATANOR_LOAD_MEMORY` (and `_STORE_MEMORY`) stay the scenario's memory. |
 | `ATANOR_LOAD_STORE_CPUS`, `_STORE_MEMORY`, `_LB_CPUS`, `_LB_MEMORY` | 2, 2g, 2, 512m | Limits of the store and the balancer. |
 | `ATANOR_LOAD_OUT` | `load/results/STAMP` | Results directory (git-ignored). |
 | `ATANOR_LOAD_STEP_S` | 180 | Seconds of load per step. |

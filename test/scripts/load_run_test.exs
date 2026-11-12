@@ -39,6 +39,16 @@ defmodule Atanor.LoadRunTest do
     assert [%{"name" => "t"}] = runtime["at_peak"]["ets"]
     assert r["runtime_ok"]["record"]["status"] == "ok"
 
+    # the criterion is memory.current - shmem against the scenario's 512 MB; the tmpfs is recorded apart
+    assert r["memory_criterion"] == %{
+             "service_max_mb" => 400.0,
+             "tmpfs_start_mb" => 256.0,
+             "tmpfs_max_mb" => 300.0,
+             "tmpfs_growth_mb" => 44.0,
+             "limit_mb" => 512.0,
+             "max_pct_of_limit" => 78.1
+           }
+
     assert [%{"name" => "high"}] = r["peak"]["at_peak"]["ets"]
     assert r["peak"]["samples"] == 2
 
@@ -121,6 +131,59 @@ defmodule Atanor.LoadRunTest do
 
       assert status == 0, out
       assert String.trim(out) == ""
+    end
+  end
+
+  describe "load-common memory limits" do
+    defp limits(env) do
+      script =
+        ~s(source scripts/load-common; echo "$ATANOR_CLUSTER_NODE_MEMORY $ATANOR_CLUSTER_STORE_MEMORY $LOAD_MEMORY_BYTES")
+
+      {out, status} = System.cmd("bash", ["-c", script], env: env, stderr_to_stdout: true)
+      {String.split(String.trim(out)), status}
+    end
+
+    test "the container limit is the scenario memory plus the tmpfs, for the node and the store" do
+      mib = 1_048_576
+      node_a = (512 + 256) * mib
+      store = (2048 + 1024) * mib
+      assert {[node, st, scenario], 0} = limits([{"ATANOR_LOAD_SCENARIO", "A"}])
+      assert {node, st, scenario} == {"#{node_a}", "#{store}", "#{512 * mib}"}
+
+      assert {[node, _, scenario], 0} = limits([{"ATANOR_LOAD_SCENARIO", "B"}, {"ATANOR_LOAD_TMPFS_SIZE", "768m"}])
+      assert {node, scenario} == {"#{(2048 + 768) * mib}", "#{2048 * mib}"}
+    end
+
+    test "a size that is not a size is refused" do
+      assert {parts, 1} = limits([{"ATANOR_LOAD_TMPFS_SIZE", "lots"}])
+      assert Enum.join(parts, " ") =~ "must be sizes"
+    end
+  end
+
+  describe "cluster-swap-run run()" do
+    # main() is not run: the module-level code is executed without its last line, and run() is called
+    # directly with a `docker` stub that fails (the full run needs a cluster).
+    test "a failing command surfaces its stderr and stdout", %{dir: dir} do
+      File.write!(Path.join(dir, "docker"), "#!/bin/sh\necho 'out line'\necho 'no such service: node-9' >&2\nexit 1\n")
+      File.chmod!(Path.join(dir, "docker"), 0o755)
+
+      script = """
+      src = open("scripts/cluster-swap-run").read().rsplit("main()", 1)[0]
+      g = {"__file__": "scripts/cluster-swap-run"}
+      exec(compile(src, "cluster-swap-run", "exec"), g)
+      g["run"]("docker", "compose", "up", "-d", "--no-deps", "node-9")
+      """
+
+      {out, status} =
+        System.cmd("python3", ["-I", "-c", script],
+          env: [{"PATH", dir <> ":" <> System.get_env("PATH")}],
+          stderr_to_stdout: true
+        )
+
+      assert status == 1
+      assert out =~ "docker compose up -d --no-deps node-9 exited 1"
+      assert out =~ "no such service: node-9"
+      assert out =~ "out line"
     end
   end
 end

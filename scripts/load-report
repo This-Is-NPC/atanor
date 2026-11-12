@@ -53,7 +53,7 @@ def step_rows(steps):
 
 
 HEADER = ["step", "phase", "value", "planned / achieved", "p50 ms", "p95 ms", "p99 ms", "max ms", "503 with / without Retry-After", "CPU cores",
-          "MB service / tmpfs / peak", "MB cgroup max", "oom kills", "fds", "S3 bytes / trips", "net host load (loadavg)", "generator swap growth MB", "host swap max MB", "status"]
+          "MB service / tmpfs / peak", "MB cgroup max (with tmpfs)", "oom kills", "fds", "S3 bytes / trips", "net host load (loadavg)", "generator swap growth MB", "host swap max MB", "status"]
 
 
 def cost(measure, steps, baseline, summary):
@@ -103,7 +103,7 @@ def report(directory):
     for scenario in sorted({s["scenario"] for s in steps}):
         limits = next((s["limits"] for s in steps if s["scenario"] == scenario and s["limits"].get("memory_mb")), {})
         latency = next(s["store_latency_ms"] for s in steps if s["scenario"] == scenario)
-        out += [f"## Scenario {scenario}", "", f"Node limits: {num(limits.get('cpus'), 1)} CPU and {num(limits.get('memory_mb'), 0)} MB (cgroup); store in tmpfs with {latency} ms added per trip.", ""]
+        out += [f"## Scenario {scenario}", "", f"Node limits: {num(limits.get('cpus'), 1)} CPU and {num(limits.get('memory_mb'), 0)} MB (scenario memory; the cgroup limit adds the tmpfs); store in tmpfs with {latency} ms added per trip.", ""]
         for measure in ("http-native", "http-wasm", "ws", "cells", "swap"):
             mine = [s for s in steps if s["scenario"] == scenario and s["measure"] == measure]
             if not mine:
