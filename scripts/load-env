@@ -10,6 +10,7 @@
 #   rtt      print the round trip from the node to the store in ms (median of three); empty when unknown
 #   check-swap [ID...]  refuse (exit 1) a container that may swap; default: the running nodes, store and lb
 #   info     print the containers, addresses and cgroup directories as JSON
+#   reset    down, then up: a new node and a new store with empty data (the next step starts from nothing)
 #   down     remove the containers, network and volumes
 set -euo pipefail
 source "$(dirname "$0")/load-common"
@@ -86,7 +87,7 @@ deploy() {
   local node tmp url
   node=$(node_id); url=$(published_url 4001)
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' RETURN
+  trap 'rm -rf "${tmp:-}"' RETURN
   [[ -x $repo/_build/cli/atanor ]] || { echo "build the CLI first: mise run build:cli" >&2; exit 1; }
   # The package holds the MD5 of the module as compiled into the release, so the beam comes from the node.
   docker cp "$node:/opt/atanor/lib/atanor_node-0.1.0/ebin/Elixir.AtanorNode.LoadWorker.beam" "$tmp/"
@@ -108,18 +109,27 @@ info() {
       lb: {id: $lb, pid: ($lbpid | tonumber)}, http: $http, admin: $admin}'
 }
 
+bring_up() {
+  "$repo/scripts/cluster-up"
+  latency
+  deploy
+}
+
+tear_down() {
+  docker rm -f "$TC" >/dev/null 2>&1 || true
+  "$repo/scripts/cluster-down"
+}
+
 case ${1:-} in
-  up)
-    "$repo/scripts/cluster-up"
-    latency
-    deploy ;;
+  up) bring_up ;;
+  reset)
+    tear_down
+    bring_up ;;
   latency) latency ;;
   deploy) deploy ;;
   rtt) store_rtt "$(node_id)"; echo ;;
   check-swap) shift; check_swap "$@" ;;
   info) info ;;
-  down)
-    docker rm -f "$TC" >/dev/null 2>&1 || true
-    "$repo/scripts/cluster-down" ;;
-  *) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  down) tear_down ;;
+  *) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

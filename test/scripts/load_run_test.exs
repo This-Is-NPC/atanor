@@ -88,6 +88,25 @@ defmodule Atanor.LoadRunTest do
     assert [%{"name" => "high"}] = r["peak"]["at_peak"]["ets"]
     assert r["peak"]["samples"] == 2
 
+    # after a failure every refine and the confirmation run on a fresh node; the ramp steps and a clean confirmation do not
+    assert r["fresh_after_fail"]["steps"] == [
+             ["ramp", "ok", false, false],
+             ["ramp", "fail", false, false],
+             ["refine", "ok", true, true],
+             ["refine", "ok", true, true],
+             ["confirm", "ok", true, true]
+           ]
+
+    assert r["fresh_after_fail"]["resets"] == ["reset", "info", "reset", "info", "reset", "info"]
+
+    assert r["fresh_never_failed"]["steps"] == [
+             ["ramp", "ok", false, false],
+             ["ramp", "ok", false, false],
+             ["confirm", "ok", false, false]
+           ]
+
+    assert r["fresh_never_failed"]["resets"] == []
+
     assert r["runtime_garbage"]["record"]["runtime"] == :null
     assert r["runtime_garbage"]["record"]["status"] == "ok"
 
