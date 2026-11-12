@@ -39,6 +39,7 @@ SIDE_TIMEOUT_S = 30  # a side measurement of a node at its limits may hang
 CLK = os.sysconf("SC_CLK_TCK")
 CORES = os.cpu_count()
 OK_STATUSES = {"200", "201", "message answered", "503 retry-after", "reconnected"}
+LOG_CAP_BYTES = 5 * 1048576
 UNITS = {"http-native": "req/s", "http-wasm": "req/s", "ws": "connections", "cells": "cells", "swap": "req/s"}
 
 
@@ -143,18 +144,20 @@ def fds(node):
 
 
 def s3_counters(store_ip):
-    """(trips, bytes) the store has served, from its Prometheus endpoint; None when it does not answer."""
+    """(trips, bytes, errors) the store has served, from its Prometheus endpoint (errors: requests answered 5xx); None when it does not answer."""
     try:
         text = urllib.request.urlopen(f"http://{store_ip}:9327/metrics", timeout=3).read().decode()
-        trips = traffic = 0.0
+        trips = traffic = errors = 0.0
         for line in text.splitlines():
+            if line.startswith("SeaweedFS_s3_request_total") and 'code="5' in line:
+                errors += float(line.rsplit(" ", 1)[1])
             if line.startswith("SeaweedFS_s3_request_seconds_count"):
                 trips += float(line.rsplit(" ", 1)[1])
             elif line.startswith(("SeaweedFS_s3_bucket_traffic_received_bytes_total", "SeaweedFS_s3_bucket_traffic_sent_bytes_total")):
                 traffic += float(line.rsplit(" ", 1)[1])
     except (OSError, http.client.HTTPException, ValueError):
         return None
-    return trips, traffic
+    return trips, traffic, errors
 
 
 def admin_json(info, path, timeout):
@@ -221,16 +224,21 @@ def node_death(before, after):
 
 
 def save_node_diagnostics(base, node, state):
-    """The node's inspect state and the last 200 log lines, next to the step file; the logs are gone after load:down."""
+    """The node's inspect state and its log from the container start (the last LOG_CAP_BYTES of it), next to the step file;
+    the logs are gone after load:down."""
     files = []
     try:
+        state = state or {}
         shown = state.get("inspect", {}).get("State", state)
         with open(f"{base}.node-state.txt", "w") as file:
             json.dump({"state": shown, "restart_count": state.get("restarts")}, file, indent=1)
         files.append(os.path.basename(f"{base}.node-state.txt"))
-        out = subprocess.run(["docker", "logs", "--tail", "200", node], capture_output=True, text=True, timeout=60)
-        with open(f"{base}.node.log", "w") as file:
-            file.write(out.stdout + out.stderr)
+        out = subprocess.run(["docker", "logs", node], capture_output=True, timeout=120)
+        log = out.stdout + out.stderr
+        with open(f"{base}.node.log", "wb") as file:
+            if len(log) > LOG_CAP_BYTES:
+                file.write(f"[truncated: the last {LOG_CAP_BYTES} of {len(log)} bytes]\n".encode())
+            file.write(log[-LOG_CAP_BYTES:])
         files.append(os.path.basename(f"{base}.node.log"))
     except (OSError, subprocess.SubprocessError):
         pass
@@ -254,6 +262,8 @@ class Sampler(threading.Thread):
         for name, directory in self.dirs.items():
             sample[name] = cgroup_sample(directory)
         sample["fds"] = fds(self.info["node"]["id"])
+        counters = s3_counters(self.info["store"]["ip"])
+        sample["s3_errors"] = int(counters[2]) if counters else None
         runtime = admin_json(self.info, "/runtime", 3)
         sample["runtime"] = runtime if isinstance(runtime, dict) else None
         return sample
@@ -321,7 +331,53 @@ def runtime_summary(samples):
             "process_count_max": largest(r.get("process_count") for r in runtimes),
             "cgroup_max_bytes": {k: largest(cgroup(r, k) for r in runtimes) for k in ("anon", "shmem", "file", "sock")},
             "oom_kill": events.get("oom_kill"),
+            "cgroup_memory_max_bytes": (runtimes[-1].get("cgroup") or {}).get("memory_max"),
             "at_peak": {k: peak.get(k) for k in ("top_memory", "top_message_queue", "ets", "wasm")}}
+
+
+def series(samples):
+    """One compact entry of integers per sample: what the node, its admission and the store held at that moment (None: unknown)."""
+    def entry(s):
+        runtime, node, store = s.get("runtime") or {}, s.get("node") or {}, s.get("store") or {}
+        cgroup, admission, memory = runtime.get("cgroup") or {}, runtime.get("admission") or {}, runtime.get("memory") or {}
+        refused = admission.get("refused") or {}
+        refusing = admission.get("refusing")
+        return {"t": round(s["t"] - samples[0]["t"], 1), "memory_current": node.get("memory_current"), "shmem": node.get("shmem"),
+                "anon": (cgroup.get("stat") or {}).get("anon"), "inactive_file": (cgroup.get("stat") or {}).get("inactive_file"),
+                "working_set": admission.get("working_set_bytes"), "refusing": None if refusing is None else int(refusing),
+                "in_flight": admission.get("in_flight"), "refused_memory": refused.get("memory"), "refused_in_flight": refused.get("in_flight"),
+                "refused_disk": refused.get("disk"), "beam_total": memory.get("total"), "beam_processes": memory.get("processes"),
+                "beam_binary": memory.get("binary"), "process_count": runtime.get("process_count"),
+                "oom_kill": (cgroup.get("events") or {}).get("oom_kill"),
+                "store_memory_current": store.get("memory_current"), "store_shmem": store.get("shmem"), "store_limit": store.get("limit"),
+                "store_s3_errors": s.get("s3_errors")}
+    return [entry(s) for s in samples]
+
+
+def admission_summary(samples):
+    """The thresholds the node judged against and the refusals counted during the step (last sample minus first); None without /runtime."""
+    seen = [s["runtime"]["admission"] for s in samples if isinstance((s.get("runtime") or {}).get("admission"), dict)]
+    if not seen:
+        return None
+    first, last = seen[0], seen[-1]
+    delta = {k: (last.get("refused") or {}).get(k, 0) - (first.get("refused") or {}).get(k, 0) for k in ("memory", "in_flight", "disk")}
+    return {"refused": delta, "refusing_seen": any(a.get("refusing") or a.get("disk_refusing") for a in seen),
+            "in_flight_max": max((a.get("in_flight") or 0 for a in seen), default=None), "working_set_max_bytes": max((a.get("working_set_bytes") or 0 for a in seen), default=None),
+            **{k: last.get(k) for k in ("limit_bytes", "refuse_at_bytes", "max_in_flight", "disk_budget_bytes")}}
+
+
+def store_summary(samples, tmpfs_bytes):
+    """The store container's memory, its tmpfs (shmem) against the tmpfs size and the S3 5xx answered during the step."""
+    mem = [s["store"] for s in samples if s.get("store")]
+    errors = [s["s3_errors"] for s in samples if s.get("s3_errors") is not None]
+    if not mem:
+        return None
+    mb = lambda n: round(n / 1048576, 1)
+    shmem = max(m["shmem"] for m in mem)
+    return {"memory_max_mb": mb(max(m["memory_current"] for m in mem)), "limit_mb": mb(mem[-1]["limit"]) if mem[-1]["limit"] else None,
+            "tmpfs_max_mb": mb(shmem), "tmpfs_size_mb": mb(tmpfs_bytes) if tmpfs_bytes else None,
+            "tmpfs_max_pct": round(100 * shmem / tmpfs_bytes, 1) if tmpfs_bytes else None,
+            "s3_errors": errors[-1] - errors[0] if errors else None}
 
 
 def summarize(samples, gen_cpu_total, limit):
@@ -508,8 +564,11 @@ class Round:
         samples = sampler.finish()
         s3_after = s3_counters(info["store"]["ip"])
         dead, files = self.node_stop(value, phase, node_before)
-        return self.record(value, phase, merge(documents), samples, (s3_before, s3_after), None, None, began=began, gens=documents, sampler=sampler,
+        result = self.record(value, phase, merge(documents), samples, (s3_before, s3_after), None, None, began=began, gens=documents, sampler=sampler,
                            dead=dead, diagnostics=files)
+        if result["status"] == "fail" and not files:  # a failed step keeps the node's whole log too
+            result["diagnostics"] = save_node_diagnostics(self.base(value, phase), info["node"]["id"], node_state(info["node"]["id"]))
+        return result
 
     def record(self, value, phase, merged, samples, s3, status, reason, valid=True, host_override=None, began=None, gens=None, sampler=None,
                dead=None, diagnostics=()):
@@ -518,14 +577,15 @@ class Round:
                   "value": value, "duration_s": a.step_s, "store_latency_ms": info["store_latency_ms"], "command": a.command,
                   "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
-                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "cells_awake": None, "store_rtt_ms": None,
+                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "admission": None, "store": None, "cells_awake": None, "store_rtt_ms": None,
                   "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "node_stopped": bool(dead), "notes": [], "diagnostics": list(diagnostics)}
         if merged is None:
             return record
         usage = summarize(samples, sampler_cpu(gens), self.info["memory_limit_bytes"])
         errors = {k: n for k, n in merged["statuses"].items() if k not in OK_STATUSES}
         record.update(statuses=merged["statuses"], cpu=usage["cpu"], memory=usage["memory"], fds=usage["fds"], host=usage["host"], swap_usage=usage["swap_usage"],
-                      runtime=runtime_summary(samples),
+                      runtime=runtime_summary(samples), series=series(samples), admission=admission_summary(samples),
+                      store=store_summary(samples, info.get("store_tmpfs_bytes")),
                       latency_ms={"p50": percentile(merged["hist"], 50, merged["max_ms"]), "p95": percentile(merged["hist"], 95, merged["max_ms"]),
                                   "p99": percentile(merged["hist"], 99, merged["max_ms"]), "max": percentile(merged["hist"], 100, merged["max_ms"])},
                       status_503={"with_retry_after": merged["statuses"].get("503 retry-after", 0), "without_retry_after": merged["statuses"].get("503 no retry-after", 0)},

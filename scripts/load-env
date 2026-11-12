@@ -97,12 +97,12 @@ deploy() {
 info() {
   local node store lb
   node=$(node_id) store=$(cluster_container store) lb=$(cluster_container lb)
-  jq -n --arg scenario "$LOAD_SCENARIO" --arg latency "$LOAD_STORE_LATENCY_MS" --arg memory "$LOAD_MEMORY_BYTES" \
+  jq -n --arg scenario "$LOAD_SCENARIO" --arg latency "$LOAD_STORE_LATENCY_MS" --arg memory "$LOAD_MEMORY_BYTES" --arg storetmpfs "$store_tmpfs_bytes" \
     --arg node "$node" --arg nodeip "$(container_ip "$node")" --arg nodepid "$(docker inspect -f '{{.State.Pid}}' "$node")" \
     --arg store "$store" --arg storeip "$(container_ip "$store")" --arg storepid "$(docker inspect -f '{{.State.Pid}}' "$store")" \
     --arg lb "$lb" --arg lbpid "$(docker inspect -f '{{.State.Pid}}' "$lb")" \
     --arg http "$(published_url 4000)" --arg admin "$(published_url 4001)" \
-    '{scenario: $scenario, memory_limit_bytes: ($memory | tonumber), store_latency_ms: ($latency | tonumber),
+    '{scenario: $scenario, memory_limit_bytes: ($memory | tonumber), store_latency_ms: ($latency | tonumber), store_tmpfs_bytes: ($storetmpfs | tonumber),
       node: {id: $node, ip: $nodeip, pid: ($nodepid | tonumber)},
       store: {id: $store, ip: $storeip, pid: ($storepid | tonumber)},
       lb: {id: $lb, pid: ($lbpid | tonumber)}, http: $http, admin: $admin}'

@@ -38,6 +38,29 @@ defmodule Atanor.LoadRunTest do
     assert [%{"initial_call" => "erlang.apply/2"}] = runtime["at_peak"]["top_memory"]
     assert [%{"name" => "t"}] = runtime["at_peak"]["ets"]
     assert r["runtime_ok"]["record"]["status"] == "ok"
+    assert runtime["cgroup_memory_max_bytes"] == 2
+
+    # the time series: one entry per sample, with the admission and the store fields
+    record = r["runtime_ok"]["record"]
+    series = record["series"]
+    assert length(series) >= 2
+    last = List.last(series)
+    assert last["working_set"] == 1000 * n
+    assert last["refusing"] == 1
+    assert last["in_flight"] == n
+    assert last["refused_memory"] == 10 * n and last["refused_in_flight"] == n and last["refused_disk"] == 0
+    assert last["inactive_file"] == 3 * n and last["anon"] == 7 * n and last["oom_kill"] == n
+    assert last["beam_total"] == 100 * n and last["beam_processes"] == :null and last["process_count"] == 50 + n
+
+    assert last["store_shmem"] == 256 * 1_048_576 and last["store_limit"] == 1280 * 1_048_576 and
+             is_integer(last["store_s3_errors"])
+
+    assert record["admission"]["refuse_at_bytes"] == 400 * 1_048_576
+    assert record["admission"]["refusing_seen"] == true
+    assert record["admission"]["refused"] == %{"memory" => 10 * (n - 1), "in_flight" => n - 1, "disk" => 0}
+    assert record["store"]["tmpfs_max_pct"] == 50.0
+    assert record["store"]["limit_mb"] == 1280.0
+    assert r["rtt_fails"]["record"]["series"] |> Enum.all?(&(&1["working_set"] == :null))
 
     # the criterion is memory.current - shmem against the scenario's 512 MB; the tmpfs is recorded apart
     assert r["memory_criterion"] == %{

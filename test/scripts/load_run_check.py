@@ -82,10 +82,11 @@ def new_round(name):
     return m.Round(args, info), args
 
 
-def scenario(name, during=lambda: None, error=None, before=None):
+def scenario(name, during=lambda: None, error=None, before=None, info=None):
     container(**(before or {}))
     hook.update(during=during, error=error)
     round_, _ = new_round(name)
+    round_.info.update(info or {})
     record = round_.step(10, "ramp")
     return {"record": record, "files": sorted(os.listdir(round_.args.out))}
 
@@ -115,12 +116,20 @@ def fake_runtime(info, path, timeout):
     top = [{"pid": f"#PID<0.{n}.0>", "name": None, "initial_call": "erlang.apply/2", "current_function": "gen_server.loop/7", "message_queue_len": n, "memory": 1000 * n}]
     return {"memory": {"total": 100 * n, "binary": 10 * (3 - n % 3)}, "process_count": 50 + n, "port_count": 1, "run_queues": [0], "ets": [{"name": "t", "bytes": n}],
             "top_memory": top, "top_message_queue": top, "wasm": None,
-            "cgroup": {"memory_current": 1, "memory_max": 2, "stat": {"anon": 7 * n, "shmem": 1, "file": None, "sock": 2 * n}, "events": {"oom": 0, "oom_kill": n}}}
+            "cgroup": {"memory_current": 1, "memory_max": 2, "stat": {"anon": 7 * n, "shmem": 1, "file": None, "sock": 2 * n, "inactive_file": 3 * n}, "events": {"oom": 0, "oom_kill": n}},
+            "admission": {"in_flight": n, "max_in_flight": 64, "refused": {"memory": 10 * n, "in_flight": n, "disk": 0}, "working_set_bytes": 1000 * n, "limit_bytes": 512 * MB,
+                          "refuse_at_bytes": 400 * MB, "refusing": n > 1, "disk_used_bytes": None, "disk_budget_bytes": None, "disk_refusing": False}}
 
 
 real_admin_json = m.admin_json
 m.admin_json = fake_runtime
-results["runtime_ok"] = scenario("runtime_ok")
+real_cgroup_sample, real_s3 = m.cgroup_sample, m.s3_counters
+m.cgroup_sample = lambda d: {"memory_current": 300 * MB, "shmem": 256 * MB if "store" in d else 1, "peak": 300 * MB, "limit": 1280 * MB, "cpu_s": time.time(), "cpu_limit": 1.0}
+m.cgroup_dir = lambda pid: work + ("/store" if pid == "store" else "/no-cgroup")
+m.s3_counters = lambda ip: (1.0, 1.0, float(len(calls)))
+results["runtime_ok"] = scenario("runtime_ok", info={"store_tmpfs_bytes": 512 * MB, "store": {"ip": "127.0.0.1", "pid": "store"}})
+m.cgroup_sample, m.s3_counters = real_cgroup_sample, real_s3
+m.cgroup_dir = lambda pid: work + "/no-cgroup"
 results["runtime_ok"]["calls"] = len(calls)
 # A /runtime that answers something else than an object is not a sample either.
 m.admin_json = lambda info, path, timeout: ["unexpected"] if path == "/runtime" else None

@@ -57,7 +57,7 @@ and `/proc/meminfo`. Per step, in this order:
    failure, with the reason `node OOM-killed`, `node exited CODE` (for example 137), `node restarted` (same
    container started again, or a new one) or `node container gone`. It is judged before the invalid checks
    (host load, swap, delivery). It saves `NAME.node-state.txt` (the container state) and `NAME.node.log` (the
-   last 200 log lines) next to the step file, before `load:down` removes the container. A node that is fine
+   whole log since the container started, the last 5 MB of it when longer) next to the step file, before `load:down` removes the container. A step that fails on a criterion with the node still running saves the same two files. A node that is fine
    while a side measurement fails (the store round trip, the awake cells, the descriptors) keeps its step as
    measured: the value is null and `notes` in the step file says what was not measured.
    The nodes do not restart (`restart: "no"`), so the round ends at a node stop: no bisection and no
@@ -95,6 +95,15 @@ process count and of the cgroup `anon`, `shmem`, `file` and `sock`; `oom_kill` a
 the top processes (by memory and by message queue) and ETS tables of the sample where `memory.current` was
 highest. It is `null` when no sample answered (a saturated or dead node), and the step is judged as before.
 The report shows the largest cgroup memory and the oom kills of each step.
+
+Every step file also keeps the evidence to tell what the admission gate did, one entry per sample (every `--sample-s`):
+
+- `series`: a list of integer entries, `null` where a source did not answer. `t` is the seconds since the first sample; `memory_current`, `shmem`, `anon` and `inactive_file` come from the node's cgroup; `working_set`, `refusing` (0 or 1), `in_flight`, `refused_memory`, `refused_in_flight` and `refused_disk` from the node's admission (`runtime.admission`, counters since the node started); `beam_total`, `beam_processes`, `beam_binary`, `process_count` and `oom_kill` from the VM and the cgroup events; `store_memory_current`, `store_shmem` (the store's tmpfs use), `store_limit` and `store_s3_errors` (S3 requests the store answered 5xx, from its metrics, since it started) from the store.
+- `admission`: the thresholds the node judged against (`limit_bytes`, `refuse_at_bytes`, `max_in_flight`, `disk_budget_bytes`), the refusals counted in the step by reason (`refused`, last sample minus first), `refusing_seen`, and the largest `in_flight` and `working_set_max_bytes`. `null` without `/runtime`.
+- `runtime.cgroup_memory_max_bytes`: `memory.max` as the node sees it.
+- `store`: `memory_max_mb`, `limit_mb`, `tmpfs_max_mb`, `tmpfs_size_mb`, `tmpfs_max_pct` (the store's tmpfs fill, `ATANOR_LOAD_STORE_TMPFS_SIZE`) and `s3_errors` in the step.
+
+The report adds, per measure, the refusals by reason, whether the gate was refusing, the largest in-flight count, the store tmpfs fill and the store 5xx at the approved step and at the first failing one.
 
 ## Settings
 
