@@ -206,6 +206,12 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    (`replicas`); `{"enabled":false}` when the loop is off
    ([how-to-place-hot-cells.md](how-to-place-hot-cells.md)).
 
+   `GET /runtime` shows what this node's memory is made of: the VM memory by type,
+   the biggest ETS tables and processes (by message queue and by memory), the cgroup
+   counters (`memory.current`, `memory.stat`, `oom_kill`) and the Wasm gauges. A
+   cgroup field is `null` when its file cannot be read. The load harness samples it
+   ([how-to-run-the-load-tests.md](how-to-run-the-load-tests.md)).
+
 8. See jobs and dead letters. Without a cell, `/jobs` is the per-node slot
    count. With `?cell=namespace.key`, it is one page of that cell's jobs;
    `?state=dead` selects the dead-letter set. Retry or discard one dead job

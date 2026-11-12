@@ -157,12 +157,18 @@ def s3_counters(store_ip):
     return trips, traffic
 
 
-def cells_awake(info):
+def admin_json(info, path, timeout):
+    """The JSON the node's admin API answers at `path`; None on any failure (the node may be dead or saturated)."""
     try:
-        request = urllib.request.Request(info["admin"] + "/cells", headers={"authorization": "Bearer " + read(f"{ROOT}/cluster/secrets/admin_token").strip()})
-        return json.load(urllib.request.urlopen(request, timeout=5)).get("total")
-    except (OSError, http.client.HTTPException, ValueError, AttributeError):
+        request = urllib.request.Request(info["admin"] + path, headers={"authorization": "Bearer " + read(f"{ROOT}/cluster/secrets/admin_token").strip()})
+        return json.load(urllib.request.urlopen(request, timeout=timeout))
+    except (OSError, http.client.HTTPException, ValueError):
         return None
+
+
+def cells_awake(info):
+    document = admin_json(info, "/cells", 5)
+    return document.get("total") if isinstance(document, dict) else None
 
 
 def load_env(*args):
@@ -248,6 +254,8 @@ class Sampler(threading.Thread):
         for name, directory in self.dirs.items():
             sample[name] = cgroup_sample(directory)
         sample["fds"] = fds(self.info["node"]["id"])
+        runtime = admin_json(self.info, "/runtime", 3)
+        sample["runtime"] = runtime if isinstance(runtime, dict) else None
         return sample
 
     def run(self):
@@ -293,6 +301,29 @@ def judge_swap(usage, generator_max_mb, host_max_mb):
     return None
 
 
+def runtime_summary(samples):
+    """What grew inside the node: the largest of each VM memory type, process count and cgroup counter, the oom kills at the end,
+    and the top processes and ETS tables of the sample with the highest memory.current. None when no sample answered."""
+    seen = [s for s in samples if isinstance(s.get("runtime"), dict)]
+    if not seen:
+        return None
+
+    def largest(values):
+        values = [v for v in values if isinstance(v, int)]
+        return max(values) if values else None
+
+    runtimes = [s["runtime"] for s in seen]
+    cgroup = lambda r, key: ((r.get("cgroup") or {}).get("stat") or {}).get(key)
+    peak = max(seen, key=lambda s: (s.get("node") or {}).get("memory_current") or 0)["runtime"]
+    events = (runtimes[-1].get("cgroup") or {}).get("events") or {}
+    return {"samples": len(seen),
+            "memory_max_bytes": {k: largest((r.get("memory") or {}).get(k) for r in runtimes) for k in sorted({k for r in runtimes for k in r.get("memory") or {}})},
+            "process_count_max": largest(r.get("process_count") for r in runtimes),
+            "cgroup_max_bytes": {k: largest(cgroup(r, k) for r in runtimes) for k in ("anon", "shmem", "file", "sock")},
+            "oom_kill": events.get("oom_kill"),
+            "at_peak": {k: peak.get(k) for k in ("top_memory", "top_message_queue", "ets", "wasm")}}
+
+
 def summarize(samples, gen_cpu_total):
     """CPU, memory, fds and host load over the samples of one step."""
     first, last = samples[0], samples[-1]
@@ -323,6 +354,7 @@ def summarize(samples, gen_cpu_total):
                 "generator_cores": round(gen_cpu_total / span, 3), "node_limit_cores": mem[-1]["cpu_limit"] if mem else None},
         "memory": {"service_mb": mb(service[-1]) if service else None, "service_max_mb": mb(max(service)) if service else None,
                    "tmpfs_mb": mb(mem[-1]["shmem"]) if mem else None, "current_mb": mb(current[-1]) if current else None,
+                   "current_max_mb": mb(max(current)) if current else None,
                    "peak_mb": mb(mem[-1]["peak"]) if mem else None, "limit_mb": mb(limit) if limit else None,
                    "max_pct_of_limit": round(100 * max(current) / limit, 1) if current and limit else None},
         "fds": {"count": fd[-1][0] if fd else None, "max": max((f[0] for f in fd), default=None), "limit": fd[-1][1] if fd else None},
@@ -484,13 +516,14 @@ class Round:
                   "value": value, "duration_s": a.step_s, "store_latency_ms": info["store_latency_ms"], "command": a.command,
                   "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
-                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "cells_awake": None, "store_rtt_ms": None,
+                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "cells_awake": None, "store_rtt_ms": None,
                   "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "node_stopped": bool(dead), "notes": [], "diagnostics": list(diagnostics)}
         if merged is None:
             return record
         usage = summarize(samples, sampler_cpu(gens))
         errors = {k: n for k, n in merged["statuses"].items() if k not in OK_STATUSES}
         record.update(statuses=merged["statuses"], cpu=usage["cpu"], memory=usage["memory"], fds=usage["fds"], host=usage["host"], swap_usage=usage["swap_usage"],
+                      runtime=runtime_summary(samples),
                       latency_ms={"p50": percentile(merged["hist"], 50, merged["max_ms"]), "p95": percentile(merged["hist"], 95, merged["max_ms"]),
                                   "p99": percentile(merged["hist"], 99, merged["max_ms"]), "max": percentile(merged["hist"], 100, merged["max_ms"])},
                       status_503={"with_retry_after": merged["statuses"].get("503 retry-after", 0), "without_retry_after": merged["statuses"].get("503 no retry-after", 0)},

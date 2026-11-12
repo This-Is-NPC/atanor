@@ -1,7 +1,7 @@
 defmodule Atanor.Admin do
   @moduledoc """
-  The admin API (design §10): JSON about workers, deployments, routes, live
-  cells, releases, crash reports, jobs, bulk operations, the failure
+  The admin API (design §10): JSON about workers, deployments, routes, the
+  memory of the VM and its cgroup (`GET /runtime`), live cells, releases, crash reports, jobs, bulk operations, the failure
   detector's view of the peers, deploys by scoped tokens and their audit log
   (design §10.2.1). It listens on its own port (option `:admin` of
   `Atanor`), loopback by default, and every request needs the operator's token or a
@@ -171,6 +171,7 @@ defmodule Atanor.Admin do
   defp get(conn, ["drain"], name), do: json(conn, 200, Overview.drain(name))
   defp get(conn, ["nodes"], name), do: json(conn, 200, Overview.peers(name))
   defp get(conn, ["hot-cells"], name), do: json(conn, 200, Overview.hot_cells(name))
+  defp get(conn, ["runtime"], name), do: json(conn, 200, Overview.runtime(name))
   defp get(conn, ["routes"], name), do: json(conn, 200, Overview.routes(name))
   defp get(conn, ["deployments"], name), do: json(conn, 200, Overview.gather(name, :deployments))
   defp get(conn, ["crashes"], name), do: crashes(conn, name, fetch_query_params(conn).query_params)
