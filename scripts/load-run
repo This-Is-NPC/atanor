@@ -679,7 +679,7 @@ def swap(round_, args, info):
         reasons.append(f"errors other than 503: {other}")
     if not result or (process.returncode and not reasons):
         reasons.append(f"cluster-swap-run exited {process.returncode}")
-    usage = summarize(samples, 0, self.info["memory_limit_bytes"]) if all(s.get("node") is not None for s in samples) else {"host": {}, "cpu": {}, "memory": {}, "fds": {}, "swap_usage": {}}
+    usage = summarize(samples, 0, info["memory_limit_bytes"]) if all(s.get("node") is not None for s in samples) else {"host": {}, "cpu": {}, "memory": {}, "fds": {}, "swap_usage": {}}
     record = {"schema": SCHEMA, "scenario": round_.scenario, "measure": "swap", "unit": "req/s", "phase": "swap", "step": 1, "value": rate,
               "duration_s": duration, "store_latency_ms": info["store_latency_ms"], "command": args.command, "planned": round(rate * duration),
               "achieved": result.get("sent"), "achieved_rate": round(result.get("sent", 0) / duration, 1),
