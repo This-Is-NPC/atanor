@@ -79,6 +79,12 @@ They are in [design §4.3](design.md#43-limits-on-cell-calls-and-their-errors).
 cgroup v2 limit, or `memory: [limit_bytes:]`), the awake cells may use half of
 it (`memory: [awake_fraction: 0.5]`), and the least used cells hibernate past
 that.
+The wakes in flight have a share too: `memory: [wake_fraction: 0.5]` of the headroom
+between the refuse mark and the limit derives `awake: [max_wakes:]` and
+`restore: [fetch_concurrency:, prefetch_bytes:]` unless you give them (a 512 MiB
+node gets 11 wakes, 1 request and 2.4 MiB of read-ahead; a 2 GiB node 11, 4 and
+9.6 MiB; formula in [design §4.3](design.md)), so a store that fails cannot make
+every queued request restore a cell at once.
 
 **Refusing requests before the node dies.** The ingress refuses with 503
 `overloaded` and `Retry-After`, before it reads the route, the token or the
@@ -91,7 +97,8 @@ body, when either gate is closed:
   limit. The sampler reads the files every `memory: [sample_ms: 100]`
   (`current_path` and `stat_path` default to
   `/sys/fs/cgroup/memory.current` and `memory.stat`). A sample older than ten
-  periods is ignored.
+  periods is ignored. While it is closed, a call for a cell that is not awake on
+  the node (it would wake it) is refused the same way.
 - `http: [max_in_flight: 1_024]`: requests served at once on the node. A WebSocket
   holds no slot after the upgrade. The memory gate is the main guard; this one
   bounds the handlers when the limit is high or unknown.

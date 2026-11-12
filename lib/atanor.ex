@@ -304,10 +304,20 @@ defmodule Atanor do
       `awake_fraction` (0.5, above 0 and at most 1) and `cgroup_path`
       (`/sys/fs/cgroup/memory.max`, cgroup v2; `max` or a missing file is no
       limit). The result is the default of `alambique: [awake: [max_bytes:]]`;
-      the node logs it and its source at start. The ingress also refuses
+      the node logs it and its source at start. `wake_fraction` (0.5, above 0 and at most 1)
+      is the share of the headroom between the refuse mark and the limit that the wakes in
+      flight may fill; unless you give them, it derives `alambique: [awake: [max_wakes:],
+      restore: [fetch_concurrency:, prefetch_bytes:]]` so that `max_wakes` wakes of
+      `prefetch_bytes` plus `fetch_concurrency` MiB each fit that share: the budget is
+      `limit * (1 - refuse_fraction) * wake_fraction`, `prefetch_bytes` a sixteenth of it (1 to
+      64 MiB), `fetch_concurrency` one per 2 MiB of it (1 to 16) and `max_wakes` what fits
+      (1 to 256). A 512 MiB node gets 11 wakes, 1 request and 2.4 MiB; a 2 GiB node 11 wakes,
+      4 requests and 9.6 MiB (design §4.3). Without a limit Alambique's defaults stay. The ingress
+      also refuses
       requests with 503 `overloaded` while the working set of the cgroup is at
       least `refuse_fraction` (0.85; `nil` turns it off) of that limit, and
-      resumes 5 points below; `sample_ms` (100) is the sampling period, and
+      resumes 5 points below, and while it refuses a call for a cell with no process on the node
+      (one that would wake it) gets 503 `overloaded` too; `sample_ms` (100) is the sampling period, and
       `current_path` and `stat_path` (`/sys/fs/cgroup/memory.current` and
       `memory.stat`) are the files it reads.
     * `:disk` - the disk budget of `data_dir` (design §4.4): `max_bytes` (default

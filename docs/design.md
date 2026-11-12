@@ -652,7 +652,7 @@ worker.
 | `sql: [max_result_bytes:]` | 67 108 864 (64 MiB) | bytes one result may hold (text and blobs by length) |
 | `sql: [max_concurrent_statements:]` | dirty IO schedulers minus two, at least 1 | the most reads (owner, replica and cross-cell) running on the node at once, so commits keep dirty IO schedulers; a read over it gets `{:error, :busy}` at once, a 503 `overloaded` at the ingress. The count is shared by every instance in the VM: give them the same value |
 | `awake: [max_cells:]` | 20 000 | cells with a process on this node; a partition counts as a cell. A call that would wake one more hibernates the least recently used cell with no caller waiting, and gets `{:error, :overloaded}` only when every awake cell has callers waiting |
-| `awake: [max_wakes:]` | 256 | cells waking at once on this node |
+| `awake: [max_wakes:]` | derived from the node's memory, else 256 (§4.3, memory of the wakes) | cells waking at once on this node; one more is `{:error, :overloaded}` |
 | `awake: [max_pending:]` | 10 000 | calls queued, running or waiting for an upload on one cell (other messages do not count) |
 | `awake: [cache_kib:]` | 512 | SQLite page cache of each awake cell, in KiB (Alambique's `PRAGMA cache_size`; SQLite's own default is 2 000) |
 | `awake: [max_bytes:]` | derived from the node's memory, else `nil` (no ceiling); see "Memory of the awake cells" below | ceiling on the page cache, schema and statements of all awake cells; past it the least recently used cells without callers hibernate before another wakes, and a call that finds none gets `{:error, :overloaded}` |
@@ -671,7 +671,7 @@ worker.
 | `compaction: [max_level:]` | 2 | highest merge level (at most 8); a higher one keeps fewer, larger files for a restore |
 | `replicas: [poll_max_ms:]` | 5 000 (Alambique's) | longest time between refreshes of a replica nobody reads: the interval grows to a quarter of the idle time up to it. Passed through, not checked by Atanor |
 | `query: [reflink:]` | `true` (Alambique's) | refresh a cached replica from a copy-on-write clone where the file system has them; `false` always copies. Passed through, not checked by Atanor |
-| `restore: [edge_bytes:, fetch_concurrency:, prefetch_bytes:]` | 65 536, 16, 67 108 864 (64 MiB) | bytes read at each end of a file before the rest, files fetched at once, and bytes read ahead during a restore |
+| `restore: [edge_bytes:, fetch_concurrency:, prefetch_bytes:]` | 65 536, 16, 67 108 864 (64 MiB) | bytes read at each end of a file before the rest, files fetched at once, and bytes read ahead during a restore; the last two are derived from the node's memory when it has a limit (§4.3, memory of the wakes) |
 | `lazy_restore: [min_bytes:]` | 4 194 304 (4 MiB) | a database smaller than this is restored whole; a larger one is restored lazily, page by page on the first queries. A cell of 5 MB whose first query reads most of it restores faster whole (166 against 215 ms in Alambique's bench): `16_777_216` does that. 0 is always lazy; `lazy_restore: false` turns lazy restore off. Its other keys are `concurrency` (4), `batch_bytes` (4 MiB) and `miss_pages` (16) |
 | `feed: [object_batches:]` | 16 (Atanor's default; Alambique's is 1) | replicated batches one feed object may carry; 1 is one object per batch |
 | `feed: [linger_ms:]` | 250 (Atanor's default; Alambique's is 0) | how long the publisher waits for more batches while a group is short; 0 never waits. At most a tenth of `feed: [window_ms:]` (10 000 by default) when `object_batches` is above 1; otherwise the instance does not start |
@@ -790,6 +790,7 @@ the node, so a container with a limit needs no option:
 | `memory: [limit_bytes:]` | `nil` | the memory limit of the node, when it is not the cgroup's. Overrides the detection |
 | `memory: [awake_fraction:]` | 0.5 | share of that limit given to `awake: [max_bytes:]`, a number above 0 and at most 1. The rest is for the BEAM, the 150 KiB per cell that `max_bytes` does not count, the stores and the file cache |
 | `memory: [cgroup_path:]` | `/sys/fs/cgroup/memory.max` | the cgroup v2 file read when `limit_bytes` is `nil`: a byte count, or `max` for no limit |
+| `memory: [wake_fraction:]` | 0.5 | share of the headroom between the refuse mark and the limit that the wakes in flight may fill, a number above 0 and at most 1; derives `awake: [max_wakes:]`, `restore: [fetch_concurrency:]` and `[prefetch_bytes:]` unless given (below) |
 | `memory: [refuse_fraction:]` | 0.85 | the ingress refuses with 503 while the working set is at least this share of the limit (§7.1, Admission); `nil` turns it off |
 | `memory: [sample_ms:]` | 100 | how often the working set is sampled |
 | `memory: [current_path:]`, `[stat_path:]` | `/sys/fs/cgroup/memory.current`, `memory.stat` | the cgroup v2 files of the working set |
@@ -803,6 +804,55 @@ came from when it starts: `atanor: awake cells limited to 1073741824 bytes
 `mem_limit` (`ATANOR_CLUSTER_NODE_MEMORY`, 2g), so with the default fraction its
 ceiling is 1 GiB. With `ATANOR_CLUSTER_TMPFS=1` the cell files count against
 that limit too; give the node more memory rather than a larger fraction.
+*Memory of the wakes.* A wake restores the state of a cell from the store, and
+a store that fails makes it worse: an upload that fails stops the cell, and every
+request that was waiting for it wakes it again, all at once. Admission cannot
+see that, because the requests are already in. Reproduced on a node with a limit
+of 768 MiB, 64 awake cells and about 520 requests in flight: when its store
+began to answer 500, the BEAM memory grew by 215 MiB in 3 seconds and the
+container was killed before the gate at 85% turned on. Alambique's defaults
+(`awake: [max_wakes: 256]`, `restore: [fetch_concurrency: 16, prefetch_bytes:
+67_108_864]`) allow 256 wakes of up to 64 MiB of read-ahead each. So Atanor
+derives the three from the node's memory unless the operator gives them, one by
+one:
+
+```
+budget         = limit * (1 - refuse_fraction) * wake_fraction     (nil when the node has no limit)
+prefetch_bytes = clamp(budget / 16, 1 MiB, 64 MiB)
+fetch_concurrency = clamp(prefetch_bytes / 2 MiB, 1, 16)
+max_wakes      = clamp(budget / (prefetch_bytes + fetch_concurrency * 1 MiB), 1, 256)
+```
+
+A request in flight holds about 1 MiB (an assumption: Alambique's files are
+read whole, and the size of an LTX file is not bounded by an option). From a
+budget of 2 MiB the worst case, `max_wakes` times the read-ahead of one wake,
+is at most the budget; below it the minimum of one wake stays over it. A wake
+over `max_wakes` is `{:error, :overloaded}` at once, a 503 at the ingress, so
+the bound sheds and does not queue.
+
+| Node | Budget | `max_wakes` | `fetch_concurrency` | `prefetch_bytes` |
+| --- | --- | --- | --- | --- |
+| 512 MiB | 38.4 MiB | 11 | 1 | 2 516 582 (2.4 MiB) |
+| 768 MiB | 57.6 MiB | 12 | 1 | 3 774 873 (3.6 MiB) |
+| 2 GiB | 153.6 MiB | 11 | 4 | 10 066 329 (9.6 MiB) |
+
+The node logs them when it starts (`atanor: wakes limited to 11 at once; ...`).
+A node that restores big cells and has the room can raise them, for example
+`awake: [max_wakes: 32]`; a value in the option always wins. A node with a
+limit also has the second guard of §7.1: while the memory gate refuses, a cell
+call that would wake a cell (`Atanor.Cell`: the cell has no process on this
+node, `Alambique.load/2` is `:none`) is a 503 `overloaded` with `Retry-After`
+and starts no wake, and `Atanor.Admission.stats/1` counts them as `wake_refused`.
+An admin call (hibernate, move) is not gated, so the node can still shed cells.
+Alambique cannot say, without a lease read, whether a cold cell would wake here
+or on another node, so a cell owned by another node is refused too while this
+node is over the mark. Atanor does not build the store client (the operator
+gives `Alambique.Store.S3` its config, whose `req_options` take the Finch pool),
+so it bounds no queue of store calls. The tests are
+`test/atanor/wake_burst_test.exs` (48 cells of 2 MB whose store fails: wakes in
+flight 48 before the bound, 4 after), `test/atanor/wake_gate_test.exs` and
+`test/atanor/memory_property_test.exs`.
+
 Evictions are `[:alambique, :admission, :evict]` (telemetry.md), counted on the
 dashboard's Metrics page, group Cells. The tests are
 `test/atanor/memory_test.exs` and, for the node's memory staying flat as cells
@@ -1163,7 +1213,10 @@ bounds the node then. The in-flight gate refuses when `http.max_in_flight`
 process and the table size is the count, so a handler that is killed (its
 `after` does not run) is dropped by the sampler on its next tick and a slot
 cannot leak. A WebSocket holds a slot only until the upgrade is answered; an
-open socket is never closed by the gates. The default of 1,024 is generous on
+open socket is never closed by the gates. A request that is already in when the
+gate turns on is not stopped, so while the memory gate refuses, a cell call for
+a cell with no process on the node, which would wake it, is a 503 `overloaded`
+(§4.3, memory of the wakes). The default of 1,024 is generous on
 purpose: the memory gate is the guard, this one bounds handlers on a node whose
 limit is large or unknown. In the load VM a node of 1 CPU and 512 MiB was
 killed at 100 req/s native, 50 req/s WASM and 6,400 WebSockets with no
