@@ -75,4 +75,22 @@ defmodule Atanor.Cluster.LeaveWaitTest do
     statuses = for task <- gets, {:ok, resp} = Task.await(task, 30_000), do: {resp.status, resp.body}
     assert Enum.all?(statuses, &match?({200, _}, &1)), "GET answers: #{inspect(Enum.frequencies(statuses))}"
   end
+
+  test "a peer that left is taken over, and only a node outside the cluster is held_elsewhere" do
+    cluster = start_cluster(names: [:n1, :n2, :n3], workers: [Manifests.counter("counter")])
+    instance = Cluster.instance(cluster)
+    peer = Cluster.node(cluster, :n3)
+    owner = Atom.to_string(peer)
+
+    # A peer the detector knows is of the cluster, whether or not it is among the members.
+    assert {:ok, :owner_unreachable} = Cluster.call(cluster, :n1, Atanor.Takeover, :unreachable, [instance, owner])
+
+    assert {:ok, :held_elsewhere} =
+             Cluster.call(cluster, :n1, Atanor.Takeover, :unreachable, [instance, "node-b@elsewhere"])
+
+    # A peer that announced its leave is confirmed down, so a call for its cell never reaches `unreachable`.
+    {:ok, _} = Cluster.call(cluster, :n1, Kernel, :send, [Module.concat(instance, Detector), {:leaving, peer}])
+    Await.until(fn -> match?({:ok, true}, Cluster.call(cluster, :n1, Atanor.Detector, :left?, [instance, peer])) end)
+    assert {:ok, {:ok, ^peer, :left}} = Cluster.call(cluster, :n1, Atanor.Detector, :down_owner, [instance, owner])
+  end
 end
