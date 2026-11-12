@@ -79,6 +79,26 @@ cgroup v2 limit, or `memory: [limit_bytes:]`), the awake cells may use half of
 it (`memory: [awake_fraction: 0.5]`), and the least used cells hibernate past
 that.
 
+**Refusing requests before the node dies.** The ingress refuses with 503
+`overloaded` and `Retry-After`, before it reads the route, the token or the
+body, when either gate is closed:
+
+- `memory: [refuse_fraction: 0.85]`: the working set of the cgroup (`memory.current`
+  minus the `inactive_file` of `memory.stat`, so page cache the kernel can drop
+  never counts) is at least that share of the memory limit. The gate opens again
+  below `refuse_fraction - 0.05`. `nil` turns it off, as does a node with no
+  limit. The sampler reads the files every `memory: [sample_ms: 100]`
+  (`current_path` and `stat_path` default to
+  `/sys/fs/cgroup/memory.current` and `memory.stat`). A sample older than ten
+  periods is ignored.
+- `http: [max_in_flight: 1_024]`: requests served at once on the node. A WebSocket
+  holds no slot after the upgrade. The memory gate is the main guard; this one
+  bounds the handlers when the limit is high or unknown.
+
+Open WebSockets are not closed by either gate. Refusals count in
+`Atanor.Admission.stats/1` and `[:atanor, :http, :reject]` (reasons `:memory` and
+`:in_flight`, [telemetry](telemetry.md)).
+
 **Store requests.** Two options cut the requests a busy cell sends:
 
 - `compaction: [hold_bytes:, hold_object_bytes:]` keeps Alambique's defaults (on).

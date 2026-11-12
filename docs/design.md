@@ -790,6 +790,9 @@ the node, so a container with a limit needs no option:
 | `memory: [limit_bytes:]` | `nil` | the memory limit of the node, when it is not the cgroup's. Overrides the detection |
 | `memory: [awake_fraction:]` | 0.5 | share of that limit given to `awake: [max_bytes:]`, a number above 0 and at most 1. The rest is for the BEAM, the 150 KiB per cell that `max_bytes` does not count, the stores and the file cache |
 | `memory: [cgroup_path:]` | `/sys/fs/cgroup/memory.max` | the cgroup v2 file read when `limit_bytes` is `nil`: a byte count, or `max` for no limit |
+| `memory: [refuse_fraction:]` | 0.85 | the ingress refuses with 503 while the working set is at least this share of the limit (§7.1, Admission); `nil` turns it off |
+| `memory: [sample_ms:]` | 100 | how often the working set is sampled |
+| `memory: [current_path:]`, `[stat_path:]` | `/sys/fs/cgroup/memory.current`, `memory.stat` | the cgroup v2 files of the working set |
 
 The ceiling is, in order: the `awake: [max_bytes:]` the operator gave (`nil`
 there means no ceiling), `limit_bytes * awake_fraction`, the cgroup limit
@@ -1059,6 +1062,33 @@ lookups a request costs at most (labels + 2) times (segments + 1), each over
 sub-binaries of the same host and path, whatever the request line holds; a
 request line of 8,000 bytes made of segments is answered 400 in a few
 milliseconds.
+
+*Admission.* A node refuses before it runs out of memory (`Atanor.Admission`).
+The first thing `Atanor.HTTP.call/2` does, before the route, the token and the
+body, is ask two gates; a refusal is 503 `overloaded` with `Retry-After` and
+the event `[:atanor, :http, :reject]` with `reason` `:memory` or `:in_flight`.
+The memory gate reads the cgroup every `memory.sample_ms` (100): the working set
+is `memory.current` minus the `inactive_file` of `memory.stat`, so page cache
+the kernel can drop never refuses, while tmpfs and shared memory still count.
+It refuses at `memory.refuse_fraction` (0.85) of the limit and resumes 5 points
+below, so the verdict does not flap. The limit is that of §4.3 (`limit_bytes`,
+else `memory.max`); with none, or `refuse_fraction: nil`, the gate is off. A
+sample older than ten periods is ignored (fail open): a dead sampler restarts
+the node, since the supervisor is `one_for_all`, and a sampler that stalls
+under CPU starvation must not keep a stale refusal; the in-flight gate still
+bounds the node then. The in-flight gate refuses when `http.max_in_flight`
+(1,024) requests are being served on the node. It is one ETS row per request
+process and the table size is the count, so a handler that is killed (its
+`after` does not run) is dropped by the sampler on its next tick and a slot
+cannot leak. A WebSocket holds a slot only until the upgrade is answered; an
+open socket is never closed by the gates. The default of 1,024 is generous on
+purpose: the memory gate is the guard, this one bounds handlers on a node whose
+limit is large or unknown. In the load VM a node of 1 CPU and 512 MiB was
+killed at 100 req/s native, 50 req/s WASM and 6,400 WebSockets with no
+admission; `Atanor.Admission.stats/1` returns the counters for the admin
+runtime page. The tests are `test/atanor/admission_test.exs` (the flood and
+the cgroup files of a temporary directory) and
+`test/atanor/admission_property_test.exs` (the pure decision function).
 
 The listener is bounded: `http.max_connections` (16,384) is the total for the
 listener, WebSockets included, divided among `http.acceptors` (10) because

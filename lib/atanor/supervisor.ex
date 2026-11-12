@@ -36,6 +36,7 @@ defmodule Atanor.Supervisor do
     children =
       [
         {Registry, config},
+        {Atanor.Admission, config},
         {Atanor.Wasm.Cache, config}
       ] ++
         auth(config) ++

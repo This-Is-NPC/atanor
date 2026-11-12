@@ -10,6 +10,8 @@ defmodule Atanor.HTTP do
 
   Failures never leak internals: no route is a 404, an oversized body a 413,
   a worker that crashes or returns something else a 500, all with a JSON body.
+  A node that is out of memory or already serves `:http`'s `:max_in_flight`
+  requests refuses first, with a 503 `overloaded` (`Atanor.Admission`).
   Expected unavailability is a 503 with the reason and `Retry-After`
   (`:http`'s `:retry_after_s`, design §8.4); a worker that mapped the error to
   5xx still gets the 503.
@@ -18,7 +20,7 @@ defmodule Atanor.HTTP do
 
   import Plug.Conn
 
-  alias Atanor.{Auth, Dispatch, Env, Registry, Request, Response, Route, Telemetry, Workers}
+  alias Atanor.{Admission, Auth, Dispatch, Env, Registry, Request, Response, Route, Telemetry, Workers}
   alias Atanor.Diagnostics.Breadcrumb
   alias Atanor.HTTP.Socket
 
@@ -31,6 +33,28 @@ defmodule Atanor.HTTP do
   def call(conn, name) do
     config = Registry.config(name)
 
+    case Admission.enter(name) do
+      :ok ->
+        try do
+          admitted(conn, name, config)
+        after
+          Admission.leave(name)
+        end
+
+      {:refuse, reason} ->
+        # Before the route, the token and the body: a refused request costs almost nothing.
+        :telemetry.execute([:atanor, :http, :reject], %{count: 1}, %{
+          reason: reason,
+          status: 503,
+          host: conn.host,
+          worker: nil
+        })
+
+        failure(conn, :overloaded, config)
+    end
+  end
+
+  defp admitted(conn, name, config) do
     case Route.canonical(conn.host, conn.request_path, config.http) do
       {:ok, host, path} ->
         conn = canonical(conn, host, path)

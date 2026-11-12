@@ -72,7 +72,15 @@ defmodule Atanor.MemoryTest do
     config = Config.build(name: :memory_defaults, store: {AlambiqueTestkit.MemoryStore, %{}}, data_dir: "/tmp", port: 0)
 
     assert Map.delete(config.memory, :awake_source) ==
-             %{limit_bytes: nil, awake_fraction: 0.5, cgroup_path: "/sys/fs/cgroup/memory.max"}
+             %{
+               limit_bytes: nil,
+               awake_fraction: 0.5,
+               cgroup_path: "/sys/fs/cgroup/memory.max",
+               refuse_fraction: 0.85,
+               sample_ms: 100,
+               current_path: "/sys/fs/cgroup/memory.current",
+               stat_path: "/sys/fs/cgroup/memory.stat"
+             }
   end
 
   test "wrong values are refused at start" do
@@ -83,6 +91,12 @@ defmodule Atanor.MemoryTest do
           [awake_fraction: 1.5],
           [awake_fraction: "half"],
           [cgroup_path: nil],
+          [refuse_fraction: 0.05],
+          [refuse_fraction: 1.5],
+          [refuse_fraction: "most"],
+          [sample_ms: 0],
+          [current_path: nil],
+          [stat_path: 1],
           [size: 1],
           :big
         ] do

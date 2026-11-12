@@ -68,8 +68,17 @@ defmodule Atanor.Config do
     guard_attempts: 3
   }
 
-  # The node's memory limit and the part of it the awake cells may use (`Atanor.Memory`, design §4.3).
-  @memory %{limit_bytes: nil, awake_fraction: 0.5, cgroup_path: "/sys/fs/cgroup/memory.max"}
+  # The node's memory limit, the part of it the awake cells may use (`Atanor.Memory`, design §4.3), and the
+  # working set at which the ingress refuses requests (`Atanor.Admission`, design §7.1).
+  @memory %{
+    limit_bytes: nil,
+    awake_fraction: 0.5,
+    cgroup_path: "/sys/fs/cgroup/memory.max",
+    refuse_fraction: 0.85,
+    sample_ms: 100,
+    current_path: "/sys/fs/cgroup/memory.current",
+    stat_path: "/sys/fs/cgroup/memory.stat"
+  }
 
   # The prefix of Atanor's own tables in a cell (`Atanor.Jobs.Schema`).
   @internal_prefix "_atanor_"
@@ -83,9 +92,11 @@ defmodule Atanor.Config do
   # Outbound HTTP (design §4.1): the body and the time of a whole fetch, redirects included.
   @calls %{max_depth: 8, max_redirects: 5, fetch_max_bytes: 8_000_000, fetch_timeout_ms: 30_000}
   # The ingress (design §7.1). `max_connections` is the total of the listener, `read_timeout_ms` the wait for
-  # the next bytes of the request (header or body), and the last two bound the work of matching a route.
+  # the next bytes of the request (header or body), the two after bound the work of matching a route, and
+  # `max_in_flight` is the requests the node serves at once before it refuses with 503 (`Atanor.Admission`).
   @http %{
     retry_after_s: 1,
+    max_in_flight: 1_024,
     max_connections: 16_384,
     acceptors: 10,
     read_timeout_ms: 10_000,
@@ -571,7 +582,19 @@ defmodule Atanor.Config do
       ":memory :awake_fraction must be a number above 0 and at most 1"
     )
 
-    check!(is_binary(memory.cgroup_path), ":memory :cgroup_path must be a string")
+    check!(
+      is_nil(memory.refuse_fraction) or
+        (is_number(memory.refuse_fraction) and memory.refuse_fraction > Atanor.Admission.hysteresis() and
+           memory.refuse_fraction <= 1),
+      ":memory :refuse_fraction must be nil or a number above #{Atanor.Admission.hysteresis()} and at most 1"
+    )
+
+    check!(positive_integer?(memory.sample_ms), ":memory :sample_ms must be a positive integer")
+
+    for key <- [:cgroup_path, :current_path, :stat_path] do
+      check!(is_binary(memory[key]), ":memory :#{key} must be a string")
+    end
+
     memory
   end
 
