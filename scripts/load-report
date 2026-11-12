@@ -84,6 +84,25 @@ def cost(measure, steps, baseline, summary):
     return out
 
 
+def admission_rows(steps, summary):
+    """Admission refusals by reason and the store tmpfs at the approved step and at the first failing one."""
+    approved = summary.get("approved") if summary else None
+    chosen = [("approved", next((s for s in reversed(steps) if s["value"] == approved and s["status"] == "ok"), None)),
+              ("first failing", next((s for s in steps if s["status"] == "fail"), None))]
+    rows = []
+    for label, s in chosen:
+        if not s:
+            continue
+        a, store = s.get("admission") or {}, s.get("store") or {}
+        refused = a.get("refused") or {}
+        rows.append([label, f"{s['value']:g}", f"{num(refused.get('memory'), 0)} / {num(refused.get('in_flight'), 0)} / {num(refused.get('disk'), 0)}",
+                     "yes" if a.get("refusing_seen") else "no", num(a.get("in_flight_max"), 0), num(store.get("tmpfs_max_pct")), num(store.get("s3_errors"), 0)])
+    return rows
+
+
+ADMISSION_HEADER = ["step", "value", "refused: memory / in-flight / disk", "refusing seen", "in-flight max", "store tmpfs max %", "store S3 5xx"]
+
+
 def swap_section(steps):
     s = steps[-1]
     w = s["swap"]
@@ -116,6 +135,8 @@ def report(directory):
                 out += [table(step_rows(mine), HEADER), ""]
                 pairs = cost(measure, mine, baseline, summary)
                 out += [table(pairs, ["cost per unit", "value"]), ""] if pairs else ["No approved step: the first step already failed or was invalid.", ""]
+                rows = admission_rows(mine, summary)
+                out += [table(rows, ADMISSION_HEADER), ""] if rows else []
             if summary:
                 stop = summary.get("stopped_by") or summary.get("invalid") or ("ceiling reached without a failure" if summary.get("ceiling_reached") else "none")
                 out += [f"Ramp stopped by: **{stop}**" + (f" (invalid: {summary['invalid']})" if summary.get("invalid") and summary.get("stopped_by") else "")
