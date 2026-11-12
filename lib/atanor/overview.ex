@@ -88,7 +88,7 @@ defmodule Atanor.Overview do
 
   @doc "What this node's memory is made of (`GET /runtime`); the cgroup is the one of `:memory` `:cgroup_path`."
   def runtime(name) do
-    Atanor.RuntimeSample.read(Path.dirname(Registry.config(name).memory.cgroup_path))
+    Atanor.RuntimeSample.sample(name, Path.dirname(Registry.config(name).memory.cgroup_path))
   end
 
   @doc "The HTTP and TCP routes this node serves."

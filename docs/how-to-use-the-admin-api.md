@@ -208,7 +208,10 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
 
    `GET /runtime` shows what this node's memory is made of: the VM memory by type,
    the biggest ETS tables and processes (by message queue and by memory), the cgroup
-   counters (`memory.current`, `memory.stat`, `oom_kill`) and the Wasm gauges. A
+   counters (`memory.current`, `memory.stat`, `oom_kill`), the Wasm gauges and the
+   admission counters (`admission`: requests in flight, refusals by reason, the last
+   working set, and whether the node is refusing, see
+   [configuration](configuration.md)). A
    cgroup field is `null` when its file cannot be read. The load harness samples it
    ([how-to-run-the-load-tests.md](how-to-run-the-load-tests.md)).
 
