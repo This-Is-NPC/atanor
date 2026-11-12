@@ -141,6 +141,8 @@ defmodule Atanor.Supervisor do
       bytes -> Logger.info("atanor: awake cells limited to #{bytes} bytes (#{config.memory.awake_source})")
     end
 
+    log_wake_limits(config)
+
     case config.disk do
       %{budget: nil} ->
         Logger.warning(
@@ -150,6 +152,19 @@ defmodule Atanor.Supervisor do
       %{budget: bytes, budget_source: source} ->
         wal = config.alambique_opts[:wal][:checkpoint_bytes]
         Logger.info("atanor: data_dir limited to #{bytes} bytes (#{source}), cells checkpoint at #{wal} bytes of WAL")
+    end
+  end
+
+  # Only when the node has set them (derived from its memory limit, or given by the operator).
+  defp log_wake_limits(config) do
+    opts = config.alambique_opts
+
+    if wakes = opts[:awake][:max_wakes] do
+      Logger.info(
+        "atanor: wakes limited to #{wakes} at once; a restore reads ahead " <>
+          "#{opts[:restore][:prefetch_bytes] || "the default"} bytes with " <>
+          "#{opts[:restore][:fetch_concurrency] || "the default"} requests"
+      )
     end
   end
 end
