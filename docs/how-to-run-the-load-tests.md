@@ -60,6 +60,11 @@ and `/proc/meminfo`. Per step, in this order:
    last 200 log lines) next to the step file, before `load:down` removes the container. A node that is fine
    while a side measurement fails (the store round trip, the awake cells, the descriptors) keeps its step as
    measured: the value is null and `notes` in the step file says what was not measured.
+   The nodes do not restart (`restart: "no"`), so the round ends at a node stop: no bisection and no
+   confirmation. The summary has `node_stopped: true`, `first_failure` and `stopped_by` from that step, and
+   `approved` is the last good value (no confirmation repeat); `load-run` still exits 0. A step that finds the
+   node not running at its start runs no generator: it is INVALID ("node not running at step start") and ends
+   the round the same way.
 5. **Criteria.** The step fails when any criterion of the table above broke.
 6. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
    failure of the node. A saturated node breaks p99 first, so it is a failure, not an invalid step.
