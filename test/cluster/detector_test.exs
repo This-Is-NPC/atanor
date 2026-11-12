@@ -113,7 +113,7 @@ defmodule Atanor.Cluster.DetectorTest do
     # Nothing is forwarded over the broken link, so the answer is quick; elsewhere the cell serves.
     t0 = now()
     assert {503, body} = write(cluster, other, cell, 2)
-    assert Jason.decode!(body)["error"] == "unavailable"
+    assert %{"error" => "unavailable", "reason" => "owner_unreachable"} = Jason.decode!(body)
     assert div(now() - t0, 1_000) < 3_000
     assert {200, _} = write(cluster, witness, cell, 3)
 

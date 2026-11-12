@@ -94,11 +94,14 @@ defmodule Atanor.Takeover do
   @doc """
   Why a cell whose lease names `owner` cannot be reached and `owner` is not down: `:held_elsewhere` when
   `owner` is no node of this cluster (a node being replaced holds it until it hands it back or the lease
-  ends), else `:owner_unreachable`.
+  ends), else `:owner_unreachable`. A node the detector knows is of the cluster even after it left the
+  members (a lost node is out of them before the detector confirms it down).
   """
   @spec unreachable(atom, String.t()) :: :held_elsewhere | :owner_unreachable
   def unreachable(instance, owner) do
-    if Enum.any?(Watcher.nodes(instance), &(Atom.to_string(&1) == owner)),
+    peers = Enum.map(Detector.peers(instance), & &1.node)
+
+    if Enum.any?(Watcher.nodes(instance) ++ peers, &(Atom.to_string(&1) == owner)),
       do: :owner_unreachable,
       else: :held_elsewhere
   end
