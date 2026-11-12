@@ -271,8 +271,9 @@ defmodule Atanor.AdminTest do
                )
              end)
 
-      %{"nodes" => nodes, "total" => 0} = json(get(node, "/jobs"))
-      assert map_size(nodes) == 1
+      # The slot is released just after the job is written as done.
+      assert until(fn -> match?(%{"total" => 0}, json(get(node, "/jobs"))) end)
+      assert map_size(json(get(node, "/jobs"))["nodes"]) == 1
 
       %{"jobs" => [job]} = json(get(node, "/jobs/jobs/a"))
       assert job["state"] == "done"
