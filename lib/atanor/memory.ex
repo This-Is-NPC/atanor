@@ -17,8 +17,9 @@ defmodule Atanor.Memory do
     end
   end
 
-  defp limit(%{limit_bytes: bytes}) when is_integer(bytes), do: {bytes, :limit_bytes}
-  defp limit(%{cgroup_path: path}), do: {cgroup_limit(path), :cgroup}
+  @doc "`{bytes | nil, source}`: the node's memory limit, `nil` when it has none."
+  def limit(%{limit_bytes: bytes}) when is_integer(bytes), do: {bytes, :limit_bytes}
+  def limit(%{cgroup_path: path}), do: {cgroup_limit(path), :cgroup}
 
   # cgroup v2: a byte count, or "max" for no limit. A missing or unreadable file is no limit either.
   defp cgroup_limit(path) do

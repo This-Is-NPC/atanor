@@ -261,6 +261,7 @@ defmodule Atanor do
       outbound HTTP fetch, redirects and name lookups included).
     * `:http` - the ingress (design §7.1): `:retry_after_s` (1, the
       `Retry-After` of a 503 for expected unavailability, `held_elsewhere` included; design §8.4);
+      `:max_in_flight` (1 024, the requests served at once on the node; above it, 503 `overloaded`);
       `:max_connections` (16 384, the total of open connections, WebSockets
       included) shared by `:acceptors` (10); `:read_timeout_ms` (10 000, how
       long the listener waits for the next bytes of a request, header or body,
@@ -301,7 +302,12 @@ defmodule Atanor do
       `awake_fraction` (0.5, above 0 and at most 1) and `cgroup_path`
       (`/sys/fs/cgroup/memory.max`, cgroup v2; `max` or a missing file is no
       limit). The result is the default of `alambique: [awake: [max_bytes:]]`;
-      the node logs it and its source at start.
+      the node logs it and its source at start. The ingress also refuses
+      requests with 503 `overloaded` while the working set of the cgroup is at
+      least `refuse_fraction` (0.85; `nil` turns it off) of that limit, and
+      resumes 5 points below; `sample_ms` (100) is the sampling period, and
+      `current_path` and `stat_path` (`/sys/fs/cgroup/memory.current` and
+      `memory.stat`) are the files it reads.
     * `:max_body_bytes` - largest request body the ingress reads for
       `handle_request/2` workers, 413 above it (default 1,000,000).
     * `:alambique` - extra options for the Alambique instance, passed through
