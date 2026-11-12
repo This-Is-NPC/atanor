@@ -33,6 +33,10 @@ defmodule Atanor.Unavailable do
   def reason(:lease_expired), do: :fenced
   def reason(:overloaded), do: :overloaded
   def reason(:busy), do: :overloaded
+  # A full disk: SQLite's message for SQLITE_FULL (what an ENOSPC on the database or the WAL becomes), or the
+  # POSIX atom. The statement did not commit, and the node recovers when it frees the disk (`Atanor.Disk`).
+  def reason("database or disk is full"), do: :overloaded
+  def reason(:enospc), do: :overloaded
   def reason(:draining), do: :draining
   def reason(:stale), do: :owner_unreachable
   def reason(:taken_elsewhere), do: :owner_unreachable
@@ -45,6 +49,9 @@ defmodule Atanor.Unavailable do
   def reason({:store, _}), do: :store_unavailable
   # The lease could not be read for a read or a lookup, which ran nothing.
   def reason({:lease_unreadable, _}), do: :store_unavailable
+  # A transaction function that did not match the error of a statement (`{:ok, _} = Tx.execute(...)`) fails
+  # with the error as the term of the exception: the reason is that of the error.
+  def reason({:raised, %{term: {:error, error}}, _stacktrace}), do: reason(error)
   def reason({:unavailable, reason}), do: reason(reason) || :owner_unreachable
   def reason({:unavailable, _owner, _expires_at_ms}), do: :owner_unreachable
   def reason({:lost, _node, _reason}), do: :owner_unreachable
