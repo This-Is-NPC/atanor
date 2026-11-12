@@ -324,8 +324,9 @@ def runtime_summary(samples):
             "at_peak": {k: peak.get(k) for k in ("top_memory", "top_message_queue", "ets", "wasm")}}
 
 
-def summarize(samples, gen_cpu_total):
-    """CPU, memory, fds and host load over the samples of one step."""
+def summarize(samples, gen_cpu_total, limit):
+    """CPU, memory, fds and host load over the samples of one step. limit: the scenario's memory in bytes (the container's
+    cgroup limit is that plus the tmpfs); the service's memory, memory.current - shmem, is measured against it."""
     first, last = samples[0], samples[-1]
     span = max(last["t"] - first["t"], 1e-9)
 
@@ -344,7 +345,6 @@ def summarize(samples, gen_cpu_total):
         own += (b["gen_cpu_s"] - a["gen_cpu_s"]) / dt
         nets.append((busy, max(busy - own, 0)))
     mem = [s["node"] for s in samples if s["node"]]
-    limit = next((m["limit"] for m in mem if m["limit"]), None)
     current = [m["memory_current"] for m in mem]
     service = [m["memory_current"] - m["shmem"] for m in mem]
     fd = [s["fds"] for s in samples if s["fds"]]
@@ -353,10 +353,12 @@ def summarize(samples, gen_cpu_total):
         "cpu": {"node_cores": round(node, 3) if node is not None else None, "store_cores": round(store or 0, 3), "lb_cores": round(lb or 0, 3),
                 "generator_cores": round(gen_cpu_total / span, 3), "node_limit_cores": mem[-1]["cpu_limit"] if mem else None},
         "memory": {"service_mb": mb(service[-1]) if service else None, "service_max_mb": mb(max(service)) if service else None,
-                   "tmpfs_mb": mb(mem[-1]["shmem"]) if mem else None, "current_mb": mb(current[-1]) if current else None,
+                   "tmpfs_mb": mb(mem[-1]["shmem"]) if mem else None,
+                   "tmpfs_start_mb": mb(mem[0]["shmem"]) if mem else None, "tmpfs_max_mb": mb(max(m["shmem"] for m in mem)) if mem else None,
+                   "tmpfs_growth_mb": mb(max(m["shmem"] for m in mem) - mem[0]["shmem"]) if mem else None, "current_mb": mb(current[-1]) if current else None,
                    "current_max_mb": mb(max(current)) if current else None,
                    "peak_mb": mb(mem[-1]["peak"]) if mem else None, "limit_mb": mb(limit) if limit else None,
-                   "max_pct_of_limit": round(100 * max(current) / limit, 1) if current and limit else None},
+                   "max_pct_of_limit": round(100 * max(service) / limit, 1) if service and limit else None},
         "fds": {"count": fd[-1][0] if fd else None, "max": max((f[0] for f in fd), default=None), "limit": fd[-1][1] if fd else None},
         "host": {"busy_cores_mean": round(sum(b for b, _ in nets) / len(nets), 2) if nets else None,
                  "net_load_mean": round(sum(n for _, n in nets) / len(nets), 2) if nets else None,
@@ -520,7 +522,7 @@ class Round:
                   "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "node_stopped": bool(dead), "notes": [], "diagnostics": list(diagnostics)}
         if merged is None:
             return record
-        usage = summarize(samples, sampler_cpu(gens))
+        usage = summarize(samples, sampler_cpu(gens), self.info["memory_limit_bytes"])
         errors = {k: n for k, n in merged["statuses"].items() if k not in OK_STATUSES}
         record.update(statuses=merged["statuses"], cpu=usage["cpu"], memory=usage["memory"], fds=usage["fds"], host=usage["host"], swap_usage=usage["swap_usage"],
                       runtime=runtime_summary(samples),
@@ -555,7 +557,7 @@ class Round:
             criteria.append(f"connections failed {merged.get('failed', 0)}, dropped {merged.get('dropped', 0)}")
         pct = usage["memory"]["max_pct_of_limit"]
         if a.measure in ("ws", "cells") and pct is not None and pct >= a.memory_pct:
-            criteria.append(f"memory {pct}% of the limit >= {a.memory_pct:g}%")
+            criteria.append(f"service memory {pct}% of the scenario limit >= {a.memory_pct:g}%")
         fd_max, fd_limit = usage["fds"]["max"], usage["fds"]["limit"]
         if a.measure == "ws" and fd_max and fd_limit and fd_max >= a.fd_pct / 100 * fd_limit:
             criteria.append(f"file descriptors {fd_max} of {fd_limit}")
@@ -677,7 +679,7 @@ def swap(round_, args, info):
         reasons.append(f"errors other than 503: {other}")
     if not result or (process.returncode and not reasons):
         reasons.append(f"cluster-swap-run exited {process.returncode}")
-    usage = summarize(samples, 0) if all(s.get("node") is not None for s in samples) else {"host": {}, "cpu": {}, "memory": {}, "fds": {}, "swap_usage": {}}
+    usage = summarize(samples, 0, self.info["memory_limit_bytes"]) if all(s.get("node") is not None for s in samples) else {"host": {}, "cpu": {}, "memory": {}, "fds": {}, "swap_usage": {}}
     record = {"schema": SCHEMA, "scenario": round_.scenario, "measure": "swap", "unit": "req/s", "phase": "swap", "step": 1, "value": rate,
               "duration_s": duration, "store_latency_ms": info["store_latency_ms"], "command": args.command, "planned": round(rate * duration),
               "achieved": result.get("sent"), "achieved_rate": round(result.get("sent", 0) / duration, 1),
@@ -714,7 +716,7 @@ def main():
     add("--steps", help="explicit values, comma separated; replaces --start/--factor/--max")
     add("--refine", type=int, default=env("REFINE", 3, int), help="bisections between the last good and the failing step (ATANOR_LOAD_REFINE, 3)")
     add("--p99-ms", type=float, default=env("P99_MS", 250), help="p99 above this fails a step (ATANOR_LOAD_P99_MS, 250)")
-    add("--memory-pct", type=float, default=env("MEMORY_PCT", 90), help="memory.current at this share of the limit fails ws and cells steps (ATANOR_LOAD_MEMORY_PCT, 90)")
+    add("--memory-pct", type=float, default=env("MEMORY_PCT", 90), help="memory.current - shmem at this share of the scenario memory fails ws and cells steps (ATANOR_LOAD_MEMORY_PCT, 90)")
     add("--fd-pct", type=float, default=env("FD_PCT", 90), help="open descriptors at this share of the limit fail a ws step (ATANOR_LOAD_FD_PCT, 90)")
     add("--delivery", type=float, default=env("DELIVERY", 0.95), help="achieved/planned below this makes a step INVALID (ATANOR_LOAD_DELIVERY, 0.95)")
     add("--host-load-max", type=float, default=env("HOST_LOAD_MAX", 6), help="net host load (busy cores minus the test's own) above this repeats the step (ATANOR_LOAD_HOST_LOAD_MAX, 6)")

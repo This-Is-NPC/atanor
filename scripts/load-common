@@ -10,15 +10,30 @@ case $LOAD_SCENARIO in
   B) cpus=2; memory=2g ;;
   *) echo "ATANOR_LOAD_SCENARIO must be A or B" >&2; exit 1 ;;
 esac
+# Bytes of a docker size such as 512m, 2g or 768M (k, m, g; a bare number is bytes).
+size_bytes() {
+  awk -v s="$1" 'BEGIN { s = tolower(s); sub(/b$/, "", s); u = substr(s, length(s));
+    m = (u == "k") ? 1024 : (u == "m") ? 1048576 : (u == "g") ? 1073741824 : 1
+    if (m > 1) s = substr(s, 1, length(s) - 1)
+    if (s !~ /^[0-9]+$/) exit 1
+    printf "%d", s * m }'
+}
+
 LOAD_CPUS=${ATANOR_LOAD_CPUS:-$cpus}
 LOAD_MEMORY=${ATANOR_LOAD_MEMORY:-$memory}
 LOAD_STORE_LATENCY_MS=${ATANOR_LOAD_STORE_LATENCY_MS:-25}   # added to every trip to the store
-LOAD_TMPFS_SIZE=${ATANOR_LOAD_TMPFS_SIZE:-256m}             # the node's data dir, inside its memory limit
-LOAD_STORE_TMPFS_SIZE=${ATANOR_LOAD_STORE_TMPFS_SIZE:-1g}   # the store's data, in the store's own limit
+LOAD_TMPFS_SIZE=${ATANOR_LOAD_TMPFS_SIZE:-256m}             # the node's data dir; its limit is the scenario memory plus this
+LOAD_STORE_TMPFS_SIZE=${ATANOR_LOAD_STORE_TMPFS_SIZE:-1g}   # the store's data; its limit is its memory plus this
 
 # The cluster settings of the scenario: one node, no peers, data in tmpfs, a balancer that is not the limit.
 export ATANOR_CLUSTER_NODES=1 ATANOR_CLUSTER_PEERS= ATANOR_CLUSTER_TMPFS=1
-export ATANOR_CLUSTER_NODE_CPUS=$LOAD_CPUS ATANOR_CLUSTER_NODE_MEMORY=$LOAD_MEMORY
+# A tmpfs counts against its container's memory limit. It is a lab artifact, so the limit is the scenario
+# memory plus the tmpfs: the scenario memory stays what the service gets (memory.current - shmem is measured against it).
+LOAD_STORE_MEMORY=${ATANOR_LOAD_STORE_MEMORY:-2g}
+LOAD_MEMORY_BYTES=$(size_bytes "$LOAD_MEMORY") && tmpfs_bytes=$(size_bytes "$LOAD_TMPFS_SIZE") \
+  && store_memory_bytes=$(size_bytes "$LOAD_STORE_MEMORY") && store_tmpfs_bytes=$(size_bytes "$LOAD_STORE_TMPFS_SIZE") \
+  || { echo "ATANOR_LOAD_MEMORY, _TMPFS_SIZE, _STORE_MEMORY and _STORE_TMPFS_SIZE must be sizes (use k, m or g)" >&2; exit 1; }
+export ATANOR_CLUSTER_NODE_CPUS=$LOAD_CPUS ATANOR_CLUSTER_NODE_MEMORY=$((LOAD_MEMORY_BYTES + tmpfs_bytes))
 export ATANOR_CLUSTER_TMPFS_SIZE=$LOAD_TMPFS_SIZE ATANOR_CLUSTER_STORE_TMPFS_SIZE=$LOAD_STORE_TMPFS_SIZE
-export ATANOR_CLUSTER_STORE_CPUS=${ATANOR_LOAD_STORE_CPUS:-2} ATANOR_CLUSTER_STORE_MEMORY=${ATANOR_LOAD_STORE_MEMORY:-2g}
+export ATANOR_CLUSTER_STORE_CPUS=${ATANOR_LOAD_STORE_CPUS:-2} ATANOR_CLUSTER_STORE_MEMORY=$((store_memory_bytes + store_tmpfs_bytes))
 export ATANOR_CLUSTER_LB_CPUS=${ATANOR_LOAD_LB_CPUS:-2} ATANOR_CLUSTER_LB_MEMORY=${ATANOR_LOAD_LB_MEMORY:-512m}

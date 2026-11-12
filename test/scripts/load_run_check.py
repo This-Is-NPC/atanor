@@ -35,6 +35,9 @@ os.environ["PATH"] = fake + os.pathsep + os.environ["PATH"]
 os.environ["FAKE_DIR"] = fake
 
 
+MB = 1048576
+
+
 def container(running=True, oom=False, exit_code=0, started="2026-01-01T00:00:00Z", restarts=0, ident="abc"):
     gone = os.path.join(fake, "gone")
     if os.path.exists(gone):
@@ -73,7 +76,7 @@ def new_round(name):
                               sample_s=0.05, repeat_invalid=0, host_wait=0.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
                               max_generator_swap_mb=1e9, max_host_swap_mb=1e12, command="test", steps="10,20", start=10, max=20, factor=2, refine=0)
     pid = os.getpid()
-    info = {"scenario": "A", "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"ip": "127.0.0.1", "pid": pid},
+    info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"ip": "127.0.0.1", "pid": pid},
             "lb": {"pid": pid}, "admin": "http://127.0.0.1:1"}
     return m.Round(args, info), args
 
@@ -147,4 +150,16 @@ def ramp_scenario(name, dies_at, before=None):
 results["ramp"] = ramp_scenario("ramp", dies_at=2)
 # A step that starts with a dead node is invalid, runs no generator and ends the round.
 results["dead_at_start"] = ramp_scenario("dead_at_start", dies_at=0, before={"running": False, "exit_code": 137})
+
+# The memory criterion: memory.current - shmem against the scenario's memory, the tmpfs recorded apart (start, max, growth).
+def memory_sample(t, current_mb, shmem_mb):
+    host = {"cpu_total": 100 * (t + 1), "cpu_idle": 100 * (t + 1), "loadavg1": 0.0, "available_gb": 8.0, "swap_used_mb": 0}
+    node = {"memory_current": current_mb * MB, "shmem": shmem_mb * MB, "peak": current_mb * MB, "limit": (512 + 768) * MB, "cpu_s": float(t), "cpu_limit": 1.0}
+    return {"t": float(t), "node": node, "store": {}, "lb": {}, "gen_cpu_s": 0.0, "gen_swap_mb": 0, "fds": None, "host": host}
+
+
+# 700 MB current, 300 of it tmpfs: the service uses 400 MB of the 512 MB scenario, not 700 of 1280.
+usage = m.summarize([memory_sample(0, 650, 256), memory_sample(1, 700, 300)], 0, 512 * MB)["memory"]
+results["memory_criterion"] = {k: usage[k] for k in ("service_max_mb", "tmpfs_start_mb", "tmpfs_max_mb", "tmpfs_growth_mb", "limit_mb", "max_pct_of_limit")}
+
 print(json.dumps(results))

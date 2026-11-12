@@ -45,7 +45,11 @@ def say(message):
 
 
 def run(*command, **kwargs):
-    return subprocess.run(command, check=True, text=True, capture_output=True, **kwargs).stdout
+    done = subprocess.run(command, text=True, capture_output=True, **kwargs)
+    if done.returncode:
+        tail = "\n".join(done.stdout.splitlines()[-20:] + done.stderr.splitlines()[-20:])
+        raise SystemExit(f"{' '.join(command)} exited {done.returncode}:\n{tail}")
+    return done.stdout
 
 
 COMPOSE = ["docker", "compose", "-p", "atanor-cluster", "-f", os.path.join(ROOT, "cluster", "compose.yml")]
