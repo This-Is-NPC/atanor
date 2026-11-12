@@ -198,6 +198,9 @@ defmodule Atanor.AdminTest do
       assert %{"anon" => 100, "file" => 200, "shmem" => 3, "sock" => 4, "slab" => 5} = runtime["cgroup"]["stat"]
       assert runtime["cgroup"]["stat"]["kernel_stack"] == nil
       assert runtime["cgroup"]["events"] == %{"oom" => 2, "oom_kill" => 1}
+
+      assert %{"in_flight" => 0, "refused" => %{"memory" => 0, "in_flight" => 0}, "refusing" => false} =
+               runtime["admission"]
     end
 
     test "cgroup fields are null when the files are missing or say max", %{tmp_dir: dir} do

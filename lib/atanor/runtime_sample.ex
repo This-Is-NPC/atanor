@@ -9,9 +9,9 @@ defmodule Atanor.RuntimeSample do
   @stat_keys ~w(anon file shmem sock slab kernel_stack inactive_file active_file)
   @event_keys ~w(oom oom_kill)
 
-  @doc "The sample of this node. `cgroup_dir` is where `memory.current` and its siblings live."
-  @spec read(Path.t()) :: map
-  def read(cgroup_dir) do
+  @doc "The sample of node `name`. `cgroup_dir` is where `memory.current` and its siblings live."
+  @spec sample(atom, Path.t()) :: map
+  def sample(name, cgroup_dir) do
     infos = process_infos()
 
     %{
@@ -24,6 +24,7 @@ defmodule Atanor.RuntimeSample do
       top_message_queue: top(infos, :message_queue_len),
       top_memory: top(infos, :memory),
       cgroup: cgroup(cgroup_dir),
+      admission: Atanor.Admission.stats(name),
       wasm: wasm()
     }
   end
