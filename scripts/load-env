@@ -7,7 +7,7 @@
 #            (tmpfs, 25 ms added per trip), deploy the native and the WASM worker
 #   latency  (re)apply the added store latency, and print the round trip from the node to the store
 #   deploy   deploy the native worker (cluster/load) and the scoreboard (WASM) to the node
-#   rtt      print the round trip from the node to the store in ms (median of three)
+#   rtt      print the round trip from the node to the store in ms (median of three); empty when unknown
 #   check-swap [ID...]  refuse (exit 1) a container that may swap; default: the running nodes, store and lb
 #   info     print the containers, addresses and cgroup directories as JSON
 #   down     remove the containers, network and volumes
@@ -18,12 +18,17 @@ TC=atanor-load-tc
 # The running node (after a swap that is node-2, not node-1).
 node_id() { docker ps -q --filter "label=$label" --filter "name=^/?$CLUSTER-node-[0-9]+$" | head -n 1; }
 
-# Median of three round trips from the node to the store's S3 port, in ms.
+# Median of the round trips from the node to the store's S3 port, in ms (three tries). Prints nothing
+# when the node or the curl fails: the round trip is then unknown, and the callers decide.
 store_rtt() {
-  local node=$1 i
+  local node=${1:-} i t times=()
+  [[ -n $node ]] || return 0
   for i in 1 2 3; do
-    docker exec "$node" curl -s -o /dev/null -w '%{time_total}\n' http://store:8333/
-  done | sort -n | sed -n 2p | awk '{printf "%.1f", $1 * 1000}'
+    t=$(docker exec "$node" curl -s -o /dev/null -w '%{time_total}' http://store:8333/ 2>/dev/null) || continue
+    times+=("$t")
+  done
+  [[ ${#times[@]} -gt 0 ]] || return 0
+  printf '%s\n' "${times[@]}" | sort -n | sed -n "$(((${#times[@]} + 1) / 2))p" | awk '{printf "%.1f", $1 * 1000}'
 }
 
 # netem on the store's side of its network: every answer it sends waits LATENCY ms, so each trip to
@@ -39,6 +44,7 @@ latency() {
   docker run --rm --name "$TC" --net "container:$store" --cap-add NET_ADMIN --user root --entrypoint tc \
     "${ATANOR_CLUSTER_IMAGE:-atanor-cluster-node:local}" qdisc "${qdisc[@]}" >/dev/null 2>&1 || true
   after=$(store_rtt "$node")
+  [[ -n $before && -n $after ]] || { echo "the store round trip could not be measured (before: '${before}', after: '${after}')" >&2; exit 1; }
   echo "store round trip from the node: ${before} ms -> ${after} ms (added latency ${LOAD_STORE_LATENCY_MS} ms)"
   if [[ $LOAD_STORE_LATENCY_MS -gt 0 ]]; then
     awk -v b="$before" -v a="$after" -v m="$LOAD_STORE_LATENCY_MS" 'BEGIN { exit !(a - b >= m * 0.8) }' \
