@@ -3,13 +3,26 @@ defmodule Atanor.WakeBurstTest.Store do
   # The memory store, counting the reads of the files of the state (`.ltx`), whole or by range.
   @behaviour Alambique.Store
 
-  def wrap(config), do: {__MODULE__, {AlambiqueTestkit.MemoryStore, config, :counters.new(1, [])}}
+  # Counter 1 counts the reads, counter 2 is 1 once the store fails: a write then waits `@fail_ms` and
+  # answers an HTTP 500, as a store whose disk is full does.
+  @fail_ms 250
+
+  def wrap(config), do: {__MODULE__, {AlambiqueTestkit.MemoryStore, config, :counters.new(2, [])}}
   def reads({__MODULE__, {_, _, counter}}), do: :counters.get(counter, 1)
+  def fail({__MODULE__, {_, _, counter}}), do: :counters.put(counter, 2, 1)
 
   defp count(counter, key), do: if(String.contains?(key, ".ltx"), do: :counters.add(counter, 1, 1))
 
   @impl true
-  def put({m, c, _}, key, body, condition, meta), do: m.put(c, key, body, condition, meta)
+  def put({m, c, n}, key, body, condition, meta) do
+    if :counters.get(n, 2) == 1 do
+      Process.sleep(@fail_ms)
+      {:error, {:http, 500, "store full"}}
+    else
+      m.put(c, key, body, condition, meta)
+    end
+  end
+
   @impl true
   def get({m, c, n}, key), do: tap(m.get(c, key), fn _ -> count(n, key) end)
   @impl true
@@ -52,8 +65,7 @@ defmodule Atanor.WakeBurstTest do
   defp start(tmp_dir) do
     {:ok, server} = MemoryStore.start_link([])
     on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
-    base = MemoryStore.config(server)
-    store = Store.wrap(base)
+    store = Store.wrap(MemoryStore.config(server))
 
     # The cgroup files are a node with plenty of room: the memory gate stays off, so only the bound on the
     # wakes is under test.
@@ -72,7 +84,7 @@ defmodule Atanor.WakeBurstTest do
 
     on_exit(fn -> Node.stop(node) end)
     {:ok, deployment} = Atanor.Registry.deployment(node.name, "burst")
-    {node, Env.new(node.name, deployment), base, store}
+    {node, Env.new(node.name, deployment), store}
   end
 
   defp wakes(node) do
@@ -113,7 +125,7 @@ defmodule Atanor.WakeBurstTest do
   end
 
   defp burst(tmp_dir) do
-    {node, env, base, store} = start(tmp_dir)
+    {node, env, store} = start(tmp_dir)
 
     cells = for n <- 1..@cells, do: {"notes", "c#{n}"}
 
@@ -125,7 +137,7 @@ defmodule Atanor.WakeBurstTest do
     assert Overview.cells_count(node.name).count == @cells
 
     # The store now fails every write: the next upload of each cell fails and stops it.
-    MemoryStore.inject(base, kind: :timeout, ms: 250, ops: [:put], reason: {:http, 500, "store full"})
+    Store.fail(store)
     # Each cell fails its upload and stops, as the cells of the node did when its store filled up.
     cells
     |> Task.async_stream(&Env.execute(env, &1, @write), max_concurrency: @cells, timeout: 30_000)
