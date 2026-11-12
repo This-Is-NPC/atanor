@@ -38,6 +38,7 @@ children = [
 | `http:` | `retry_after_s` 1 is the `Retry-After` of every 503, `held_elsewhere` included ([design §8.4](design.md#84-when-the-node-is-lost)). |
 | `hot_cells:`, `tags:`, `affinity:` | The opt-in placement of hot cells ([guide](how-to-place-hot-cells.md)). |
 | `diagnostics:` | Crash breadcrumbs and reports ([guide](how-to-diagnose-a-crash.md)). |
+| `disk:` | The disk budget of `data_dir` ([below](#cells-limits-memory-and-store-requests)). |
 | `:dashboard` | The read-only dashboard ([guide](how-to-open-the-dashboard.md)). |
 
 The node holds no workers of its own. It applies the *heads* it finds in the
@@ -98,6 +99,35 @@ body, when either gate is closed:
 Open WebSockets are not closed by either gate. Refusals count in
 `Atanor.Admission.stats/1` and `[:atanor, :http, :reject]` (reasons `:memory` and
 `:in_flight`, [telemetry](telemetry.md)).
+
+**Disk budget.** `data_dir` is bounded too. An awake cell's `-wal` file grows
+about 17 to 32 KiB a write and is moved into the database only when it passes
+`alambique: [wal: [checkpoint_bytes:]]`, so without a bound a node fills its disk
+under continuous writes. The budget is `disk: [max_bytes:]`, or by default
+`disk: [fraction: 0.8]` of the size of the file system that holds `data_dir` (read
+with `df -Pk` at start; the node logs the budget and its source, for example
+`atanor: data_dir limited to 1073741824 bytes (option)`). When the size cannot be
+read there is no budget, a warning is logged and Alambique's defaults apply.
+
+- Unless you set them, `wal: [checkpoint_bytes:]` is `budget / max_cells / 2` between
+  1 MiB and 64 MiB (`max_cells` is `awake: [max_cells:]`, 20 000 by default, so
+  1 MiB below about 39 GiB), and `local_cache: [max_bytes:]` is the budget minus
+  what the WALs may hold (at most half of it). `local_cache: [interval_ms:]`
+  follows `disk: [sample_ms:]`. An option you give wins.
+- Every `disk: [sample_ms: 5_000]` the node adds up the files of `data_dir`. At
+  `disk: [evict_fraction: 0.7]` of the budget it hibernates the idle cells with
+  the biggest WALs. At `disk: [refuse_fraction: 0.95]` the ingress refuses every
+  new request with 503 `overloaded` and `Retry-After` (reasons `:disk` in
+  `[:atanor, :http, :reject]`), and resumes 5 points below. `refuse_fraction: nil`
+  turns the refusal off. The node can pass the mark by what is written between two
+  samples: lower `sample_ms` for a fast disk.
+- A write that fails because the disk is full is a 503 `overloaded`, never a 500.
+- `disk: [probe:]` replaces the reading of the file system size (a function of
+  the path, `{:ok, bytes}` or `:error`), for tests.
+- `diagnostics: [max_bytes: 33_554_432]` caps the crash reports kept on disk while
+  the store is down, the oldest removed first.
+
+Design §4.4 has the reasons and the measurements.
 
 **Store requests.** Two options cut the requests a busy cell sends:
 

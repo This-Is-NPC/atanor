@@ -657,9 +657,9 @@ worker.
 | `awake: [cache_kib:]` | 512 | SQLite page cache of each awake cell, in KiB (Alambique's `PRAGMA cache_size`; SQLite's own default is 2 000) |
 | `awake: [max_bytes:]` | derived from the node's memory, else `nil` (no ceiling); see "Memory of the awake cells" below | ceiling on the page cache, schema and statements of all awake cells; past it the least recently used cells without callers hibernate before another wakes, and a call that finds none gets `{:error, :overloaded}` |
 | `idle_timeout_ms` (top level of `alambique:`) | 300 000 | time without calls before a cell hibernates; a positive integer |
-| `local_cache: [max_bytes:]` | 21 474 836 480 (20 GiB) | size of `data_dir` above which the files of hibernated cells are removed, the least recently used first |
-| `local_cache: [interval_ms:]` | 60 000 | time between those rounds; `local_cache: false` keeps every file |
-| `wal: [checkpoint_bytes:]` | 67 108 864 (64 MiB) | size of an awake cell's `-wal` file above which it is checkpointed |
+| `local_cache: [max_bytes:]` | derived from the disk budget (§4.4); Alambique's 21 474 836 480 (20 GiB) when the budget is unknown | size of `data_dir` above which the files of hibernated cells are removed, the least recently used first |
+| `local_cache: [interval_ms:]` | `disk: [sample_ms:]` (5 000) with a disk budget, else 60 000 | time between those rounds; `local_cache: false` keeps every file |
+| `wal: [checkpoint_bytes:]` | derived from the disk budget, 1 to 64 MiB (§4.4); Alambique's 67 108 864 (64 MiB) when the budget is unknown | size of an awake cell's `-wal` file above which it is checkpointed |
 | `compaction: [hold_bytes:]` | 33 554 432 (32 MiB) per instance | memory that keeps the files a cell just replicated, so the compaction of an awake cell reads them from memory and not from the store; 0 turns it off |
 | `compaction: [hold_object_bytes:]` | 1 048 576 (1 MiB) | largest file held; a larger one is read back |
 | `compaction: [snapshot_ratio:]` | 2.0 | a snapshot is taken when the level-0 bytes written since the last one reach this many times its size; a number above 0 |
@@ -864,6 +864,84 @@ token), and use TLS distribution (`-proto_dist inet_tls` with
 `-ssl_dist_optfile`, see the Erlang/OTP "Using TLS for Erlang Distribution"
 guide) when the network is not private. The how-to has the steps.
 
+### 4.4 The disk budget
+
+*The problem.* Under continuous writes the `-wal` file of an awake cell grows
+by 17 to 32 KiB a write. Alambique checkpoints it (SQLite `TRUNCATE`, so the
+file shrinks to nothing) only when it passes `wal: [checkpoint_bytes:]` (64 MiB
+per cell), SQLite's own autocheckpoint is off, the file is removed only when the
+cell hibernates (`idle_timeout_ms`, which never comes under load), and the local
+cache sweep never touches an awake cell. Its `max_bytes` is 20 GiB. Nothing
+bounded the disk of a node: in a container with a 768 MiB `data_dir`, 20 cells
+written without pause filled it in minutes, and the failed writes were 500s. With
+Alambique's 64 MiB mark, 12 writers on 20 cells for 8 s (the load of
+`test/atanor/disk_budget_test.exs`) made the files of `data_dir` 1.34 GB.
+
+*The budget.* `disk: [max_bytes:]` is the number of bytes `data_dir` may hold.
+When it is `nil` (the default) the node uses `disk: [fraction:]` (0.8) of the
+size of the file system that holds `data_dir` (or its nearest existing parent):
+`df -Pk`, run once when the options are built, through `disk: [probe:]`
+(`path -> {:ok, bytes} | :error`, replaceable in tests). `df` was chosen over a
+NIF for `statvfs`: Atanor's crate (`atanor_wasm`) is the WASM engine, a second
+entry point would be one more thing to build and cover for a call made once at
+start, and `df -P` is the same on GNU and busybox. When the size cannot be read
+the node logs a warning and runs without a budget: Alambique's defaults stay, the
+monitor is off, and the disk gate never refuses. The node logs the budget and
+its source at start (`atanor: data_dir limited to 1073741824 bytes (option)`).
+`Atanor.Disk.budget/2` is the function.
+
+*The Alambique options it gives.* Unless the operator sets them:
+
+| Option | Value |
+| --- | --- |
+| `wal: [checkpoint_bytes:]` | `budget / cells / 2`, at least 1 MiB, at most 64 MiB, and at most half the budget. `cells` is `awake: [max_cells:]` (20 000 by default) |
+| `local_cache: [max_bytes:]` | the budget minus the WAL allowance: `min(budget / 2, checkpoint_bytes * cells)`, at least 1 |
+| `local_cache: [interval_ms:]` | `disk: [sample_ms:]`: a cache that is trimmed once a minute cannot follow a small disk |
+
+The two never add up to more than the budget (the property tests in
+`test/atanor/disk_property_test.exs`). With the default `max_cells` the floor of
+1 MiB applies below about 39 GiB: every cell checkpoints at 1 MiB, about every 40
+writes, which costs a checkpoint of a file that small. Lower `max_cells` to give
+fewer cells a higher mark. The floor means that 20 000 cells at their mark can
+hold more than the budget; the monitor below is what keeps the node under it.
+
+*The monitor.* `Atanor.Disk` adds up the files under `data_dir` every
+`disk: [sample_ms:]` (5 000; every second or less while escalated). It walks the
+tree instead of asking the file system: that measures what the node holds
+whether or not other files share the disk, and costs one `lstat` per file (the
+local cache sweeps do the same each round). It escalates, with 5 points of
+hysteresis, in a pure function (`Atanor.Disk.level/3`):
+
+| Use of the budget | Action |
+| --- | --- |
+| `evict_fraction` (0.7) or more | hibernates idle cells (no call pending, `Alambique.load/2`), the ones with the biggest `-wal` first, up to 64 per round, until the WALs it frees would bring the use under the mark. A hibernation checkpoints the cell (the WAL is gone) and the local cache then removes its files |
+| `refuse_fraction` (0.95) or more | as above, and the ingress answers 503 `overloaded` with `Retry-After` to every new request (§7.1). Reads cannot be told from writes at the ingress, so all are refused until the use falls to `refuse_fraction - 0.05` |
+
+*A full disk.* A write that SQLite refuses with `SQLITE_FULL` ("database or disk
+is full", what an `ENOSPC` on the database or the WAL becomes) is a 503
+`overloaded`, not a 500: `Atanor.Unavailable` maps that message and `:enospc`,
+also when a transaction function fails to match it (`{:ok, _} = Tx.execute(...)`).
+A worker that handles that error inside a transaction and answers with a 5xx of
+its own is not seen by the ingress: such a worker should roll back with the
+error, as in §4.3. The test injects the full disk with `PRAGMA max_page_count`
+(`test/atanor/disk_full_test.exs`).
+
+*What bounds the use, and what does not.* The WAL mark bounds each awake cell;
+the monitor bounds the node by the use it sees every sample, so the use can pass
+the refuse mark by what the writes add between two samples (the budget test writes
+to 20 cells at about 10 000 writes per second, 170 MB/s of WAL: with
+`sample_ms: 100` a 12 MiB budget reached 18.8 MiB, with `sample_ms: 20` a 16 MiB
+budget reached 14 to 15 MiB). Lower `sample_ms` for a disk that fast. The files of hibernated cells
+are the local cache's to remove, so a node whose awake cells' database files
+alone pass the budget (not their WALs) refuses until cells hibernate: raise the
+budget or lower `awake: [max_cells:]`. Alambique has no node-wide WAL budget and
+no call that checkpoints an awake cell, so the monitor hibernates cells for it;
+see [what does not work](what-does-not-work.md#alambique-has-no-node-wal-budget).
+Crash reports kept for a store that is down are capped by
+`diagnostics: [max_bytes:]` (33 554 432), the oldest removed first (§17.2). The tests
+are `test/atanor/disk_test.exs`, `disk_property_test.exs` and
+`disk_budget_test.exs` (20 cells, 8 s of writes, budgets of 32 and 16 MiB).
+
 ## 5. Deployments and the store layout
 
 Atanor writes its metadata through the `Alambique.Store` behaviour, in the
@@ -1063,10 +1141,14 @@ sub-binaries of the same host and path, whatever the request line holds; a
 request line of 8,000 bytes made of segments is answered 400 in a few
 milliseconds.
 
-*Admission.* A node refuses before it runs out of memory (`Atanor.Admission`).
+*Admission.* A node refuses before it runs out of memory or disk (`Atanor.Admission`).
 The first thing `Atanor.HTTP.call/2` does, before the route, the token and the
-body, is ask two gates; a refusal is 503 `overloaded` with `Retry-After` and
-the event `[:atanor, :http, :reject]` with `reason` `:memory` or `:in_flight`.
+body, is ask three gates; a refusal is 503 `overloaded` with `Retry-After` and
+the event `[:atanor, :http, :reject]` with `reason` `:memory`, `:disk` or
+`:in_flight`. The disk gate refuses while `data_dir` holds `disk.refuse_fraction`
+(0.95) of the disk budget (§4.4) and resumes 5 points below; `Atanor.Disk`
+publishes each sample (`disk.sample_ms`) and the gate ignores one older than ten
+periods, like the memory gate. A node with no budget has no disk gate.
 The memory gate reads the cgroup every `memory.sample_ms` (100): the working set
 is `memory.current` minus the `inactive_file` of `memory.stat`, so page cache
 the kernel can drop never refuses, while tmpfs and shared memory still count.
@@ -1088,7 +1170,8 @@ killed at 100 req/s native, 50 req/s WASM and 6,400 WebSockets with no
 admission; `Atanor.Admission.stats/1` returns the counters for the admin
 runtime page. The tests are `test/atanor/admission_test.exs` (the flood and
 the cgroup files of a temporary directory) and
-`test/atanor/admission_property_test.exs` (the pure decision function).
+`test/atanor/admission_property_test.exs` (the pure decision function, the disk
+gate included).
 
 The listener is bounded: `http.max_connections` (16,384) is the total for the
 listener, WebSockets included, divided among `http.acceptors` (10) because

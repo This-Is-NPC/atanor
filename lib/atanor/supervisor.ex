@@ -43,7 +43,10 @@ defmodule Atanor.Supervisor do
         [
           # Starts without joining the cluster: the node takes cells when the `ready` task joins it.
           {Alambique, config.alambique_opts},
-          {Atanor.Diagnostics, config},
+          {Atanor.Diagnostics, config}
+        ] ++
+        disk(config) ++
+        [
           # Children stop in reverse order: listeners close, the jobs get `stop.jobs_ms` to finish, the tasks
           # still running are cancelled, then the detector tells the peers that the node leaves, then the
           # cells are handed off, then Alambique stops. The tasks use the tables of the children before them.
@@ -100,6 +103,9 @@ defmodule Atanor.Supervisor do
   defp listener_options(%{max_connections: max, acceptors: acceptors, read_timeout_ms: read_timeout_ms}),
     do: [num_acceptors: acceptors, num_connections: div(max + acceptors - 1, acceptors), read_timeout: read_timeout_ms]
 
+  defp disk(%Config{disk: %{budget: nil}}), do: []
+  defp disk(config), do: [{Atanor.Disk, config}]
+
   defp auth(%Config{auth: auth}) when map_size(auth) == 0, do: []
   defp auth(config), do: [{Atanor.Auth.Keys, config}]
 
@@ -133,6 +139,17 @@ defmodule Atanor.Supervisor do
     case config.alambique_opts[:awake][:max_bytes] do
       nil -> :ok
       bytes -> Logger.info("atanor: awake cells limited to #{bytes} bytes (#{config.memory.awake_source})")
+    end
+
+    case config.disk do
+      %{budget: nil} ->
+        Logger.warning(
+          "atanor: the disk budget is unknown (no disk: [max_bytes:], and the file system size could not be read)"
+        )
+
+      %{budget: bytes, budget_source: source} ->
+        wal = config.alambique_opts[:wal][:checkpoint_bytes]
+        Logger.info("atanor: data_dir limited to #{bytes} bytes (#{source}), cells checkpoint at #{wal} bytes of WAL")
     end
   end
 end
