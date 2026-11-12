@@ -325,8 +325,12 @@ defmodule Atanor.Diagnostics do
 
     # A report the store refuses stays in `pending`; `retry_pending/1` runs next and schedules the retry.
     case put_report(state, report, body) do
-      :ok -> File.rm(path)
-      {:error, reason} -> Logger.warning("atanor: could not store crash report #{report["id"]}: #{inspect(reason)}")
+      :ok ->
+        File.rm(path)
+
+      {:error, reason} ->
+        Logger.warning("atanor: could not store crash report #{report["id"]}: #{inspect(reason)}")
+        cap_pending(state)
     end
 
     :telemetry.execute([:atanor, :crash, :detected], %{count: 1}, %{
@@ -357,6 +361,7 @@ defmodule Atanor.Diagnostics do
 
   defp retry_pending(state) do
     if state.retry, do: Process.cancel_timer(state.retry)
+    cap_pending(state)
 
     pending =
       case File.ls(state.pending) do
@@ -390,6 +395,31 @@ defmodule Atanor.Diagnostics do
       end)
 
     if failed, do: schedule_retry(state, state.config.diagnostics.pending_retry_ms), else: state
+  end
+
+  # The pending copies stay under `max_bytes`: the oldest go first, so a store that stays down cannot fill the disk.
+  defp cap_pending(state) do
+    files =
+      for {:ok, names} <- [File.ls(state.pending)],
+          name <- names,
+          path = Path.join(state.pending, name),
+          {:ok, %{size: size, mtime: mtime}} <- [File.stat(path, time: :posix)],
+          do: {mtime, path, size}
+
+    files = Enum.sort(files)
+    excess = files |> Enum.map(&elem(&1, 2)) |> Enum.sum() |> Kernel.-(state.config.diagnostics.max_bytes)
+
+    files
+    |> Enum.reduce_while(excess, fn {_mtime, path, size}, excess ->
+      if excess > 0 do
+        File.rm(path)
+        {:cont, excess - size}
+      else
+        {:halt, excess}
+      end
+    end)
+
+    :ok
   end
 
   defp schedule_retry(state, ms) do

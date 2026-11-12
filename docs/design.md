@@ -5023,8 +5023,9 @@ settle, the diagnostics process reads busy files, groups them into one report,
 enriches each unit that names a cell with `Alambique.crashes/2` and
 `Alambique.frozen?/2`, writes `<prefix>/crashes/<node>/<id>`, and removes the
 files. If the store fails, the report stays under
-`data_dir/diagnostics/pending/` and is retried every `:pending_retry_ms`.
-Reports older than `:retention_ms` are deleted every `:cleanup_ms`.
+`data_dir/diagnostics/pending/` and is retried every `:pending_retry_ms`; the
+pending files stay under `:max_bytes`, the oldest removed first, so a store that
+stays down does not fill the disk (§4.4). Reports older than `:retention_ms` are deleted every `:cleanup_ms`.
 
 `GET /crashes` lists reports (`?node=`, `?after=`, `?limit=`), `GET
 /crashes/:node/:id` reads one, and `POST /cells/:ns/:key/unfreeze` calls
@@ -5042,6 +5043,7 @@ Options:
 | `:settle_ms` | 1 000 | wait before reading the previous boot's markers |
 | `:max_files` | 10 000 | stale marker files read at start; the rest are counted and removed |
 | `:max_units` | 1 000 | units in one report |
+| `:max_bytes` | 33 554 432 | bytes of pending reports kept on disk while the store refuses them; the oldest are removed first |
 | `:pending_retry_ms` | 60 000 | retry interval after a failed report write |
 | `:retention_ms` | 2 592 000 000 | report retention (30 days) |
 | `:cleanup_ms` | 3 600 000 | retention-cleaner interval |

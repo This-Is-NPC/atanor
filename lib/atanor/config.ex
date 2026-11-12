@@ -265,6 +265,7 @@ defmodule Atanor.Config do
     settle_ms: 1_000,
     max_files: 10_000,
     max_units: 1_000,
+    max_bytes: 33_554_432,
     pending_retry_ms: 60_000,
     retention_ms: 2_592_000_000,
     cleanup_ms: 3_600_000
@@ -823,7 +824,7 @@ defmodule Atanor.Config do
     dir = diagnostics.dir || Path.join(data_dir, "diagnostics")
     check!(is_binary(dir) and dir != "", ":diagnostics :dir must be a non-empty path or nil")
 
-    for key <- [:max_files, :max_units, :pending_retry_ms, :retention_ms, :cleanup_ms] do
+    for key <- [:max_files, :max_units, :max_bytes, :pending_retry_ms, :retention_ms, :cleanup_ms] do
       check!(positive_integer?(diagnostics[key]), ":diagnostics #{inspect(key)} must be a positive integer")
     end
 
