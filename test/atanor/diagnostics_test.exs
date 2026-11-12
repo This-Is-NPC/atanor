@@ -148,6 +148,26 @@ defmodule Atanor.DiagnosticsTest do
     assert File.ls!(Path.join(dir, "diagnostics/pending")) == []
   end
 
+  test "the pending reports stay under max_bytes, the oldest removed first" do
+    {dir, source} = previous_boot()
+    pending = Path.join(dir, "diagnostics/pending")
+    File.mkdir_p!(pending)
+    {_module, config} = source
+    MemoryStore.inject(config, kind: :error, ops: [:put], key: ~r{crashes/}, reason: :down, times: 1_000)
+
+    # Three reports of about 2 000 bytes, written oldest first with older times of modification.
+    for {name, age} <- [{"a", 300}, {"b", 200}, {"c", 100}] do
+      path = Path.join(pending, name <> ".json")
+      File.write!(path, Jason.encode!(%{"id" => name, "pad" => String.duplicate("x", 2_000)}))
+      File.touch!(path, System.os_time(:second) - age)
+    end
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      restart(dir, source, max_bytes: 4_500, pending_retry_ms: 60_000)
+      assert until(fn -> File.ls!(pending) |> Enum.sort() == ["b.json", "c.json"] end)
+    end)
+  end
+
   test "a report older than the retention is removed and a recent one kept" do
     now = System.os_time(:millisecond)
 

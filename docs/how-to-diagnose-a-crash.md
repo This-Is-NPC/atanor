@@ -170,7 +170,9 @@ counter, so the cell starts at zero.
 - **No `/crashes` report after a restart.** The VM may have stopped cleanly,
   or the breadcrumb files were lost with the machine. Check `data_dir/
   diagnostics/pending/`; a report that could not be written to the store stays
-  there and is retried every `diagnostics.pending_retry_ms`.
+  there and is retried every `diagnostics.pending_retry_ms`. The files there
+  stay under `diagnostics.max_bytes` (32 MiB): when the store is down for long,
+  the oldest reports are removed first.
 - **The report names a cell but `alambique` is `null`.** The crash was outside
   Alambique's native callbacks (for example a worker sleeping or its own NIF),
   so the cell marker was idle. The unit still identifies the job or request.

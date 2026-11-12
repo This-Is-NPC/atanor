@@ -239,7 +239,9 @@ defmodule Atanor do
       `:enabled` (true), `:breadcrumbs` (`:durable`; `:off` or `:all`),
       `:dir` (`data_dir/diagnostics`), `:settle_ms` (1 000, wait before
       reading the previous boot's markers so Alambique's quarantine tracker
-      can settle), `:max_files` (10 000), `:max_units`
+      can settle), `:max_files` (10 000), `:max_bytes` (33 554 432, the
+      pending reports kept on disk while the store refuses them; the oldest
+      go first), `:max_units`
       (1 000), `:pending_retry_ms` (60 000), `:retention_ms` (2 592 000 000)
       and `:cleanup_ms` (3 600 000). `:durable` covers jobs, alarms, sweep
       driver pages, migrations, deployment activation and WebSocket
