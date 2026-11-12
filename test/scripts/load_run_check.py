@@ -158,6 +158,37 @@ def ramp_scenario(name, dies_at, before=None):
 
 
 results["ramp"] = ramp_scenario("ramp", dies_at=2)
+# After a failing step the refine and confirm steps run on a fresh node (a stubbed reset); ramp steps and a clean confirmation do not.
+def fresh_scenario(name, slow_call):
+    container()
+    resets, runs = [], []
+
+    def generators(self, value, sampler):
+        runs.append(value)
+        slow = len(runs) == slow_call
+        return [{**DOCUMENT, "statuses": {"200": 10}, "hist": {"9000" if slow else "5": 10}}]
+
+    real_load_env, real_generators = m.load_env, m.Round.run_generators
+    round_, args = new_round(name)
+    info = json.dumps(round_.info)
+    m.load_env = lambda *a: resets.append(a[0]) or (info if a[0] == "info" else "")
+    m.Round.run_generators = generators
+    try:
+        args.measure, args.steps, args.refine = "http-native", "10,20", 2
+        summary = m.ramp(round_, args)
+    finally:
+        m.load_env, m.Round.run_generators = real_load_env, real_generators
+    steps = []
+    for file in sorted(f for f in os.listdir(args.out) if f.endswith(".json") and "summary" not in f):
+        with open(os.path.join(args.out, file)) as handle:
+            record = json.load(handle)
+        steps.append([record["phase"], record["status"], record["fresh_node"], record["reset_s"] is not None])
+    return {"steps": steps, "resets": resets, "approved": summary["approved"]}
+
+
+results["fresh_after_fail"] = fresh_scenario("fresh_after_fail", slow_call=2)
+results["fresh_never_failed"] = fresh_scenario("fresh_never_failed", slow_call=0)
+
 # A step that starts with a dead node is invalid, runs no generator and ends the round.
 results["dead_at_start"] = ramp_scenario("dead_at_start", dies_at=0, before={"running": False, "exit_code": 137})
 

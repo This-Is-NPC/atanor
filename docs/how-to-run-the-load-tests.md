@@ -84,10 +84,18 @@ tmpfs, peak since the container started, and the largest `memory.current` of the
 `current_max_mb`; `service_max_mb` and `max_pct_of_limit` are `memory.current - shmem` and its share of the scenario
 memory; `tmpfs_start_mb`, `tmpfs_max_mb` and `tmpfs_growth_mb` are the tmpfs at the first sample, its largest size and the growth in the step), descriptors, S3 bytes and trips, host load, validity and the criterion that stopped it.
 
-The tmpfs is not reset between steps: the criterion already excludes it (`memory.current - shmem`), and
-the container limit has room for the whole tmpfs, so data left by earlier steps can fill the tmpfs (writes then fail
-with a full disk) but cannot get the node OOM-killed. Restarting the node between steps would instead
-lose the warm state the steps are meant to measure. Each step records the tmpfs at its start and its growth.
+The ramp steps before the first failure share one node and one store: the tmpfs is not reset between them, the
+criterion already excludes it (`memory.current - shmem`), and the container limit has room for the whole tmpfs,
+so data left by earlier steps can fill the tmpfs (writes then fail with a full disk) but cannot get the node
+OOM-killed. Restarting the node between those steps would lose the warm state they are meant to measure. Each
+step records the tmpfs at its start and its growth.
+
+After a failing step, every refine step and the confirmation start on a fresh node: `load-run` runs
+`scripts/load-env reset` (`load:down`, then `load:up` without the build: a new node and store with empty data, the
+latency applied again, the workers deployed again). A refine on the node that just collapsed would measure the
+collapse (memory not given back, a full store, retries), not the rate. Each step file records `fresh_node`
+(`true` for those steps) and `reset_s`, the seconds the reset took. A confirmation after a ramp that never failed
+keeps the warm node. A node that stopped still ends the round.
 
 Each sample also reads the node's `GET /runtime` ([admin API](how-to-use-the-admin-api.md)) with a 3 second
 timeout. The step file keeps `runtime`: the largest of each VM memory type (`memory_max_bytes`), of the

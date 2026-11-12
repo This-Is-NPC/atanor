@@ -18,7 +18,7 @@ fails), swap in a measured container or generator swap growing over --max-genera
 --max-host-swap-growth-mb (INVALID), delivery under 95% of the plan (INVALID, the round stops: the generator or the host,
 not the node). The host swap used is only recorded. A container that may swap refuses the run before the first step.
 After the first failing step the ramp refines between the last good value and the failing one (--refine
-bisections), then repeats the best good step once to confirm it. Environment: ATANOR_LOAD_* give defaults.
+bisections, each on a fresh node and store), then repeats the best good step once to confirm it, also fresh. Environment: ATANOR_LOAD_* give defaults.
 """
 import argparse
 import http.client
@@ -514,9 +514,19 @@ class Round:
                 if os.path.exists(out):
                     os.remove(out)
 
-    def step(self, value, phase):
+    def reset(self):
+        """A new node and a new store with empty data (load-env reset); the addresses and ids change, so the info is read again. Returns seconds."""
+        began = time.time()
+        say("resetting the node and the store")
+        load_env("reset")
+        self.info.clear()
+        self.info.update(json.loads(load_env("info")))
+        return round(time.time() - began, 1)
+
+    def step(self, value, phase, fresh=False):
         a = self.args
         self.index += 1
+        reset_s = self.reset() if fresh else None
         for attempt in range(a.repeat_invalid + 1):
             record = self.attempt(value, phase)
             if record["stop_reason"] != "host load" or attempt == a.repeat_invalid:
@@ -524,6 +534,7 @@ class Round:
             say(f"host busy (net load {record['host']['net_load_mean']} > {a.host_load_max}): repeating the step in {a.host_wait:.0f} s")
             time.sleep(a.host_wait)
         record["attempts"] = attempt + 1
+        record["fresh_node"], record["reset_s"] = fresh, reset_s
         path = self.base(value, phase) + ".json"
         write_json(path, record)
         say(f"{a.measure} {value} {UNITS[a.measure]}: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")
@@ -670,7 +681,7 @@ def ramp(round_, args):
             mid = round((lo + hi) / 2)
             if mid in (lo, hi):
                 break
-            r = round_.step(mid, "refine")
+            r = round_.step(mid, "refine", fresh=True)  # not on the node that just collapsed: that measures the collapse, not the rate
             steps.append(r)
             if r["status"] == "ok":
                 lo = mid
@@ -686,7 +697,7 @@ def ramp(round_, args):
         good = lo
     confirmed = None
     if good is not None and not stopped and not node_stopped:
-        r = round_.step(good, "confirm")
+        r = round_.step(good, "confirm", fresh=failed is not None)
         steps.append(r)
         confirmed = r["status"] == "ok"
         stopped = r if r["status"] == "invalid" else None
