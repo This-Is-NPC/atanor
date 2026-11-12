@@ -6,9 +6,26 @@ cluster of nodes, with compute and S3-compatible storage only. It is built on
 Alambique, which provides the cells, and it knows no product, organization,
 tenant or region.
 
-**Status:** 0.1.0 pre-release, not published on a package registry. Open defects are in
-[docs/what-does-not-work.md](docs/what-does-not-work.md); the limits of the
-design are in [Limitations](#limitations) and in [docs/design.md](docs/design.md).
+**Status:** version <!-- x-release-please-start-version -->0.3.0<!-- x-release-please-end -->,
+published as GitHub releases and git tags, not on Hex
+([install](#installation)). The first release, 0.1.0, is from 2026-11-06;
+[CHANGELOG.md](CHANGELOG.md) lists every release and change. Open
+defects are in [docs/what-does-not-work.md](docs/what-does-not-work.md); the
+limits of the design are in [Limitations](#limitations) and in
+[docs/design.md](docs/design.md).
+
+Since 0.1.0:
+
+- **0.2.0:** nodes can run with no peers; a node drains on demand (`atanor drain`,
+  `POST /drain`) or on SIGTERM, with its progress reported and its job claims
+  released; the ingress answers `draining` and `held_elsewhere` with 503; the
+  admin API can flush the OIDC key cache; the CLI reads the login token without echo.
+- **0.3.0:** the admin API limits failed token attempts per address; the failure
+  detector hears a peer through the bytes of a busy link; nested worker calls
+  stay on one deployment; WASM compiles run off the dirty schedulers, guests that
+  wait free their right to run, and batch results and cell messages are capped;
+  undo tables are read without a row cursor; a data directory that is refused is
+  logged with its reason.
 
 ## What it is for
 
@@ -34,15 +51,22 @@ read-only dashboard. The model is in [docs/design.md](docs/design.md).
 
 ## Installation
 
-Atanor is not published yet. Add it to a Mix project as a path or git
-dependency:
+Atanor is not on Hex. Add it to your `mix.exs` as a git dependency at a
+release tag:
 
+<!-- x-release-please-start-version -->
 ```elixir
-{:atanor, path: "path/to/atanor"}
+{:atanor, git: "https://github.com/This-Is-NPC/atanor.git", tag: "v0.3.0"}
 ```
+<!-- x-release-please-end -->
 
-Alambique is a required dependency; the release Atanor is built against (a tag) is in
-`alambique.ref` ([how to move it](docs/how-to-update-alambique.md)).
+Then run `mix deps.get` and `mix compile`. Alambique comes with it: do not
+declare it unless you want to move it ([how](docs/how-to-update-alambique.md);
+the release Atanor is built against is the tag in `alambique.ref`). The first
+compile builds the Rust crates, which takes a few minutes ([requirements](#requirements)).
+
+To work on Atanor itself, or to try a checkout, use a path dependency instead:
+`{:atanor, path: "path/to/atanor"}`.
 
 ## A minimal example
 
