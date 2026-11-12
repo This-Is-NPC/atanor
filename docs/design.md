@@ -836,6 +836,24 @@ the bound sheds and does not queue.
 | 768 MiB | 57.6 MiB | 12 | 1 | 3 774 873 (3.6 MiB) |
 | 2 GiB | 153.6 MiB | 11 | 4 | 10 066 329 (9.6 MiB) |
 
+Cost, measured with the memory store and 25 ms added to every read (64 cells of
+24 commits each, hibernated, then woken; 512 MiB node; the master-like row
+gives the options Alambique defaults to: 256 wakes, 16 requests, 64 MiB):
+
+| Options | One cold wake | 63 cells woken at once |
+| --- | --- | --- |
+| 256 wakes, 16 requests, 64 MiB (Alambique) | 89 ms | 147 ms, none refused |
+| derived for 512 MiB (11, 1, 2.4 MiB) | 87 ms | 93 ms, 52 refused with `overloaded` |
+| derived for 2 GiB (11, 4, 9.6 MiB) | 88 ms | 94 ms, 52 refused with `overloaded` |
+
+With 150 commits a cell: 118 ms, 117 ms and 116 ms for one wake. The restore of
+a cell takes about three round trips in sequence whatever `fetch_concurrency`
+is, so one wake is not slower. The price is the number of wakes at once: a
+burst of cold cells above `max_wakes` gets 503 `overloaded` with `Retry-After`
+and the client retries, which is what bounds the memory. A node that wakes many
+cells at once and has the room raises `awake: [max_wakes:]` or `memory:
+[wake_fraction:]`.
+
 The node logs them when it starts (`atanor: wakes limited to 11 at once; ...`).
 A node that restores big cells and has the room can raise them, for example
 `awake: [max_wakes: 32]`; a value in the option always wins. A node with a
