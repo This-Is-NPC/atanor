@@ -3795,7 +3795,7 @@ delay it. With 16 runaway guests on 4 threads the scheduler lag stayed under
 
 Three bounds, all in Rust (`admission.rs`); Elixir does not count requests.
 
-* **Running.** At most `threads` guests (default: logical processors) run at
+* **Running.** At most `threads` guests (default: logical processors, at most the CPU quota of the container from cgroup `cpu.max`, rounded up) run at
   once. A call polls its guest only while it holds one of `threads` permits and
   gives the permit back whenever the guest is pending: a sleep, `poll`, a host
   call, an outbound response or a worker it called. A waiting guest holds no

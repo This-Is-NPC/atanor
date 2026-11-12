@@ -17,7 +17,8 @@ defmodule Atanor.Wasm do
   Application environment `:atanor, :wasm`, read when the first instance
   starts and fixed for the VM:
 
-    * `:threads` - guests that run at once (default: the logical processors).
+    * `:threads` - guests that run at once (default: the logical processors,
+      at most the CPU quota of the container, rounded up).
       A guest that waits (sleeps, polls, waits for a host call, an outbound
       response or a worker it called) does not count.
     * `:max_calls` - calls in flight that are not waiting: the threads of the
@@ -137,12 +138,30 @@ defmodule Atanor.Wasm do
 
   def settings(overrides), do: build_settings(overrides)
 
+  # The host's processors, capped by the CPU quota of the container (cgroup v2 `cpu.max`), which the
+  # VM does not see: a node of 1 CPU on a 12-core host would run 12 guests at once.
+  defp default_threads, do: cpu_threads(:erlang.system_info(:logical_processors), File.read("/sys/fs/cgroup/cpu.max"))
+
+  @doc false
+  @spec cpu_threads(pos_integer, {:ok, binary} | {:error, term}) :: pos_integer
+  def cpu_threads(processors, {:ok, text}) do
+    with [quota, period] <- String.split(text),
+         {quota, ""} when quota > 0 <- Integer.parse(quota),
+         {period, ""} when period > 0 <- Integer.parse(period) do
+      min(processors, div(quota + period - 1, period))
+    else
+      _ -> processors
+    end
+  end
+
+  def cpu_threads(processors, {:error, _}), do: processors
+
   defp build_settings(overrides) do
     config =
       Application.get_env(:atanor, :wasm, [])
       |> Keyword.merge(overrides)
 
-    threads = Keyword.get(config, :threads, :erlang.system_info(:logical_processors))
+    threads = Keyword.get_lazy(config, :threads, &default_threads/0)
 
     config =
       config
