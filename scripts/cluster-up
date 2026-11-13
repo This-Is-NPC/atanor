@@ -6,9 +6,8 @@ set -euo pipefail
 source "$(dirname "$0")/cluster-common"
 
 nodes=${ATANOR_CLUSTER_NODES:-3}
-# With ATANOR_CLUSTER_PEERS set empty the nodes form no cluster: each one sees only itself.
+# The nodes find each other through the store, so each one sees all the nodes.
 sees=$nodes
-[[ -z ${ATANOR_CLUSTER_PEERS-x} ]] && sees=1
 timeout_s=${ATANOR_CLUSTER_UP_TIMEOUT:-300}
 [[ $nodes =~ ^[0-9]+$ && $nodes -ge 1 && $nodes -le 10 ]] || { echo "ATANOR_CLUSTER_NODES must be 1 to 10" >&2; exit 1; }
 
@@ -42,10 +41,15 @@ done
 # The load balancer: every node in rotation, the nodes see each other, a request is answered.
 while :; do
   up=$(curl -s -m 2 "$(published_url 8404)/stats;csv" | awk -F, '$1 == "atanor_http" && $2 ~ /^node/ && $18 == "UP"' | wc -l || true)
-  seen=$(admin_get /health | jq -r '.nodes | length' 2>/dev/null || true)
+  # The balancer answers from any node; every node must see all of them, so ask each one.
+  seen=$nodes
+  for id in $(cluster_ids node); do
+    n=$(docker exec "$id" sh -c 'curl -s -m 3 -H "authorization: Bearer $(cat /run/secrets/admin_token)" http://127.0.0.1:4001/health' | jq -r '.nodes | length' 2>/dev/null || true)
+    [[ ${n:-0} -ge $seen ]] || seen=${n:-0}
+  done
   code=$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$(published_url 4000)/" || true)
   [[ $up -eq $nodes && ${seen:-0} -eq $sees && $code != 000 && $code != 503 ]] && break
-  (( SECONDS < deadline )) || { echo "load balancer not ready: $up servers up, nodes see $seen, HTTP $code" >&2; exit 1; }
+  (( SECONDS < deadline )) || { echo "load balancer not ready: $up servers up, the nodes see at least $seen of $sees, HTTP $code" >&2; exit 1; }
   sleep 1
 done
 
