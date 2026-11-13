@@ -16,8 +16,7 @@ set -euo pipefail
 source "$(dirname "$0")/load-common"
 
 TC=atanor-load-tc
-# The running node (after a swap that is node-2, not node-1).
-node_id() { docker ps -q --filter "label=$label" --filter "name=^/?$CLUSTER-node-[0-9]+$" | head -n 1; }
+node_id() { running_node; }
 
 # Median of the round trips from the node to the store's S3 port, in ms (three tries). Prints nothing
 # when the node or the curl fails: the round trip is then unknown, and the callers decide.
@@ -84,14 +83,8 @@ check_swap() {
 }
 
 deploy() {
-  local node tmp url
-  node=$(node_id); url=$(published_url 4001)
-  tmp=$(mktemp -d)
-  trap 'rm -rf "${tmp:-}"' RETURN
-  [[ -x $repo/_build/cli/atanor ]] || { echo "build the CLI first: mise run build:cli" >&2; exit 1; }
-  # The package holds the MD5 of the module as compiled into the image, so the beam comes from the node.
-  docker cp "$node:/opt/atanor/lib/atanor_load-0.1.0/ebin/Elixir.AtanorLoad.Worker.beam" "$tmp/"
-  (cd "$repo/cluster/load" && ATANOR_URL=$url ATANOR_TOKEN=$(admin_token) "$repo/_build/cli/atanor" deploy --ebin "$tmp" --activate)
+  # The image holds the command and the compiled module (the package holds its MD5), so only the manifest is mounted.
+  atanor_cli "$(admin_token)" "$repo/cluster/load" deploy /w --ebin /opt/atanor/lib/atanor_load-0.1.0/ebin --activate
   "$repo/scripts/cluster-deploy-example"
 }
 
