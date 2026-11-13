@@ -38,6 +38,7 @@ defmodule Atanor.Daemon do
   @any {0, 0, 0, 0}
   @default_region "us-east-1"
   @default_data_dir "/var/lib/atanor/cells"
+  @default_prefix "atanor"
   @mask "***"
 
   # `listen` keys take `ip:port`; `bytes` take a number of bytes, with an optional k, m or g (powers
@@ -90,6 +91,7 @@ defmodule Atanor.Daemon do
   @secrets for {name, type, _} <- @keys, type in [:secret, :token], do: name
   @boot for {name, :boot, _} <- @keys, do: name
   @peers_key "ATANOR_PEERS"
+  @store_key "ATANOR_STORE"
   # The path of the file, read before the loader runs.
   @config_var "ATANOR_CONFIG"
 
@@ -173,6 +175,41 @@ defmodule Atanor.Daemon do
         raise ArgumentError, "invalid configuration:\n" <> Enum.map_join(messages, "\n", &("  " <> &1))
     end
   end
+
+  @doc """
+  The store of an `s3://bucket/prefix` URL under the rules of the node, for tools that run without one
+  (`atanor deploy --bucket`): the same endpoint, region and AWS credential chain, read from `env` (the
+  config file is not read). Returns `{:ok, %{store: {module, config}, prefix: prefix, children:
+  children, credentials: source}}`, where `children` hold renewable credentials and must be running
+  while the store is used, or `{:error, messages}`. The prefix is `atanor` when the URL has none, as
+  for the node. Takes the options of `load/3`.
+  """
+  @spec store(String.t(), %{optional(String.t()) => String.t()}, keyword) ::
+          {:ok,
+           %{store: {module, map}, prefix: String.t(), children: [Supervisor.child_spec()], credentials: String.t()}}
+          | {:error, [String.t()]}
+  def store(url, env, opts \\ []) when is_binary(url) and is_map(env) do
+    read = Keyword.get(opts, :read_file, &File.read/1)
+
+    with {:ok, layers} <- layers(Map.put(env, @store_key, url), %{}),
+         {:ok, values} <- resolve(layers, read),
+         {parsed, []} <- parse_all(Enum.filter(values, &store_value?/1)),
+         {:ok, aws} <- credentials(parsed, env, read, opts) do
+      {store, prefix} = s3_store(parsed, aws)
+      prefix = if prefix == "", do: @default_prefix, else: prefix
+
+      with {:ok, _} <- validate(store: store, prefix: prefix, data_dir: @default_data_dir) do
+        {:ok, %{store: store, prefix: prefix, children: credential_children(aws), credentials: aws.source}}
+      end
+    else
+      {_, [_ | _] = errors} -> {:error, errors}
+      {:error, _} = error -> error
+    end
+  end
+
+  # What the S3 store and its credentials read: the bucket, the endpoint, the region and every AWS_ variable.
+  defp store_value?({name, _type, _text}),
+    do: name in [@store_key, "ATANOR_S3_ENDPOINT", "ATANOR_S3_REGION"] or String.starts_with?(name, "AWS_")
 
   @doc "The effective settings as one log line, secrets masked."
   @spec describe(settings) :: String.t()
@@ -290,26 +327,17 @@ defmodule Atanor.Daemon do
   end
 
   defp build(values, env, read, opts) do
-    {parsed, errors} =
-      Enum.reduce(values, {%{}, []}, fn {name, type, text}, {acc, errors} ->
-        case parse(type, text) do
-          {:ok, value} -> {Map.put(acc, name, value), errors}
-          {:error, why} -> {acc, errors ++ ["#{name}: #{why}"]}
-        end
-      end)
-
+    {parsed, errors} = parse_all(values)
     errors = errors ++ boot_errors(env) ++ missing(parsed)
 
     with [] <- errors,
          {:ok, aws} <- credentials(parsed, env, read, opts),
          {:ok, store_opts} <- options(parsed, aws) do
-      children = if aws.provider, do: [{Atanor.AwsCredentials, {aws.provider, source: aws.source}}], else: []
-
       {:ok,
        %{
          opts: store_opts,
          peers: Map.get(parsed, @peers_key, []),
-         children: children,
+         children: credential_children(aws),
          effective: effective(parsed, env) ++ [{"credentials", aws.source}]
        }}
     else
@@ -317,6 +345,20 @@ defmodule Atanor.Daemon do
       {:error, _} = error -> error
     end
   end
+
+  defp parse_all(values) do
+    Enum.reduce(values, {%{}, []}, fn {name, type, text}, {acc, errors} ->
+      case parse(type, text) do
+        {:ok, value} -> {Map.put(acc, name, value), errors}
+        {:error, why} -> {acc, errors ++ ["#{name}: #{why}"]}
+      end
+    end)
+  end
+
+  defp credential_children(%{provider: nil}), do: []
+
+  defp credential_children(%{provider: provider, source: source}),
+    do: [{Atanor.AwsCredentials, {provider, source: source}}]
 
   defp credentials(parsed, env, read, opts) do
     detect_opts =
@@ -391,17 +433,20 @@ defmodule Atanor.Daemon do
   defp unit_bytes("m"), do: 1_048_576
   defp unit_bytes("g"), do: 1_073_741_824
 
-  defp options(v, aws) do
+  # The bucket under the prefix, with the region and credentials rules of the node. Without an endpoint
+  # Alambique derives the AWS one from the region. Renewable credentials are a function Alambique caches
+  # by its identity.
+  defp s3_store(v, aws) do
     {bucket, prefix} = v["ATANOR_STORE"]
     region = v["ATANOR_S3_REGION"] || v["AWS_REGION"] || v["AWS_DEFAULT_REGION"] || @default_region
-
-    # Without an endpoint Alambique derives the AWS one from the region. Renewable credentials are
-    # a function Alambique caches by its identity.
     config = Map.merge(%{region: region, bucket: bucket}, credential_options(aws))
 
-    store =
-      {Alambique.Store.S3,
-       if(v["ATANOR_S3_ENDPOINT"], do: Map.put(config, :endpoint, v["ATANOR_S3_ENDPOINT"]), else: config)}
+    {{Alambique.Store.S3,
+      if(v["ATANOR_S3_ENDPOINT"], do: Map.put(config, :endpoint, v["ATANOR_S3_ENDPOINT"]), else: config)}, prefix}
+  end
+
+  defp options(v, aws) do
+    {store, prefix} = s3_store(v, aws)
 
     {ip, port} = v["ATANOR_LISTEN"] || {@any, 4000}
 
@@ -425,12 +470,14 @@ defmodule Atanor.Daemon do
       )
       |> put_group(:detector, acceptable_pause_ms: v["ATANOR_DETECTOR_PAUSE_MS"])
 
-    try do
-      _ = Atanor.Config.build(opts)
-      {:ok, opts}
-    rescue
-      error in ArgumentError -> {:error, ["#{Exception.message(error)}"]}
-    end
+    validate(opts)
+  end
+
+  defp validate(opts) do
+    _ = Atanor.Config.build(opts)
+    {:ok, opts}
+  rescue
+    error in ArgumentError -> {:error, ["#{Exception.message(error)}"]}
   end
 
   defp credential_options(%{static: {id, secret, token}}) do
