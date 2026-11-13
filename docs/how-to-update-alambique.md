@@ -15,7 +15,7 @@ examples and the lab release all use that release.
 
 The tag (for example `v0.1.0`) is written in one file, `alambique.ref`, at the root of this
 repository. `mix.exs`, `testkit/mix.exs` and `examples/*/mix.exs` read it.
-`lab/app` and `cluster/node` depend on Atanor by path and get Alambique through
+`lab/app` and `daemon` depend on Atanor by path and get Alambique through
 Atanor's `mix.exs`. Each `mix.lock` records the tag and the commit it resolves to.
 
 Each project declares `:alambique` with `override: true`, because
@@ -79,11 +79,10 @@ on `:alambique` too. With the override both resolve to the pinned release.
    ```
 
    Run `mise run lab:build` when the lab is used; it builds `lab/app` with the
-   pinned release. The cluster image takes the same tag: `mise run
-   cluster:up` runs `scripts/cluster-context`, which checks out the tag in `alambique.ref`
-   into `cluster/.build/alambique`. It fetches from the public repository, or
-   from `$ALAMBIQUE_SOURCE` when you set it to another URL or a local checkout
-   that contains the tag.
+   pinned release. The daemon image takes the same tag: its
+   build runs `mix deps.get` against the public repository, with the root `mix.lock`
+   ([how to build it](how-to-build-the-release.md)), so a new tag must be published
+   before the image can be built.
 
 ## Options a new pin leaves alone
 

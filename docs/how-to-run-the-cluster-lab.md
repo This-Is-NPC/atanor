@@ -39,9 +39,8 @@ VMs, not the firewall.
   for `--aws-sigv4`) and `tar` on the host. Docker only once, to take the
   `weed` binary out of the image `chrislusf/seaweedfs:4.48`.
 - The tools of the [README](../README.md#requirements) (`mise install`), and
-  `git` access to the public Alambique repository: `scripts/cluster-context`
-  fetches the tag in `alambique.ref` (`ALAMBIQUE_SOURCE` selects another
-  URL or a local checkout).
+  `git` access to the public Alambique repository: the tag in `alambique.ref`
+  is a git dependency.
 - About 14 GB of free RAM, 4 GB of disk under `/var/tmp`, and a free subnet
   `10.77.42.0/24` (check with `ip -br addr`).
 - Internet access for the first run: the image (570 MB) and the Hex packages.

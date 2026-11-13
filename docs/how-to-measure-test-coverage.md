@@ -40,7 +40,7 @@ Arguments after `--` go to `mix test`. Results are in `cover/` (git-ignored).
 
 - Elixir: the modules of `lib/`, with Elixir's own `:cover`. `test/support`,
   `testkit/`, the development tooling (`Atanor.Dev`, `Atanor.Dev.SeaweedFS` and
-  `mix atanor.dev`), `cluster/node`, `lab/`, `bench/`, `scripts/` and `examples/` are
+  `mix atanor.dev`), `daemon`, `cluster/load`, `lab/`, `bench/`, `scripts/` and `examples/` are
   not counted.
 - Code that runs on the peer nodes of `AtanorTestkit.Cluster` is counted: the
   testkit starts `:cover` on each peer and merges its counters when the cluster

@@ -50,7 +50,7 @@ token, so deployers never hold the bucket credentials
 
 ## The daemon: environment and file
 
-A node run as a daemon (the release in [cluster/node](../cluster/node), and the images derived from it)
+A node run as a daemon (the release built from [daemon](../daemon), and the images derived from it)
 has no Elixir to write: `Atanor.Daemon` turns environment variables, plus an optional JSON file, into the
 options above and checks them with the same validator as `{Atanor, opts}`.
 
@@ -103,7 +103,7 @@ Rules:
 | `ATANOR_LEASE_TTL_MS` | `lease_ttl_ms` | Alambique's | The cell lease time to live (`alambique: [lease_ttl_ms:]`). |
 | `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY` | `shutdown_ms`, `drain_timeout_ms`, `drain_concurrency` | 75000, 15000, 64 | `stop:` ([above](#the-instance)). The container's grace period must exceed the first. |
 | `ATANOR_DETECTOR_PAUSE_MS` | `detector_pause_ms` | 2000 | `detector: [acceptable_pause_ms:]`. |
-| `ATANOR_PEERS` | `peers` | none | The host names of the peers, comma separated. Read by `cluster/node` only, not by `Atanor.Daemon`'s options; it goes away with discovery through the store. |
+| `ATANOR_PEERS` | `peers` | none | The host names of the peers, comma separated. Read by the daemon (`daemon/lib/atanor_daemon/mesh.ex`) only, not by `Atanor.Daemon`'s options; it goes away with discovery through the store. |
 
 Before this page, the container cluster named these `ATANOR_NODE_*` (`ATANOR_NODE_BUCKET`,
 `ATANOR_NODE_S3_ENDPOINT`, `ATANOR_NODE_S3_ACCESS_KEY`, ...). They fail now, with the closest key in the error:

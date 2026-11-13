@@ -37,6 +37,7 @@
 | [properties.md](properties.md) | Which rules have property tests, what does each prove, and which rules are left to example tests? |
 | [how-to-build-and-test.md](how-to-build-and-test.md) | How do I build Atanor from source, run a local node, and run the tests and benchmarks? |
 | [how-to-measure-test-coverage.md](how-to-measure-test-coverage.md) | How do I measure which production lines the tests run, in Elixir and Rust, and what is left out of the count? |
+| [how-to-build-the-release.md](how-to-build-the-release.md) | How do I build the Atanor daemon as an image or a tarball, check it, publish it with a release, and what does the tarball need on the host? |
 | [how-to-update-alambique.md](how-to-update-alambique.md) | How do I move Atanor to a new Alambique release, and why is it pinned? |
 | [prior-art.md](prior-art.md) | What do workerd, celld, Spin and wasmCloud do, and which choices did Atanor make? |
 
