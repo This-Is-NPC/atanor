@@ -96,6 +96,18 @@ defmodule Atanor.LoadRunTest do
              "limit_mb" => 512.0
            }
 
+    # the swap runs through load-env; the status of the measure: 1 for an invalid step and for a swap that did not pass
+    assert r["swap_command"] == [r["swap_command"] |> hd(), "swap"]
+    assert String.ends_with?(hd(r["swap_command"]), "/scripts/load-env")
+
+    assert r["exit_status"] == %{
+             "swap_ok" => 0,
+             "swap_fail" => 1,
+             "swap_invalid" => 1,
+             "ramp_ok" => 0,
+             "ramp_invalid" => 1
+           }
+
     # host swap: a high, flat level is valid; growth over the limit is not
     assert r["host_swap"]["flat"] == :null
     assert r["host_swap"]["grows"] == "host swap grew 300 MB > 256 MB"
@@ -231,16 +243,15 @@ defmodule Atanor.LoadRunTest do
   end
 
   describe "cluster-swap-run run()" do
-    # main() is not run: the module-level code is executed without its last line, and run() is called
+    # main() is not run (the module is not `__main__`), and run() is called
     # directly with a `docker` stub that fails (the full run needs a cluster).
     test "a failing command surfaces its stderr and stdout", %{dir: dir} do
       File.write!(Path.join(dir, "docker"), "#!/bin/sh\necho 'out line'\necho 'no such service: node-9' >&2\nexit 1\n")
       File.chmod!(Path.join(dir, "docker"), 0o755)
 
       script = """
-      src = open("scripts/cluster-swap-run").read().rsplit("main()", 1)[0]
-      g = {"__file__": "scripts/cluster-swap-run"}
-      exec(compile(src, "cluster-swap-run", "exec"), g)
+      g = {"__file__": "scripts/cluster-swap-run", "__name__": "cluster_swap_run"}
+      exec(compile(open("scripts/cluster-swap-run").read(), "cluster-swap-run", "exec"), g)
       g["run"]("docker", "compose", "up", "-d", "--no-deps", "node-9")
       """
 
@@ -254,6 +265,85 @@ defmodule Atanor.LoadRunTest do
       assert out =~ "docker compose up -d --no-deps node-9 exited 1"
       assert out =~ "no such service: node-9"
       assert out =~ "out line"
+    end
+
+    # B that exited ends the run at once with its status and last log lines, not after the timeout.
+    test "a node B that exited stops the run with its exit code and logs", %{dir: dir} do
+      File.write!(Path.join(dir, "docker"), """
+      #!/bin/sh
+      case "$1" in
+        inspect) echo "exited 127 " ;;
+        logs) echo "exec: /opt/atanor/bin/atanor: not found" ;;
+      esac
+      """)
+
+      File.chmod!(Path.join(dir, "docker"), 0o755)
+      {out, status, seconds} = wait_for_b(dir, 60)
+
+      assert status == 127
+      assert out =~ "atanor-cluster-node-2 is exited with status 127"
+      assert out =~ "exec: /opt/atanor/bin/atanor: not found"
+      assert seconds < 10
+    end
+
+    test "a node B that turns unhealthy stops the run", %{dir: dir} do
+      File.write!(Path.join(dir, "docker"), """
+      #!/bin/sh
+      case "$1" in
+        inspect) echo "running 0 unhealthy" ;;
+        logs) echo "boot failed" ;;
+      esac
+      """)
+
+      File.chmod!(Path.join(dir, "docker"), 0o755)
+      {out, status, seconds} = wait_for_b(dir, 60)
+
+      assert status == 1
+      assert out =~ "atanor-cluster-node-2 is unhealthy"
+      assert out =~ "boot failed"
+      assert seconds < 10
+    end
+
+    defp wait_for_b(dir, timeout) do
+      script = """
+      g = {"__file__": "scripts/cluster-swap-run", "__name__": "cluster_swap_run"}
+      exec(compile(open("scripts/cluster-swap-run").read(), "cluster-swap-run", "exec"), g)
+      g["wait_for_b"]("b", "atanor-cluster-node-2", #{timeout})
+      """
+
+      started = System.monotonic_time(:second)
+
+      {out, status} =
+        System.cmd("python3", ["-I", "-c", script],
+          env: [{"PATH", dir <> ":" <> System.get_env("PATH")}],
+          stderr_to_stdout: true
+        )
+
+      {out, status, System.monotonic_time(:second) - started}
+    end
+  end
+
+  describe "the image of the load environment" do
+    # load-env swap runs cluster-swap-run, so node B starts from the image of the load environment; the
+    # cluster scripts alone keep the cluster image. A copy of the scripts has a stub cluster-swap-run.
+    test "load-env swap passes the load image to cluster-swap-run; cluster-common leaves it unset", %{dir: dir} do
+      scripts = Path.join(dir, "scripts")
+      File.mkdir_p!(scripts)
+      for name <- ~w(load-env load-common cluster-common), do: File.cp!("scripts/" <> name, Path.join(scripts, name))
+      File.write!(Path.join(scripts, "cluster-swap-run"), "#!/bin/sh\necho \"image=$ATANOR_CLUSTER_IMAGE args=$*\"\n")
+      File.chmod!(Path.join(scripts, "cluster-swap-run"), 0o755)
+
+      {out, 0} =
+        System.cmd(Path.join(scripts, "load-env"), ["swap", "--rate", "10"], env: [{"ATANOR_CLUSTER_IMAGE", ""}])
+
+      assert String.trim(out) == "image=atanor-cluster-load:local args=--rate 10"
+
+      {out, 0} =
+        System.cmd("bash", ["-c", "source scripts/cluster-common; echo \"[${ATANOR_CLUSTER_IMAGE:-unset}]\""],
+          env: [{"ATANOR_CLUSTER_IMAGE", nil}]
+        )
+
+      assert String.trim(out) == "[unset]"
     end
   end
 end

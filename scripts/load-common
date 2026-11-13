@@ -27,6 +27,9 @@ LOAD_STORE_TMPFS_SIZE=${ATANOR_LOAD_STORE_TMPFS_SIZE:-1g}   # the store's data; 
 
 # The cluster settings of the scenario: one node, data in tmpfs, a balancer that is not the limit.
 export ATANOR_CLUSTER_NODES=1 ATANOR_CLUSTER_TMPFS=1
+# The nodes run the harness image that load-env builds, in every compose call and throwaway container of the load
+# environment: without it compose falls back to atanor-cluster-node:local, an image without the native worker.
+export ATANOR_CLUSTER_IMAGE=atanor-cluster-load:local
 # A tmpfs counts against its container's memory limit. It is a lab artifact, so the limit is the scenario
 # memory plus the tmpfs: the scenario memory stays what the service gets (memory.current - shmem is measured against it).
 LOAD_STORE_MEMORY=${ATANOR_LOAD_STORE_MEMORY:-2g}

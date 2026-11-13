@@ -226,9 +226,9 @@ results["memory_criterion"] = {k: usage[k] for k in ("service_max_mb", "tmpfs_st
 
 # The swap record: a stub cluster-swap-run writes result.json; the node is measured, so the usage is summarized against the scenario memory.
 os.makedirs(os.path.join(work, "scripts"))
-stub = os.path.join(work, "scripts", "cluster-swap-run")
+stub = os.path.join(work, "scripts", "load-env")  # the swap runs through `load-env swap`
 with open(stub, "w") as file:
-    file.write("#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --out ] && out=$2; shift; done\nmkdir -p \"$out\"\n"
+    file.write("#!/bin/sh\n[ \"$1\" = swap ] || exit 2\nwhile [ $# -gt 0 ]; do [ \"$1\" = --out ] && out=$2; shift; done\nmkdir -p \"$out\"\n"
                "echo '{\"sent\": 100, \"duration_s\": 10, \"a_exit_s\": 1.5, \"lost\": 0, \"duplicated\": 0, \"errors\": {}, \"phases\": {\"warmup\": {\"p99\": 20, \"max\": 30}}}' > \"$out/result.json\"\n")
 os.chmod(stub, os.stat(stub).st_mode | stat.S_IXUSR)
 m.Sampler.take = lambda self: memory_sample(time.time(), 650, 256)
@@ -236,7 +236,11 @@ swap_round, swap_args = new_round("swap")
 swap_args.rate, swap_args.trigger, swap_args.swap_workers = 10, "sigterm", 1
 swap_args.swap_warmup = swap_args.swap_overlap = swap_args.swap_settle = 1
 swap_args.swap_timeout = 30
-m.swap(swap_round, swap_args, swap_round.info)
+swap_summary = m.swap(swap_round, swap_args, swap_round.info)
+results["swap_command"] = m.swap_command(swap_args, 10, "out")[:2]
+results["exit_status"] = {"swap_ok": m.exit_status("swap", swap_summary), "swap_fail": m.exit_status("swap", {"status": "fail", "invalid": None}),
+                          "swap_invalid": m.exit_status("swap", {"status": "invalid", "invalid": "no result"}),
+                          "ramp_ok": m.exit_status("ws", {"invalid": None, "stopped_by": "p99"}), "ramp_invalid": m.exit_status("ws", {"invalid": "delivery 80%"})}
 with open(os.path.join(swap_args.out, "A_swap_01-swap-10.json")) as file:
     swap_record = json.load(file)
 results["swap"] = {k: swap_record[k] for k in ("status", "valid", "stop_reason")} | {"service_max_mb": swap_record["memory"]["service_max_mb"],
