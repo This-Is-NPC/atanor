@@ -36,10 +36,14 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
   (default: the Erlang node name, `atanor@node-1.cluster`). With the same id, B would
   treat A's lease as its own and both nodes would write the same cell. Atanor
   cannot detect this; keep the names distinct.
-- **No peers between them.** Do not give B A's name in `ATANOR_PEERS` (or
-  your equivalent of `AtanorDaemon.Mesh`), and do not start both with the same
-  list. If they connect, they are a cluster and the swap is a different
-  operation ([how-to-run-a-cluster.md](how-to-run-a-cluster.md)).
+- **No cluster between them.** Nodes that share a store find each other through it
+  ([discovery](configuration.md#discovery)), so B must be in **another discovery
+  group** than A: start it with `ATANOR_GROUP=b` (A has none). B is in the store's
+  registry, but neither node dials the other. Another store prefix would isolate
+  them too, but they would then share no cells, which a swap needs. If they connect,
+  they are a cluster and the swap is a different operation
+  ([how-to-run-a-cluster.md](how-to-run-a-cluster.md)). B keeps its group after A
+  is gone: a node you add later joins B's group, or B restarts without it.
 - **A grace period longer than the drain.** The drain is bounded by
   `stop.shutdown_ms` (75 000 ms by default). `docker stop` (10 s by default),
   Kubernetes (30 s) and systemd (90 s) would otherwise send SIGKILL to a node
@@ -53,12 +57,9 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
 
 ## Steps
 
-1. Start A as the only node, with no peers, and deploy the app. The empty
-   `ATANOR_CLUSTER_PEERS` is what keeps the nodes apart. Use the same value
-   for every `cluster:*` command, as with `ATANOR_CLUSTER_TMPFS`.
+1. Start A as the only node, in no group, and deploy the app.
 
    ```sh
-   export ATANOR_CLUSTER_PEERS=            # empty: no cluster
    ATANOR_CLUSTER_NODES=1 mise run cluster:up
    mise run cluster:deploy-example
    ```
@@ -69,11 +70,11 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    scoreboard: active 55c8cdbc30d325d5628e54486c7ddb7bf3528f6355afe153817dafefb7f4061f, revision 1, previous none
    ```
 
-   Outside the container cluster, the same is: `ATANOR_PEERS` empty (or
-   unset) on both, and a node name and `ATANOR_NODE_ID` of their own.
+   Outside the container cluster, the same is: `ATANOR_GROUP` unset on A and set on B, and a
+   node name and `ATANOR_NODE_ID` of their own.
 
 2. Start B: another Compose service of the same project (`node-2`: hostname
-   `node-2`, node `atanor@node-2.cluster`), the same bucket, no peers.
+   `node-2`, node `atanor@node-2.cluster`), the same bucket, in group `b` (`ATANOR_CLUSTER_GROUP=b`).
 
    ```sh
    docker compose -p atanor-cluster -f cluster/compose.yml up -d --no-deps node-2
@@ -89,7 +90,7 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    Each node sees only itself: they are not a cluster. B follows the app's
    deployment within the poll interval (5 s). If you used a compose file
    other than ours, the side-by-side services look like this (the part that
-   matters: distinct names, empty peers, one bucket, a long grace period):
+   matters: distinct names, another group, one bucket, a long grace period):
 
    ```yaml
    services:
@@ -98,7 +99,6 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
        hostname: node-1                      # node atanor@node-1.cluster
        stop_grace_period: 90s                # more than stop.shutdown_ms (75 s)
        environment: &env
-         ATANOR_PEERS: ""                    # no peers
          ATANOR_ADVERTISE: node-1.cluster      # the node is atanor@node-1.cluster
          ATANOR_S3_ENDPOINT: http://store:8333
          ATANOR_STORE: s3://atanor           # the same store and prefix
@@ -109,6 +109,7 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
        hostname: node-2
        environment:
          <<: *env
+         ATANOR_GROUP: b                     # not A's group: no cluster with A
          ATANOR_ADVERTISE: node-2.cluster
          ATANOR_NODE_ID: atanor@node-2.cluster
    ```
@@ -194,7 +195,6 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
 8. Do all of it under load and measure it:
 
    ```sh
-   export ATANOR_CLUSTER_PEERS=
    ATANOR_CLUSTER_NODES=1 mise run cluster:up && mise run cluster:deploy-example
    mise run cluster:swap-run --trigger sigterm   # or --trigger api
    ```
@@ -263,12 +263,12 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
   node its own name or id before they share a store; there is no check at
   start.
 - **`/health` on A or B lists the other node.** They are connected as a
-  cluster: remove the other from `ATANOR_PEERS` and restart.
+  cluster: they share a discovery group. Give one of them `ATANOR_GROUP` and restart it.
 - **Many 503 `held_elsewhere` before the drain.** Both nodes are in rotation
   while A holds the cells. Drain A right after B serves, or add B to the
   balancer only when you drain.
-- **`cluster:swap-run` says the node has peers.** Start the cluster with
-  `ATANOR_CLUSTER_PEERS=` set (empty) and only one node.
+- **`cluster:swap-run` says the node is in a discovery group.** Start the cluster with one
+  node and without `ATANOR_CLUSTER_GROUP`.
 
 ## Next steps
 

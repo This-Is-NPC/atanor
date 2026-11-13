@@ -98,6 +98,16 @@ that moment; 300 is the cap) and `instance` and `node` (the peer) in the metadat
 | `[:atanor, :node, :link_broken]` | `via` (the node that reached the peer) | this node cannot reach the peer, but another can; it stays in the cluster and calls are not forwarded to it from here |
 | `[:atanor, :node, :alive]` | `from` (the previous state) | heartbeats are back |
 
+Discovery through the store (design §8.16) emits these, with no measurements:
+
+| Event | Metadata | Meaning |
+| --- | --- | --- |
+| `[:atanor, :discovery, :joined]` | `instance`, `node_id`, `advertise` | a peer entered the registry's listing |
+| `[:atanor, :discovery, :left]` | `instance`, `node_id`, `advertise` | a peer left it (stopped, or expired); the node stays connected |
+| `[:atanor, :discovery, :connect]` | `instance`, `node`, `result` (`:ok` or `:failed`) | one `Node.connect/1` to a listed peer |
+| `[:atanor, :discovery, :invalid]` | `instance`, `advertise` | a peer advertises something that is not a node name |
+| `[:atanor, :discovery, :ignored]` | `instance`, `node_id`, `advertise` | a peer of another group, not dialled |
+
 | Event | Measurements | Metadata |
 | --- | --- | --- |
 | `[:atanor, :cell, :take_over]` | `duration` (the whole step: quorum, lease read, `Alambique.take_over/4`) | `instance`, `cell` (the Alambique id, `<namespace>.<key>`), `node` (the lost owner), `reason` (why the detector has it down), `result`: `:ok` (the cell is served here now), `:moved` (another node won a concurrent takeover and serves it), `:stale` (the lease no longer named the lost owner), `:no_quorum` (this node is not in a majority, nothing was taken; rate-limited, see below) or `{:error, reason}` (the cell stays unavailable until its lease expires) |

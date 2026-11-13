@@ -1876,9 +1876,8 @@ leave. Breaking the broadcast so that it skips a node makes the property fail.
 ## 8. Cluster
 
 Nodes run an instance with the same `name`, `prefix` and placement over the
-same store. The operator connects the Erlang nodes (`Node.connect/1`, a
-cluster library, or `mix atanor.dev --connect`); Atanor does not discover
-them. Alambique already forwards a cell call to the cell's owner, so a worker
+same store. The nodes find each other through the store ([§8.16](#816-discovery-through-the-store)),
+or the operator connects them (`Node.connect/1`, a cluster library, or `mix atanor.dev --connect`). Alambique already forwards a cell call to the cell's owner, so a worker
 that runs anywhere reads and writes correctly. Atanor goes further and runs the
 worker callback on the owner, so its cell calls are local and its CPU is spent
 where the data is. [how-to-run-a-cluster.md](how-to-run-a-cluster.md) shows it.
@@ -3017,6 +3016,54 @@ manual moves, loads and node restarts, and checks that every acknowledged write 
 in its cell exactly once, that no two nodes acknowledged one epoch, that requests
 of a cell did not overlap in time except across a move or a takeover, and that the
 loop kept to residence time and cap. Every run waits for at least one move by the loop.
+
+### 8.16 Discovery through the store
+
+Nodes find each other through Alambique's node registry, not through a list of peers. An instance with
+`alambique: [registry: [advertise:, ttl_ms:, renew_ms:, meta:]]` writes `<prefix>/nodes/<node_id>`, renews
+it and deletes it when it drains or stops. `Alambique.peers/1` lists the other live nodes, and
+`[:alambique, :registry, :peers_changed]` says who joined and who left. Alambique never connects to them.
+`Atanor.Discovery` does, in a process that starts after Alambique when the VM is distributed:
+
+* **What `advertise` holds.** The Erlang node name of the peer, `atanor@node-2.cluster`: the one rule. The
+  daemon builds it from `ATANOR_ADVERTISE` (`atanor@<host>`, the name `rel/env.sh.eex` gives the VM); an
+  embedded instance gives `Atom.to_string(node())`. A string that is not a `name@host` is logged and
+  counted (`[:atanor, :discovery, :invalid]`), never dialled.
+* **When it dials.** On `peers_changed` and every refresh period (the registry's `refresh_ms`, else its
+  `renew_ms`, else 10 s). It reads the current listing each time and calls `Node.connect/1` for the nodes
+  it is not connected to, minus itself, in tasks: a host that does not answer takes `net_setuptime` (7 s)
+  and must not stop the process. A peer that expired or left is not in the listing and is not dialled again.
+  The dial set is a pure function (`Atanor.Discovery.targets/4`) with a property: exactly the live peers of
+  the group, minus this node and the connected ones.
+* **It never disconnects.** A peer that leaves the registry stays connected. The registry says who is
+  *listed*, which depends on renewals, the store and the clock; whether a connected peer is *down* is the
+  failure detector's call (§8.7 to §8.10), made from heartbeats on the link. A store that fails for a
+  minute would otherwise cut the links of live nodes and trigger takeovers. The detector also
+  disconnects a node it confirms down; if the registry still lists it, discovery connects again at the next
+  round, as the old `Mesh` did every second, and the detector judges the link anew.
+* **Groups.** The `"group"` of `meta` (`ATANOR_GROUP`) limits whom a node dials: it dials only its own
+  group. A node of another group is in the store, logged and counted (`:ignored`), and left alone. A swap
+  (design §8.11, [how-to-replace-a-node.md](how-to-replace-a-node.md)) needs two nodes that share the
+  store and form no cluster; a store prefix of its own would isolate them but also their cells.
+* **Trust boundary.** Whoever can write `<prefix>/nodes/` decides whom the nodes dial, so a writer can
+  make nodes connect to any host that listens. The cookie still gates the handshake, and it is never in the
+  bucket, so a stranger without it cannot join and can only make the nodes spend connection attempts.
+  Write access to the bucket must be as trusted as the cluster. Between the nodes, `epmd` (4369) and the
+  distribution ports (9100 to 9110 for the daemon) must be open.
+* **Single owner.** Discovery changes who is connected, never who owns a cell: that stays in the lease and
+  its fencing. `test/cluster/discovery_property_test.exs` runs C1's checks while nodes join (found while
+  requests run), stop and die, with peers that are not connected at start. **Mutation:** making
+  `Dispatch.execute/3` run every call locally fails it at once, as it fails C1.
+* **Tests.** `test/cluster/discovery_test.exs` starts peers that are not connected: two and three nodes find
+  each other, a node added later joins, a node that stopped is listed no more while the detector keeps
+  the link, a node that was killed is forgotten after the TTL (2.4 s with a 2 s TTL and 400 ms of skew), and a
+  node of another group is left alone. Without `Atanor.Discovery` all of them fail. Mutations caught by
+  `test/atanor/discovery_property_test.exs`: dialling this node, dialling a connected node, ignoring the
+  group, dialling a peer twice, and remembering a peer after it left the listing; a `Node.disconnect` on
+  `:left` is caught by the cluster test.
+
+Limits: a node found by the store but unreachable (a closed port, a name that does not resolve) is retried
+every round and logged once. The join time is the renewal period of the peer plus one connect.
 
 ## 9. Limits
 

@@ -21,9 +21,12 @@ Everything belongs to the Compose project `atanor-cluster` ([cluster/compose.yml
 | `atanor-cluster-lb-1` | HAProxy. A node is in rotation only while `GET /health/serving` on its admin port answers 200: the node is ready and has a quorum ([design §10](design.md#102-admin-api)). It adds the header `x-atanor-server` (the balancer's slot) to every answer. |
 
 A node is named `atanor@node-N.cluster` (`ATANOR_ADVERTISE`, set by the Compose service to its hostname plus `.cluster`; long names need a dot). Docker's DNS resolves
-`node-N.cluster` while the container runs, and each node tries every name in
-`ATANOR_PEERS` once a second ([daemon/lib/atanor_daemon/mesh.ex](../daemon/lib/atanor_daemon/mesh.ex)),
-so a container that restarts with another address is the same node. The Erlang cookie, the admin and dashboard tokens and the S3 keys
+`node-N.cluster` while the container runs. There is no list of peers: each node publishes
+`atanor@node-N.cluster` under `atanor/nodes/` in the bucket and connects to the names it reads there
+([discovery](configuration.md#discovery)), so a container that restarts with another address is the
+same node. Between the nodes the network must carry `epmd` (4369) and the distribution ports 9100 to
+9110; Compose's network does. Whoever can write `atanor/nodes/` in the bucket decides whom the nodes
+dial, though the cookie still gates the handshake: give the bucket's keys to the nodes only. The Erlang cookie, the admin and dashboard tokens and the S3 keys
 are generated in `cluster/secrets` (git-ignored, mode 700) and mounted as
 Compose secrets; the nodes read them through the `*_FILE` variables
 (`ATANOR_COOKIE_FILE`, `ATANOR_ADMIN_TOKEN_FILE`, ...), and every node setting is
@@ -60,7 +63,8 @@ Set these in the environment of `mise run`; the defaults are in `compose.yml`.
 | `ATANOR_CLUSTER_STORE_IMAGE`, `_LB_IMAGE` | pinned digests | Images. |
 | `ATANOR_CLUSTER_IMAGE` | `atanor-cluster-node:local`, built by `cluster:up` | The node image. When you set it, `cluster:up` does not build: it uses that image, which needs `curl` (the `harness` target has it). The load tests use it for their derived image ([cluster/load/Dockerfile](../cluster/load/Dockerfile)). |
 | `ATANOR_CLUSTER_LEASE_TTL_MS`, `_NET_TICKTIME` | 30000, 60 | Cell lease and Erlang net tick time (seconds). |
-| `ATANOR_CLUSTER_PEERS` | `node-1.cluster`..`node-10.cluster` | Advertised hosts each node connects to (`ATANOR_PEERS`). Set it empty and the nodes form no cluster, which `cluster:swap-run` needs ([how-to-replace-a-node.md](how-to-replace-a-node.md)). |
+| `ATANOR_CLUSTER_GROUP` | none | The discovery group of the nodes started ([`ATANOR_GROUP`](configuration.md#discovery)). `cluster:swap-run` starts the replacement in group `b`, so it does not join the others ([how-to-replace-a-node.md](how-to-replace-a-node.md)). |
+| `ATANOR_CLUSTER_REGISTRY_TTL_MS`, `_REGISTRY_RENEW_MS` | 15000, 3000 | How long a node's entry in the store lives, and how often it is renewed (`ATANOR_REGISTRY_*`). A new node is found within the renewal; a node that was killed is forgotten after the TTL plus 2 s. |
 | `ATANOR_CLUSTER_STOP_GRACE` | 90s | Time `docker stop` waits for a node to drain; keep it above the drain (`stop.shutdown_ms`, 75 s). |
 | `ATANOR_CLUSTER_SHUTDOWN_MS`, `_DRAIN_TIMEOUT_MS`, `_DRAIN_CONCURRENCY` | node defaults (75000, 15000, 64) | The node's `stop.shutdown_ms`, `drain_timeout_ms` and `drain_concurrency`. |
 | `ATANOR_CLUSTER_BUILD_JOBS` | 6 | Cargo jobs while building. |

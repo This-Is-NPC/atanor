@@ -37,7 +37,7 @@ runs the worker's callback on the owner and sends back the answer.
    ```
 
 2. Start the first node. `--sname` and `--cookie` make it a distributed
-   Erlang node; the other nodes must use the same cookie. `atanor-demo` is a public
+   Erlang node, which publishes itself in the bucket; the other nodes must use the same cookie. `atanor-demo` is a public
    value for this local demo. For a real cluster use a secret cookie, set in the
    environment of the process (`RELEASE_COOKIE` for a release) and not in the
    arguments, which show in the process list. Alambique's Mix tasks read
@@ -56,20 +56,22 @@ runs the worker's callback on the owner and sends back the answer.
    ```
 
 3. In the second and third terminals start `b` and `c` the same way, with their
-   own ports, and `--connect` to the nodes that are already up. Atanor does not
-   find other nodes: connecting them is the operator's job (`--connect` calls
-   `Node.connect/1`; in production use a cluster library or your orchestrator).
+   own ports. There is no list of nodes and no `--connect`: each node reads the
+   others from the bucket (`<prefix>/nodes/` in the bucket `atanor-dev`) and connects to
+   them, within a second or two here
+   ([discovery](configuration.md#discovery)). The nodes share a bucket and a prefix.
 
    ```sh
    mise exec -- elixir --sname b --cookie atanor-demo -S mix atanor.dev \
      --store seaweedfs --port 4002 --admin-port 5002 --admin-token demo-token \
-     --data-dir /tmp/atanor-demo/b --connect a@HOST
+     --data-dir /tmp/atanor-demo/b
    mise exec -- elixir --sname c --cookie atanor-demo -S mix atanor.dev \
      --store seaweedfs --port 4003 --admin-port 5003 --admin-token demo-token \
-     --data-dir /tmp/atanor-demo/c --connect a@HOST --connect b@HOST
+     --data-dir /tmp/atanor-demo/c
    ```
 
-4. Check that the nodes see each other.
+4. Check that the nodes see each other (run it again if `c` has just started: a
+   node is found within a second or two).
 
    ```sh
    curl -s -H "authorization: Bearer demo-token" localhost:5001/health
@@ -228,14 +230,16 @@ tenant's cells and secrets. Distribution is plain TCP, so forwarded requests
    export ALAMBIQUE_COOKIE="$RELEASE_COOKIE"             # Alambique's Mix tasks
    ```
 
-2. Open `epmd` (4369) and the distribution ports only between the nodes. Fix the
+2. Open `epmd` (4369) and the distribution ports only between the nodes. Whoever can
+   write `<prefix>/nodes/` in the bucket decides whom the nodes dial: the cookie still
+   gates the handshake, but give the bucket's write keys only to the nodes. Fix the
    range with `-kernel inet_dist_listen_min 9100 inet_dist_listen_max 9110` so a
    firewall rule can name it.
 3. If the network between the nodes is not private, use TLS distribution: start
    the nodes with `-proto_dist inet_tls -ssl_dist_optfile /etc/atanor/dist.conf`
    and put the certificates in that file, as the Erlang/OTP guide "Using TLS for
    Erlang Distribution" describes. Check it with `:net_kernel.get_net_ticktime()`
-   on a node and a successful `--connect`.
+   on a node and `/health` listing the other nodes.
 
 The demo above uses the public cookie `atanor-demo` for a local run only. The
 lab scripts generate a separate random secret for the cookie and for the admin
@@ -301,10 +305,10 @@ still gets the 503: the runtime keeps the availability reason of the cell call.
 ## Troubleshooting
 
 - **`/health` lists only one node.** The nodes are not connected. Check that
-  every node has the same `--cookie`, that `--connect` names `NAME@HOST` with
-  the host from `hostname -s`, and run `epmd -names` to see the registered
-  names. Nodes started with `--sname` cannot connect to nodes started with
-  `--name`.
+  every node has the same `--cookie`, the same bucket and the same `--prefix`, and
+  that the objects under `<prefix>/nodes/` exist; run `epmd -names` to see the
+  registered names, and look for `atanor discovery: cannot connect` in the log.
+  Nodes started with `--sname` cannot connect to nodes started with `--name`.
 - **`mix atanor.dev` says `--connect needs a named node`.** Start it through
   `elixir --sname NAME -S mix atanor.dev`, as above.
 - **`could not connect to ...`.** The other node is not up yet or uses another
