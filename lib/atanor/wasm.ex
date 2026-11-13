@@ -26,7 +26,8 @@ defmodule Atanor.Wasm do
     * `:max_waiting` - guests that wait without holding a call slot or a pool
       thread, so they do not count against `:max_calls` or `:worker_calls`
       (default: what the node's memory fits, `waiting_budget / waiting_bytes`, 1 to 256,
-      see `Atanor.Memory`; 2 per thread when the node has no memory limit). Each has a thread and an instance slot of its
+      see `Atanor.Memory`; 2 per thread when the node has no memory limit). The settings are fixed
+      for the VM by the first node that starts, so the limit of that node derives them. Each has a thread and an instance slot of its
       own; a guest that waits above this number keeps its slot, as it would
       without the setting.
     * `:max_nested_calls` - calls that guests make to other workers, in flight
