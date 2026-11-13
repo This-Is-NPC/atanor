@@ -18,12 +18,17 @@ defmodule Atanor.Daemon do
       exceptions.
     * A secret `K` also has `K_FILE`, which names a file that holds the value. Giving both in one
       place is an error. The secrets are `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-      `ATANOR_ADMIN_TOKEN` and `ATANOR_DASHBOARD_TOKEN`.
+      `AWS_SESSION_TOKEN`, `AWS_CONTAINER_AUTHORIZATION_TOKEN`, `ATANOR_ADMIN_TOKEN` and
+      `ATANOR_DASHBOARD_TOKEN`.
+    * The S3 credentials come from the AWS chain (`Atanor.AwsCredentials`): the environment, web
+      identity, the shared files, container credentials, then EC2 metadata. Without a region
+      `ATANOR_S3_REGION`, `AWS_REGION` and `AWS_DEFAULT_REGION` decide it, in that order.
     * `ATANOR_ADVERTISE`, `ATANOR_NET_TICKTIME` and `ATANOR_COOKIE_FILE` are read by the release's
       start script, before the VM boots (`rel/env.sh.eex`), so they come from the environment only.
     * The options are checked by `Atanor.Config.build/1`, the single validator of an instance.
 
-  `load/3` is a pure function of the environment map and the contents of the file; `load!/1` reads
+  `load/3` is a pure function of the environment map and the contents of the file (the shared AWS
+  files are the only other thing it reads); `load!/1` reads
   the process environment and the file named by `ATANOR_CONFIG`, and logs the effective settings
   once, with the secrets masked.
   """
@@ -42,8 +47,23 @@ defmodule Atanor.Daemon do
     {"ATANOR_S3_ENDPOINT", :string,
      "The S3 endpoint URL. Default: Alambique derives `https://s3.<region>.amazonaws.com` from the region."},
     {"ATANOR_S3_REGION", :string, "The signing region. Default `#{@default_region}`."},
-    {"AWS_ACCESS_KEY_ID", :secret, "The S3 access key id. Required."},
-    {"AWS_SECRET_ACCESS_KEY", :secret, "The S3 secret access key. Required."},
+    {"AWS_ACCESS_KEY_ID", :secret, "The S3 access key id (first source of the AWS chain)."},
+    {"AWS_SECRET_ACCESS_KEY", :secret, "The S3 secret access key."},
+    {"AWS_SESSION_TOKEN", :secret, "The token of temporary keys."},
+    {"AWS_REGION", :string, "The region when `ATANOR_S3_REGION` is unset."},
+    {"AWS_DEFAULT_REGION", :string, "The region when neither `ATANOR_S3_REGION` nor `AWS_REGION` is set."},
+    {"AWS_WEB_IDENTITY_TOKEN_FILE", :string, "The web identity token file (with `AWS_ROLE_ARN`)."},
+    {"AWS_ROLE_ARN", :string, "The role to assume with the web identity token."},
+    {"AWS_ROLE_SESSION_NAME", :string, "The session name of the assumed role. Default `atanor`."},
+    {"AWS_ENDPOINT_URL_STS", :string, "The STS endpoint URL. Default: derived from the region."},
+    {"AWS_PROFILE", :string, "The profile of the shared files. Default `default`."},
+    {"AWS_SHARED_CREDENTIALS_FILE", :string, "The shared credentials file. Default `~/.aws/credentials`."},
+    {"AWS_CONFIG_FILE", :string, "The shared config file. Default `~/.aws/config`."},
+    {"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", :string, "The ECS credentials path, on 169.254.170.2."},
+    {"AWS_CONTAINER_CREDENTIALS_FULL_URI", :string, "The container credentials URL (EKS Pod Identity)."},
+    {"AWS_CONTAINER_AUTHORIZATION_TOKEN", :token, "The authorization token of the container credentials."},
+    {"AWS_EC2_METADATA_DISABLED", :string, "`true` turns the EC2 metadata source off."},
+    {"AWS_EC2_METADATA_SERVICE_ENDPOINT", :string, "The EC2 metadata endpoint. Default `http://169.254.169.254`."},
     {"ATANOR_LISTEN", :listen, "The cell ingress, `ip:port`. Default `0.0.0.0:4000`."},
     {"ATANOR_ADMIN_LISTEN", :listen, "The admin API, `ip:port`. Default `0.0.0.0:4001`."},
     {"ATANOR_ADMIN_TOKEN", :secret, "The admin token, at least 32 bytes. Without it there is no admin API."},
@@ -67,12 +87,11 @@ defmodule Atanor.Daemon do
     {"ATANOR_PEERS", :peers, "The host names of the peers, comma separated (the daemon; removed by store discovery)."}
   ]
 
-  @secrets for {name, :secret, _} <- @keys, do: name
+  @secrets for {name, type, _} <- @keys, type in [:secret, :token], do: name
   @boot for {name, :boot, _} <- @keys, do: name
   @peers_key "ATANOR_PEERS"
   # The path of the file, read before the loader runs.
   @config_var "ATANOR_CONFIG"
-  @session_token "AWS_SESSION_TOKEN"
 
   # The documented variables of the CLI (`Atanor.CLI`), listed one by one on purpose.
   @cli_variables ~w(ATANOR_URL ATANOR_TOKEN ATANOR_PROFILE ATANOR_CONNECT_TIMEOUT ATANOR_TIMEOUT
@@ -81,9 +100,11 @@ defmodule Atanor.Daemon do
   @file_forms for name <- @secrets, do: name <> "_FILE"
   @known Enum.map(@keys, &elem(&1, 0)) ++ @file_forms ++ [@config_var]
 
+  # `children` are the processes to start before `{Atanor, opts}`: the holder of renewable credentials.
   @type settings :: %{
           opts: keyword,
           peers: [String.t()],
+          children: [Supervisor.child_spec()],
           effective: [{String.t(), String.t()}]
         }
 
@@ -107,9 +128,10 @@ defmodule Atanor.Daemon do
   The settings from the environment and the contents of the file (a JSON object, or `nil`).
 
   Returns `{:ok, settings}` with `opts` (for `{Atanor, opts}`), `peers` and `effective`, the list of
-  `{variable, text}` in effect, secrets masked; or `{:error, messages}` with every problem found.
-  The only option is `:read_file`, a function of a path that returns `{:ok, binary}` or
-  `{:error, reason}`, used for the `*_FILE` variables (default `File.read/1`).
+  `{variable, text}` in effect, secrets masked, and the source of the credentials; or `{:error, messages}` with every problem found.
+  The options are `:read_file`, a function of a path that returns `{:ok, binary}` or
+  `{:error, reason}`, used for the `*_FILE` variables and the shared AWS files (default `File.read/1`),
+  `:home` (default `HOME` of `env`) and `:ecs_endpoint` (the host of the relative container URI).
   """
   @spec load(%{optional(String.t()) => String.t()}, binary | nil, keyword) ::
           {:ok, settings} | {:error, [String.t()]}
@@ -119,7 +141,7 @@ defmodule Atanor.Daemon do
     with {:ok, file} <- decode(file_contents),
          {:ok, layers} <- layers(env, file),
          {:ok, values} <- resolve(layers, read),
-         {:ok, settings} <- build(values, env) do
+         {:ok, settings} <- build(values, env, read, opts) do
       {:ok, settings}
     end
   end
@@ -187,12 +209,7 @@ defmodule Atanor.Daemon do
         unknown("variable #{name}", name, @known)
       end
 
-    session =
-      if blank(env[@session_token]),
-        do: ["#{@session_token} is set, but the S3 store takes no session token yet: use static keys"],
-        else: []
-
-    {own, Enum.sort(errors) ++ session}
+    {own, Enum.sort(errors)}
   end
 
   defp file_layer(file) do
@@ -200,9 +217,6 @@ defmodule Atanor.Daemon do
 
     Enum.reduce(Enum.sort(file), {%{}, []}, fn {key, value}, {layer, errors} ->
       cond do
-        key == "aws_session_token" ->
-          {layer, errors ++ ["file key aws_session_token: the S3 store takes no session token yet: use static keys"]}
-
         not Map.has_key?(index, key) ->
           {layer, errors ++ [unknown("key #{inspect(key)} of the config file", key, Map.keys(index))]}
 
@@ -248,25 +262,26 @@ defmodule Atanor.Daemon do
     end
   end
 
-  defp pick(name, :secret, env, file, read) do
+  defp pick(name, type, env, file, read) when type in [:secret, :token] do
     layer = Enum.find([env, file], &(Map.has_key?(&1, name) or Map.has_key?(&1, name <> "_FILE")))
 
     case layer && {layer[name], layer[name <> "_FILE"]} do
       nil -> {:ok, nil}
       {inline, nil} -> {:ok, inline}
-      {nil, path} -> read_secret(name, path, read)
+      {nil, path} -> read_secret(name, path, read, type)
       {_, _} -> {:error, "#{name} and #{name}_FILE are both set: give one"}
     end
   end
 
   defp pick(name, _type, env, file, _read), do: {:ok, env[name] || file[name]}
 
-  defp read_secret(name, path, read) do
+  # A `:token` keeps its path, because the holder of the credentials reads it again (it rotates).
+  defp read_secret(name, path, read, type) do
     case read.(path) do
       {:ok, contents} ->
         case blank(String.trim(contents)) do
           nil -> {:error, "#{name}_FILE: #{path} is empty"}
-          value -> {:ok, value}
+          value -> {:ok, if(type == :token, do: {:file, path}, else: value)}
         end
 
       {:error, reason} ->
@@ -274,7 +289,7 @@ defmodule Atanor.Daemon do
     end
   end
 
-  defp build(values, env) do
+  defp build(values, env, read, opts) do
     {parsed, errors} =
       Enum.reduce(values, {%{}, []}, fn {name, type, text}, {acc, errors} ->
         case parse(type, text) do
@@ -286,11 +301,31 @@ defmodule Atanor.Daemon do
     errors = errors ++ boot_errors(env) ++ missing(parsed)
 
     with [] <- errors,
-         {:ok, opts} <- options(parsed) do
-      {:ok, %{opts: opts, peers: Map.get(parsed, @peers_key, []), effective: effective(parsed, env)}}
+         {:ok, aws} <- credentials(parsed, env, read, opts),
+         {:ok, store_opts} <- options(parsed, aws) do
+      children = if aws.provider, do: [{Atanor.AwsCredentials, {aws.provider, source: aws.source}}], else: []
+
+      {:ok,
+       %{
+         opts: store_opts,
+         peers: Map.get(parsed, @peers_key, []),
+         children: children,
+         effective: effective(parsed, env) ++ [{"credentials", aws.source}]
+       }}
     else
       [_ | _] = errors -> {:error, errors}
       {:error, _} = error -> error
+    end
+  end
+
+  defp credentials(parsed, env, read, opts) do
+    detect_opts =
+      [home: Keyword.get(opts, :home, blank(env["HOME"])), read_file: read] ++
+        Keyword.take(opts, [:ecs_endpoint])
+
+    case Atanor.AwsCredentials.detect(parsed, detect_opts) do
+      {:ok, aws} -> {:ok, aws}
+      {:error, message} -> {:error, [message]}
     end
   end
 
@@ -308,12 +343,13 @@ defmodule Atanor.Daemon do
   end
 
   defp missing(parsed) do
-    for name <- ["ATANOR_STORE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"], not Map.has_key?(parsed, name) do
+    for name <- ["ATANOR_STORE"], not Map.has_key?(parsed, name) do
       "#{name} is required"
     end
   end
 
   defp parse(:secret, text), do: {:ok, text}
+  defp parse(:token, text), do: {:ok, text}
   defp parse(:string, text), do: {:ok, text}
 
   defp parse(:integer, text) do
@@ -355,17 +391,13 @@ defmodule Atanor.Daemon do
   defp unit_bytes("m"), do: 1_048_576
   defp unit_bytes("g"), do: 1_073_741_824
 
-  defp options(v) do
+  defp options(v, aws) do
     {bucket, prefix} = v["ATANOR_STORE"]
-    region = v["ATANOR_S3_REGION"] || @default_region
+    region = v["ATANOR_S3_REGION"] || v["AWS_REGION"] || v["AWS_DEFAULT_REGION"] || @default_region
 
-    # Without an endpoint Alambique derives the AWS one from the region.
-    config = %{
-      region: region,
-      bucket: bucket,
-      access_key_id: v["AWS_ACCESS_KEY_ID"],
-      secret_access_key: v["AWS_SECRET_ACCESS_KEY"]
-    }
+    # Without an endpoint Alambique derives the AWS one from the region. Renewable credentials are
+    # a function Alambique caches by its identity.
+    config = Map.merge(%{region: region, bucket: bucket}, credential_options(aws))
 
     store =
       {Alambique.Store.S3,
@@ -401,6 +433,13 @@ defmodule Atanor.Daemon do
     end
   end
 
+  defp credential_options(%{static: {id, secret, token}}) do
+    %{access_key_id: id, secret_access_key: secret}
+    |> then(&if(token, do: Map.put(&1, :session_token, token), else: &1))
+  end
+
+  defp credential_options(%{provider: _}), do: %{credentials: &Atanor.AwsCredentials.credentials/0}
+
   defp put_unless(opts, true, _key, _value), do: opts
   defp put_unless(opts, false, key, value), do: opts ++ [{key, value}]
 
@@ -426,7 +465,7 @@ defmodule Atanor.Daemon do
     Enum.reject(set ++ [{@config_var, env[@config_var]}], fn {_, text} -> is_nil(blank(text)) end)
   end
 
-  defp shown(name, :secret, parsed, _env), do: if(Map.has_key?(parsed, name), do: @mask)
+  defp shown(name, type, parsed, _env) when type in [:secret, :token], do: if(Map.has_key?(parsed, name), do: @mask)
   defp shown(name, :boot, _parsed, env), do: blank(env[name])
 
   defp shown(name, :url, parsed, _env),

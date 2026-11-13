@@ -32,7 +32,7 @@ defmodule Atanor.DaemonPropertyTest do
   property "an unknown key of the file always fails" do
     check all(key <- string([?a..?z, ?_], min_length: 1, max_length: 12), value <- string(:alphanumeric)) do
       known = for name <- Daemon.known_variables(), do: String.downcase(String.replace_prefix(name, "ATANOR_", ""))
-      check_unknown = key not in known and key != "aws_session_token"
+      check_unknown = key not in known
 
       if check_unknown do
         assert {:error, [message]} = Daemon.load(base(), Jason.encode!(%{key => value}))
