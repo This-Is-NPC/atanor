@@ -124,10 +124,9 @@ Atanor listening on http://127.0.0.1:4000
 
 - WASM workers cannot serve TCP yet, and cannot read the change feed
   ([design §14.8](docs/design.md#148-alarms-sockets-and-what-is-left-out)).
-- Atanor does not find other nodes: the operator connects them with a cluster
-  library, `Node.connect/1` or `mix atanor.dev --connect`. Nodes that are not
-  connected each serve the cells they can lease, and Alambique's fencing keeps
-  each cell's data safe ([run a cluster](docs/how-to-run-a-cluster.md)).
+- Discovery trusts the bucket: whoever can write `<prefix>/nodes/` decides whom the
+  nodes dial, so write access to the bucket must be as trusted as the cluster
+  ([discovery](docs/configuration.md#discovery)).
 - Cluster behavior was measured on one machine: three nodes and one SeaweedFS
   process in VMs on one host, with injected latency and loss, not a real network
   or a replicated bucket ([the lab](docs/how-to-run-the-cluster-lab.md)). Run the
