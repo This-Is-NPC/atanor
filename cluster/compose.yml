@@ -97,6 +97,7 @@ services:
       # The nodes find each other through the store. A node of another group (ATANOR_CLUSTER_GROUP) does not
       # join the others: cluster:swap-run starts the replacement so.
       ATANOR_GROUP: ${ATANOR_CLUSTER_GROUP:-}
+      ATANOR_MEMORY_LIMIT: ${ATANOR_CLUSTER_MEMORY_LIMIT:-}
       ATANOR_REGISTRY_TTL_MS: ${ATANOR_CLUSTER_REGISTRY_TTL_MS:-}
       ATANOR_REGISTRY_RENEW_MS: ${ATANOR_CLUSTER_REGISTRY_RENEW_MS:-}
       ATANOR_SHUTDOWN_MS: ${ATANOR_CLUSTER_SHUTDOWN_MS:-}

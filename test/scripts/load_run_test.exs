@@ -77,14 +77,14 @@ defmodule Atanor.LoadRunTest do
     assert record["store"]["limit_mb"] == 1280.0
     assert r["rtt_fails"]["record"]["series"] |> Enum.all?(&(&1["working_set"] == :null))
 
-    # the criterion is memory.current - shmem against the scenario's 512 MB; the tmpfs is recorded apart
+    # the criterion is the node's working set (memory.current - inactive_file, tmpfs included) against the scenario's 512 MB
     assert r["memory_criterion"] == %{
-             "service_max_mb" => 400.0,
+             "service_max_mb" => 650.0,
              "tmpfs_start_mb" => 256.0,
              "tmpfs_max_mb" => 300.0,
              "tmpfs_growth_mb" => 44.0,
              "limit_mb" => 512.0,
-             "max_pct_of_limit" => 78.1
+             "max_pct_of_limit" => 127.0
            }
 
     # the swap record is written with the usage against the scenario memory (swap() crashed on a name that did not exist)
@@ -92,7 +92,7 @@ defmodule Atanor.LoadRunTest do
              "status" => "ok",
              "valid" => true,
              "stop_reason" => :null,
-             "service_max_mb" => 394.0,
+             "service_max_mb" => 600.0,
              "limit_mb" => 512.0
            }
 
@@ -219,7 +219,7 @@ defmodule Atanor.LoadRunTest do
   describe "load-common memory limits" do
     defp limits(env) do
       script =
-        ~s(source scripts/load-common; echo "$ATANOR_CLUSTER_NODE_MEMORY $ATANOR_CLUSTER_STORE_MEMORY $LOAD_MEMORY_BYTES")
+        ~s(source scripts/load-common; echo "$ATANOR_CLUSTER_NODE_MEMORY $ATANOR_CLUSTER_STORE_MEMORY $LOAD_MEMORY_BYTES $ATANOR_CLUSTER_MEMORY_LIMIT")
 
       {out, status} = System.cmd("bash", ["-c", script], env: env, stderr_to_stdout: true)
       {String.split(String.trim(out)), status}
@@ -229,10 +229,12 @@ defmodule Atanor.LoadRunTest do
       mib = 1_048_576
       node_a = (512 + 256) * mib
       store = (2048 + 1024) * mib
-      assert {[node, st, scenario], 0} = limits([{"ATANOR_LOAD_SCENARIO", "A"}])
+      assert {[node, st, scenario, node_limit], 0} = limits([{"ATANOR_LOAD_SCENARIO", "A"}])
       assert {node, st, scenario} == {"#{node_a}", "#{store}", "#{512 * mib}"}
+      # the node's own limit is the scenario memory, not the container limit with the tmpfs
+      assert node_limit == "#{512 * mib}"
 
-      assert {[node, _, scenario], 0} = limits([{"ATANOR_LOAD_SCENARIO", "B"}, {"ATANOR_LOAD_TMPFS_SIZE", "768m"}])
+      assert {[node, _, scenario, _], 0} = limits([{"ATANOR_LOAD_SCENARIO", "B"}, {"ATANOR_LOAD_TMPFS_SIZE", "768m"}])
       assert {node, scenario} == {"#{(2048 + 768) * mib}", "#{2048 * mib}"}
     end
 

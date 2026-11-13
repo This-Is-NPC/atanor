@@ -213,14 +213,14 @@ results["fresh_never_failed"] = fresh_scenario("fresh_never_failed", slow_call=0
 # A step that starts with a dead node is invalid, runs no generator and ends the round.
 results["dead_at_start"] = ramp_scenario("dead_at_start", dies_at=0, before={"running": False, "exit_code": 137})
 
-# The memory criterion: memory.current - shmem against the scenario's memory, the tmpfs recorded apart (start, max, growth).
-def memory_sample(t, current_mb, shmem_mb):
+# The memory criterion: memory.current - inactive_file (the node's working set, tmpfs included) against the scenario's memory, the tmpfs recorded apart (start, max, growth).
+def memory_sample(t, current_mb, shmem_mb, inactive_mb=50):
     host = {"cpu_total": 100 * (t + 1), "cpu_idle": 100 * (t + 1), "loadavg1": 0.0, "available_gb": 8.0, "swap_used_mb": 0}
-    node = {"memory_current": current_mb * MB, "shmem": shmem_mb * MB, "peak": current_mb * MB, "limit": (512 + 768) * MB, "cpu_s": float(t), "cpu_limit": 1.0}
+    node = {"memory_current": current_mb * MB, "shmem": shmem_mb * MB, "inactive_file": inactive_mb * MB, "peak": current_mb * MB, "limit": (512 + 768) * MB, "cpu_s": float(t), "cpu_limit": 1.0}
     return {"t": float(t), "node": node, "store": {}, "lb": {}, "gen_cpu_s": 0.0, "gen_swap_mb": 0, "fds": None, "host": host}
 
 
-# 700 MB current, 300 of it tmpfs: the service uses 400 MB of the 512 MB scenario, not 700 of 1280.
+# 700 MB current, 50 of it inactive file cache: the working set is 650 MB of the 512 MB scenario, as the node's gate sees it; the tmpfs (300) counts.
 usage = m.summarize([memory_sample(0, 650, 256), memory_sample(1, 700, 300)], 0, 512 * MB)["memory"]
 results["memory_criterion"] = {k: usage[k] for k in ("service_max_mb", "tmpfs_start_mb", "tmpfs_max_mb", "tmpfs_growth_mb", "limit_mb", "max_pct_of_limit")}
 
