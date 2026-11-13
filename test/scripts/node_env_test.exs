@@ -50,4 +50,20 @@ defmodule Atanor.Scripts.NodeEnvTest do
     assert {message, 1} = run(with_env([{"RELEASE_COOKIE", "a"}]))
     assert message =~ "ATANOR_ADVERTISE is required"
   end
+
+  test "`eval` needs neither an advertise address nor a cookie: the CLI runs through it" do
+    # The release's script sets RELEASE_COMMAND before it sources env.sh; nothing else is exported.
+    script = ". #{@script} && echo \"ran node=${RELEASE_NODE:-none} dist=${RELEASE_DISTRIBUTION:-none}\""
+
+    assert {"ran node=none dist=none", 0} = eval_in(script, "eval")
+    assert {message, 1} = eval_in(script, "start")
+    assert message =~ "ATANOR_ADVERTISE is required"
+  end
+
+  defp eval_in(script, command) do
+    {out, status} =
+      System.cmd("sh", ["-c", script], env: with_env([{"RELEASE_COMMAND", command}]), stderr_to_stdout: true)
+
+    {String.trim(out), status}
+  end
 end
