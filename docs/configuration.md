@@ -63,6 +63,15 @@ The limits that bound a statement, an awake cell and the local files
 (`alambique: [sql:, awake:, wal:, local_cache:]`) keep Alambique's defaults.
 They are in [design §4.3](design.md#43-limits-on-cell-calls-and-their-errors).
 
+`alambique: [registry: [advertise:, meta:, ttl_ms:, renew_ms:, refresh_ms:,
+page_size:, sweep_ms:]]` makes Alambique keep this node in a registry in the
+store, which `Alambique.peers/1` reads. It is off by default and Atanor does
+not use it yet; Atanor checks the keys and the types of the values at start
+(`advertise:` is a non-empty string, `meta:` a map, the others positive
+integers). The S3 store takes an optional `endpoint:` (derived from the
+region), `session_token:` and a credentials function in its own config, which
+Atanor passes through.
+
 - `sql: [max_concurrent_statements:]` is the most reads that run on a node at
   once (default: the dirty IO schedulers minus two, at least 1). A read over it
   is a 503 `overloaded`.

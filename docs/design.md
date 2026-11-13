@@ -3048,6 +3048,16 @@ detected at start emits `[:atanor, :crash, :detected]` (§17.2). `[:atanor, :cal
 
 ### 10.2 Admin API
 
+**An open store breaker does not make the node unready.** `/health` and `/runtime` show it
+(`store`), and `/health/ready` and `/health/serving` ignore it. Readiness says that the node can
+serve (§2.1), and an open breaker leaves most of that: the awake cells keep answering, their
+leases renew through it (Alambique 0.5), and calls that need the store get a fast 503
+`store_unavailable` instead of a queue (§4.3). The store is shared, so the breakers of the other
+nodes open with it: a balancer that left the nodes out would turn a degraded service into none,
+and a rolling restart that polled `/health/ready` would stall on an outage that a restart does
+not fix. An operator or an alert reads `store` instead; a half-open breaker is the probe, and a
+closed one with `failures` above zero is a store that has begun to fail.
+
 `Atanor.Admin` is a Bandit listener of its own (option `admin:`), on loopback
 unless `ip:` says otherwise, with no listener when the option is absent. Every
 request needs `Authorization: Bearer <token>`, compared in constant time; the
@@ -3065,7 +3075,7 @@ JSON; `GET` unless the table says otherwise:
 
 | Path | Answers |
 | --- | --- |
-| `/health` | this node, its `status` (`ok` or `starting`), the nodes running the instance, the number of active workers |
+| `/health` | this node, its `status` (`ok` or `starting`), the nodes running the instance, the number of active workers, and `store`: the circuit breaker of each store location (`state` `closed`, `open` or `half_open`, `since_ms` in Unix ms, `failures` in a row), read from `Alambique.breaker_status/1` without a request to the store |
 | `/health/ready` | 200 `ready` when the node serves; 503 `starting` with the `reason` until it serves (§2.1). Poll it during a rolling restart |
 | `/health/serving` | `/health/ready` and a quorum: 200 `serving`, or 503 `no_quorum` while this node is not a majority of the nodes it knows (§8.10; always 200 when ready with `takeover: [quorum: false]`). Point a load balancer at it: a partitioned node leaves the rotation. A rolling restart still polls `/health/ready` |
 | `/crashes`, `/crashes/:node/:id` | crash reports from a previous VM death, with the units, their cells and `Alambique.crashes/2` (§17.2) |
