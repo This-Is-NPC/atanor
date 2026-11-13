@@ -652,7 +652,7 @@ worker.
 | `sql: [max_result_bytes:]` | 67 108 864 (64 MiB) | bytes one result may hold (text and blobs by length) |
 | `sql: [max_concurrent_statements:]` | dirty IO schedulers minus two, at least 1 | the most reads (owner, replica and cross-cell) running on the node at once, so commits keep dirty IO schedulers; a read over it gets `{:error, :busy}` at once, a 503 `overloaded` at the ingress. The count is shared by every instance in the VM: give them the same value |
 | `awake: [max_cells:]` | 20 000 | cells with a process on this node; a partition counts as a cell. A call that would wake one more hibernates the least recently used cell with no caller waiting, and gets `{:error, :overloaded}` only when every awake cell has callers waiting |
-| `awake: [max_wakes:]` | derived from the node's memory, else 256 (§4.3, memory of the wakes) | cells waking at once on this node; one more is `{:error, :overloaded}` |
+| `awake: [max_wakes:]` | derived from the node's memory, else 256 (§4.3, memory of the wakes) | cells waking at once on this node; one more waits in Alambique's queue (`awake: [wake_queue_ms: 500, max_wake_queue: 4 × max_wakes]`, Alambique's defaults, checked by Atanor) and is `{:error, :overloaded}` when the queue is full or its time is up |
 | `awake: [max_pending:]` | 10 000 | calls queued, running or waiting for an upload on one cell (other messages do not count) |
 | `awake: [cache_kib:]` | 512 | SQLite page cache of each awake cell, in KiB (Alambique's `PRAGMA cache_size`; SQLite's own default is 2 000) |
 | `awake: [max_bytes:]` | derived from the node's memory, else `nil` (no ceiling); see "Memory of the awake cells" below | ceiling on the page cache, schema and statements of all awake cells; past it the least recently used cells without callers hibernate before another wakes, and a call that finds none gets `{:error, :overloaded}` |
@@ -660,6 +660,7 @@ worker.
 | `local_cache: [max_bytes:]` | derived from the disk budget (§4.4); Alambique's 21 474 836 480 (20 GiB) when the budget is unknown | size of `data_dir` above which the files of hibernated cells are removed, the least recently used first |
 | `local_cache: [interval_ms:]` | `disk: [sample_ms:]` (5 000) with a disk budget, else 60 000 | time between those rounds; `local_cache: false` keeps every file |
 | `wal: [checkpoint_bytes:]` | derived from the disk budget, 1 to 64 MiB (§4.4); Alambique's 67 108 864 (64 MiB) when the budget is unknown | size of an awake cell's `-wal` file above which it is checkpointed |
+| `wal: [max_bytes:, budget_interval_ms:]` | derived from the disk budget (§4.4), `nil` (none) and 1 000 when the budget is unknown | the most the `-wal` files of all awake cells may hold; past it Alambique checkpoints the biggest first, and how often it checks (`disk: [sample_ms:]`, at most 1 000) |
 | `compaction: [hold_bytes:]` | 33 554 432 (32 MiB) per instance | memory that keeps the files a cell just replicated, so the compaction of an awake cell reads them from memory and not from the store; 0 turns it off |
 | `compaction: [hold_object_bytes:]` | 1 048 576 (1 MiB) | largest file held; a larger one is read back |
 | `compaction: [snapshot_ratio:]` | 2.0 | a snapshot is taken when the level-0 bytes written since the last one reach this many times its size; a number above 0 |
@@ -671,7 +672,7 @@ worker.
 | `compaction: [max_level:]` | 2 | highest merge level (at most 8); a higher one keeps fewer, larger files for a restore |
 | `replicas: [poll_max_ms:]` | 5 000 (Alambique's) | longest time between refreshes of a replica nobody reads: the interval grows to a quarter of the idle time up to it. Passed through, not checked by Atanor |
 | `query: [reflink:]` | `true` (Alambique's) | refresh a cached replica from a copy-on-write clone where the file system has them; `false` always copies. Passed through, not checked by Atanor |
-| `restore: [edge_bytes:, fetch_concurrency:, prefetch_bytes:]` | 65 536, 16, 67 108 864 (64 MiB) | bytes read at each end of a file before the rest, files fetched at once, and bytes read ahead during a restore; the last two are derived from the node's memory when it has a limit (§4.3, memory of the wakes) |
+| `restore: [edge_bytes:, fetch_concurrency:, max_inflight_bytes:]` | 65 536, 16, 67 108 864 (64 MiB) | bytes read at each end of a file before the rest, files fetched at once, and the most bytes one restore holds from the store; the last two are derived from the node's memory when it has a limit (§4.3, memory of the wakes) |
 | `lazy_restore: [min_bytes:]` | 4 194 304 (4 MiB) | a database smaller than this is restored whole; a larger one is restored lazily, page by page on the first queries. A cell of 5 MB whose first query reads most of it restores faster whole (166 against 215 ms in Alambique's bench): `16_777_216` does that. 0 is always lazy; `lazy_restore: false` turns lazy restore off. Its other keys are `concurrency` (4), `batch_bytes` (4 MiB) and `miss_pages` (16) |
 | `feed: [object_batches:]` | 16 (Atanor's default; Alambique's is 1) | replicated batches one feed object may carry; 1 is one object per batch |
 | `feed: [linger_ms:]` | 250 (Atanor's default; Alambique's is 0) | how long the publisher waits for more batches while a group is short; 0 never waits. At most a tenth of `feed: [window_ms:]` (10 000 by default) when `object_batches` is above 1; otherwise the instance does not start |
@@ -811,34 +812,48 @@ see that, because the requests are already in. Reproduced on a node with a limit
 of 768 MiB, 64 awake cells and about 520 requests in flight: when its store
 began to answer 500, the BEAM memory grew by 215 MiB in 3 seconds and the
 container was killed before the gate at 85% turned on. Alambique's defaults
-(`awake: [max_wakes: 256]`, `restore: [fetch_concurrency: 16, prefetch_bytes:
-67_108_864]`) allow 256 wakes of up to 64 MiB of read-ahead each. So Atanor
+(`awake: [max_wakes: 256]`, `restore: [fetch_concurrency: 16, max_inflight_bytes:
+67_108_864]`) allow 256 wakes of up to 64 MiB each. So Atanor
 derives the three from the node's memory unless the operator gives them, one by
-one:
+one. Alambique 0.5 bounds what one wake holds, `max(max_inflight_bytes, largest file) + (fetch_concurrency + 2) × edge_bytes` (its design §6.3), so the
+worst case of the wakes in flight is that times `max_wakes`:
 
 ```
 budget         = limit * (1 - refuse_fraction) * wake_fraction     (nil when the node has no limit)
-prefetch_bytes = clamp(budget / 16, 1 MiB, 64 MiB)
-fetch_concurrency = clamp(prefetch_bytes / 2 MiB, 1, 16)
-max_wakes      = clamp(budget / (prefetch_bytes + fetch_concurrency * 1 MiB), 1, 256)
+max_inflight_bytes = clamp(budget / 16, 1 MiB, 64 MiB)
+fetch_concurrency  = clamp(max_inflight_bytes / 2 MiB, 1, 16)
+max_wakes          = clamp(budget / (max_inflight_bytes + (fetch_concurrency + 2) * edge_bytes), 1, 256)
 ```
 
-A request in flight holds about 1 MiB (an assumption: Alambique's files are
-read whole, and the size of an LTX file is not bounded by an option). From a
-budget of 2 MiB the worst case, `max_wakes` times the read-ahead of one wake,
-is at most the budget; below it the minimum of one wake stays over it. A wake
-over `max_wakes` is `{:error, :overloaded}` at once, a 503 at the ingress, so
-the bound sheds and does not queue.
+`edge_bytes` is the operator's `restore: [edge_bytes:]` or 65 536. From a budget
+of one wake's cost (about 1.2 MiB) the worst case, `max_wakes` times that cost,
+is at most the budget; below it the minimum of one wake stays over it. One file
+larger than `max_inflight_bytes` is read alone and costs its own size, which no
+option bounds: the derivation does not know the largest file of a cell, so a node
+with larger files sets `max_inflight_bytes` to match (Alambique's how-to-size-a-node).
+A wake over `max_wakes` waits in Alambique's FIFO queue (`awake: [wake_queue_ms:
+500, max_wake_queue:]`) and holds no memory there; after the 500 ms, or when the
+queue is full, it is `{:error, :overloaded}`, a 503 at the ingress. A wake that fails on the store backs
+off (`wake: [backoff_ms: 200, ...]`, Alambique's defaults) and starts no new
+restore during the delay, so the queue and the backoff add nothing to the wakes
+in flight. Alambique's store breaker (`breaker: [failures: 5, cooldown_ms: 5_000]`,
+`retry: [max_attempts: 10]`, defaults, not derived by Atanor) is what stops the
+requests of a store that is down: with it open, calls and wakes get
+`{:error, :store_unavailable}` at once, which `Atanor.Unavailable` reports as a 503
+`store_unavailable` (§8.4), and a cell that failed on the store stays in backoff.
 
-| Node | Budget | `max_wakes` | `fetch_concurrency` | `prefetch_bytes` |
+| Node | Budget | `max_wakes` | `fetch_concurrency` | `max_inflight_bytes` |
 | --- | --- | --- | --- | --- |
-| 512 MiB | 38.4 MiB | 11 | 1 | 2 516 582 (2.4 MiB) |
-| 768 MiB | 57.6 MiB | 12 | 1 | 3 774 873 (3.6 MiB) |
-| 2 GiB | 153.6 MiB | 11 | 4 | 10 066 329 (9.6 MiB) |
+| 512 MiB | 38.4 MiB | 14 | 1 | 2 516 582 (2.4 MiB) |
+| 768 MiB | 57.6 MiB | 15 | 1 | 3 774 873 (3.6 MiB) |
+| 2 GiB | 153.6 MiB | 15 | 4 | 10 066 329 (9.6 MiB) |
 
-Cost, measured with the memory store and 25 ms added to every read (64 cells of
+Cost, measured on Alambique 0.3.1 (before the wake queue, and with the derivation
+of Atanor 0.3: 11 wakes), with the memory store and 25 ms added to every read (64 cells of
 24 commits each, hibernated, then woken; 512 MiB node; the master-like row
-gives the options Alambique defaults to: 256 wakes, 16 requests, 64 MiB):
+gives the options Alambique defaults to: 256 wakes, 16 requests, 64 MiB). Not
+measured again for 0.5, where a burst above `max_wakes` waits up to 500 ms in the
+queue before it is refused:
 
 | Options | One cold wake | 63 cells woken at once |
 | --- | --- | --- |
@@ -858,17 +873,18 @@ The node logs them when it starts (`atanor: wakes limited to 11 at once; ...`).
 A node that restores big cells and has the room can raise them, for example
 `awake: [max_wakes: 32]`; a value in the option always wins. A node with a
 limit also has the second guard of §7.1: while the memory gate refuses, a cell
-call that would wake a cell (`Atanor.Cell`: the cell has no process on this
-node, `Alambique.load/2` is `:none`) is a 503 `overloaded` with `Retry-After`
+call that would wake a cell (`Atanor.Cell`: no member of the instance holds it
+awake, `Alambique.owner/3` with `peers: true` is `:none`) is a 503 `overloaded` with `Retry-After`
 and starts no wake, and `Atanor.Admission.stats/1` counts them as `wake_refused`.
 An admin call (hibernate, move) is not gated, so the node can still shed cells.
-Alambique cannot say, without a lease read, whether a cold cell would wake here
-or on another node, so a cell owned by another node is refused too while this
-node is over the mark. Atanor does not build the store client (the operator
+`owner/3` with `peers: true` asks the registries of the members, never the store
+(a store that fails is how the node got here) and never wakes a cell, so a cell
+owned by another node is forwarded, not refused; a cell that is still waking on
+another node counts as held by nobody and is refused. Atanor does not build the store client (the operator
 gives `Alambique.Store.S3` its config, whose `req_options` take the Finch pool),
 so it bounds no queue of store calls. The tests are
 `test/atanor/wake_burst_test.exs` (48 cells of 2 MB whose store fails: wakes in
-flight 48 before the bound, 4 after), `test/atanor/wake_gate_test.exs` and
+flight 48 before the bound, at most 8 after, the 128 MiB node of the test), `test/atanor/wake_gate_test.exs`, `test/cluster/wake_gate_owner_test.exs` and
 `test/atanor/memory_property_test.exs`.
 
 Evictions are `[:alambique, :admission, :evict]` (telemetry.md), counted on the
@@ -939,8 +955,8 @@ by 17 to 32 KiB a write. Alambique checkpoints it (SQLite `TRUNCATE`, so the
 file shrinks to nothing) only when it passes `wal: [checkpoint_bytes:]` (64 MiB
 per cell), SQLite's own autocheckpoint is off, the file is removed only when the
 cell hibernates (`idle_timeout_ms`, which never comes under load), and the local
-cache sweep never touches an awake cell. Its `max_bytes` is 20 GiB. Nothing
-bounded the disk of a node: in a container with a 768 MiB `data_dir`, 20 cells
+cache sweep never touches an awake cell. Its `max_bytes` is 20 GiB. Before
+Alambique 0.4, nothing bounded the disk of a node: in a container with a 768 MiB `data_dir`, 20 cells
 written without pause filled it in minutes, and the failed writes were 500s. With
 Alambique's 64 MiB mark, 12 writers on 20 cells for 8 s (the load of
 `test/atanor/disk_budget_test.exs`) made the files of `data_dir` 1.34 GB.
@@ -963,10 +979,11 @@ its source at start (`atanor: data_dir limited to 1073741824 bytes (option)`).
 | Option | Value |
 | --- | --- |
 | `wal: [checkpoint_bytes:]` | `budget / cells / 2`, at least 1 MiB, at most 64 MiB, and at most half the budget. `cells` is `awake: [max_cells:]` (20 000 by default) |
-| `local_cache: [max_bytes:]` | the budget minus the WAL allowance: `min(budget / 2, checkpoint_bytes * cells)`, at least 1 |
+| `wal: [max_bytes:]` | the WAL allowance: `min(budget / 2, checkpoint_bytes * cells)`, at least 1. Alambique adds up the `-wal` files of the awake cells every `wal: [budget_interval_ms:]` (`disk: [sample_ms:]`, at most 1 000) and, at the allowance, checkpoints the biggest first (`Alambique.checkpoint/3`, which keeps the cell awake and truncates only what the store has) |
+| `local_cache: [max_bytes:]` | the budget minus the WAL allowance, at least 1 |
 | `local_cache: [interval_ms:]` | `disk: [sample_ms:]`: a cache that is trimmed once a minute cannot follow a small disk |
 
-The two never add up to more than the budget (the property tests in
+The allowance and the local cache never add up to more than the budget (the property tests in
 `test/atanor/disk_property_test.exs`). With the default `max_cells` the floor of
 1 MiB applies below about 39 GiB: every cell checkpoints at 1 MiB, about every 40
 writes, which costs a checkpoint of a file that small. Lower `max_cells` to give
@@ -982,13 +999,14 @@ hysteresis, in a pure function (`Atanor.Disk.level/3`):
 
 | Use of the budget | Action |
 | --- | --- |
-| `evict_fraction` (0.7) or more | hibernates idle cells (no call pending, `Alambique.load/2`), the ones with the biggest `-wal` first, up to 64 per round, until the WALs it frees would bring the use under the mark. A hibernation checkpoints the cell (the WAL is gone) and the local cache then removes its files |
+| `evict_fraction` (0.7) or more | hibernates idle cells (no call pending, `Alambique.load/2`), the ones used longest ago first (`last_used` of `Alambique.cells(instance, details: true)`), up to 64 per round, until the files of those cells would bring the use under the mark; the local cache then removes their files. The WALs are not its business: Alambique's budget keeps them under the allowance |
 | `refuse_fraction` (0.95) or more | as above, and the ingress answers 503 `overloaded` with `Retry-After` to every new request (§7.1). Reads cannot be told from writes at the ingress, so all are refused until the use falls to `refuse_fraction - 0.05` |
 
 *A full disk.* A write that SQLite refuses with `SQLITE_FULL` ("database or disk
-is full", what an `ENOSPC` on the database or the WAL becomes) is a 503
-`overloaded`, not a 500: `Atanor.Unavailable` maps that message and `:enospc`,
-also when a transaction function fails to match it (`{:ok, _} = Tx.execute(...)`).
+is full", what an `ENOSPC` on the database or the WAL becomes) is Alambique's
+`{:error, :disk_full}`, a 503 `overloaded`, not a 500: `Atanor.Unavailable`
+maps the atom, also when a transaction function fails to match it
+(`{:ok, _} = Tx.execute(...)`), as the `MatchError` carries the error.
 A worker that handles that error inside a transaction and answers with a 5xx of
 its own is not seen by the ingress: such a worker should roll back with the
 error, as in §4.3. The test injects the full disk with `PRAGMA max_page_count`
@@ -996,15 +1014,15 @@ error, as in §4.3. The test injects the full disk with `PRAGMA max_page_count`
 
 *What bounds the use, and what does not.* The WAL mark bounds each awake cell;
 the monitor bounds the node by the use it sees every sample, so the use can pass
-the refuse mark by what the writes add between two samples (the budget test writes
+the refuse mark by what the writes add between two samples (measured before the WAL
+budget of Alambique 0.4, not again since: the budget test writes
 to 20 cells at about 10 000 writes per second, 170 MB/s of WAL: with
 `sample_ms: 100` a 12 MiB budget reached 18.8 MiB, with `sample_ms: 20` a 16 MiB
 budget reached 14 to 15 MiB). Lower `sample_ms` for a disk that fast. The files of hibernated cells
 are the local cache's to remove, so a node whose awake cells' database files
 alone pass the budget (not their WALs) refuses until cells hibernate: raise the
-budget or lower `awake: [max_cells:]`. Alambique has no node-wide WAL budget and
-no call that checkpoints an awake cell, so the monitor hibernates cells for it;
-see [what does not work](what-does-not-work.md#alambique-has-no-node-wal-budget).
+budget or lower `awake: [max_cells:]`. The WAL allowance is checked once an interval, so the WAL files
+can pass it by what the cells write in one.
 Crash reports kept for a store that is down are capped by
 `diagnostics: [max_bytes:]` (33 554 432), the oldest removed first (§17.2). The tests
 are `test/atanor/disk_test.exs`, `disk_property_test.exs` and

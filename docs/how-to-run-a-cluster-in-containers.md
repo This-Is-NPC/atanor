@@ -96,7 +96,7 @@ ATANOR_CLUSTER_TMPFS=1 mise run cluster:up
 - **tmpfs counts against the container's memory limit.** A cell file took about 50 MB in these
   runs (12 rooms on one node: 640 MB), and the store held 684 MB after 19,000 writes. If a node holds
   many cells, raise `ATANOR_CLUSTER_NODE_MEMORY` and `_STORE_MEMORY` together with the size.
-- A full tmpfs shows as HTTP 500 `database or disk is full` (see Troubleshooting).
+- A full tmpfs of a node shows as HTTP 503 `overloaded` (Alambique's `disk_full`); a full tmpfs of the store, as store errors (see Troubleshooting).
 
 Measured on this repository's cluster (3 nodes at 1.5 CPUs, SeaweedFS, HAProxy, 12 rooms `d1` to `d12`, 8
 workers, 40 s per run, host: AMD Ryzen AI 5 340, 12 schedulers,
@@ -462,7 +462,7 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
   file system under Docker's data directory. On btrfs this happened with the cell files and
   the store's data both on it; start with `ATANOR_CLUSTER_TMPFS=1`
   ([above](#keeping-the-data-in-memory)).
-- **Writes answer 500 `database or disk is full` with `ATANOR_CLUSTER_TMPFS=1`.** A tmpfs is full.
+- **Writes answer 503 `overloaded`, or 500 from the store, with `ATANOR_CLUSTER_TMPFS=1`.** A tmpfs is full.
   Check `docker exec atanor-cluster-node-1 df -m /var/lib/atanor` and
   `docker exec atanor-cluster-store-1 df -m /data`, then run `cluster:down` and start again with a
   larger `ATANOR_CLUSTER_TMPFS_SIZE` (and memory limits). With 512m, two nodes filled in about four minutes

@@ -6,41 +6,6 @@ are choices of the design are in the "Limits" paragraphs of
 [design.md](design.md) and in the README's
 [Limitations](../README.md#limitations).
 
-## Alambique has no node WAL budget
-
-**What happens.** An awake cell checkpoints its `-wal` only when the file passes
-`wal: [checkpoint_bytes:]`, and a hibernation is the only other thing that
-removes it. There is no budget for the WALs of the whole node and no call that
-checkpoints an awake cell, so Atanor derives a low `checkpoint_bytes` from the
-disk budget and its monitor hibernates cells to free WALs (design §4.4). A
-hibernation costs more than a checkpoint (an upload, then a wake with a restore
-on the next call), and it can only choose by the size of the files it sees under
-`data_dir`: there is no call that lists the awake cells by use or by WAL size.
-With the default `max_cells` the mark is 1 MiB for every cell, which checkpoints
-about every 40 writes.
-
-**Workaround.** Set `disk: [max_bytes:]` for the disk the node has, lower
-`awake: [max_cells:]` to give fewer cells a higher mark, and set
-`disk: [sample_ms:]` for the write rate: the use can pass the refuse mark by what
-is written between two samples.
-
-**Evidence.** `test/atanor/disk_budget_test.exs`: 12 writers on 20 cells for 8 s
-made `data_dir` 1.34 GB with Alambique's 64 MiB mark; 17 to 20 MiB with a 32 MiB
-budget (the 1 MiB marks alone); and 14 to 15 MiB with a 16 MiB budget
-(`sample_ms: 20`), where the monitor hibernated cells. What Alambique would need
-to offer:
-
-- A node-wide `wal: [max_bytes:]`: when the WALs of the awake cells add up to it,
-  the cell with the biggest WAL checkpoints (the same TRUNCATE checkpoint, after
-  its uploads are acknowledged).
-- `Alambique.checkpoint(instance, cell)`: checkpoint one awake cell now, without
-  hibernating it, answering `:ok`, `{:error, :busy}` or `:asleep`.
-- A listing of the awake cells with their last use and the size of their WAL
-  (for example `Alambique.cells/2` with `:details`), so that a caller chooses
-  the idle ones without reading the directory.
-- A disk-full error of its own (`{:error, :disk_full}`) instead of SQLite's
-  message `"database or disk is full"`, which Atanor matches as text.
-
 ## WASM throughput is about 5% below 0.2.0 after the admission change
 
 **What happens.** The hello guest over HTTP serves about 5% fewer requests/s
