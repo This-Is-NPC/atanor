@@ -20,7 +20,7 @@ defmodule Atanor.HTTP do
 
   import Plug.Conn
 
-  alias Atanor.{Admission, Auth, Dispatch, Env, Registry, Request, Response, Route, Telemetry, Workers}
+  alias Atanor.{Admission, Auth, Cell, Dispatch, Env, Registry, Request, Response, Route, Telemetry, Workers}
   alias Atanor.Diagnostics.Breadcrumb
   alias Atanor.HTTP.Socket
 
@@ -50,7 +50,7 @@ defmodule Atanor.HTTP do
           worker: nil
         })
 
-        failure(conn, :overloaded, config)
+        unavailable(conn, "overloaded", Atom.to_string(reason), config.http.retry_after_s)
     end
   end
 
@@ -151,8 +151,19 @@ defmodule Atanor.HTTP do
 
   defp failure(conn, :invalid_key, _config), do: json(conn, 400, "invalid_key")
 
-  defp failure(conn, :overloaded, config),
-    do: unavailable(conn, "overloaded", "overloaded", config.http.retry_after_s)
+  # A call that the node refused after admitting the request: the reason names the gate (`Atanor.Unavailable.cause/1`).
+  defp failure(conn, :overloaded, config) do
+    cause = Cell.overload_cause() || :overloaded
+
+    :telemetry.execute([:atanor, :http, :reject], %{count: 1}, %{
+      reason: cause,
+      status: 503,
+      host: conn.host,
+      worker: nil
+    })
+
+    unavailable(conn, "overloaded", Atom.to_string(cause), config.http.retry_after_s)
+  end
 
   defp failure(conn, {:unavailable, reason}, config),
     do: unavailable(conn, "unavailable", reason_name(reason), config.http.retry_after_s)

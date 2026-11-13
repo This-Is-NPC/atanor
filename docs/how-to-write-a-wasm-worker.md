@@ -313,7 +313,7 @@ does not instantiate in either mode.
   guest panicked or trapped; its stderr, up to `stderr_bytes` (4 KiB by default), is logged just before.
 - **503 `overloaded`.** The queue was full, the call waited too long for the right
   to run, or the worker already had `worker_calls` busy calls in flight (a guest that
-  waits counts against neither `threads` nor `worker_calls`, up to `max_waiting` waiting guests on the node). The body is `{"error":"overloaded","reason":"overloaded"}`
+  waits counts against neither `threads` nor `worker_calls`, up to `max_waiting` waiting guests on the node). The body is `{"error":"overloaded","reason":"worker_queue"}` (`reason` names the gate that refused; for the others see [design §7.1](design.md))
   and the response carries `Retry-After` (`http.retry_after_s`, 1 s by default).
   A burst of one worker above `worker_calls` (36 with 12 threads) busy calls is refused on purpose; retry after `Retry-After`, or raise `worker_calls` and `max_calls`. If the guests mostly wait, raise `max_waiting`.
   See the node settings in `Atanor.Wasm`.

@@ -1270,7 +1270,14 @@ cannot leak. A WebSocket holds a slot only until the upgrade is answered; an
 open socket is never closed by the gates. A request that is already in when the
 gate turns on is not stopped, so while the memory gate refuses, a cell call for
 a cell with no process on the node, which would wake it, is a 503 `overloaded`
-(§4.3, memory of the wakes). The default of 1,024 is generous on
+(§4.3, memory of the wakes). The `reason` of every 503 `overloaded` names the gate that
+refused: `memory`, `disk` or `in_flight` (the ingress gates), `wake_gate` (the wake
+refused above), `awake_limit` (Alambique's `awake` limits, `{:error, :overloaded}`),
+`busy` (a cell's `max_pending` or the node's statement slots, `{:error, :busy}`),
+`disk_full` (the write found no room) and `worker_queue` (a WASM worker's `queue`,
+`worker_calls` or wait for a thread, §14.2); `overloaded` alone is a worker that
+answered 503 itself. A refusal after the ingress emits `[:atanor, :http, :reject]`
+with the same `reason`. The default of 1,024 is generous on
 purpose: the memory gate is the guard, this one bounds handlers on a node whose
 limit is large or unknown. In the load VM a node of 1 CPU and 512 MiB was
 killed at 100 req/s native, 50 req/s WASM and 6,400 WebSockets with no

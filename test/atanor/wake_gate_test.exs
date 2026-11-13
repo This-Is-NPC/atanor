@@ -38,7 +38,9 @@ defmodule Atanor.WakeGateTest do
     assert {:ok, _} = Cell.query(node.name, awake, "SELECT 1")
     assert {:ok, _} = Cell.owner(node.name, awake)
 
+    Cell.clear_unavailable()
     assert {:error, {:unavailable, :overloaded}} = Cell.execute(node.name, cold, sql)
+    assert Cell.overload_cause() == :wake_gate
     assert {:error, {:unavailable, :overloaded}} = Cell.query(node.name, cold, "SELECT 1")
     assert {:error, {:unavailable, :overloaded}} = Cell.owner(node.name, cold)
     assert Admission.stats(node.name).wake_refused == 3

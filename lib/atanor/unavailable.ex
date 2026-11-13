@@ -61,6 +61,18 @@ defmodule Atanor.Unavailable do
   def reason(_), do: nil
 
   @doc """
+  The gate behind an `:overloaded` answer of Alambique, as the `reason` of the 503 body: `:busy` (a cell's
+  waiting callers or the node's statement slots are full), `:awake_limit` (the awake cells or wakes are full)
+  or `:disk_full`. `nil` for any other error.
+  """
+  @spec cause(term) :: atom | nil
+  def cause({:error, reason}), do: cause(reason)
+  def cause(:busy), do: :busy
+  def cause(:overloaded), do: :awake_limit
+  def cause(:disk_full), do: :disk_full
+  def cause(_), do: nil
+
+  @doc """
   The error a routing failure becomes. A `{:foreign_store, node}` is a
   configuration error (a node of another store joined this instance): it is kept
   as it is, logged, and never retried or counted as unavailability (design §8.4).

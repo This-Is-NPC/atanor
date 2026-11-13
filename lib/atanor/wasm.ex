@@ -391,6 +391,9 @@ defmodule Atanor.Wasm do
         :overloaded -> {{:error, :overloaded}, "", nil}
       end
 
+    # The queue, the worker's call limit or the wait for a thread: no cell is behind it.
+    if match?({{:error, :overloaded}, _, _}, result), do: Atanor.Cell.mark_overload(:worker_queue)
+
     finish(result, env.instance, deployment, started, elem(call, 0))
   end
 

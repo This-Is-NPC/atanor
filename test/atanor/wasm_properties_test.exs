@@ -148,7 +148,17 @@ defmodule Atanor.WasmPropertiesTest do
 
       assert 503 in statuses
       assert Enum.all?(statuses, &(&1 in [500, 503, 504]))
+
+      # The refusal names the pool, not the memory, the disk or a cell.
+      assert %{status: 503, body: %{"error" => "overloaded", "reason" => "worker_queue"}} = refused_spin(node)
     end
+  end
+
+  defp refused_spin(node) do
+    1..80
+    |> Enum.map(fn _ -> Task.async(fn -> request(node, "spin") end) end)
+    |> Task.await_many(60_000)
+    |> Enum.find(&(&1.status == 503))
   end
 
   # Latency of a timer and of a round trip to another process while guests run.

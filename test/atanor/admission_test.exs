@@ -49,7 +49,7 @@ defmodule Atanor.AdmissionTest do
       for _ <- 1..180 do
         assert_receive {:response, {503, headers, body}}, 10_000
         assert {"retry-after", "3"} in headers
-        assert Jason.decode!(body) == %{"error" => "overloaded", "reason" => "overloaded"}
+        assert Jason.decode!(body) == %{"error" => "overloaded", "reason" => "in_flight"}
       end
 
       handlers =
@@ -158,7 +158,7 @@ defmodule Atanor.AdmissionTest do
 
       assert {503, headers, body} = echo(node)
       assert {"retry-after", "1"} in headers
-      assert Jason.decode!(body) == %{"error" => "overloaded", "reason" => "overloaded"}
+      assert Jason.decode!(body) == %{"error" => "overloaded", "reason" => "memory"}
       assert {:error, 503, _} = WSClient.connect(node.port, "/ws")
       assert %{working_set_bytes: 900_000, refused: %{memory: 2}} = Admission.stats(node.name)
 
