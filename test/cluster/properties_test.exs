@@ -13,6 +13,8 @@ defmodule Atanor.Cluster.PropertiesTest do
     * a counter cell has every acknowledged increment once, and no increment
       twice. Requests that did not get an answer may or may not be in the cell;
       they are counted.
+    * the cell is read back with `verify_lease: true` (`GET /v/CELL`): a plain read on
+      a node that lost the cell and was thawed can be stale (design §8.12).
 
   The run includes takeovers (design §8.10): `lose` freezes a node until a survivor
   confirms it down, serves its cells through the survivors (which takes them over)
@@ -88,23 +90,64 @@ defmodule Atanor.Cluster.PropertiesTest do
               max_runs: 12,
               max_shrinking_steps: 0
             ) do
-        cluster =
-          start_cluster(
-            names: @names,
-            ttl_ms: @ttl_ms,
-            skew_margin_ms: @skew_ms,
-            atanor: [detector: @detector, routing: [owner_check_ms: @owner_check_ms]],
-            workers: [Manifests.counter("counter")]
-          )
+        run_c1(ops)
+      end
+    end
 
-        try do
-          run = Enum.reduce(ops, new_run(), &step(cluster, &1, &2))
-          settle(cluster, run)
-          verify(cluster, run)
-        after
-          Process.unlink(cluster)
-          Cluster.stop(cluster)
-        end
+    # The sequence of seed 73201: n2 is thawed after n3 took `c1` over and acknowledged increments, and the
+    # final read must not be answered from n2's stale copy (design §8.12).
+    test "the final read sees the increments the new owner acknowledged to a thawed false positive" do
+      ops = [
+        {:partition_nodes, {:n2, :n3}},
+        {:lose, :n3},
+        {:steal, :n1, "c0"},
+        {:request, :n2, "c2"},
+        {:heal_nodes, {:n1, :n2}},
+        {:request, :n2, "c0"},
+        {:burst, :n3, "c2"},
+        {:heal_store, :n2},
+        {:pass, 678},
+        {:request, :n3, "c1"},
+        {:burst, :n1, "c1"},
+        {:request, :n3, "c1"},
+        {:request, :n3, "c2"},
+        {:request, :n1, "c2"},
+        {:pause, :n3},
+        {:pass, 1074},
+        {:pass, 691},
+        {:steal, :n2, "c0"},
+        {:pass, 839},
+        {:partition_store, :n1},
+        {:resume, :n3},
+        {:lose, :n2},
+        {:request, :n3, "c2"},
+        {:request, :n1, "c2"},
+        {:request, :n2, "c0"},
+        {:resume, :n1},
+        {:burst, :n3, "c1"},
+        {:request, :n3, "c2"}
+      ]
+
+      for _ <- 1..5, do: run_c1(ops)
+    end
+
+    defp run_c1(ops) do
+      cluster =
+        start_cluster(
+          names: @names,
+          ttl_ms: @ttl_ms,
+          skew_margin_ms: @skew_ms,
+          atanor: [detector: @detector, routing: [owner_check_ms: @owner_check_ms]],
+          workers: [Manifests.counter("counter")]
+        )
+
+      try do
+        run = Enum.reduce(ops, new_run(), &step(cluster, &1, &2))
+        settle(cluster, run)
+        verify(cluster, run)
+      after
+        Process.unlink(cluster)
+        Cluster.stop(cluster)
       end
     end
 

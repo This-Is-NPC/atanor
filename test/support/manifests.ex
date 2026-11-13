@@ -69,7 +69,7 @@ defmodule Atanor.Test.Manifests do
         [
           module: Atanor.Test.CounterWorker,
           cells: %{"log" => Atanor.Test.CounterWorker.migrations()},
-          routes: [{"127.0.0.1", "/c"}, {"127.0.0.1", "/r"}]
+          routes: [{"127.0.0.1", "/c"}, {"127.0.0.1", "/r"}, {"127.0.0.1", "/v"}]
         ],
         opts
       )
