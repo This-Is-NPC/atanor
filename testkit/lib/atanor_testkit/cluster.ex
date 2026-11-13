@@ -54,6 +54,11 @@ defmodule AtanorTestkit.Cluster do
     [:atanor, :node, :link_broken],
     [:atanor, :node, :alive],
     [:atanor, :node, :drain],
+    [:atanor, :discovery, :joined],
+    [:atanor, :discovery, :left],
+    [:atanor, :discovery, :connect],
+    [:atanor, :discovery, :invalid],
+    [:atanor, :discovery, :ignored],
     [:atanor, :deployments, :loaded],
     [:atanor, :node, :ready],
     [:atanor, :cell, :take_over],
@@ -126,6 +131,11 @@ defmodule AtanorTestkit.Cluster do
       lease and cell timings of the Alambique instances
     * `:boot_timeout_ms` - how long to wait for a peer's instance to start
       (default 120 000); only a failure bound
+    * `:discover` - options of the node registry (`ttl_ms`, `renew_ms`, `refresh_ms`). The peers
+      then publish themselves in the store and are not connected to each other: `Atanor.Discovery`
+      must find them (`add/2` starts one later)
+    * `:peer_discover` - `%{name => options}` merged over `:discover` for one peer, for example a
+      `meta: %{"group" => "b"}`
     * `:workers` - manifest maps deployed before this returns (see `deploy/3`)
     * `:atanor` - any other option of `Atanor` (for example `:alarms`,
       `:poll_interval_ms`, `:listeners`)
@@ -246,6 +256,10 @@ defmodule AtanorTestkit.Cluster do
     {:ok, status} = call(cluster, name, Deployments, :status, [instance(cluster)])
     status
   end
+
+  @doc "Starts a new peer `name` on the running cluster, as a machine that joins; see the `:discover` option."
+  @spec add(GenServer.server(), atom) :: :ok
+  def add(cluster, name), do: GenServer.call(cluster, {:add, name}, 120_000)
 
   @doc "Halts the peer's VM without any shutdown."
   @spec kill(GenServer.server(), atom) :: :ok
@@ -410,6 +424,11 @@ defmodule AtanorTestkit.Cluster do
     {:reply, :ok, state}
   end
 
+  def handle_call({:add, name}, _from, state) do
+    if Map.has_key?(state.peers, name), do: raise(ArgumentError, "peer #{inspect(name)} exists")
+    {:reply, :ok, start_peer(state, name)}
+  end
+
   def handle_call({:restart, name, opts}, _from, state) do
     state = if opts[:atanor], do: put_in(state.peer_atanor[name], opts[:atanor]), else: state
     {:reply, :ok, start_peer(state, name, opts)}
@@ -501,7 +520,9 @@ defmodule AtanorTestkit.Cluster do
     os_pid = :erpc.call(node, :os, :getpid, [])
     state = put_in(state.peers[name], %{peer: peer, node: node, os_pid: os_pid, port: nil, admin_port: nil})
 
+    # With discovery the peers are left apart: the registry brings them together.
     for {other, %{peer: other_peer, node: other_node}} <- state.peers,
+        not discover?(state),
         other != name,
         other_peer != nil,
         not cut?(state, name, other) do
@@ -511,6 +532,8 @@ defmodule AtanorTestkit.Cluster do
     {port, admin_port} = boot(state, name, node, opts)
     update_in(state.peers[name], &%{&1 | port: port, admin_port: admin_port})
   end
+
+  defp discover?(state), do: Keyword.has_key?(state.opts, :discover)
 
   # A restarted VM reuses its name; the old registration may take a moment to go.
   defp start_with_retry(opts, attempts \\ 50) do
@@ -541,6 +564,16 @@ defmodule AtanorTestkit.Cluster do
         ],
         Keyword.get(opts[:atanor] || [], :alambique, [])
       )
+
+    alambique =
+      case opts[:discover] do
+        nil ->
+          alambique
+
+        registry ->
+          registry = Keyword.merge(registry, Map.get(opts[:peer_discover] || %{}, name, []))
+          Keyword.put(alambique, :registry, [advertise: Atom.to_string(node)] ++ registry)
+      end
 
     own = Map.get(state.peer_atanor, name, [])
 

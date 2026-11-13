@@ -45,6 +45,7 @@ defmodule Atanor.Supervisor do
           {Alambique, config.alambique_opts},
           {Atanor.Diagnostics, config}
         ] ++
+        discovery(config) ++
         disk(config) ++
         [
           # Children stop in reverse order: listeners close, the jobs get `stop.jobs_ms` to finish, the tasks
@@ -102,6 +103,27 @@ defmodule Atanor.Supervisor do
   # ThousandIsland counts connections per acceptor, so the total cap is the rounded-up share of each.
   defp listener_options(%{max_connections: max, acceptors: acceptors, read_timeout_ms: read_timeout_ms}),
     do: [num_acceptors: acceptors, num_connections: div(max + acceptors - 1, acceptors), read_timeout: read_timeout_ms]
+
+  # Connects to the nodes the registry lists (design §8.16); a VM that is not distributed has none to reach.
+  defp discovery(%Config{alambique_opts: opts} = config) do
+    case Keyword.get(opts, :registry, false) do
+      false ->
+        []
+
+      registry ->
+        if Node.alive?() do
+          [
+            {Atanor.Discovery,
+             instance: config.alambique,
+             refresh_ms: Atanor.Discovery.refresh_ms(registry),
+             group: Atanor.Discovery.group_of(registry)}
+          ]
+        else
+          Logger.warning("atanor: the registry is on but this VM is not distributed: no peer will be connected")
+          []
+        end
+    end
+  end
 
   defp disk(%Config{disk: %{budget: nil}}), do: []
   defp disk(config), do: [{Atanor.Disk, config}]
