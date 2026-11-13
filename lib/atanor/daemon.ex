@@ -95,6 +95,8 @@ defmodule Atanor.Daemon do
     {"ATANOR_DRAIN_TIMEOUT_MS", :integer, "The bound of one cell's handoff in a drain. Default 15000."},
     {"ATANOR_DRAIN_CONCURRENCY", :integer, "The cells handed off at once in a drain. Default 64."},
     {"ATANOR_DETECTOR_PAUSE_MS", :integer, "The pause the failure detector tolerates. Default 2000."},
+    {"ATANOR_HTTP_QUEUE_WAIT_MS", :integer,
+     "How long an admitted request may wait for its handler, a worker slot or a cell before a 503 `queue_timeout` (`http: [queue_wait_ms:]`). Default 5000; 0 turns it off."},
     {"ATANOR_GROUP", :group,
      "The discovery group: a node dials only the nodes of its own group. Default none. A node that replaces another in a swap takes one."},
     {"ATANOR_REGISTRY_TTL_MS", :integer,
@@ -503,6 +505,7 @@ defmodule Atanor.Daemon do
         drain_concurrency: v["ATANOR_DRAIN_CONCURRENCY"]
       )
       |> put_group(:detector, acceptable_pause_ms: v["ATANOR_DETECTOR_PAUSE_MS"])
+      |> put_group(:http, queue_wait_ms: v["ATANOR_HTTP_QUEUE_WAIT_MS"])
 
     validate(opts)
   end

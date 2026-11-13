@@ -11,7 +11,8 @@ defmodule Atanor.HTTP do
   Failures never leak internals: no route is a 404, an oversized body a 413,
   a worker that crashes or returns something else a 500, all with a JSON body.
   A node that is out of memory or already serves `:http`'s `:max_in_flight`
-  requests refuses first, with a 503 `overloaded` (`Atanor.Admission`).
+  requests refuses first, with a 503 `overloaded` (`Atanor.Admission`). A request that waits longer than
+  `:queue_wait_ms` for its handler or its cells is a 503 `overloaded` with reason `queue_timeout`.
   Expected unavailability is a 503 with the reason and `Retry-After`
   (`:http`'s `:retry_after_s`, design §8.4); a worker that mapped the error to
   5xx still gets the 503.
@@ -39,6 +40,9 @@ defmodule Atanor.HTTP do
           admitted(conn, name, config)
         after
           Admission.leave(name)
+          # A connection serves many requests in one process: what one call recorded is not the next one's.
+          Cell.clear_unknown()
+          Cell.clear_unavailable()
         end
 
       {:refuse, reason} ->
@@ -122,11 +126,17 @@ defmodule Atanor.HTTP do
   defp upgrade?(conn), do: Enum.any?(get_req_header(conn, "upgrade"), &(String.downcase(&1) == "websocket"))
 
   defp serve_request(conn, env, config) do
-    case read_body(conn,
-           length: config.max_body_bytes,
-           read_length: config.max_body_bytes,
-           read_timeout: config.http.read_timeout_ms
-         ) do
+    # The client sending the body is not the node being slow: the wait deadline does not run meanwhile.
+    read =
+      Admission.excluding(fn ->
+        read_body(conn,
+          length: config.max_body_bytes,
+          read_length: config.max_body_bytes,
+          read_timeout: config.http.read_timeout_ms
+        )
+      end)
+
+    case read do
       {:ok, body, conn} ->
         request = request(conn, body)
 
@@ -154,6 +164,7 @@ defmodule Atanor.HTTP do
   # A call that the node refused after admitting the request: the reason names the gate (`Atanor.Unavailable.cause/1`).
   defp failure(conn, :overloaded, config) do
     cause = Cell.overload_cause() || :overloaded
+    if cause == :queue_timeout, do: Admission.refuse_queue_timeout(config.name)
 
     :telemetry.execute([:atanor, :http, :reject], %{count: 1}, %{
       reason: cause,
@@ -164,6 +175,9 @@ defmodule Atanor.HTTP do
 
     unavailable(conn, "overloaded", Atom.to_string(cause), config.http.retry_after_s)
   end
+
+  # A refusal of the node itself before the handler ran (the wake gate, the deadline) names its gate too.
+  defp failure(conn, {:unavailable, :overloaded}, config), do: failure(conn, :overloaded, config)
 
   defp failure(conn, {:unavailable, reason}, config),
     do: unavailable(conn, "unavailable", reason_name(reason), config.http.retry_after_s)

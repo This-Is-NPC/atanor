@@ -43,7 +43,8 @@ defmodule Atanor.Wasm do
       `:max_waiting` with a memory limit, else 4 per thread).
       A full queue refuses the call with `{:error, :overloaded}`.
     * `:queue_wait_ms` - longest wait in the queue and for the right to run
-      (default 1000).
+      (default 1000; less when the request's `http: [queue_wait_ms:]` leaves less). The caller takes the call
+      back at that time unless a thread started it, and answers 503 `queue_timeout`.
     * `:tick_ms` - epoch tick, the resolution of the time limits (default 10).
     * `:cpu` - `:epoch` or `:fuel`, how CPU is limited (default `:epoch`).
     * `:pooling` - `true` to reuse pre-mapped instance slots (Wasmtime's pooling
@@ -420,20 +421,38 @@ defmodule Atanor.Wasm do
   defp run(%Deployment{wasm: prepared} = deployment, %Env{} = env, call) do
     settings = settings()
     limits = Map.put(limits(deployment.manifest, settings), :nested, env.depth > 0)
+    limits = bound_queue_wait(limits, env)
     tag = :erlang.unique_integer([:positive])
     started = System.monotonic_time()
 
-    result =
+    {result, cause} =
       case Native.invoke(prepared, call, limits, self(), tag) do
-        :ok -> await(tag, env, limits.timeout_ms + limits.queue_wait_ms + settings.grace_ms, started)
-        :overloaded -> {{:error, :overloaded}, "", nil}
+        {:ok, ticket} ->
+          wait_ms = limits.timeout_ms + limits.queue_wait_ms + settings.grace_ms
+          {await(tag, env, wait_ms, started, {ticket, limits.queue_wait_ms}), :queue_timeout}
+
+        # The queue is full or the worker has `worker_calls` calls.
+        :overloaded ->
+          {{{:error, :overloaded}, "", nil}, :worker_queue}
       end
 
-    # The queue, the worker's call limit or the wait for a thread: no cell is behind it.
-    if match?({{:error, :overloaded}, _, _}, result), do: Atanor.Cell.mark_overload(:worker_queue)
+    # No cell is behind a refusal; `cause` says whether the call was refused as it came or after it waited
+    # past `queue_wait_ms` or what the request deadline left.
+    if match?({{:error, :overloaded}, _, _}, result), do: Atanor.Cell.mark_overload(cause)
 
     finish(result, env.instance, deployment, started, elem(call, 0))
   end
+
+  # A call waits in the queue at most until the request deadline (`Atanor.Admission`). A call that a guest
+  # made to another worker belongs to a handler that runs, and keeps `queue_wait_ms`.
+  defp bound_queue_wait(%{nested: false} = limits, _env) do
+    case Atanor.Admission.remaining() do
+      :infinity -> limits
+      left -> %{limits | queue_wait_ms: min(limits.queue_wait_ms, max(left, 0))}
+    end
+  end
+
+  defp bound_queue_wait(limits, _env), do: limits
 
   @doc false
   def limits(manifest, settings) do
@@ -457,20 +476,34 @@ defmodule Atanor.Wasm do
     {:http, r.method, r.scheme, authority, path, r.headers, r.body}
   end
 
-  defp await(tag, env, wait_ms, started) do
+  # `queue` is `{ticket, queue_wait_ms}` while the call may still be queued: a host call or the result says
+  # a thread took it. At `queue_wait_ms` the call is taken back unless a thread started it meanwhile.
+  defp await(tag, env, wait_ms, started, queue) do
     elapsed = System.convert_time_unit(System.monotonic_time() - started, :native, :millisecond)
 
     receive do
       {:atanor_wasm, ^tag, :host, id, op, args} ->
         Native.host_reply(id, Host.handle(env, op, args, max(wait_ms - elapsed, 0)))
-        await(tag, env, wait_ms, started)
+        await(tag, env, wait_ms, started, nil)
 
       {:atanor_wasm, ^tag, :done, result, stderr, timing} ->
         {result, stderr, timing}
     after
-      max(wait_ms - elapsed, 0) -> {{:error, {:limit, :timeout}}, "", nil}
+      max(next_timeout(wait_ms, queue) - elapsed, 0) ->
+        case queue do
+          {ticket, _} ->
+            if Native.withdraw(ticket),
+              do: {{:error, :overloaded}, "", nil},
+              else: await(tag, env, wait_ms, started, nil)
+
+          nil ->
+            {{:error, {:limit, :timeout}}, "", nil}
+        end
     end
   end
+
+  defp next_timeout(wait_ms, nil), do: wait_ms
+  defp next_timeout(_wait_ms, {_ticket, queue_wait_ms}), do: queue_wait_ms
 
   defp finish({result, stderr, timing}, instance, deployment, started, call) do
     worker = Deployment.worker(deployment)

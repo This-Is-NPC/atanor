@@ -16,7 +16,7 @@ use std::time::Instant;
 use rustler::{Atom, Binary, Encoder, Env, LocalPid, NifResult, ResourceArc, Term};
 
 use component::{Compiled, Grants, PrepareError, Prepared};
-use guest::{Call, Job, Limits};
+use guest::{Call, Job, Limits, Ticket};
 use wire::Wire;
 
 #[global_allocator]
@@ -89,18 +89,22 @@ fn prepare(
         })
 }
 
-/// Queues a call (see `guest::Call::parse` for its shape). The result arrives
+/// Queues a call (see `guest::Call::parse` for its shape) and returns
+/// `{:ok, ticket}`, or `:overloaded` when it is refused. The result arrives
 /// at `pid` as `{:atanor_wasm, tag, :done, result, stderr, timing}`; host
-/// calls as `{:atanor_wasm, tag, :host, id, op, args}`.
+/// calls as `{:atanor_wasm, tag, :host, id, op, args}`. `withdraw/1` takes the
+/// call back while it is queued.
 #[rustler::nif]
-fn invoke(
+fn invoke<'a>(
+    env: Env<'a>,
     prepared: ResourceArc<Prepared>,
     call: Wire,
     limits: Limits,
     pid: LocalPid,
     tag: u64,
-) -> NifResult<Atom> {
+) -> NifResult<Term<'a>> {
     let call = Call::parse(call).ok_or(rustler::Error::BadArg)?;
+    let ticket = ResourceArc::new(Ticket::new());
     let job = Job {
         pre: prepared,
         call,
@@ -108,13 +112,21 @@ fn invoke(
         pid,
         tag,
         queued_at: Instant::now(),
+        ticket: ticket.clone(),
         slot: None,
     };
     Ok(if engine::submit(job).is_ok() {
-        atoms::ok()
+        (atoms::ok(), ticket).encode(env)
     } else {
-        atoms::overloaded()
+        atoms::overloaded().encode(env)
     })
+}
+
+/// Takes a call back that no thread has started: true, and it never runs and
+/// sends nothing; false when it started (or ended), and its result still comes.
+#[rustler::nif]
+fn withdraw(ticket: ResourceArc<Ticket>) -> bool {
+    ticket.withdraw()
 }
 
 /// Answers a host call. Small replies decode on a normal scheduler.

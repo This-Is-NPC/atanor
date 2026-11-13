@@ -158,7 +158,7 @@ defmodule Atanor.WasmPropertiesTest do
     1..80
     |> Enum.map(fn _ -> Task.async(fn -> request(node, "spin") end) end)
     |> Task.await_many(60_000)
-    |> Enum.find(&(&1.status == 503))
+    |> Enum.find(&(&1.status == 503 and &1.body["reason"] == "worker_queue"))
   end
 
   # Latency of a timer and of a round trip to another process while guests run.
