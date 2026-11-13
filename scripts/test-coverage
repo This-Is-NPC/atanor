@@ -53,6 +53,10 @@ if [ $report_only -eq 0 ]; then
   if [ $keep -eq 0 ]; then
     rm -rf "$cover"
     (cd "$crate" && cargo llvm-cov clean --profraw-only)
+    # The report reads every test executable in the target dir; one left by another checkout lists its sources
+    # under that checkout's path and shows up as a second, uncovered copy of each file.
+    ! [ -d "$CARGO_TARGET_DIR/release/deps" ] ||
+      find "$CARGO_TARGET_DIR/release/deps" -maxdepth 1 -type f -name 'atanor_wasm-*' ! -name '*.*' -delete
   fi
   mkdir -p "$cover"
   # priv/ is shared by every build path: keep the normal NIF and put it back, and force the instrumented build.
