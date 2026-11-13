@@ -33,7 +33,7 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
 - Two nodes that use the same store and prefix, and a balancer that sends to
   both and takes a node out while it answers 503 on `/health/serving`.
 - **A different node name and `node_id` on each.** The id is in the leases
-  (default: the Erlang node name, `atanor@node-1`). With the same id, B would
+  (default: the Erlang node name, `atanor@node-1.cluster`). With the same id, B would
   treat A's lease as its own and both nodes would write the same cell. Atanor
   cannot detect this; keep the names distinct.
 - **No peers between them.** Do not give B A's name in `ATANOR_PEERS` (or
@@ -73,7 +73,7 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    unset) on both, and a node name and `ATANOR_NODE_ID` of their own.
 
 2. Start B: another Compose service of the same project (`node-2`: hostname
-   `node-2`, node `atanor@node-2`), the same bucket, no peers.
+   `node-2`, node `atanor@node-2.cluster`), the same bucket, no peers.
 
    ```sh
    docker compose -p atanor-cluster -f cluster/compose.yml up -d --no-deps node-2
@@ -82,8 +82,8 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    ```
 
    ```text
-   {"node":"atanor@node-1","status":"ok","nodes":["atanor@node-1"],"workers":1}
-   {"node":"atanor@node-2","status":"ok","nodes":["atanor@node-2"],"workers":1}
+   {"node":"atanor@node-1.cluster","status":"ok","nodes":["atanor@node-1.cluster"],"workers":1}
+   {"node":"atanor@node-2.cluster","status":"ok","nodes":["atanor@node-2.cluster"],"workers":1}
    ```
 
    Each node sees only itself: they are not a cluster. B follows the app's
@@ -95,20 +95,22 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    services:
      node-1: &node
        image: atanor-node:1
-       hostname: node-1                      # node atanor@node-1
+       hostname: node-1                      # node atanor@node-1.cluster
        stop_grace_period: 90s                # more than stop.shutdown_ms (75 s)
        environment: &env
-         ATANOR_PEERS: ""               # no peers
+         ATANOR_PEERS: ""                    # no peers
+         ATANOR_ADVERTISE: node-1.cluster      # the node is atanor@node-1.cluster
          ATANOR_S3_ENDPOINT: http://store:8333
          ATANOR_STORE: s3://atanor           # the same store and prefix
-         ATANOR_NODE_ID: atanor@node-1       # optional; distinct from B's
+         ATANOR_NODE_ID: atanor@node-1.cluster # optional; distinct from B's
      node-2:
        <<: *node
        image: atanor-node:2                  # the new version
        hostname: node-2
        environment:
          <<: *env
-         ATANOR_NODE_ID: atanor@node-2
+         ATANOR_ADVERTISE: node-2.cluster
+         ATANOR_NODE_ID: atanor@node-2.cluster
    ```
 
 3. Point the balancer at both. In the container cluster HAProxy finds every
@@ -142,7 +144,7 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    ```
 
    ```text
-   {"node":"atanor@node-1","state":"drained","errors":[],"hibernated":3,"duration_ms":5}
+   {"node":"atanor@node-1.cluster","state":"drained","errors":[],"hibernated":3,"duration_ms":5}
    ```
 
    `errors` is empty when every cell was handed back and each lease released.

@@ -426,7 +426,10 @@ defmodule Atanor.Daemon do
 
   defp shown(name, :secret, parsed, _env), do: if(Map.has_key?(parsed, name), do: @mask)
   defp shown(name, :boot, _parsed, env), do: blank(env[name])
-  defp shown(name, :url, parsed, _env), do: with({bucket, prefix} <- parsed[name], do: "s3://#{bucket}/#{prefix}")
+
+  defp shown(name, :url, parsed, _env),
+    do: with({bucket, prefix} <- parsed[name], do: Path.join("s3://" <> bucket, prefix))
+
   defp shown(name, :listen, parsed, _env), do: with({ip, port} <- parsed[name], do: "#{:inet.ntoa(ip)}:#{port}")
   defp shown(name, :peers, parsed, _env), do: with(peers when is_list(peers) <- parsed[name], do: Enum.join(peers, ","))
   defp shown(name, _type, parsed, _env), do: with(value when value != nil <- parsed[name], do: to_string(value))

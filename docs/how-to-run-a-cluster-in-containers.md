@@ -15,13 +15,13 @@ Everything belongs to the Compose project `atanor-cluster` ([cluster/compose.yml
 
 | Container | What it is |
 | --- | --- |
-| `atanor-cluster-node-1..N` | A release of [cluster/node](../cluster/node), built by [cluster/Dockerfile](../cluster/Dockerfile) in two stages (Elixir, Rust for both NIFs, then a Debian slim runtime). One Compose service per node (`node-1` to `node-10`), each with the hostname `node-N`. N is 3 by default, at most 10. |
+| `atanor-cluster-node-1..N` | A release of [cluster/node](../cluster/node), built by [cluster/Dockerfile](../cluster/Dockerfile) in two stages (Elixir, Rust for both NIFs, then a Debian slim runtime). One Compose service per node (`node-1` to `node-10`), each with the hostname `node-N` and the network alias `node-N.cluster`. N is 3 by default, at most 10. |
 | `atanor-cluster-store-1` | SeaweedFS `chrislusf/seaweedfs:4.48`, pinned by digest, with a volume. |
 | `atanor-cluster-bucket-1` | Creates the bucket once, then exits. |
 | `atanor-cluster-lb-1` | HAProxy. A node is in rotation only while `GET /health/serving` on its admin port answers 200: the node is ready and has a quorum ([design §10](design.md#102-admin-api)). It adds the header `x-atanor-server` (the balancer's slot) to every answer. |
 
-A node is named `atanor@node-N`, after its hostname. Docker's DNS resolves
-`node-N` while the container runs, and each node tries every name in
+A node is named `atanor@node-N.cluster` (`ATANOR_ADVERTISE`, set by the image's entrypoint to its hostname plus `.cluster`; long names need a dot). Docker's DNS resolves
+`node-N.cluster` while the container runs, and each node tries every name in
 `ATANOR_PEERS` once a second ([cluster/node/lib/atanor_node/mesh.ex](../cluster/node/lib/atanor_node/mesh.ex)),
 so a container that restarts with another address is the same node. The Erlang cookie, the admin and dashboard tokens and the S3 keys
 are generated in `cluster/secrets` (git-ignored, mode 700) and mounted as
@@ -59,7 +59,7 @@ Set these in the environment of `mise run`; the defaults are in `compose.yml`.
 | `ATANOR_CLUSTER_BIND` | 127.0.0.1 | Host address the ports bind to. Keep loopback. |
 | `ATANOR_CLUSTER_STORE_IMAGE`, `_LB_IMAGE` | pinned digests | Images. |
 | `ATANOR_CLUSTER_LEASE_TTL_MS`, `_NET_TICKTIME` | 30000, 60 | Cell lease and Erlang net tick time (seconds). |
-| `ATANOR_CLUSTER_PEERS` | `node-1`..`node-10` | Host names each node connects to. Set it empty and the nodes form no cluster, which `cluster:swap-run` needs ([how-to-replace-a-node.md](how-to-replace-a-node.md)). |
+| `ATANOR_CLUSTER_PEERS` | `node-1.cluster`..`node-10.cluster` | Advertised hosts each node connects to (`ATANOR_PEERS`). Set it empty and the nodes form no cluster, which `cluster:swap-run` needs ([how-to-replace-a-node.md](how-to-replace-a-node.md)). |
 | `ATANOR_CLUSTER_STOP_GRACE` | 90s | Time `docker stop` waits for a node to drain; keep it above the drain (`stop.shutdown_ms`, 75 s). |
 | `ATANOR_CLUSTER_SHUTDOWN_MS`, `_DRAIN_TIMEOUT_MS`, `_DRAIN_CONCURRENCY` | node defaults (75000, 15000, 64) | The node's `stop.shutdown_ms`, `drain_timeout_ms` and `drain_concurrency`. |
 | `ATANOR_CLUSTER_BUILD_JOBS` | 6 | Cargo jobs while building. |
@@ -164,9 +164,9 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
      node2 UP
      node3 UP
    views of the cluster:
-     atanor-cluster-node-3 (atanor@node-3) sees 3 nodes
-     atanor-cluster-node-2 (atanor@node-2) sees 3 nodes
-     atanor-cluster-node-1 (atanor@node-1) sees 3 nodes
+     atanor-cluster-node-3 (atanor@node-3.cluster) sees 3 nodes
+     atanor-cluster-node-2 (atanor@node-2.cluster) sees 3 nodes
+     atanor-cluster-node-1 (atanor@node-1.cluster) sees 3 nodes
    ```
    The balancer's slots (`node1`..) are numbered in the order DNS answered, not
    by node.
@@ -276,8 +276,8 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
      node1 UP
      node3 UP
    views of the cluster:
-     atanor-cluster-node-3 (atanor@node-3) sees 2 nodes
-     atanor-cluster-node-1 (atanor@node-1) sees 2 nodes
+     atanor-cluster-node-3 (atanor@node-3.cluster) sees 2 nodes
+     atanor-cluster-node-1 (atanor@node-1.cluster) sees 2 nodes
    start atanor-cluster-node-2 (d327e65a7f0e)
    sent 100: acknowledged 100, refused 0, unknown 0 (no answer 0); stored rows 100
    acknowledged: LOST 0, DUPLICATED 0
@@ -453,7 +453,7 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
 - **`deploy-example` says the token is refused.** The cluster was recreated;
   the script creates a new token by itself when the stored one stops working.
 - **A node I replaced shows as a lost node.** Nodes are named after their
-  service (`atanor@node-N`), so a restart, even with another address, is the same
+  service (`atanor@node-N.cluster`), so a restart, even with another address, is the same
   node. Only a container created under another name (for example by
   `docker compose up --scale`) is a different node.
 - **The balancer shows a node DOWN though it is up.** The balancer asks
