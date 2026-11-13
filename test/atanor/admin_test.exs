@@ -193,6 +193,8 @@ defmodule Atanor.AdminTest do
         assert %{"pid" => "#PID" <> _, "initial_call" => _, "current_function" => _, "memory" => _} = hd(runtime[key])
       end
 
+      assert [%{"state" => "closed", "failures" => 0, "since_ms" => since}] = Map.values(runtime["store"])
+      assert is_integer(since)
       assert runtime["cgroup"]["memory_current"] == 123_456
       assert runtime["cgroup"]["memory_max"] == 536_870_912
       assert %{"anon" => 100, "file" => 200, "shmem" => 3, "sock" => 4, "slab" => 5} = runtime["cgroup"]["stat"]
@@ -364,7 +366,9 @@ defmodule Atanor.AdminTest do
   describe "endpoints" do
     test "health" do
       node = start([notes("a")])
-      assert %{"status" => "ok", "node" => _, "nodes" => [_], "workers" => 1} = json(get(node, "/health"))
+
+      assert %{"status" => "ok", "node" => _, "nodes" => [_], "workers" => 1, "store" => %{}} =
+               json(get(node, "/health"))
     end
 
     test "workers: the heads of the store" do
