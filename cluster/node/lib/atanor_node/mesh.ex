@@ -1,9 +1,9 @@
 defmodule AtanorNode.Mesh do
   @moduledoc """
   Connects this node to its peers and reconnects after a partition: the operator's job (design 8).
-  The peers are named in a list of host names (the Compose services `node-1` to `node-10`, which
-  Docker's DNS resolves while their container runs). A node is named `atanor@<host name>`, so a
-  restarted container is the same node whatever its address.
+  The peers are named in a list of advertised hosts (`node-1.cluster` to `node-10.cluster`, the network
+  aliases of the Compose services, which Docker's DNS resolves while their container runs). A node is
+  named `atanor@<advertised host>`, so a restarted container is the same node whatever its address.
   """
   use GenServer
 

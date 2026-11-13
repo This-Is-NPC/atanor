@@ -4,9 +4,9 @@
 # inspect` or in the process arguments.
 set -eu
 
-# The node name is the container hostname set by Compose (node-1), which a restart keeps even
-# when the address changes.
-ATANOR_ADVERTISE=$(hostname)
+# The node is atanor@<hostname>.cluster: the hostname set by Compose (node-1) with the network alias
+# of compose.yml, which a restart keeps even when the address changes. Long names need a dot.
+ATANOR_ADVERTISE=$(hostname).cluster
 export ATANOR_ADVERTISE
 
 exec /opt/atanor/bin/atanor_node start
