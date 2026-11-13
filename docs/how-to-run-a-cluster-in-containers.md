@@ -61,7 +61,7 @@ Set these in the environment of `mise run`; the defaults are in `compose.yml`.
 | `ATANOR_CLUSTER_HTTP_PORT`, `_ADMIN_PORT`, `_DASHBOARD_PORT`, `_STATS_PORT` | 18080 to 18083 | Host ports of the load balancer. |
 | `ATANOR_CLUSTER_BIND` | 127.0.0.1 | Host address the ports bind to. Keep loopback. |
 | `ATANOR_CLUSTER_STORE_IMAGE`, `_LB_IMAGE` | pinned digests | Images. |
-| `ATANOR_CLUSTER_IMAGE` | `atanor-cluster-node:local`, built by `cluster:up` | The node image. When you set it, `cluster:up` does not build: it uses that image, which needs `curl` (the `harness` target has it). The load tests use it for their derived image ([cluster/load/Dockerfile](../cluster/load/Dockerfile)). |
+| `ATANOR_CLUSTER_IMAGE` | `atanor-cluster-node:local`, built by `cluster:up` | The node image. When you set it, `cluster:up` does not build: it uses that image, which needs `curl` (the `harness` target has it). The load tests do not use it: `load:up` builds a [derived image](how-to-build-a-derived-image.md) ([cluster/load/Dockerfile](../cluster/load/Dockerfile)) and starts the cluster with it. |
 | `ATANOR_CLUSTER_LEASE_TTL_MS`, `_NET_TICKTIME` | 30000, 60 | Cell lease and Erlang net tick time (seconds). |
 | `ATANOR_CLUSTER_GROUP` | none | The discovery group of the nodes started ([`ATANOR_GROUP`](configuration.md#discovery)). `cluster:swap-run` starts the replacement in group `b`, so it does not join the others ([how-to-replace-a-node.md](how-to-replace-a-node.md)). |
 | `ATANOR_CLUSTER_REGISTRY_TTL_MS`, `_REGISTRY_RENEW_MS` | 15000, 3000 | How long a node's entry in the store lives, and how often it is renewed (`ATANOR_REGISTRY_*`). A new node is found within the renewal; a node that was killed is forgotten after the TTL plus 2 s. |

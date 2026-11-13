@@ -5502,6 +5502,22 @@ argument goes to `bin/atanor`, and the default command, `start`, runs the node. 
 environment variables, the secrets come through the `*_FILE` variables, and the start script
 `rel/env.sh.eex` checks the cookie and names the node before the VM boots.
 
+**Derived images.** Elixir code that has to share the VM with a node (a Phoenix and LiveView app, a native
+worker's module) is built into a release of its own, not added to this one. The app depends on `atanor`
+(a path or git dependency, never Hex) and starts the node itself: `Atanor.Daemon.children/1` returns the
+processes of a node (renewable credentials and the instance named
+`Atanor.Daemon.instance/0`, which finds the other nodes through the store), `AtanorDaemon.Application` starts exactly those, and the app's supervision
+tree puts them before its own processes. There is one loader of the settings, `Atanor.Daemon`, and one
+list of processes. The release is named `atanor`, so the image has the layout, the entry point and
+`rel/env.sh.eex` of the product image. `mix atanor.release` copies those two files from the dependency
+(`daemon/rel`) and writes a `Dockerfile`, which builds the release on the same bases as the root one
+(a test compares the pins) and runs it as the user `atanor`. The Rust crates are compiled in the build stage, as for the
+product image, so the first build costs about the same. `cluster/load` is the first consumer and
+`examples/live-counter` the second. A native worker of such an image reaches a node only through a node
+(`atanor deploy --url`, or a profile): `--bucket` refuses it because no node has checked the module. Embedding
+Atanor in an arbitrary app, with your own release, is not a supported way to install it; the library API stays
+because this image is built with it. [how-to-build-a-derived-image.md](how-to-build-a-derived-image.md) walks through one.
+
 **Sources.** The build uses public sources only: Hex, crates.io and the git tag of Alambique in
 `alambique.ref`, which `mix deps.get` clones. Nothing is rewritten in `mix.lock`.
 

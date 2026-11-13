@@ -153,9 +153,10 @@ or through a Ranch protocol such as gen_smtp
 
 ## Run it in your own application
 
-Compile the worker module into the same release as the node, then publish its
-package and activate it. [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md)
-shows how, against a shared bucket, and how to switch versions and roll back.
+Build the worker module into an [image derived from the release](how-to-build-a-derived-image.md),
+with Phoenix, LiveView or any other code of your app in the same VM, then
+publish its package and activate it. [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md)
+shows how, through a node, and how to switch versions and roll back.
 
 ## Run it on several nodes
 
