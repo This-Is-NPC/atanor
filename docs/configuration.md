@@ -83,7 +83,7 @@ Rules:
 | Variable | File key | Default | What it sets |
 | --- | --- | --- | --- |
 | `ATANOR_STORE` | `store` | required | The bucket: `s3://bucket` or `s3://bucket/prefix`. The prefix is the instance `prefix:` (default `atanor`). |
-| `ATANOR_S3_ENDPOINT` | `s3_endpoint` | `https://s3.<region>.amazonaws.com` | The S3 endpoint URL; give it for SeaweedFS, R2 or MinIO. |
+| `ATANOR_S3_ENDPOINT` | `s3_endpoint` | unset: Alambique derives `https://s3.<region>.amazonaws.com` from the region | The S3 endpoint URL; give it for SeaweedFS, R2 or MinIO. |
 | `ATANOR_S3_REGION` | `s3_region` | `us-east-1` | The signing region. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | `aws_access_key_id`, `aws_secret_access_key` | required | Static S3 credentials. The `_FILE` variants read them from files. `AWS_SESSION_TOKEN` fails the start: the S3 store takes no session token yet. |
 | `ATANOR_LISTEN` | `listen` | `0.0.0.0:4000` | `ip:port` of the cell ingress. |
