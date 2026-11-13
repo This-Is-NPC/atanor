@@ -3,7 +3,7 @@
 | Page | Question it answers |
 | --- | --- |
 | [design.md](design.md) | How is Atanor built: model, processes, bindings, storage layout, guarantees? |
-| [configuration.md](configuration.md) | Which options does an instance take, and what do they bound? |
+| [configuration.md](configuration.md) | Which options does an instance take, what do they bound, and which environment variables and file keys configure a node run as a daemon? |
 | [how-to-write-a-native-worker.md](how-to-write-a-native-worker.md) | How do I write a native worker, give it a cell, and run it locally? |
 | [how-to-write-a-wasm-worker.md](how-to-write-a-wasm-worker.md) | How do I write a worker as a WebAssembly component and run it locally? |
 | [how-to-serve-tcp.md](how-to-serve-tcp.md) | How do I speak a TCP protocol from a worker, bind a connection to a cell, and serve it over TLS, STARTTLS or a Ranch protocol such as gen_smtp? |

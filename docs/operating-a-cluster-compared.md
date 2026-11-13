@@ -143,7 +143,7 @@ work to a vendor but do not remove the items.
    ([the design](design.md#814-ingress-and-owner-what-runs-where)).
 10. **The operator builds the image and the mesh.** Atanor does not find nodes
     ([the README](../README.md#limitations));
-    the cluster here does it with `ATANOR_NODE_PEERS` and a 24-line module, and builds
+    the cluster here does it with `ATANOR_PEERS` and a 24-line module, and builds
     the image with Alambique fetched at the pinned release, with Rust for both NIFs.
 11. **The audit log has no retention**, and a deploy token is still the
     authority of its manifest for some grants
