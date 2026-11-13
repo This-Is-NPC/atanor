@@ -14,8 +14,8 @@ machine say how the harness works, not what a release holds: run the real ramps 
 | Measure (task) | Ramp | A step fails when | Cost per unit |
 | --- | --- | --- | --- |
 | `load:http-native`, `load:http-wasm`: reads and writes in cells | requests per second | p99 > 250 ms, a 5xx other than 503 with `Retry-After`, or any error | req/s per vCPU, fixed MB, MB per req/s, S3 trips and bytes per request |
-| `load:ws`: open idle WebSockets, one message per socket every 30 s | connections | memory at 90% of the limit, or file descriptors at 90% of the limit (or a socket that cannot connect or is dropped) | MB and descriptors per connection |
-| `load:cells`: cells written once every 10 s, all awake together | cells | memory at 90% of the limit, or p99 > 250 ms | MB per hot cell |
+| `load:ws`: open idle WebSockets, one message per socket every 30 s | connections | working set at 90% of the limit (see [the memory criterion](#the-memory-criterion)), or file descriptors at 90% of the limit (or a socket that cannot connect or is dropped) | MB and descriptors per connection |
+| `load:cells`: cells written once every 10 s, all awake together | cells | working set at 90% of the limit, or p99 > 250 ms | MB per hot cell |
 | `load:swap`: node A replaced by B under load | none (one run at the last approved `http-wasm` rate) | an acknowledged write lost or duplicated, or an answer other than 503 with `Retry-After` | swap duration and p99 peak |
 
 Every `load:*` task exits with status 1 when a step ended INVALID (the lab, not the node, broke: there is no
@@ -33,7 +33,7 @@ One container per service, all of the project `atanor-cluster` (`scripts/cluster
 | Piece | How |
 | --- | --- |
 | Node | One container, `cpus` and `mem_limit` from the scenario (A: 1 and 512 MB; B: 2 and 2 GB), no peers. |
-| Service data | The node's data directory is a tmpfs (`ATANOR_LOAD_TMPFS_SIZE`, 256 MB). A tmpfs counts against its container's memory limit, so the container's limit (`mem_limit` and `memswap_limit`) is the scenario memory **plus** the tmpfs size (scenario A: 512 + 256 = 768 MB); the tmpfs is a lab artifact and does not take memory from the service. Service memory is `memory.current - shmem` from the container's cgroup `memory.stat`, and the 90% criterion compares it with the scenario memory, not the container limit. `shmem`, the tmpfs, is reported apart. |
+| Service data | The node's data directory is a tmpfs (`ATANOR_LOAD_TMPFS_SIZE`, 256 MB). A tmpfs counts against its container's memory limit, so the container's limit (`mem_limit` and `memswap_limit`) is the scenario memory **plus** the tmpfs size (scenario A: 512 + 256 = 768 MB), so that a full tmpfs cannot get the node OOM-killed. The node itself is given the scenario memory as its limit (`ATANOR_MEMORY_LIMIT`, set from `ATANOR_LOAD_MEMORY`), not the container limit, so its gates and the awake and WASM waiting limits it derives from the limit are those of a 512 MB (A) or 2 GB (B) machine. The tmpfs is a lab stand-in for the disk of a real machine; the node's working set counts it, so a tmpfs that fills takes memory from the 512 MB, which is conservative. `shmem`, the tmpfs, is reported apart. |
 | No swap | Every measured container has `memswap_limit` equal to `mem_limit`, so it cannot swap (zram or disk swap on the host would void the memory numbers). `load-run` checks `docker inspect` (`Memory` set and `MemorySwap` equal to it) and, when readable, the cgroup's `memory.swap.max` (0) before the first step, and refuses to run otherwise (`scripts/load-env check-swap`). Recreate a cluster started before this limit existed with `load:down` and `load:up`. |
 | Store | SeaweedFS in its own container (2 CPUs, 2 GB plus its tmpfs of 1 GB, outside the node's limit), data in tmpfs. |
 | Store latency | `tc netem delay 25ms` on the store's network interface, so every answer the store sends waits 25 ms: each trip costs 25 ms more. The node image has `tc`; `atanor-load-tc` joins the store's network namespace with `NET_ADMIN`, applies the qdisc and exits. The qdisc needs no root on the host. A request on a warm connection pays the latency once; a `curl` that opens a connection pays it twice, because the handshake answer waits too. `load:up` checks that the round trip from the node to the store grew by at least 80% of the added latency (observed: 1.0 ms to 51.1 ms for a new connection) and every step records it (`store_rtt_ms`). |
@@ -95,13 +95,23 @@ value once to confirm it. Every step writes one JSON file, atomically (temporary
 `SCENARIO_MEASURE_NN-PHASE-VALUE.json`, with: scenario and limits, measure, value, planned and achieved,
 p50/p95/p99/max, status counts (503 with and without `Retry-After`), node CPU cores, memory (service,
 tmpfs, peak since the container started, and the largest `memory.current` of the node's cgroup,
-`current_max_mb`; `service_max_mb` and `max_pct_of_limit` are `memory.current - shmem` and its share of the scenario
-memory; `tmpfs_start_mb`, `tmpfs_max_mb` and `tmpfs_growth_mb` are the tmpfs at the first sample, its largest size and the growth in the step), descriptors, S3 bytes and trips, host load, validity and the criterion that stopped it.
+`current_max_mb`; `service_max_mb` and `max_pct_of_limit` are the working set (`memory.current - inactive_file`, what the node's memory gate reads, tmpfs included) and its share of the scenario
+memory (the node refuses at 85% of it, the criterion fails the step at 90%); `tmpfs_start_mb`, `tmpfs_max_mb` and `tmpfs_growth_mb` are the tmpfs at the first sample, its largest size and the growth in the step), descriptors, S3 bytes and trips, host load, validity and the criterion that stopped it.
 
-The ramp steps before the first failure share one node and one store: the tmpfs is not reset between them, the
-criterion already excludes it (`memory.current - shmem`), and the container limit has room for the whole tmpfs,
-so data left by earlier steps can fill the tmpfs (writes then fail with a full disk) but cannot get the node
-OOM-killed. Restarting the node between those steps would lose the warm state they are meant to measure. Each
+### The memory criterion
+
+The node's memory gate and the `ws` and `cells` criterion read the same number: the working set of the node's
+cgroup, `memory.current` minus `inactive_file` (tmpfs included), against the same limit, the scenario memory (A 512 MB, B 2 GB).
+The node refuses new requests at 85% of it (503 `overloaded`, reason `memory`; the step file's `refusing_seen` and
+`refused_memory` show it) and the harness fails the step at 90% (`--memory-pct`). The gates do not close open
+WebSockets (design §7.1, a documented decision): sockets opened below 85% keep their memory, and their growth
+(messages, buffers) can take a `ws` step past 90% with no refusal to show for it. The step then fails with the stop reason
+`working set N% of the scenario limit >= 90%`, and `refusing_seen` is true only if the node refused something on the way
+(for example the opening of more sockets). That is a result about the sockets held, not a defect of the gate.
+
+The ramp steps before the first failure share one node and one store: the tmpfs is not reset between them and the working set counts it,
+and the container limit has room for the whole tmpfs, so data left by earlier steps can fill the tmpfs (writes
+then fail with a full disk) but cannot get the node OOM-killed. Restarting the node between those steps would lose the warm state they are meant to measure. Each
 step records the tmpfs at its start and its growth.
 
 After a failing step, every refine step and the confirmation start on a fresh node: `load-run` runs

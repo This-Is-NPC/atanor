@@ -805,6 +805,7 @@ came from when it starts: `atanor: awake cells limited to 1073741824 bytes
 `mem_limit` (`ATANOR_CLUSTER_NODE_MEMORY`, 2g), so with the default fraction its
 ceiling is 1 GiB. With `ATANOR_CLUSTER_TMPFS=1` the cell files count against
 that limit too; give the node more memory rather than a larger fraction.
+The load harness sets `ATANOR_MEMORY_LIMIT` to the scenario memory (`ATANOR_CLUSTER_MEMORY_LIMIT`) while the container limit adds the tmpfs, so the gates see the scenario's machine.
 *Memory of the wakes.* A wake restores the state of a cell from the store, and
 a store that fails makes it worse: an upload that fails stops the cell, and every
 request that was waiting for it wakes it again, all at once. Admission cannot
