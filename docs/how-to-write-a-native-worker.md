@@ -4,7 +4,10 @@
 on a local node?
 
 This guide stands alone. It uses [examples/hello-native](../examples/hello-native),
-which you can read next to it.
+which you can read next to it. It develops the worker against a checkout of Atanor,
+on a local node. To run a native worker on a daemon, put its module in a
+[derived image](how-to-build-a-derived-image.md); a WASM worker needs none
+([how](how-to-write-a-wasm-worker.md)).
 
 ## Prerequisites
 
