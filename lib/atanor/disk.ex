@@ -6,8 +6,8 @@ defmodule Atanor.Disk do
   The budget is `disk: [max_bytes:]`, or `disk: [fraction:]` (0.8) of the file system that holds `data_dir`.
   Every `disk: [sample_ms:]` the monitor adds up the files of `data_dir` and escalates:
 
-    * at `evict_fraction` of the budget it hibernates the idle cells with the biggest `-wal` files (a
-      hibernation checkpoints, which truncates the WAL); the local cache then drops their files;
+    * at `evict_fraction` of the budget it hibernates the idle cells that were used longest ago
+      (`Alambique.cells/2` with `details: true`); the local cache then drops their files;
     * at `refuse_fraction` the ingress refuses requests with 503 `overloaded` (`Atanor.Admission`), until the
       use falls 5 points below.
 
@@ -23,7 +23,9 @@ defmodule Atanor.Disk do
   @max_wal 64 * @mib
   @min_wal @mib
   @escalated_ms 1_000
+  @budget_interval_ms 1_000
   @reclaim_batch 64
+  @cells_page 1_000
   @reclaim_timeout_ms 15_000
 
   ## Budget
@@ -67,8 +69,10 @@ defmodule Atanor.Disk do
 
     * `wal: [checkpoint_bytes:]` is `budget / cells / 2` between 1 MiB and 64 MiB (and at most half the
       budget), `cells` being `awake: [max_cells:]` (20 000 by default);
-    * `local_cache: [max_bytes:]` is the budget minus what the WALs of those cells may hold (at most half
-      of it), and its rounds run every `sample_ms`.
+    * `wal: [max_bytes:]` is the WAL allowance, what the WALs of those cells may hold (at most half the
+      budget): Alambique checkpoints the biggest WALs when they add up to it, every `budget_interval_ms`
+      (`sample_ms`, at most 1 000);
+    * `local_cache: [max_bytes:]` is the budget minus that allowance, and its rounds run every `sample_ms`.
   """
   @spec alambique_options(keyword, pos_integer | nil, pos_integer) :: keyword
   def alambique_options(alambique, nil, _sample_ms), do: alambique
@@ -83,15 +87,21 @@ defmodule Atanor.Disk do
         :error -> checkpoint_bytes(budget, cells)
       end
 
-    alambique = Keyword.put(alambique, :wal, Keyword.put(wal, :checkpoint_bytes, checkpoint))
+    allowance = min(div(budget, 2), checkpoint * cells)
+
+    wal =
+      wal
+      |> Keyword.put(:checkpoint_bytes, checkpoint)
+      |> Keyword.put_new(:max_bytes, max(allowance, 1))
+      |> Keyword.put_new(:budget_interval_ms, min(sample_ms, @budget_interval_ms))
+
+    alambique = Keyword.put(alambique, :wal, wal)
 
     case Keyword.get(alambique, :local_cache, []) do
       false ->
         alambique
 
       cache ->
-        allowance = min(div(budget, 2), checkpoint * cells)
-
         cache =
           cache
           |> Keyword.put_new(:max_bytes, max(budget - allowance, 1))
@@ -156,10 +166,10 @@ defmodule Atanor.Disk do
   ## Usage
 
   @doc """
-  `{total, cells}`: the bytes of every file under `dir`, and for each `<id>.cell` directory its id, its bytes
-  and the bytes of its `-wal` file. A file that disappears while the walk runs counts for nothing.
+  `{total, cells}`: the bytes of every file under `dir`, and for each `<id>.cell` directory its id and its
+  bytes. A file that disappears while the walk runs counts for nothing.
   """
-  @spec usage(Path.t()) :: {non_neg_integer, [%{id: String.t(), bytes: non_neg_integer, wal: non_neg_integer}]}
+  @spec usage(Path.t()) :: {non_neg_integer, [%{id: String.t(), bytes: non_neg_integer}]}
   def usage(dir) do
     case File.ls(dir) do
       {:ok, names} ->
@@ -167,8 +177,8 @@ defmodule Atanor.Disk do
           path = Path.join(dir, name)
 
           if String.ends_with?(name, ".cell") do
-            {bytes, wal} = cell_usage(path)
-            cell = %{id: String.replace_suffix(name, ".cell", ""), bytes: bytes, wal: wal}
+            bytes = tree_bytes(path)
+            cell = %{id: String.replace_suffix(name, ".cell", ""), bytes: bytes}
             {total + bytes, [cell | cells]}
           else
             {total + tree_bytes(path), cells}
@@ -177,19 +187,6 @@ defmodule Atanor.Disk do
 
       {:error, _} ->
         {0, []}
-    end
-  end
-
-  defp cell_usage(dir) do
-    case File.ls(dir) do
-      {:ok, files} ->
-        Enum.reduce(files, {0, 0}, fn file, {bytes, wal} ->
-          size = tree_bytes(Path.join(dir, file))
-          {bytes + size, if(String.ends_with?(file, "-wal"), do: wal + size, else: wal)}
-        end)
-
-      {:error, _} ->
-        {0, 0}
     end
   end
 
@@ -266,18 +263,21 @@ defmodule Atanor.Disk do
     %{state | levels: levels}
   end
 
-  # Hibernates idle cells, the biggest WALs first, until the WALs they hold would bring the use below the
-  # resume mark of the eviction. A busy cell is skipped: the refusal protects the node while it is.
+  # Hibernates idle cells, the least recently used first, until the files they hold would bring the use below
+  # the resume mark of the eviction. A busy cell is skipped: the refusal protects the node while it is. The WALs
+  # are Alambique's (`wal: [max_bytes:]`).
   defp reclaim(config, used, cells, model) do
     target = used - model.budget * (model.evict_fraction - Admission.hysteresis())
+    bytes = Map.new(cells, &{&1.id, &1.bytes})
 
     {chosen, _} =
-      cells
-      |> Enum.filter(&(&1.wal > 0))
-      |> Enum.sort_by(& &1.wal, :desc)
+      config.alambique
+      |> awake_cells()
+      |> Enum.filter(&(&1.last_used != nil and Map.has_key?(bytes, &1.id)))
+      |> Enum.sort_by(& &1.last_used)
       |> Enum.take(@reclaim_batch)
       |> Enum.reduce_while({[], 0}, fn cell, {chosen, freed} ->
-        if freed >= target, do: {:halt, {chosen, freed}}, else: {:cont, {[cell | chosen], freed + cell.wal}}
+        if freed >= target, do: {:halt, {chosen, freed}}, else: {:cont, {[cell | chosen], freed + bytes[cell.id]}}
       end)
 
     alambique = config.alambique
@@ -295,6 +295,20 @@ defmodule Atanor.Disk do
     :telemetry.execute([:atanor, :disk, :reclaim], %{candidates: length(chosen), hibernated: hibernated}, %{
       instance: config.name
     })
+  end
+
+  # Every cell with a process on this node, a page at a time (a waking one has no `last_used` yet).
+  defp awake_cells(alambique) do
+    Stream.unfold(:start, fn
+      :done ->
+        nil
+
+      page ->
+        opts = if page == :start, do: [], else: [after: page]
+        %{cells: cells, next: next} = Alambique.cells(alambique, [details: true, limit: @cells_page] ++ opts)
+        {cells, next || :done}
+    end)
+    |> Enum.concat()
   end
 
   defp hibernate(alambique, id) do

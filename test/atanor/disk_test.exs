@@ -92,6 +92,10 @@ defmodule Atanor.DiskTest do
       assert opts[:wal][:checkpoint_bytes] == @mib
       assert opts[:local_cache][:max_bytes] == 10 * @gib
       assert opts[:local_cache][:interval_ms] == 5_000
+      # The WAL allowance is the half of the budget Alambique checkpoints under, every second at most.
+      assert opts[:wal][:max_bytes] == 10 * @gib
+      assert opts[:wal][:budget_interval_ms] == 1_000
+      assert build(max_bytes: 20 * @gib, sample_ms: 200).alambique_opts[:wal][:budget_interval_ms] == 200
     end
 
     test "follow the cells a node may hold" do
@@ -103,22 +107,26 @@ defmodule Atanor.DiskTest do
       opts = build([max_bytes: 400 * @mib], awake: [max_cells: 100]).alambique_opts
       assert opts[:wal][:checkpoint_bytes] == 2 * @mib
       assert opts[:local_cache][:max_bytes] == 400 * @mib - 200 * @mib
+      assert opts[:wal][:max_bytes] == 200 * @mib
     end
 
     test "the WAL never takes more than half of a small budget" do
       opts = build([max_bytes: 1_000], awake: [max_cells: 1]).alambique_opts
       assert opts[:wal][:checkpoint_bytes] == 500
+      assert opts[:wal][:max_bytes] == 500
       assert opts[:local_cache][:max_bytes] == 500
     end
 
     test "an option the operator gave wins" do
       opts =
         build([max_bytes: 4 * @gib],
-          wal: [checkpoint_bytes: 5_000],
+          wal: [checkpoint_bytes: 5_000, max_bytes: 6_000, budget_interval_ms: 8_000],
           local_cache: [max_bytes: 7_000, interval_ms: 9_000]
         ).alambique_opts
 
       assert opts[:wal][:checkpoint_bytes] == 5_000
+      assert opts[:wal][:max_bytes] == 6_000
+      assert opts[:wal][:budget_interval_ms] == 8_000
       assert opts[:local_cache][:max_bytes] == 7_000
       assert opts[:local_cache][:interval_ms] == 9_000
     end
@@ -131,7 +139,7 @@ defmodule Atanor.DiskTest do
   end
 
   describe "usage" do
-    test "adds up the files, and tells each cell and its WAL", %{tmp_dir: dir} do
+    test "adds up the files, and tells each cell", %{tmp_dir: dir} do
       File.mkdir_p!(Path.join(dir, "a.b.cell"))
       File.write!(Path.join(dir, "a.b.cell/cell.db"), String.duplicate("x", 100))
       File.write!(Path.join(dir, "a.b.cell/cell.db-wal"), String.duplicate("x", 30))
@@ -139,7 +147,7 @@ defmodule Atanor.DiskTest do
       File.write!(Path.join(dir, "diagnostics/pending/r.json"), "12345")
       File.write!(Path.join(dir, "lock"), "")
 
-      assert {135, [%{id: "a.b", bytes: 130, wal: 30}]} = Disk.usage(dir)
+      assert {135, [%{id: "a.b", bytes: 130}]} = Disk.usage(dir)
       assert Disk.usage(Path.join(dir, "missing")) == {0, []}
     end
   end
@@ -171,12 +179,12 @@ defmodule Atanor.DiskTest do
 
   describe "the monitor" do
     test "hibernates idle cells when the disk passes the eviction mark, and the gate follows" do
-      # The WAL mark is Alambique's 64 MiB, so one cell's WAL alone passes 70% of the budget.
+      # The WAL mark and allowance are Alambique's 64 MiB, so one cell's WAL alone passes 70% of the budget.
       node =
         Node.start(
           workers: [Manifests.counter("w")],
           disk: [max_bytes: 4 * @mib, sample_ms: 50],
-          alambique: [wal: [checkpoint_bytes: 64 * @mib]]
+          alambique: [wal: [checkpoint_bytes: 64 * @mib, max_bytes: 64 * @mib]]
         )
 
       on_exit(fn -> Node.stop(node) end)

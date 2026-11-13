@@ -14,7 +14,7 @@ defmodule Atanor.DiskPropertyTest do
   defp budget, do: integer((2 * @mib)..(64 * 1_073_741_824))
   defp cells, do: integer(1..50_000)
 
-  property "the derived WAL mark and local cache never exceed the budget together" do
+  property "the derived WAL mark, WAL allowance and local cache never exceed the budget together" do
     check all(budget <- budget(), cells <- cells()) do
       opts = Disk.alambique_options([awake: [max_cells: cells]], budget, 5_000)
       wal = opts[:wal][:checkpoint_bytes]
@@ -23,6 +23,8 @@ defmodule Atanor.DiskPropertyTest do
       assert wal in @mib..(64 * @mib)
       assert cache > 0
       assert wal + cache <= budget
+      # The WAL allowance Alambique enforces and the local cache never exceed the budget together.
+      assert opts[:wal][:max_bytes] + cache <= budget
       # What every cell's WAL may hold at its mark, within the half of the budget set aside for it.
       assert min(div(budget, 2), wal * cells) + cache == budget
     end
