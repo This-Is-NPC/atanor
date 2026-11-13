@@ -1,14 +1,20 @@
 # How to deploy a worker, switch versions and roll back
 
 **The question:** How do I put a new version of a worker on my nodes, make
-them serve it, and go back if it is wrong, without holding the bucket
-credentials?
+them serve it, and go back if it is wrong?
 
 This guide stands alone for the deploy itself, and builds on
 [how-to-write-a-native-worker.md](how-to-write-a-native-worker.md) for the
 project: it uses [examples/hello-native](../examples/hello-native). You deploy
-with the `atanor` command ([reference](cli.md)), which sends the package to a
-node through the admin API. Only nodes write the store.
+with the `atanor` command ([reference](cli.md)), in one of two ways:
+
+- **through a node** (the steps below): the command sends the package to a
+  node's admin API with a scoped token, and the node writes the store, so you
+  never hold the bucket credentials;
+- **through the bucket**, with `--bucket` ([below](#deploy-through-the-bucket)):
+  the command writes the store itself, for a WASM worker, and needs no node.
+
+Either way the nodes apply the new head on their own at their next poll.
 
 ## Prerequisites
 
@@ -190,6 +196,81 @@ atanor: forbidden: this token needs the scope worker:hello:deploy
 Every upload, activation, rollback and token change is in the audit log
 (`GET /audit`, [how-to-use-the-admin-api.md](how-to-use-the-admin-api.md)).
 
+## Deploy through the bucket
+
+If your CI or your laptop has write access to the bucket, `deploy` needs no
+node and no token. This is the one-line deploy of a cluster started from the
+[image](how-to-build-the-release.md): the nodes find the head in the bucket.
+It works for WASM workers only ([why](#troubleshooting)). This section uses
+[examples/scoreboard](../examples/scoreboard), which `mise run build:scoreboard`
+builds into `scoreboard.wasm`.
+
+1. Give the command the bucket and the credentials, as you give them to a node
+   ([configuration.md](configuration.md#the-daemon-environment-and-file)): the
+   endpoint, the region and the AWS chain (`AWS_ACCESS_KEY_ID` and
+   `AWS_SECRET_ACCESS_KEY`, a profile, a web identity, container credentials
+   or EC2 metadata). The bucket and the prefix must be the nodes' `ATANOR_STORE`.
+   Here they are for a local SeaweedFS and a node started with
+   `mix atanor.dev --port 4107 --store seaweedfs --bucket atanor-demo --prefix demo`:
+
+   ```sh
+   export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... ATANOR_S3_ENDPOINT=http://127.0.0.1:18343
+   ```
+
+2. Deploy and activate.
+
+   ```sh
+   cd examples/scoreboard
+   atanor deploy --bucket s3://atanor-demo/demo --activate
+   ```
+
+   ```text
+   package 55c8cdbc30d325d5628e54486c7ddb7bf3528f6355afe153817dafefb7f4061f (scoreboard, wasm, 117888 bytes)
+   scoreboard: active 55c8cdbc30d325d5628e54486c7ddb7bf3528f6355afe153817dafefb7f4061f, revision 1, previous none
+   stored in s3://atanor-demo/demo; the nodes apply it at their next poll
+   ```
+
+   Without `--activate` the package is stored and no head moves.
+
+3. Wait for the nodes. Every node polls the heads (`:poll_interval_ms`, 5
+   seconds by default), so after at most that long each one serves the worker:
+
+   ```text
+   $ curl -s -H 'Host: scoreboard.localhost' http://127.0.0.1:4107/rooms/demo
+   {"room":"demo","writes":0,"last_seq":0,"ranked_through":0,"rankings":[]}
+   ```
+
+   `atanor versions`, `activate`, `rollback` and `status` go through a node:
+   they need the admin API and a token (steps 2 and 3 above). A second
+   `deploy --bucket --activate` of changed code moves the head again, and a
+   rollback is `atanor rollback`. Nothing else tells the nodes: a node that is
+   down applies the head when it starts.
+
+`--bucket` cannot be combined with `--url`, `--profile` or `--timeout`
+(`atanor: --bucket writes the store directly and --profile is for the admin API
+of a node: give one or the other`). `ATANOR_URL`, `ATANOR_TOKEN` and
+`ATANOR_PROFILE` are ignored with it.
+
+### From the image
+
+The release image holds the same command, so a machine with Docker and no
+Erlang can deploy. The image starts the node with no argument and runs the
+command for `deploy` (and `status`, `activate`, ...). Mount the project and
+give the credentials by files:
+
+```sh
+docker run --rm -v "$PWD:/w:ro" -v "$HOME/.secrets/atanor:/run/secrets:ro" \
+  -e ATANOR_S3_ENDPOINT=https://s3.example.com \
+  -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key \
+  -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret_key \
+  ghcr.io/this-is-npc/atanor deploy /w --bucket s3://my-bucket --activate
+```
+
+It needs no cookie and no advertise address, because it starts no node. The
+command runs as the user `atanor` (uid 10001): the mounted directory must be
+readable by it. `mise run image:smoke` runs exactly this against SeaweedFS and
+checks that a node then serves the worker.
+
 ## Native code
 
 A native package holds the MD5 of the module's compiled code, and a node
@@ -263,6 +344,20 @@ The manifest only declares routes. The operator decides, per node, in
   component is over `package: [max_manifest_bytes:, max_component_bytes:]`
   (262,144 and 8,388,608 bytes by default). The `subject` of the answer names
   what was refused. See [design §3.3](design.md#33-what-a-manifest-may-grant).
+- **`--bucket deploys WASM workers only: ... is native`** A native package
+  holds the MD5 of a module that has to be in the node's release. Through a node
+  the node checks that (`module_not_loaded`); with the bucket nobody can, and a
+  head could name a package no node can apply, so the command refuses. Roll the
+  nodes to a release that has the module, then deploy through a node with
+  `--url` or a profile.
+- **`--bucket: must be s3://bucket or s3://bucket/prefix`** Give the URL of the
+  store as the nodes' `ATANOR_STORE` reads it, with no port, query or user.
+- **`no AWS credentials: ...`** or **`cannot get the AWS credentials`** The
+  command found no source of the chain or the source failed; see the AWS
+  variables in [configuration.md](configuration.md#the-daemon-environment-and-file).
+- **The command succeeded but the nodes do not serve the worker.** The bucket
+  or the prefix differs from the nodes' `ATANOR_STORE`. Compare them, then
+  `atanor status WORKER` against a node.
 - **`other changes moved the head at the same time`** Sixteen attempts lost the
   race against other changes of the same head. Run the command again.
 

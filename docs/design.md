@@ -1142,10 +1142,28 @@ on the code path, so the atoms are bounded by the files the node has.
 The `atanor` command (`Atanor.CLI`, reference in [cli.md](cli.md)) is a client of
 the admin API (§10.2.1): `login`, `logout`, `deploy`, `activate`, `rollback`,
 `status`, `versions` and `token`. Deployers hold an admin URL and a scoped
-token, never the bucket credentials: only nodes write the store, through
+token, never the bucket credentials: the nodes write the store, through
 `Atanor.Deployments.Service`. It is an escript (`mise run build:cli`) that needs
 only Erlang, and keeps its profiles in `$XDG_CONFIG_HOME/atanor/config.json`
-(mode 0600).
+(mode 0600). The release and its image run the same module
+(`bin/atanor-entrypoint`, §17.4), so there is one implementation.
+
+`deploy --bucket s3://bucket/prefix` is the other way in, for a deployer that
+holds the bucket credentials (a CI job in the same account as the cluster): it
+needs no node. The command opens the store with `Atanor.Daemon.store/3`, which
+applies the daemon's rules for the endpoint, the region and the AWS credential
+chain, and calls `Atanor.Deployments.Service.deploy/4`, the same function the
+admin API calls: the package, the version index (`atanor versions` lists it,
+`uploaded_by` is `{"type": "bucket"}`) and, with `--activate`, the head. Nothing
+tells the nodes: each applies the head at its next poll (`:poll_interval_ms`), the
+way it applies one moved through a store handle (D1 holds as for any switch).
+The two modes exclude each other (`--bucket` with `--url`, `--profile` or
+`--timeout` is a usage error). A native worker is refused through the bucket:
+`Service.upload/5` checks that the node holds the module, and with no node
+nothing can, so a head could name a package no node can apply. WASM packages
+carry their component and are always safe to publish this way. The cluster test
+`test/cluster/deploy_bucket_test.exs` shows three peers serving a worker
+deployed through a store handle with no peer told.
 
 `deploy` builds the package on the deployer's machine with
 `Atanor.Package.from_project/3`, the one implementation of package building. A
@@ -5422,9 +5440,13 @@ target), with only the libraries the release links (libssl3, libstdc++6, libncur
 `harness`, the same plus `curl`, `iproute2`, `iptables` and `procps`, which `cluster/` needs for
 faults, `tc` and healthchecks; and `artifact`, a scratch image with the release directory, from which
 the tarball is cut. Both images run as the user `atanor` (uid 10001), with the data directory
-`/var/lib/atanor/cells` owned by it, and start `/opt/atanor/bin/atanor start`. There is no entrypoint
-script: the settings are environment variables, the secrets come through the `*_FILE` variables, and
-the start script `rel/env.sh.eex` checks the cookie and names the node before the VM boots.
+`/var/lib/atanor/cells` owned by it. The entrypoint is `/opt/atanor/bin/atanor-entrypoint`, a release
+overlay (`daemon/rel/overlays/bin`) of one `case`: the commands of the `atanor` CLI (`deploy`, `status`, ...)
+run `Atanor.CLI.main/1` through `bin/atanor eval`, which starts no node, so `docker run IMAGE deploy /w --bucket
+s3://...` needs no advertise address and no cookie (`rel/env.sh.eex` skips its checks for `eval`); any other
+argument goes to `bin/atanor`, and the default command, `start`, runs the node. The settings are
+environment variables, the secrets come through the `*_FILE` variables, and the start script
+`rel/env.sh.eex` checks the cookie and names the node before the VM boots.
 
 **Sources.** The build uses public sources only: Hex, crates.io and the git tag of Alambique in
 `alambique.ref`, which `mix deps.get` clones. Nothing is rewritten in `mix.lock`.

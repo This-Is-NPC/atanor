@@ -2,9 +2,11 @@
 
 `atanor` is a client of the [admin API](how-to-use-the-admin-api.md). It logs in
 to a node, builds and uploads worker packages, moves heads and manages scoped
-tokens. It never holds bucket credentials: only nodes write the store. The API
-it calls is described in [openapi/admin.json](openapi/admin.json). For a walk
-through, see [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md).
+tokens. Except for `deploy --bucket`, it holds no bucket credentials: the nodes
+write the store. `deploy --bucket` writes the store itself, for a deployer that
+has the credentials, and needs no node. The API it calls is described in
+[openapi/admin.json](openapi/admin.json). For a walk through, see
+[how-to-deploy-a-worker.md](how-to-deploy-a-worker.md).
 
 ## Install
 
@@ -20,6 +22,20 @@ atanor --version
 ```text
 atanor 0.1.0
 ```
+
+The release image and tarball hold the same command, so a machine with Docker needs no Erlang. Its
+entrypoint runs the `atanor` command for the commands below, and starts the node with no argument
+([how-to-build-the-release.md](how-to-build-the-release.md)):
+
+```sh
+docker run --rm -v "$PWD:/w:ro" ghcr.io/this-is-npc/atanor deploy /w --bucket s3://my-bucket --activate
+```
+
+Give the image the credentials as for a node ([configuration.md](configuration.md#the-daemon-environment-and-file)),
+for example `-e AWS_ACCESS_KEY_ID_FILE=... -e AWS_SECRET_ACCESS_KEY_FILE=...` with the files mounted. The command
+runs as the user `atanor` (uid 10001), which has to be able to read the directory. The profiles file is
+inside the container, so `login` there does not last: use `ATANOR_URL` and `ATANOR_TOKEN`. From a tarball,
+`bin/atanor-entrypoint deploy ...` does the same.
 
 ## Profiles and the config file
 
@@ -71,23 +87,55 @@ logged in to http://127.0.0.1:5010 (profile default); the token is stored in ~/.
 Removes the profile from this machine. It does not revoke the token; use
 `atanor token revoke` for that.
 
-### atanor deploy
+### atanor deploy [DIR]
 
-Reads the manifest, builds the package in this machine, computes its SHA-256
-and uploads it. Needs the `deploy` scope of the worker, and `activate` too with
-`--activate`. A native package holds the MD5 of the compiled module, which
-`deploy` reads from the project's `.beam` file, so compile the project first.
+Reads the manifest of `DIR` (default: the current directory), builds the package
+in this machine and computes its SHA-256. A native package holds the MD5 of the
+compiled module, which `deploy` reads from the project's `.beam` file, so compile
+the project first. Then it delivers the package in one of two ways, which exclude each other:
+
+- **Through a node** (the default): uploads it to the admin API of the profile, or of `--url`. Needs
+  the `deploy` scope of the worker, and `activate` too with `--activate`.
+- **Through the bucket**, with `--bucket`: writes the package, the entry of `atanor versions` and, with
+  `--activate`, the head straight to the store. No node is needed and no token is used; the command
+  needs write access to the bucket. It reads the endpoint, region and credentials as a node does:
+  `ATANOR_S3_ENDPOINT`, `ATANOR_S3_REGION` (then `AWS_REGION`, `AWS_DEFAULT_REGION`) and the AWS chain
+  (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, web identity, the shared files, container credentials,
+  EC2 metadata; each secret also with `_FILE`), all in [configuration.md](configuration.md). The config
+  file of the daemon is not read. The nodes apply the new head at their next poll (5 seconds by default).
+  It deploys WASM workers only: a native worker needs its module in the node's release, which only a
+  node can check, so the command refuses it and names the way (a node, `--url`).
+
+`--bucket` with `--url`, `--profile` or `--timeout` is a usage error (exit 2). `ATANOR_URL`,
+`ATANOR_TOKEN` and `ATANOR_PROFILE` are ignored with `--bucket`.
 
 | Option | Meaning |
 | --- | --- |
-| `--manifest FILE` | The manifest (default `atanor.json`). A WASM component is read from the manifest's directory. |
+| `--manifest FILE` | The manifest, in `DIR` (default `atanor.json`). A WASM component is read from the manifest's directory. |
 | `--activate` | Also make the package the active one. |
+| `--bucket URL` | Publish to the store `s3://bucket` or `s3://bucket/prefix` (prefix default `atanor`), not through a node. |
+| `--url URL` | The admin API URL; replaces the URL of the profile (or `ATANOR_URL`). With a URL other than the profile's, give `ATANOR_TOKEN` too. |
 | `--ebin DIR` | A directory with compiled modules; repeatable (default `_build/$MIX_ENV/lib/*/ebin`, with `MIX_ENV` `dev` when unset). |
 
 ```text
 $ atanor deploy --activate
 package fa48567b0c8764bf0121aa6a9f0d7b40626820cfcccc8d9e5033aaa41e605c8f (hello, native, 460 bytes)
 hello: active fa48567b0c8764bf0121aa6a9f0d7b40626820cfcccc8d9e5033aaa41e605c8f, revision 1, previous none
+```
+
+Through the bucket (a WASM worker; the keys are in the environment, here for a local SeaweedFS):
+
+```text
+$ cd examples/scoreboard
+$ AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... ATANOR_S3_ENDPOINT=http://127.0.0.1:18343 \
+    atanor deploy --bucket s3://atanor-demo/demo --activate
+package 55c8cdbc30d325d5628e54486c7ddb7bf3528f6355afe153817dafefb7f4061f (scoreboard, wasm, 117888 bytes)
+scoreboard: active 55c8cdbc30d325d5628e54486c7ddb7bf3528f6355afe153817dafefb7f4061f, revision 1, previous none
+stored in s3://atanor-demo/demo; the nodes apply it at their next poll
+$ atanor deploy ../hello-native --bucket s3://atanor-demo/demo --activate
+atanor: --bucket deploys WASM workers only: hello is native, and a node can run it only if its release holds the module, which the bucket cannot check. Deploy it through a node with --url or a profile, after rolling the nodes to a release that has the module
+$ atanor deploy --bucket s3://atanor-demo/demo --profile ops
+atanor: --bucket writes the store directly and --profile is for the admin API of a node: give one or the other
 ```
 
 ### atanor activate WORKER PACKAGE_ID
