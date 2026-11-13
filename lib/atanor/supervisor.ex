@@ -164,6 +164,7 @@ defmodule Atanor.Supervisor do
     end
 
     log_wake_limits(config)
+    log_waiting_limits(config)
 
     case config.disk do
       %{budget: nil} ->
@@ -190,6 +191,18 @@ defmodule Atanor.Supervisor do
         "atanor: wakes limited to #{wakes} at once; a restore reads ahead " <>
           "#{opts[:restore][:max_inflight_bytes] || "the default"} bytes in flight with " <>
           "#{opts[:restore][:fetch_concurrency] || "the default"} requests"
+      )
+    end
+  end
+
+  # Where `Atanor.Wasm.configure/1` derived them from the node's memory.
+  defp log_waiting_limits(config) do
+    if Atanor.Memory.waiting_budget(config.memory) do
+      wasm = Atanor.Wasm.configure(config.memory)
+
+      Logger.info(
+        "atanor: #{wasm.max_waiting} waiting guests and #{wasm.queue} queued calls at most " <>
+          "(#{wasm.waiting_bytes} bytes each), #{wasm.threads} guests run at once"
       )
     end
   end

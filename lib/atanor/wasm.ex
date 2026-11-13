@@ -25,7 +25,8 @@ defmodule Atanor.Wasm do
       pool (default: 4 per thread, at least `:threads`).
     * `:max_waiting` - guests that wait without holding a call slot or a pool
       thread, so they do not count against `:max_calls` or `:worker_calls`
-      (default: 2 per thread). Each has a thread and an instance slot of its
+      (default: what the node's memory fits, `waiting_budget / waiting_bytes`, 1 to 256,
+      see `Atanor.Memory`; 2 per thread when the node has no memory limit). Each has a thread and an instance slot of its
       own; a guest that waits above this number keeps its slot, as it would
       without the setting.
     * `:max_nested_calls` - calls that guests make to other workers, in flight
@@ -35,7 +36,10 @@ defmodule Atanor.Wasm do
       included, waiting guests excepted; one more is refused with
       `{:error, :overloaded}`, so a busy worker cannot take every thread (default: three quarters of
       `:max_calls`, at least 1).
-    * `:queue` - calls that may wait for a pool thread (default: 4 per thread).
+    * `:waiting_bytes` - what one waiting guest or queued call is counted to hold when
+      `:max_waiting` and `:queue` are derived from the memory (default 2 MiB).
+    * `:queue` - calls that may wait for a pool thread (default: the same number as
+      `:max_waiting` with a memory limit, else 4 per thread).
       A full queue refuses the call with `{:error, :overloaded}`.
     * `:queue_wait_ms` - longest wait in the queue and for the right to run
       (default 1000).
@@ -124,10 +128,24 @@ defmodule Atanor.Wasm do
   @spec settings(keyword) :: map
   def settings(overrides \\ [])
 
-  def settings([]) do
+  def settings([]), do: settings_for(nil)
+  def settings(overrides), do: settings(overrides, nil)
+
+  @doc false
+  # `overrides` as for `settings/1`, with the budget of `Atanor.Memory.waiting_budget/1` (nil: no limit).
+  @spec settings(keyword, non_neg_integer | nil) :: map
+  def settings(overrides, waiting_budget), do: build_settings(overrides, waiting_budget)
+
+  @doc false
+  # Builds the VM's settings from the memory the first node gives (`Atanor.Memory.waiting_budget/1`):
+  # the waiting guests and the queue follow it. The first call fixes them for the VM.
+  @spec configure(map) :: map
+  def configure(memory), do: settings_for(Atanor.Memory.waiting_budget(memory))
+
+  defp settings_for(budget) do
     case :persistent_term.get({__MODULE__, :settings}, nil) do
       nil ->
-        settings = build_settings([])
+        settings = build_settings([], budget)
         :persistent_term.put({__MODULE__, :settings}, settings)
         settings
 
@@ -135,8 +153,6 @@ defmodule Atanor.Wasm do
         settings
     end
   end
-
-  def settings(overrides), do: build_settings(overrides)
 
   # The host's processors, capped by the CPU quota of the container (cgroup v2 `cpu.max`), which the
   # VM does not see: a node of 1 CPU on a 12-core host would run 12 guests at once.
@@ -156,17 +172,37 @@ defmodule Atanor.Wasm do
 
   def cpu_threads(processors, {:error, _}), do: processors
 
-  defp build_settings(overrides) do
+  @doc false
+  # A guest that waits holds a store, an instance with its memory and a stack, and a call its request: 2 MiB
+  # covers both (about 0.7 MiB measured for a small guest, design §14.2).
+  def waiting_bytes, do: 2 * 1_048_576
+
+  @doc false
+  # `{max_waiting, queue}`. With a memory budget the guests that wait and the calls that queue follow what it
+  # fits; the CPU only limits the guests that run (`threads`, `max_calls`, `worker_calls`).
+  @spec waiting_limits(pos_integer, non_neg_integer | nil, pos_integer) :: {pos_integer, pos_integer}
+  def waiting_limits(threads, nil, _waiting_bytes), do: {2 * threads, 4 * threads}
+
+  def waiting_limits(_threads, budget, waiting_bytes) do
+    limit = Atanor.Memory.waiting_limit(budget, waiting_bytes)
+    {limit, limit}
+  end
+
+  defp build_settings(overrides, waiting_budget) do
     config =
       Application.get_env(:atanor, :wasm, [])
       |> Keyword.merge(overrides)
 
     threads = Keyword.get_lazy(config, :threads, &default_threads/0)
+    waiting_bytes = Keyword.get(config, :waiting_bytes, waiting_bytes())
+
+    {waiting, queue} = waiting_limits(threads, waiting_budget, waiting_bytes)
 
     config =
       config
       |> Keyword.put_new(:threads, threads)
-      |> Keyword.put_new(:queue, 4 * threads)
+      |> Keyword.put_new(:queue, queue)
+      |> Keyword.put_new(:waiting_bytes, waiting_bytes)
 
     max_calls = Keyword.get(config, :max_calls, 4 * threads)
 
@@ -174,7 +210,7 @@ defmodule Atanor.Wasm do
       config
       |> Keyword.put_new(:max_calls, max_calls)
       |> Keyword.put_new(:max_nested_calls, threads)
-      |> Keyword.put_new(:max_waiting, 2 * threads)
+      |> Keyword.put_new(:max_waiting, waiting)
       |> Keyword.put_new(:worker_calls, max(max_calls - div(max_calls, 4), 1))
 
     settings = Map.new(Keyword.merge(@defaults, config))
@@ -200,6 +236,7 @@ defmodule Atanor.Wasm do
           :max_calls,
           :max_nested_calls,
           :max_waiting,
+          :waiting_bytes,
           :worker_calls,
           :queue,
           :queue_wait_ms,

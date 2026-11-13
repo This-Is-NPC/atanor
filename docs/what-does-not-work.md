@@ -6,27 +6,6 @@ are choices of the design are in the "Limits" paragraphs of
 [design.md](design.md) and in the README's
 [Limitations](../README.md#limitations).
 
-## A WASM worker on 1 CPU refuses requests at 10 req/s when the store is slow
-
-**What happens.** A node limited to 1 CPU sizes the WASM pool from the CPU quota
-(`threads` 1, `worker_calls` 3, `queue` 4, `max_waiting` 2). A guest that waits
-for the store holds a slot unless one of the two `max_waiting` places is free, and
-with 25 ms added per store trip a write takes about 0.6 s (about 12 trips). Twelve
-concurrent writers at 10 req/s therefore get 503 `overloaded` with
-`reason` `worker_queue` (about 0.5% of the requests), although the node uses
-under a third of its memory and its admission counters stay at 0.
-
-**Workaround.** Raise `wasm: [worker_calls:, max_calls:, queue:, max_waiting:]` for
-a node whose guests mostly wait. Clients retry after `Retry-After`.
-
-**Evidence.** `scripts/scoreboard-check write` (12 rooms, 12 workers, 10 req/s,
-150 s) on scenario A of the load environment: 8 of 1,512 requests answered 503
-`{"error":"overloaded","reason":"worker_queue"}` in 2 to 5 ms; the other 1,504
-were acknowledged. The step files of the round 018f smoke show the same 503s
-for `http-wasm` (1 at 10 req/s, 5 at 20 req/s) with `refused.memory`,
-`refused.in_flight` and `refused.disk` at 0 and a working set of 253 MB against
-a refuse mark of 684 MB.
-
 ## WASM throughput is about 5% below 0.2.0 after the admission change
 
 **What happens.** The hello guest over HTTP serves about 5% fewer requests/s

@@ -215,7 +215,7 @@ Atanor passes through.
 cgroup v2 limit, or `memory: [limit_bytes:]`), the awake cells may use half of
 it (`memory: [awake_fraction: 0.5]`), and the least used cells hibernate past
 that.
-The wakes in flight have a share too: `memory: [wake_fraction: 0.5]` of the headroom
+The wakes in flight have a share too, and the guests of WASM workers that wait take the rest (`1 - wake_fraction`, below): `memory: [wake_fraction: 0.5]` of the headroom
 between the refuse mark and the limit derives `awake: [max_wakes:]` and
 `restore: [fetch_concurrency:, max_inflight_bytes:]` unless you give them (a 512 MiB
 node gets 14 wakes, 1 request and 2.4 MiB in flight; a 2 GiB node 15, 4 and
@@ -311,8 +311,13 @@ The node settings of the WASM engine (threads, calls in flight, queue, CPU limit
 `:atanor, :wasm` application environment, documented in `Atanor.Wasm`. `threads` defaults to the
 logical processors, at most the CPU quota of the container (cgroup `cpu.max`, rounded up). The pooling allocator reserves address space for
 `max_calls + max_waiting + max_nested_calls` calls (about 2.8 TiB for 12 threads at the defaults).
-`max_waiting` (default 2 per thread) is how many guests that wait (a sleep, a host call, an outbound response, a
-worker they called) stop counting against `max_calls` and `worker_calls` (design §14.2). On a host with `ulimit -v`,
+`max_waiting` is how many guests that wait (a sleep, a host call, an outbound response, a
+worker they called) stop counting against `max_calls` and `worker_calls`. On a node with a memory limit it
+and `queue` are derived from it, not from the CPUs: `(limit * (1 - refuse_fraction) * (1 - wake_fraction)) /
+waiting_bytes` (`waiting_bytes` 2 MiB, 1 to 256), which is 19 on a 512 MiB node (scenario A, 1 CPU) and 76 on
+2 GiB (scenario B, 2 CPUs); without a limit 2 per thread (and `queue` 4 per thread). `threads`,
+`max_calls` and `worker_calls` still follow the CPU quota. A value you give wins (design §14.2). The node logs
+the derived values at start. On a host with `ulimit -v`,
 `vm.overcommit_memory=2` or a container memory policy that refuses it, the node fails to start with an error
 naming those settings: lower them or set `pooling: false` (design §14.9).
 Component compiles run on their own pool: `compile_threads` (default 2) at
