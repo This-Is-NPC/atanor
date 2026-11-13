@@ -74,14 +74,14 @@ defmodule Atanor.Cluster.StoppedInstanceTest do
 
     # The router of a peer whose instance stopped answers `{:error, :draining}`.
     test "are refusals, in the shapes Alambique still reports" do
-      table = AtanorNode.Atanor.Cells.Admission
+      table = AtanorDaemon.Atanor.Cells.Admission
 
       stack = [
         {:ets, :lookup, [table, {:failed, "c.x"}], [error_info: %{cause: :id}]},
         {Alambique.Admission, :failure, 2, []}
       ]
 
-      message = "no Alambique instance named AtanorNode.Atanor.Cells is running"
+      message = "no Alambique instance named AtanorDaemon.Atanor.Cells is running"
 
       for reason <- [
             {:exception, :badarg, stack},
@@ -93,7 +93,7 @@ defmodule Atanor.Cluster.StoppedInstanceTest do
 
     test "a stopped router answers draining, and a peer's raise is no longer a refusal" do
       assert Cell.refusal({:error, :draining}) == :draining
-      message = "no Alambique instance named AtanorNode.Atanor.Cells is running"
+      message = "no Alambique instance named AtanorDaemon.Atanor.Cells is running"
 
       assert Cell.refusal({:error, {:forward_failed, {:error, {:exception, %ArgumentError{message: message}, []}}}}) ==
                nil
@@ -101,7 +101,7 @@ defmodule Atanor.Cluster.StoppedInstanceTest do
 
     test "are not mistaken for calls that may have run" do
       stack = [{:ets, :lookup, [:other_table, {:failed, "c.x"}], []}]
-      other_lookup = [{:ets, :lookup, [AtanorNode.Atanor.Cells.Admission, {:waking, self()}], []}]
+      other_lookup = [{:ets, :lookup, [AtanorDaemon.Atanor.Cells.Admission, {:waking, self()}], []}]
 
       for answer <- [
             {:error, {:forward_failed, {:error, {:exception, :badarg, stack}}}},

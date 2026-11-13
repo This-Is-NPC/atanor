@@ -36,7 +36,7 @@ defmodule Atanor.Daemon do
   @mask "***"
 
   # `listen` keys take `ip:port`; `bytes` take a number of bytes, with an optional k, m or g (powers
-  # of 1024). `:boot` keys are read by the start script; `:peers` is the list of `cluster/node`.
+  # of 1024). `:boot` keys are read by the start script; `:peers` is the list of the daemon.
   @keys [
     {"ATANOR_STORE", :url, "The bucket as `s3://bucket` or `s3://bucket/prefix` (prefix default `atanor`). Required."},
     {"ATANOR_S3_ENDPOINT", :string,
@@ -64,8 +64,7 @@ defmodule Atanor.Daemon do
     {"ATANOR_DRAIN_TIMEOUT_MS", :integer, "The bound of one cell's handoff in a drain. Default 15000."},
     {"ATANOR_DRAIN_CONCURRENCY", :integer, "The cells handed off at once in a drain. Default 64."},
     {"ATANOR_DETECTOR_PAUSE_MS", :integer, "The pause the failure detector tolerates. Default 2000."},
-    {"ATANOR_PEERS", :peers,
-     "The host names of the peers, comma separated (`cluster/node`; removed by store discovery)."}
+    {"ATANOR_PEERS", :peers, "The host names of the peers, comma separated (the daemon; removed by store discovery)."}
   ]
 
   @secrets for {name, :secret, _} <- @keys, do: name
