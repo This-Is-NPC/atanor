@@ -2638,7 +2638,8 @@ choose per read:
 * **The WASM `sql` import has no lease flag.** Adding one means a new version of the
   WIT interface and rebuilding every guest, for a stale window that is bounded
   and short. Decision recorded here; revisit when a guest needs it. (A bound on
-  the other side is the function `query-bounded` of `sql`, §19.2.)
+  the other side is the function `query-bounded` of `sql`, §19.2.) The reading guide
+  explains it for users: [how-to-read-from-replicas.md](how-to-read-from-replicas.md).
 * **A read that accepts staleness** says so with `consistency: {:bounded, ms}`
   and may be answered by a replica on another node (§19).
 

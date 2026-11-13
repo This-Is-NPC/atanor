@@ -20,6 +20,49 @@ the owner answers, so the read is always correct. The copy costs disk (the whole
 database) and a few store requests per second on every node that reads the cell.
 A request that reads a bounded state **cannot write**.
 
+## A plain read can be old after a change of owner
+
+This is separate from replicas, and it applies to every read, including a
+strong one. When another node takes a cell over (the owner was declared down,
+or in a partition), the old owner can keep answering a plain `query` from its
+own copy until it learns of the new epoch. If it is alive, for example a node
+that was frozen and thawed, the answer can miss writes the new owner has
+already acknowledged. A test shows it: the old owner answers `[0, 1]` for a
+cell whose new owner acknowledged `2` and `3`
+(`test/cluster/takeover_test.exs`, design [§8.12](design.md#812-reads-that-must-not-be-stale)).
+
+How long (read from Alambique's design §5, "Stale reads", not measured here),
+counted from the moment the takeover returns:
+
+- the old owner is told at once if its node still runs the instance: the time of
+  one message and one renewal request;
+- otherwise it learns at its next lease renewal, at most `ttl / 3` plus two
+  requests later;
+- in the worst case, when it cannot reach the store, it stops answering at the
+  end of its lease: `lease_ttl_ms` minus `skew_margin_ms` after its last
+  renewal (30 s by default for `lease_ttl_ms`).
+
+To read what you have just written, ask for the lease to be checked:
+
+```elixir
+Atanor.Env.query(env, {"notes", "room-1"}, "SELECT body FROM notes", [], verify_lease: true)
+```
+
+The cell runs the statement, reads its lease object from the store, and answers
+only if the lease is still its own. If it is not, the router sends the read to
+the new owner. The cost, read from the code (`lib/atanor/env.ex`, design §8.12):
+one store `GET` per read, or per batch of reads that wait behind a write. It is
+off by default, so a plain read costs no store request. It is not measured here.
+
+`verify_lease: true` cannot be combined with `{:bounded, _}`: it answers
+`{:error, {:invalid_option, :consistency}}`. `Atanor.Cell.query/5` takes the
+same option.
+
+A WASM guest has no equivalent: the `sql` import has no lease flag, and
+`query-bounded` is the opposite (it accepts old data). A guest that must read
+its own writes right after a takeover cannot ask for it. The decision is in
+design §8.12.
+
 ## Prerequisites
 
 - A cluster of at least two nodes on one store.
