@@ -107,7 +107,8 @@ defmodule Atanor.Cell do
   defp wake_gate(instance, config, id) do
     if Admission.memory_refusing?(instance) and not match?({:ok, _}, Alambique.owner(config.alambique, id, peers: true)) do
       Admission.refuse_wake(instance)
-      unavailable(:overloaded)
+      mark_overload(:wake_gate)
+      {:error, {:unavailable, :overloaded}}
     else
       :ok
     end
@@ -165,6 +166,7 @@ defmodule Atanor.Cell do
   defp wrote(result, _kind), do: result
 
   @unavailable {__MODULE__, :unavailable_reason}
+  @cause {__MODULE__, :overload_cause}
 
   @doc false
   # Whether a cell write of the calling process answered `:outcome_unknown` since `clear_unknown/0`.
@@ -185,7 +187,21 @@ defmodule Atanor.Cell do
   def unavailable_reason, do: Process.get(@unavailable)
 
   @doc false
-  def clear_unavailable, do: Process.delete(@unavailable)
+  def clear_unavailable do
+    Process.delete(@cause)
+    Process.delete(@unavailable)
+  end
+
+  @doc false
+  # Records an `:overloaded` refusal with the gate that made it (`Atanor.Unavailable.cause/1`), for the 503 body.
+  def mark_overload(cause) when is_atom(cause) do
+    Process.put(@cause, cause)
+    Process.put(@unavailable, :overloaded)
+  end
+
+  @doc false
+  # The gate behind the last `:overloaded` since `clear_unavailable/0`, `nil` when unknown.
+  def overload_cause, do: Process.get(@cause)
 
   @handler {__MODULE__, :handler_deadline}
 
@@ -311,7 +327,11 @@ defmodule Atanor.Cell do
   end
 
   defp note_outcome(_instance, error) do
-    if reason = Unavailable.from_error(error), do: Process.put(@unavailable, reason)
+    if reason = Unavailable.from_error(error) do
+      Process.put(@unavailable, reason)
+      if reason == :overloaded, do: Process.put(@cause, Unavailable.cause(error))
+    end
+
     error
   end
 

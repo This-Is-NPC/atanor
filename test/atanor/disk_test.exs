@@ -222,7 +222,7 @@ defmodule Atanor.DiskTest do
 
       Await.until(fn -> Admission.stats(node.name).disk_refusing end)
 
-      assert %{status: 503, headers: %{"retry-after" => ["1"]}, body: %{"error" => "overloaded"}} =
+      assert %{status: 503, headers: %{"retry-after" => ["1"]}, body: %{"error" => "overloaded", "reason" => "disk"}} =
                Req.post!(node.url <> "/c/a", body: "1", retry: false)
 
       assert Admission.stats(node.name).refused.disk >= 1

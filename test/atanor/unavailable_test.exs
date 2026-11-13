@@ -3,6 +3,13 @@ defmodule Atanor.UnavailableTest do
 
   alias Atanor.Unavailable
 
+  test "names the gate behind an overloaded answer" do
+    assert Unavailable.cause({:error, :busy}) == :busy
+    assert Unavailable.cause({:error, :overloaded}) == :awake_limit
+    assert Unavailable.cause({:error, :disk_full}) == :disk_full
+    assert Unavailable.cause({:error, :timeout}) == nil
+  end
+
   test "names the availability reasons of cell and routing errors" do
     for {error, reason} <- [
           {:no_quorum, :no_quorum},

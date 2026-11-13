@@ -18,6 +18,8 @@ defmodule Atanor.CellLimitsSharedSlotsTest do
 
   defp wasm, do: WasmCase.start([{"cell", "cell", cells: %{"notes" => @notes}}], alambique: @one)
 
+  def report(_event, _measurements, meta, test), do: send(test, {:reject, meta})
+
   defp sql(node, op, sql, key) do
     headers = [{"x-op", op}, {"x-ns", "notes"}, {"x-key", key}, {"x-params", ""}]
     request(node, "cell", "", method: :post, body: sql, headers: headers)
@@ -25,14 +27,25 @@ defmodule Atanor.CellLimitsSharedSlotsTest do
 
   test "a read over sql max_concurrent_statements is a 503 overloaded" do
     node = wasm()
+    ref = make_ref()
+
+    :telemetry.attach(
+      {__MODULE__, ref},
+      [:atanor, :http, :reject],
+      &__MODULE__.report/4,
+      self()
+    )
+
+    on_exit(fn -> :telemetry.detach({__MODULE__, ref}) end)
 
     assert %{status: 200} = sql(node, "query", "SELECT 1", "b")
     slow = Task.async(fn -> sql(node, "query", @forever, "a") end)
 
     Await.until(fn ->
-      match?(%{status: 503, body: %{"error" => "overloaded"}}, sql(node, "query", "SELECT 1", "b"))
+      match?(%{status: 503, body: %{"error" => "overloaded", "reason" => "busy"}}, sql(node, "query", "SELECT 1", "b"))
     end)
 
+    assert_received {:reject, %{reason: :busy, status: 503}}
     assert %{status: 500, body: "failed: statement_timeout: " <> _} = Task.await(slow, 10_000)
     Await.until(fn -> match?(%{status: 200}, sql(node, "query", "SELECT 1", "b")) end)
   end
@@ -47,7 +60,7 @@ defmodule Atanor.CellLimitsSharedSlotsTest do
     holder = Task.async(fn -> Env.query(env, {"notes", "a"}, @forever) end)
 
     Await.until(fn ->
-      match?(%{status: 503, body: %{"error" => "overloaded"}}, sql(node, "query", "SELECT 1", "b"))
+      match?(%{status: 503, body: %{"error" => "overloaded", "reason" => "busy"}}, sql(node, "query", "SELECT 1", "b"))
     end)
 
     assert {:error, :statement_timeout} = Task.await(holder, 10_000)
