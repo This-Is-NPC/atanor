@@ -3,6 +3,8 @@ erlang = "28.5.0.7"
 elixir = "1.20.4-otp-28"
 rust = { version = "1.97.1", targets = "wasm32-wasip2" }
 "aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
+"aqua:rhysd/actionlint" = "1.7.12"
+shellcheck = "0.11.0"
 
 [tasks.test]
 description = "Run the default test suite (no external services)"
@@ -190,6 +192,14 @@ description = "Build the scoreboard example (WASM) into examples/scoreboard/scor
 run = "scripts/build-scoreboard"
 sources = ["examples/scoreboard/guest/src/**", "examples/scoreboard/guest/Cargo.toml", "examples/scoreboard/guest/wit/world.wit", "wit/**/*.wit"]
 outputs = ["examples/scoreboard/scoreboard.wasm"]
+
+[tasks."check:workflows"]
+description = "Lint the GitHub Actions workflows with actionlint"
+run = "actionlint"
+
+[tasks."image:smoke"]
+description = "Build the runtime and harness images and check them: a node starts from environment variables only and is ready, it refuses to start without a cookie or on an unknown ATANOR_ variable, the runtime image has no curl or iptables (needs Docker; reports sizes and times; ATANOR_SMOKE_REUSE=1 reuses the images)"
+run = "scripts/image-smoke"
 
 [tasks."cluster:up"]
 description = "Build the node image if needed, start the container cluster (project atanor-cluster) and wait until it serves (env: ATANOR_CLUSTER_NODES, _NODE_CPUS, _NODE_MEMORY, _HTTP_PORT, _TMPFS=1 for data in memory, ...)"
