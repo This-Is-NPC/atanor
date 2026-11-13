@@ -33,10 +33,9 @@ defmodule Atanor.Unavailable do
   def reason(:lease_expired), do: :fenced
   def reason(:overloaded), do: :overloaded
   def reason(:busy), do: :overloaded
-  # A full disk: SQLite's message for SQLITE_FULL (what an ENOSPC on the database or the WAL becomes), or the
-  # POSIX atom. The statement did not commit, and the node recovers when it frees the disk (`Atanor.Disk`).
-  def reason("database or disk is full"), do: :overloaded
-  def reason(:enospc), do: :overloaded
+  # A full disk (Alambique's `{:error, :disk_full}`). The statement did not commit, and the node recovers when
+  # it frees the disk (`Atanor.Disk`).
+  def reason(:disk_full), do: :overloaded
   def reason(:draining), do: :draining
   def reason(:stale), do: :owner_unreachable
   def reason(:taken_elsewhere), do: :owner_unreachable
@@ -45,6 +44,8 @@ defmodule Atanor.Unavailable do
   def reason({:epoch_changed, _epoch}), do: :owner_unreachable
   def reason({:contended, _owner, _epoch}), do: :owner_unreachable
   def reason({:deployment_unavailable, _}), do: :deployment_unavailable
+  # The store breaker of Alambique is open: the call, or the wake it needed, made no request.
+  def reason(:store_unavailable), do: :store_unavailable
   # The store did not answer a request a transaction needed; the transaction was rolled back.
   def reason({:store, _}), do: :store_unavailable
   # The lease could not be read for a read or a lookup, which ran nothing.
