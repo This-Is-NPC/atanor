@@ -27,7 +27,9 @@ so a container that restarts with another address is the same node. The Erlang c
 are generated in `cluster/secrets` (git-ignored, mode 700) and mounted as
 Compose secrets; the nodes read them through the `*_FILE` variables
 (`ATANOR_COOKIE_FILE`, `ATANOR_ADMIN_TOKEN_FILE`, ...), and every node setting is
-one of [the daemon's](configuration.md#the-daemon-environment-and-file). The cookie is a root password for the cluster
+one of [the daemon's](configuration.md#the-daemon-environment-and-file). The cluster uses static keys (the first source); on AWS a node
+can take its S3 credentials from a web identity, the container agent or the instance profile instead
+([AWS credentials](configuration.md#aws-credentials)). The cookie is a root password for the cluster
 ([design §4](design.md#4-bindings), "What the cookie protects"); it
 is separate from the tokens. Ports 4001 (admin) and 4002 (dashboard) of the
 nodes are not published; the load balancer publishes everything on
