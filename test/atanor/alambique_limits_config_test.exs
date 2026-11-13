@@ -16,13 +16,15 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
   test "the limits of Alambique are passed through unchanged" do
     alambique = [
       sql: [statement_timeout_ms: 500, max_result_rows: 10, max_result_bytes: 1_000],
-      awake: [max_cells: 5, max_wakes: 2, max_pending: 9],
+      awake: [max_cells: 5, max_wakes: 2, wake_queue_ms: 100, max_wake_queue: 7, max_pending: 9],
       local_cache: [max_bytes: 1_000_000, interval_ms: 5_000],
-      wal: [checkpoint_bytes: 1_000_000]
+      wal: [checkpoint_bytes: 1_000_000, checkpoint_deadline_ms: 2_000, max_bytes: 5_000_000, budget_interval_ms: 500]
     ]
 
     config = build(alambique)
-    for {key, value} <- alambique, do: assert(config.alambique_opts[key] == value)
+
+    for {key, value} <- alambique,
+        do: assert(Keyword.take(config.alambique_opts[key], Keyword.keys(value)) |> Enum.sort() == Enum.sort(value))
   end
 
   test "the statement slots, the script deadline and the moved-cell scan are passed through" do
@@ -68,7 +70,7 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
         delete_superseded: false,
         max_level: 3
       ],
-      restore: [fetch_concurrency: 8, prefetch_bytes: 1_000_000],
+      restore: [fetch_concurrency: 8, max_inflight_bytes: 1_000_000],
       lazy_restore: [min_bytes: 16_777_216],
       feed: [retention_ms: 1_209_600_000]
     ]
@@ -148,7 +150,12 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
           [compaction: [delete_superseded: 1]],
           [compaction: [max_level: 0]],
           [restore: [fetch_concurrency: 0]],
-          [restore: [prefetch_bytes: 1.5]],
+          [restore: [max_inflight_bytes: 1.5]],
+          [awake: [wake_queue_ms: 0]],
+          [awake: [max_wake_queue: nil]],
+          [wal: [max_bytes: 0]],
+          [wal: [budget_interval_ms: 1.5]],
+          [restore: [prefetch_bytes: 1_000]],
           [restore: [window: 1]],
           [lazy_restore: [min_bytes: -1]],
           [lazy_restore: [concurrency: 0]],

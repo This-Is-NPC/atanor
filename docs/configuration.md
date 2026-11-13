@@ -81,8 +81,8 @@ it (`memory: [awake_fraction: 0.5]`), and the least used cells hibernate past
 that.
 The wakes in flight have a share too: `memory: [wake_fraction: 0.5]` of the headroom
 between the refuse mark and the limit derives `awake: [max_wakes:]` and
-`restore: [fetch_concurrency:, prefetch_bytes:]` unless you give them (a 512 MiB
-node gets 11 wakes, 1 request and 2.4 MiB of read-ahead; a 2 GiB node 11, 4 and
+`restore: [fetch_concurrency:, max_inflight_bytes:]` unless you give them (a 512 MiB
+node gets 14 wakes, 1 request and 2.4 MiB in flight; a 2 GiB node 15, 4 and
 9.6 MiB; formula in [design §4.3](design.md)), so a store that fails cannot make
 every queued request restore a cell at once.
 
@@ -118,12 +118,14 @@ read there is no budget, a warning is logged and Alambique's defaults apply.
 
 - Unless you set them, `wal: [checkpoint_bytes:]` is `budget / max_cells / 2` between
   1 MiB and 64 MiB (`max_cells` is `awake: [max_cells:]`, 20 000 by default, so
-  1 MiB below about 39 GiB), and `local_cache: [max_bytes:]` is the budget minus
-  what the WALs may hold (at most half of it). `local_cache: [interval_ms:]`
+  1 MiB below about 39 GiB), `wal: [max_bytes:]` is what the WALs of all awake cells
+  may hold (at most half of the budget; Alambique checkpoints the biggest WALs past it,
+  checked every `wal: [budget_interval_ms:]`, `disk: [sample_ms:]` at most 1 000), and
+  `local_cache: [max_bytes:]` is the budget minus that. `local_cache: [interval_ms:]`
   follows `disk: [sample_ms:]`. An option you give wins.
 - Every `disk: [sample_ms: 5_000]` the node adds up the files of `data_dir`. At
-  `disk: [evict_fraction: 0.7]` of the budget it hibernates the idle cells with
-  the biggest WALs. At `disk: [refuse_fraction: 0.95]` the ingress refuses every
+  `disk: [evict_fraction: 0.7]` of the budget it hibernates the idle cells used
+  longest ago. At `disk: [refuse_fraction: 0.95]` the ingress refuses every
   new request with 503 `overloaded` and `Retry-After` (reasons `:disk` in
   `[:atanor, :http, :reject]`), and resumes 5 points below. `refuse_fraction: nil`
   turns the refusal off. The node can pass the mark by what is written between two

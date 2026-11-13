@@ -89,8 +89,8 @@ defmodule Atanor.WakeBurstTest do
 
   defp wakes(node) do
     config = Atanor.Registry.config(node.name).alambique
-    [{:wakes, n}] = :ets.lookup(Alambique.Config.fetch!(config).admission, :wakes)
-    n
+    %{holders: holders} = :sys.get_state(Alambique.Config.fetch!(config).wakes)
+    map_size(holders)
   end
 
   # {peak total memory above the start, peak wakes in flight, peak process count above the start}
@@ -167,9 +167,9 @@ defmodule Atanor.WakeBurstTest do
 
     # No request is answered by a cell; they are refused or fail with the store.
     assert Enum.all?(results, &match?({:error, _}, &1))
-    # A 128 MiB node gives 9.6 MiB of its headroom to wakes: 4 at once (design §4.3). Without the bound all
+    # A 128 MiB node gives 9.6 MiB of its headroom to wakes: 8 at once (design §4.3). Without the bound all
     # 48 cells wake together: memory +13 MiB, processes +626, 336 reads.
-    assert wake <= 4, peaks
+    assert wake <= 8, peaks
     assert reads <= 100, peaks
     assert procs <= 200, peaks
     assert mem <= 8 * 1_048_576, peaks

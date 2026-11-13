@@ -307,12 +307,12 @@ defmodule Atanor do
       the node logs it and its source at start. `wake_fraction` (0.5, above 0 and at most 1)
       is the share of the headroom between the refuse mark and the limit that the wakes in
       flight may fill; unless you give them, it derives `alambique: [awake: [max_wakes:],
-      restore: [fetch_concurrency:, prefetch_bytes:]]` so that `max_wakes` wakes of
-      `prefetch_bytes` plus `fetch_concurrency` MiB each fit that share: the budget is
-      `limit * (1 - refuse_fraction) * wake_fraction`, `prefetch_bytes` a sixteenth of it (1 to
+      restore: [fetch_concurrency:, max_inflight_bytes:]]` so that `max_wakes` wakes of
+      `max_inflight_bytes + (fetch_concurrency + 2) * edge_bytes` each fit that share: the budget is
+      `limit * (1 - refuse_fraction) * wake_fraction`, `max_inflight_bytes` a sixteenth of it (1 to
       64 MiB), `fetch_concurrency` one per 2 MiB of it (1 to 16) and `max_wakes` what fits
-      (1 to 256). A 512 MiB node gets 11 wakes, 1 request and 2.4 MiB; a 2 GiB node 11 wakes,
-      4 requests and 9.6 MiB (design §4.3). Without a limit Alambique's defaults stay. The ingress
+      (1 to 256). A 512 MiB node gets 14 wakes, 1 request and 2.4 MiB in flight; a 2 GiB node 15
+      wakes, 4 requests and 9.6 MiB (design §4.3). Wakes above `max_wakes` wait in Alambique's queue. Without a limit Alambique's defaults stay. The ingress
       also refuses
       requests with 503 `overloaded` while the working set of the cgroup is at
       least `refuse_fraction` (0.85; `nil` turns it off) of that limit, and
@@ -324,10 +324,10 @@ defmodule Atanor do
       `nil`: `fraction`, 0.8, of the size of the file system that holds
       `data_dir`, read with `df -Pk`; the node logs it and its source at start, and
       has no budget when the size cannot be read). Unless you give them, it
-      derives `alambique: [wal: [checkpoint_bytes:]]` (`budget / max_cells / 2`
-      between 1 MiB and 64 MiB) and `[local_cache: [max_bytes:, interval_ms:]]`.
+      derives `alambique: [wal: [checkpoint_bytes:, max_bytes:, budget_interval_ms:]]` (`budget / max_cells / 2`
+      between 1 MiB and 64 MiB, and at most half the budget in all) and `[local_cache: [max_bytes:, interval_ms:]]`.
       Every `sample_ms` (5 000) the node measures `data_dir`; from `evict_fraction`
-      (0.7) of the budget it hibernates idle cells with the biggest WALs, and from
+      (0.7) of the budget it hibernates the idle cells used longest ago, and from
       `refuse_fraction` (0.95; `nil` turns it off) the ingress refuses with 503
       `overloaded`, resuming 5 points below. `probe` is a function of a path that
       returns `{:ok, file_system_bytes}` or `:error`, for tests. A write that finds
@@ -359,7 +359,7 @@ defmodule Atanor do
       below unless you give it, `nil` meaning no ceiling; a call that cannot be
       served gets `{:error, :overloaded}` or `{:error, :busy}`, a 503 at the
       ingress), `idle_timeout_ms: 300_000` (a positive integer), `local_cache: [max_bytes: 21_474_836_480, interval_ms:
-      60_000]` (or `false`) and `wal: [checkpoint_bytes: 67_108_864]`. A wrong
+      60_000]` (or `false`) and `wal: [checkpoint_bytes: 67_108_864, max_bytes: nil]`. A wrong
       number of parameters is `{:error, {:bad_params, message}}`. Design §4.3.
       Two more groups are checked and passed through: `compaction: [hold_bytes:
       33_554_432, hold_object_bytes: 1_048_576, moved_scan_ms: 60_000,
@@ -386,7 +386,7 @@ defmodule Atanor do
       `compaction` takes `snapshot_ratio: 2.0`, `snapshot_interval_ms:
       604_800_000`, `snapshot_keep_ms: 259_200_000`, `delete_superseded: true`
       and `max_level: 2`; `restore` takes `edge_bytes: 65_536`,
-      `fetch_concurrency: 16` and `prefetch_bytes: 67_108_864`; `lazy_restore`
+      `fetch_concurrency: 16` and `max_inflight_bytes: 67_108_864`; `lazy_restore`
       takes `min_bytes: 4_194_304` (or is `false`), `concurrency`, `batch_bytes`
       and `miss_pages`. All keep Alambique's defaults and are checked at start.
 
