@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Shared by the smoke tests of the images (scripts/image-smoke, scripts/derived-image-smoke): the
+# cleanup, the counters and timers, and a disposable SeaweedFS with random secrets and the environment
+# of a node. Source it; it is not a command.
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+# SMOKE_PREFIX names the containers and the network of a script, so two smokes never meet.
+SMOKE_PREFIX=${SMOKE_PREFIX:-atanor-smoke}
+net=$SMOKE_PREFIX-net
+store_image=${ATANOR_SMOKE_STORE_IMAGE:-chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d}
+ready_timeout=${ATANOR_SMOKE_READY_TIMEOUT:-120}
+bucket=smoke
+
+ids=()
+tmp=$(mktemp -d)
+cleanup() {
+  [[ ${#ids[@]} -eq 0 ]] || docker rm -f "${ids[@]}" >/dev/null 2>&1 || true
+  docker network rm "$net" >/dev/null 2>&1 || true
+  rm -rf -- "${tmp:?}"
+}
+trap cleanup EXIT
+
+failures=0
+pass() { echo "ok    $*"; }
+fail() { echo "FAIL  $*" >&2; failures=$((failures + 1)); }
+now() { date +%s.%N; }
+since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
+
+# smoke_store_up: the secrets in $tmp, the network, the store and the bucket $bucket; then
+# node_env, the environment of a node (only what docs/configuration.md documents), and run_node.
+smoke_store_up() {
+  openssl rand -hex 16 >"$tmp/access_key"
+  openssl rand -hex 24 >"$tmp/secret_key"
+  openssl rand -hex 24 >"$tmp/admin_token"
+  openssl rand -hex 24 >"$tmp/cookie"
+  for file in access_key secret_key admin_token cookie; do
+    tr -d '\n' <"$tmp/$file" >"$tmp/$file.n" && mv "$tmp/$file.n" "$tmp/$file"
+  done
+  chmod 755 "$tmp"
+  chmod 644 "$tmp"/*
+
+  docker network create "$net" >/dev/null
+  store=$(docker run -d --name "$SMOKE_PREFIX-store" --network "$net" -p 127.0.0.1::8333 \
+    -v "$tmp:/run/secrets:ro" --entrypoint /bin/sh "$store_image" -c \
+    'export AWS_ACCESS_KEY_ID="$(cat /run/secrets/access_key)" AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/secret_key)";
+     exec /entrypoint.sh mini -dir=/data -ip='"$SMOKE_PREFIX"'-store -ip.bind=0.0.0.0 -s3.port=8333 -admin.ui=false')
+  ids+=("$store")
+  store_url=http://$(docker port "$store" 8333/tcp | head -n 1)
+  deadline=$((SECONDS + ready_timeout))
+  until curl -s -o /dev/null -m 2 "$store_url/"; do
+    (( SECONDS < deadline )) || { echo "the store did not answer in ${ready_timeout}s" >&2; docker logs "$store" 2>&1 | tail -n 20 >&2; exit 1; }
+    sleep 1
+  done
+  code=$(curl -sS -o /dev/null -w '%{http_code}' --aws-sigv4 aws:amz:us-east-1:s3 \
+    --user "$(cat "$tmp/access_key"):$(cat "$tmp/secret_key")" -X PUT "$store_url/$bucket")
+  [[ $code == 200 || $code == 409 ]] || { echo "creating the bucket answered HTTP $code" >&2; exit 1; }
+
+  # The environment of a node: only what docs/configuration.md documents; no command arguments.
+  node_env=(
+    -e ATANOR_STORE="s3://$bucket" -e ATANOR_S3_ENDPOINT=http://$SMOKE_PREFIX-store:8333
+    -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret_key
+    -e ATANOR_ADMIN_TOKEN_FILE=/run/secrets/admin_token -e ATANOR_ADVERTISE=node-1.smoke
+    -e ATANOR_COOKIE_FILE=/run/secrets/cookie
+  )
+  run_node() { docker run -d --network "$net" -v "$tmp:/run/secrets:ro" "$@"; }
+}
