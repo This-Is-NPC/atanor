@@ -8,6 +8,9 @@ defmodule Atanor.Daemon do
       settings = Atanor.Daemon.load!()
       children = [{Atanor, settings.opts}]
 
+  A node is the processes of `children/1`; an app derived from the release (`mix atanor.release`)
+  puts them first in its own supervision tree, so its code and Atanor share one VM.
+
   The rules:
 
     * The environment and the file share one namespace. The file key of `ATANOR_LISTEN` is `listen`
@@ -119,6 +122,22 @@ defmodule Atanor.Daemon do
           children: [Supervisor.child_spec()],
           effective: [{String.t(), String.t()}]
         }
+
+  # The name of the node's Atanor instance (`Atanor.port/1`, `Atanor.Registry`, ...).
+  @instance AtanorDaemon.Atanor
+
+  @doc "The name of the Atanor instance that `children/1` starts."
+  @spec instance() :: atom
+  def instance, do: @instance
+
+  @doc """
+  The processes of a node, in start order: the renewable credentials and the instance named `instance/0`
+  (which finds the other nodes through the store, `Atanor.Discovery`). The default settings are those of `load!/0`.
+  """
+  @spec children(settings) :: [Supervisor.child_spec()]
+  def children(settings \\ load!()) do
+    settings.children ++ [{Atanor, Keyword.put(settings.opts, :name, @instance)}]
+  end
 
   @doc "The keys: `{variable, type, description}`, in the order of the reference."
   @spec keys() :: [{String.t(), atom, String.t()}]
