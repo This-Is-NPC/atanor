@@ -123,6 +123,11 @@ defmodule Atanor.Drain do
 
     summary = bounded(config)
 
+    Logger.info(
+      "atanor: drain handed off #{summary.hibernated} cells (their leases released) in " <>
+        "#{System.convert_time_unit(System.monotonic_time() - started, :native, :millisecond)} ms, #{length(summary.errors)} left to their leases"
+    )
+
     if summary.errors != [] do
       Logger.warning(
         "atanor: drain left #{length(summary.errors)} cells to their leases: #{inspect(summary.errors, limit: 5)}"
