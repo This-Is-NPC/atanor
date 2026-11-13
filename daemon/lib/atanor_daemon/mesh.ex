@@ -1,4 +1,4 @@
-defmodule AtanorNode.Mesh do
+defmodule AtanorDaemon.Mesh do
   @moduledoc """
   Connects this node to its peers and reconnects after a partition: the operator's job (design 8).
   The peers are named in a list of advertised hosts (`node-1.cluster` to `node-10.cluster`, the network

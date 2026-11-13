@@ -172,7 +172,7 @@ defmodule Atanor.DaemonTest do
     end
 
     test "the variables of the start script are known" do
-      script = File.read!("cluster/node/rel/env.sh.eex")
+      script = File.read!("daemon/rel/env.sh.eex")
 
       names = Regex.scan(~r/ATANOR_[A-Z_]+/, script) |> List.flatten() |> Enum.uniq()
       assert names != []

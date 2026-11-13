@@ -1,8 +1,8 @@
 defmodule Atanor.Scripts.NodeEnvTest do
-  @moduledoc "The start script of the node release (cluster/node/rel/env.sh.eex): name and cookie, before the VM boots."
+  @moduledoc "The start script of the node release (daemon/rel/env.sh.eex): name and cookie, before the VM boots."
   use ExUnit.Case, async: true
 
-  @script Path.expand("../../cluster/node/rel/env.sh.eex", __DIR__)
+  @script Path.expand("../../daemon/rel/env.sh.eex", __DIR__)
 
   # Sources the script in a clean environment and prints the node, the distribution and the cookie.
   defp run(env) do

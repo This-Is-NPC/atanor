@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "name": "load",
   "kind": "native",
-  "module": "Elixir.AtanorNode.LoadWorker",
+  "module": "Elixir.AtanorLoad.Worker",
   "bindings": {
     "cells": {
       "load": {

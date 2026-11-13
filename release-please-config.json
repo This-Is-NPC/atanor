@@ -11,6 +11,7 @@
       "bump-minor-pre-major": true,
       "extra-files": [
         { "type": "generic", "path": "testkit/mix.exs" },
+        { "type": "generic", "path": "daemon/mix.exs" },
         { "type": "generic", "path": "README.md" }
       ]
     }
