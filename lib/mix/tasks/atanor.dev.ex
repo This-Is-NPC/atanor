@@ -26,7 +26,8 @@ defmodule Mix.Tasks.Atanor.Dev do
 
   `--connect NODE` (repeatable) connects this VM to another node before the
   instance starts, so nodes started with `--sname` and the same `--cookie`
-  form a cluster; see docs/how-to-run-a-cluster.md.
+  form a cluster; see docs/how-to-run-a-cluster.md. With `--store seaweedfs` on a named node the node
+  also publishes itself in the bucket and connects to the others it finds there (design §8.16).
 
   The default store is the in-memory store of the Alambique testkit, which only
   this VM can reach. With `--store seaweedfs` the node uses the bucket
@@ -81,6 +82,14 @@ defmodule Mix.Tasks.Atanor.Dev do
     ]
 
     start_opts = if opts[:prefix], do: [prefix: opts[:prefix]] ++ start_opts, else: start_opts
+
+    # Nodes that share the bucket find each other (design §8.16); the memory store is private to a VM.
+    start_opts =
+      if Node.alive?() and store == :seaweedfs do
+        start_opts ++ [alambique: [registry: [advertise: Atom.to_string(node()), ttl_ms: 6_000, renew_ms: 1_000]]]
+      else
+        start_opts
+      end
 
     case Atanor.Dev.start(start_opts) do
       {:ok, _} -> :ok
