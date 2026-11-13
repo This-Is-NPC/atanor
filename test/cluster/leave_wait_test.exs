@@ -50,7 +50,7 @@ defmodule Atanor.Cluster.LeaveWaitTest do
     # n3 refuses to wake cells while every view, its own included, still has it among the members: the
     # moment between the start of its drain and the views catching up with the leave.
     {:ok, :ok} = Cluster.call(cluster, :n3, Alambique.Membership, :put_state, [config, :left])
-    gets = for i <- 1..24, do: Task.async(fn -> request(cluster, :n1, :get, "/c/lv#{i}") end)
+    gets = for i <- 1..24, do: Task.async(fn -> get_when_served(cluster, "/c/lv#{i}") end)
 
     Process.sleep(300)
     {:ok, :ok} = Cluster.call(cluster, :n3, Alambique.Membership, :leave, [config])
@@ -67,7 +67,7 @@ defmodule Atanor.Cluster.LeaveWaitTest do
 
     # As above, but the handler of `/c/direct/` runs on n1 and reaches the cell through Alambique's router.
     {:ok, :ok} = Cluster.call(cluster, :n3, Alambique.Membership, :put_state, [config, :left])
-    gets = for i <- 1..24, do: Task.async(fn -> request(cluster, :n1, :get, "/c/direct/dr#{i}") end)
+    gets = for i <- 1..24, do: Task.async(fn -> get_when_served(cluster, "/c/direct/dr#{i}") end)
 
     Process.sleep(300)
     {:ok, :ok} = Cluster.call(cluster, :n3, Alambique.Membership, :leave, [config])
@@ -92,5 +92,24 @@ defmodule Atanor.Cluster.LeaveWaitTest do
     {:ok, _} = Cluster.call(cluster, :n1, Kernel, :send, [Module.concat(instance, Detector), {:leaving, peer}])
     Await.until(fn -> match?({:ok, true}, Cluster.call(cluster, :n1, Atanor.Detector, :left?, [instance, peer])) end)
     assert {:ok, {:ok, ^peer, :left}} = Cluster.call(cluster, :n1, Atanor.Detector, :down_owner, [instance, owner])
+  end
+
+  # The cells wake together when the owner hands off, and a node runs at most `max_concurrent_statements`
+  # reads at once: the read over it is a 503 `overloaded` (design §7), which a client retries after
+  # Retry-After. Any other answer, `owner_down` included, is final.
+  defp get_when_served(cluster, path, attempts \\ 5) do
+    case request(cluster, :n1, :get, path) do
+      {:ok, %{status: 503, body: body} = resp} when attempts > 1 ->
+        if match?(%{"error" => "overloaded"}, Jason.decode!(body)) do
+          [seconds] = Req.Response.get_header(resp, "retry-after")
+          Process.sleep(String.to_integer(seconds) * 1_000)
+          get_when_served(cluster, path, attempts - 1)
+        else
+          {:ok, resp}
+        end
+
+      other ->
+        other
+    end
   end
 end
