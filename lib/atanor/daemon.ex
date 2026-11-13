@@ -39,7 +39,8 @@ defmodule Atanor.Daemon do
   # of 1024). `:boot` keys are read by the start script; `:peers` is the list of `cluster/node`.
   @keys [
     {"ATANOR_STORE", :url, "The bucket as `s3://bucket` or `s3://bucket/prefix` (prefix default `atanor`). Required."},
-    {"ATANOR_S3_ENDPOINT", :string, "The S3 endpoint URL. Default `https://s3.<region>.amazonaws.com`."},
+    {"ATANOR_S3_ENDPOINT", :string,
+     "The S3 endpoint URL. Default: Alambique derives `https://s3.<region>.amazonaws.com` from the region."},
     {"ATANOR_S3_REGION", :string, "The signing region. Default `#{@default_region}`."},
     {"AWS_ACCESS_KEY_ID", :secret, "The S3 access key id. Required."},
     {"AWS_SECRET_ACCESS_KEY", :secret, "The S3 secret access key. Required."},
@@ -359,15 +360,17 @@ defmodule Atanor.Daemon do
     {bucket, prefix} = v["ATANOR_STORE"]
     region = v["ATANOR_S3_REGION"] || @default_region
 
+    # Without an endpoint Alambique derives the AWS one from the region.
+    config = %{
+      region: region,
+      bucket: bucket,
+      access_key_id: v["AWS_ACCESS_KEY_ID"],
+      secret_access_key: v["AWS_SECRET_ACCESS_KEY"]
+    }
+
     store =
       {Alambique.Store.S3,
-       %{
-         endpoint: v["ATANOR_S3_ENDPOINT"] || "https://s3.#{region}.amazonaws.com",
-         region: region,
-         bucket: bucket,
-         access_key_id: v["AWS_ACCESS_KEY_ID"],
-         secret_access_key: v["AWS_SECRET_ACCESS_KEY"]
-       }}
+       if(v["ATANOR_S3_ENDPOINT"], do: Map.put(config, :endpoint, v["ATANOR_S3_ENDPOINT"]), else: config)}
 
     {ip, port} = v["ATANOR_LISTEN"] || {@any, 4000}
 

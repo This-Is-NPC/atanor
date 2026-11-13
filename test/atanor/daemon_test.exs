@@ -31,9 +31,8 @@ defmodule Atanor.DaemonTest do
       assert opts[:data_dir] == System.tmp_dir!()
       refute opts[:admin] || opts[:dashboard] || opts[:release] || opts[:stop]
 
-      assert {Alambique.Store.S3,
-              %{endpoint: "https://s3.us-east-1.amazonaws.com", region: "us-east-1", bucket: "bucket"}} =
-               opts[:store]
+      assert {Alambique.Store.S3, %{region: "us-east-1", bucket: "bucket"} = s3} = opts[:store]
+      refute Map.has_key?(s3, :endpoint)
 
       assert %Atanor.Config{} = Atanor.Config.build(opts)
     end
@@ -48,9 +47,10 @@ defmodule Atanor.DaemonTest do
       assert Atanor.Config.build(opts).prefix == "atanor"
     end
 
-    test "the endpoint follows the region" do
+    test "the endpoint is left to Alambique, which derives it from the region" do
       {:ok, %{opts: opts}} = Daemon.load(env(%{"ATANOR_S3_REGION" => "eu-west-1"}))
-      assert {_, %{endpoint: "https://s3.eu-west-1.amazonaws.com", region: "eu-west-1"}} = opts[:store]
+      assert {_, %{region: "eu-west-1"} = s3} = opts[:store]
+      refute Map.has_key?(s3, :endpoint)
     end
 
     test "the store, the keys and nothing else are required" do
