@@ -329,7 +329,8 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     one that is not running 409 `invalid_state`.
 
 12. Deploy through the API with a scoped token, so the deployer never holds
-    the bucket credentials. Only nodes talk to the store. The `atanor` command
+    the bucket credentials (`atanor deploy --bucket` is the way for one that does).
+    The nodes talk to the store. The `atanor` command
     does all of this ([cli.md](cli.md), [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md));
     the contract of these endpoints is [openapi/admin.json](openapi/admin.json). First create a token
     with the operator token. The answer holds the secret `token` once; the

@@ -76,6 +76,9 @@ disposable SeaweedFS (all its containers and its network are named `atanor-smoke
 and removed at the end):
 
 - a node started with environment variables only is ready on `/health/ready`;
+- `docker run IMAGE deploy /w --bucket s3://...` publishes and activates the scoreboard example with no node
+  of its own (the `build:scoreboard` task builds it first), and the running node then serves it;
+- the CLI in the image refuses `--bucket` together with `--profile`, with no cookie and no node;
 - it refuses to start without a cookie, and on an unknown `ATANOR_` variable, with the reason in the log;
 - the runtime image has no `curl` and no `iptables`, and runs as a user that is not root;
 - the harness image has `curl`, `iptables`, `tc` and `ps`.
@@ -106,6 +109,8 @@ tar --owner=0 --group=0 -C out -czf atanor-<version>-linux-<arch>.tar.gz atanor
 
 Unpack it anywhere. `atanor/bin/atanor start` starts the node, with the same
 environment variables as the image, and `atanor/bin/atanor remote` attaches to a running one.
+`atanor/bin/atanor-entrypoint deploy DIR --bucket s3://...` runs the `atanor` command
+([cli.md](cli.md)); it is the entrypoint of the image.
 Set the cookie with `RELEASE_COOKIE` or `ATANOR_COOKIE_FILE`, as for the image.
 
 **What the tarball needs on the host.** It is built in the Debian 13 (trixie)

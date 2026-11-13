@@ -149,7 +149,7 @@ Atanor listening on http://127.0.0.1:4000
 
 - [Write a native worker](docs/how-to-write-a-native-worker.md) or [a WASM worker](docs/how-to-write-a-wasm-worker.md).
 - [Configure an instance](docs/configuration.md).
-- [Deploy a worker](docs/how-to-deploy-a-worker.md) with the `atanor` command ([reference](docs/cli.md)).
+- [Deploy a worker](docs/how-to-deploy-a-worker.md) with the `atanor` command, through a node or straight into the bucket ([reference](docs/cli.md)).
 - [Run a cluster](docs/how-to-run-a-cluster.md).
 - [Open the dashboard](docs/how-to-open-the-dashboard.md) and [read the telemetry](docs/telemetry.md).
 - [Design](docs/design.md) and [build and test](docs/how-to-build-and-test.md), for contributors.

@@ -15,7 +15,7 @@
 | [how-to-measure-job-round-trips.md](how-to-measure-job-round-trips.md) | How many requests does the store receive for each job, of which kind, and how many jobs a second does one cell finish when the store is slow? |
 | [how-to-run-a-bulk-operation.md](how-to-run-a-bulk-operation.md) | How do I run the same job across many cells, throttled, guarded and resumable, and see what it changed? |
 | [how-to-protect-a-route-with-oidc.md](how-to-protect-a-route-with-oidc.md) | How do I require a valid OIDC access token on a route, with any provider, and read its claims in the worker? |
-| [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md) | How do I upload a new version with a scoped token, switch nodes to it, and roll back, without holding the bucket credentials? |
+| [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md) | How do I put a new version on the nodes, through a node with a scoped token or straight into the bucket, switch to it, and roll back? |
 | [cli.md](cli.md) | Which commands, options, environment variables and errors does the `atanor` command have? |
 | [openapi/admin.json](openapi/admin.json) | What is the contract of the admin API endpoints for deploys, tokens and the audit log (OpenAPI 3.1)? |
 | [how-to-run-a-migration-rehearsal.md](how-to-run-a-migration-rehearsal.md) | How do I check that a new package's migrations apply to copies of my real cells before I activate it? |

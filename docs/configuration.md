@@ -45,7 +45,9 @@ children = [
 The node holds no workers of its own. It applies the *heads* it finds in the
 store: each worker's head names the package, identified by its hash, that is
 active. The `atanor` command moves heads through the admin API with a scoped
-token, so deployers never hold the bucket credentials
+token, so deployers need not hold the bucket credentials; with `--bucket` it
+writes the store itself, reading the endpoint, region and AWS credentials from
+the same variables as the daemon
 ([how to deploy a worker](how-to-deploy-a-worker.md)).
 
 ## The daemon: environment and file
