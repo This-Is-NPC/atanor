@@ -29,6 +29,7 @@ import argparse
 import atexit
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -119,6 +120,18 @@ def wait_for_b(b, name, timeout):
             pass
         time.sleep(0.2)
     raise SystemExit("timeout waiting for B ready and in rotation")
+
+
+def lb_servers(path):
+    """{request id: (server, termination state)} from the balancer's request log (`option httplog`). A request
+    that got no answer has no `x-atanor-server`, so this is how a timeout is tied to a node."""
+    found = {}
+    pattern = re.compile(r"atanor_http/(\S+) \S+ \d+ \S+ \S+ \S+ (\w{4}) .*[?&]id=([^& \"]+)")
+    for line in open(path, errors="replace"):
+        match = pattern.search(line)
+        if match:
+            found[match.group(3)] = (match.group(1), match.group(2))
+    return found
 
 
 def spawn(command, log):
@@ -215,6 +228,9 @@ def main():
     for name, container in (("a", a), ("b", b)):
         with open(f"{out}/docker-{name}.log", "w") as file:
             subprocess.run(["docker", "logs", "--since", str(int(started)), container], stdout=file, stderr=subprocess.STDOUT)
+    lb = run(*COMPOSE, "ps", "-q", "lb").strip()
+    with open(f"{out}/docker-lb.log", "w") as file:
+        subprocess.run(["docker", "logs", "--since", str(int(started)), lb], stdout=file, stderr=subprocess.STDOUT)
     if not args.keep_a:
         run("docker", "rm", "-f", a)
 
@@ -235,7 +251,16 @@ def main():
             errors[key] = errors.get(key, 0) + 1
     ends = [x_["t"] + x_["ms"] / 1000 for x_ in entries if x_["status"] == 503]
     other = {k: n for k, n in errors.items() if not (k.startswith("503 ") and "without" not in k) and k != "0 connection_refused"}
-    result.update(trigger=args.trigger, a=a_name, b=b_service, a_exit_code=exit_code, drain_response=drain, errors=errors,
+    served = lb_servers(f"{out}/docker-lb.log")
+    silent = [{"id": x_["id"], "room": x_["room"], "at_s": round(x_["t"] - events["drain_at"], 1),
+               "server": served.get(x_["id"], ("", ""))[0], "balancer_state": served.get(x_["id"], ("", ""))[1]}
+              for x_ in entries if x_["status"] == 0 and x_["kind"] == "unknown"]
+    by_server = {}
+    for item in silent:
+        by_server[item["server"] or "none"] = by_server.get(item["server"] or "none", 0) + 1
+    if silent:
+        print(f"no answer by balancer server (the log in docker-lb.log): {by_server}; rooms {sorted({i['room'] for i in silent})}")
+    result.update(no_answer_by_server=by_server, no_answer_requests=silent, trigger=args.trigger, a=a_name, b=b_service, a_exit_code=exit_code, drain_response=drain, errors=errors,
                   last_503_s=round(max(ends) - d, 1) if ends else None, a_exit_s=round(x - d, 1),
                   b_rotation_s=round(events["b_serving_at"] - events["b_start_at"], 1), workers=args.workers, rate=args.rate,
                   epoch=events, out=out)
