@@ -1,0 +1,14 @@
+# Only what the release is built from.
+*
+!mix.exs
+!mix.lock
+!alambique.ref
+!lib
+!native
+!wit
+!daemon
+**/_build
+**/deps
+**/target
+priv
+erl_crash.dump*

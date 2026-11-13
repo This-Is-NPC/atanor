@@ -25,7 +25,7 @@ ready() {
 case ${1:-} in
   build)
     export ATANOR_CLUSTER_RELEASE=${ATANOR_CLUSTER_RELEASE:-roll-$(date +%s)}
-    compose build node-1 >&2
+    "$repo/scripts/cluster-image" >&2
     echo "$ATANOR_CLUSTER_RELEASE" ;;
   roll)
     count=$(cluster_ids node | wc -l)

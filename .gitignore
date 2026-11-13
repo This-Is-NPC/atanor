@@ -9,7 +9,6 @@ erl_crash.dump
 /test/fixtures/guests/wit/deps
 /lab/results
 /cluster/secrets
-/cluster/.build
 /cover
 # Claude Code local state (worktrees, settings); only untracked item in `git status` today.
 /.claude/

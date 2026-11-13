@@ -50,3 +50,11 @@ admin_get() {
   local path=$1; shift
   curl -s -m 5 -H "authorization: Bearer $(admin_token)" "$@" "$(published_url 4001)$path"
 }
+
+# cluster_release_id: the release id of the image, the commit; a dirty tree says so.
+cluster_release_id() {
+  local id
+  id=$(git -C "$repo" rev-parse --short=12 HEAD)
+  [[ -z $(git -C "$repo" status --porcelain -- lib native mix.exs mix.lock daemon Dockerfile cluster) ]] || id+=-dirty
+  echo "$id"
+}
