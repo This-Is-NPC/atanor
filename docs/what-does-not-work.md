@@ -6,6 +6,32 @@ are choices of the design are in the "Limits" paragraphs of
 [design.md](design.md) and in the README's
 [Limitations](../README.md#limitations).
 
+## A cell that is never compacted restores slowly, and a swap leaves requests without an answer
+
+**What happens.** Alambique's compactor (0.6.1) takes the first `concurrency *
+batch_factor` (8) ready cells of its table at each tick. When more than 8 cells
+commit continuously, the same cells come first at every tick and the others
+are never compacted. A cell like that has one object per commit in the store.
+When another node takes it, for example after a swap or a drain, it reads them
+one at a time on a small node (`fetch_concurrency` 1), so with a store 25 ms
+away a cell of 800 commits needs 25 to 32 s to wake. Requests for it wait for
+the wake with no deadline, and a client that waits 10 s gets no answer.
+
+**Workaround.** Keep the busy cells of a node at 8 or fewer, or the store
+close: with a store under 1 ms the same restore takes about a second (inference
+from the runs in [how-to-replace-a-node.md](how-to-replace-a-node.md), which had
+no unknown outcome).
+
+**Evidence.** `mise run load:swap -- --rate 750` in scenario A
+(`ATANOR_LOAD_SCENARIO=A`, `ATANOR_LOAD_STORE_TMPFS_SIZE=2g`), 4 runs, 4
+reproductions. In the run with compaction telemetry: A released 12 of 12 leases;
+the 4 rooms with no answer had 2, 0, 0 and 0 compaction passes on A against 12
+to 14 for the other 8, and B restored them from 516 to 804 segments in 18.6 to
+31.0 s (the others from 13 to 42 segments in 0.8 to 2.6 s). The compactor's
+selection is deterministic: a model of its table (`:ets.select/3` with a limit
+of 8 over 12 cells, each row deleted when taken and put back by the next commit)
+gave 200 of 200 passes to 8 cells and none to the other 4.
+
 ## WASM throughput is about 5% below 0.2.0 after the admission change
 
 **What happens.** The hello guest over HTTP serves about 5% fewer requests/s
