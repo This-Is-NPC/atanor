@@ -1,0 +1,104 @@
+#!/usr/bin/env -S python3 -I
+"""Mount the LiveView at URL over a WebSocket and press its `increment` button.
+
+  scripts/liveview-click http://127.0.0.1:4010/
+
+Fetches the page, joins the LiveView channel with the session of the page (the protocol of the browser
+script), checks that the mounted view shows the count of the page, pushes a click and checks that the
+view renders the count plus one. Prints one line; exit 1 with the reason on standard error when a step
+fails. Standard library only.
+"""
+import base64, http.client, json, os, re, socket, struct, sys, urllib.parse
+
+def fail(message):
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+def frame(text):
+    data = text.encode()
+    mask = os.urandom(4)
+    head = bytes([0x81])
+    if len(data) < 126:
+        head += bytes([0x80 | len(data)])
+    elif len(data) < 65536:
+        head += bytes([0x80 | 126]) + struct.pack(">H", len(data))
+    else:
+        head += bytes([0x80 | 127]) + struct.pack(">Q", len(data))
+    return head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+
+def read(sock, n):
+    data = b""
+    while len(data) < n:
+        chunk = sock.recv(n - len(data))
+        if not chunk:
+            fail("the socket closed")
+        data += chunk
+    return data
+
+def message(sock):
+    """The next text message of the server; frames are unmasked."""
+    payload = b""
+    while True:
+        first, second = read(sock, 2)
+        size = second & 0x7F
+        if size == 126:
+            size = struct.unpack(">H", read(sock, 2))[0]
+        elif size == 127:
+            size = struct.unpack(">Q", read(sock, 8))[0]
+        payload += read(sock, size)
+        if first & 0x80:
+            return json.loads(payload)
+
+def reply(sock, ref):
+    while True:
+        join_ref, msg_ref, topic, event, body = message(sock)
+        if event == "phx_reply" and msg_ref == ref:
+            return body
+        if event == "phx_close" or event == "phx_error":
+            fail("the channel said %s: %s" % (event, body))
+
+def count(html):
+    found = re.search(r'id="count">([^<]*)<', html)
+    return found.group(1) if found else None
+
+url = urllib.parse.urlparse(sys.argv[1])
+conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+conn.request("GET", url.path or "/")
+page = conn.getresponse()
+html = page.read().decode()
+if page.status != 200:
+    fail("GET %s answered %d" % (sys.argv[1], page.status))
+cookie = "; ".join(v.split(";")[0] for k, v in page.getheaders() if k.lower() == "set-cookie")
+csrf = re.search(r'name="csrf-token" content="([^"]+)"', html)
+main = re.search(r"<div[^>]*data-phx-main[^>]*>", html)
+if not csrf or not main:
+    fail("the page has no csrf token or no LiveView container")
+attr = lambda name: re.search(name + r'="([^"]*)"', main.group(0)).group(1)
+topic, session, static = "lv:" + attr("id"), attr("data-phx-session"), attr("data-phx-static")
+before = count(html)
+
+sock = socket.create_connection((url.hostname, url.port), timeout=10)
+key = base64.b64encode(os.urandom(16)).decode()
+sock.sendall(("GET /live/websocket?_csrf_token=%s&vsn=2.0.0 HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\n"
+              "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nOrigin: http://%s:%d\r\n"
+              "Cookie: %s\r\n\r\n" % (urllib.parse.quote(csrf.group(1)), url.hostname, url.port, key, url.hostname, url.port, cookie)).encode())
+head = b""
+while b"\r\n\r\n" not in head:
+    head += read(sock, 1)
+if b" 101 " not in head.split(b"\r\n")[0]:
+    fail("the WebSocket was refused: " + head.split(b"\r\n")[0].decode())
+
+join = {"url": sys.argv[1], "params": {"_csrf_token": csrf.group(1), "_mounts": 0}, "session": session, "static": static}
+sock.sendall(frame(json.dumps(["4", "4", topic, "phx_join", join])))
+joined = reply(sock, "4")
+if joined.get("status") != "ok":
+    fail("the join was refused: %s" % joined)
+if '"%s"' % before not in json.dumps(joined["response"]["rendered"]):
+    fail("the mounted LiveView does not show the count %s of the page: %s" % (before, joined["response"]))
+
+sock.sendall(frame(json.dumps(["4", "5", topic, "event", {"type": "click", "event": "increment", "value": {}}])))
+clicked = reply(sock, "5")
+after = str(int(before) + 1)
+if clicked.get("status") != "ok" or '"%s"' % after not in json.dumps(clicked["response"]):
+    fail("the click did not render the count %s: %s" % (after, clicked))
+print("page count %s, mounted over a WebSocket, a click rendered %s" % (before, after))

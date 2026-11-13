@@ -1,0 +1,12 @@
+{
+  "manifest_version": 1,
+  "name": "counter",
+  "kind": "native",
+  "module": "Elixir.LiveCounter.Worker",
+  "bindings": {
+    "cells": {
+      "counter": {"migrations": [[1, "CREATE TABLE hits (n INTEGER NOT NULL)"], [2, "INSERT INTO hits (n) VALUES (0)"]]}
+    }
+  },
+  "routes": [{"http": {"host": "counter.localhost", "path": "/counter"}}]
+}
