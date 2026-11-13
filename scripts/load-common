@@ -1,6 +1,6 @@
 # Shared settings of the load-test scripts; sourced, not run. The load tests use the container
 # cluster of scripts/cluster-* (project atanor-cluster, every container named atanor-cluster-*)
-# with one node and no peers; see docs/how-to-run-the-load-tests.md for every ATANOR_LOAD_* setting.
+# with one node (the nodes find each other through the store, so there is no peer list); see docs/how-to-run-the-load-tests.md for every ATANOR_LOAD_* setting.
 source "$(dirname "${BASH_SOURCE[0]}")/cluster-common"
 
 LOAD_SCENARIO=${ATANOR_LOAD_SCENARIO:-A}

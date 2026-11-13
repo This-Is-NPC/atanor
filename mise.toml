@@ -220,7 +220,7 @@ run = "scripts/cluster-chaos"
 
 [tasks."cluster:deploy-example"]
 description = "Deploy examples/scoreboard to the running cluster with atanor deploy and a token scoped to that worker"
-depends = ["build:cli", "build:scoreboard"]
+depends = ["build:scoreboard"]
 run = "scripts/cluster-deploy-example"
 
 [tasks."cluster:scoreboard-check"]
@@ -241,7 +241,7 @@ run = "scripts/cluster-roll"
 
 [tasks."load:up"]
 description = "Start the load-test scenario: one node with cgroup limits (env: ATANOR_LOAD_SCENARIO=A 1 CPU/512 MB or B 2 CPUs/2 GB), data and store in tmpfs, 25 ms added per store trip, both workers deployed (see docs/how-to-run-the-load-tests.md)"
-depends = ["build:cli", "build:scoreboard"]
+depends = ["build:scoreboard"]
 run = "scripts/load-env up"
 
 [tasks."load:down"]

@@ -150,7 +150,7 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
   [README](../README.md#requirements) (`mise install`).
 - About 4 GB of free memory for the containers and the generator, and an idle host: the harness measures
   the host load and refuses a busy one.
-- The first `load:up` builds the node image (several minutes: two Rust NIFs) and the CLI and the scoreboard.
+- The first `load:up` builds the node image (several minutes: two Rust NIFs) and the scoreboard. Both workers are deployed with the `atanor` command of that image, so no host CLI is needed.
 
 ## Steps
 

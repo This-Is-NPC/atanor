@@ -177,7 +177,7 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
 
 3. Deploy the example, the [scoreboard](../examples/scoreboard/README.md). It
    is a WASM worker, so the component travels in the package and the nodes need
-   no new image. The task builds the `atanor` command and the component, uses
+   no new image. The task builds the component, runs the `atanor` command of the node image (`docker run IMAGE deploy ...` in the node's network), uses
    the operator token once to create a token limited to
    `worker:scoreboard:deploy`, `activate` and `read`, keeps it in
    `cluster/secrets/deploy-token`, and deploys with that token.

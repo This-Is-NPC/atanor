@@ -39,6 +39,23 @@ cluster_container() {
   echo "$id" | head -n 1
 }
 
+# running_node: the id of a running node (after a swap that is node-2, not node-1).
+running_node() { docker ps -q --filter "label=$label" --filter "name=^/?$CLUSTER-node-[0-9]+$" | head -n 1; }
+
+# atanor_cli TOKEN DIR ARGS...: the `atanor` command of the node's own image, the product path
+# (docker run IMAGE deploy ...), in the node's network namespace, so the admin URL is its loopback.
+# DIR (or "") is mounted read-only at /w. The token reaches the command through its environment.
+atanor_cli() {
+  local token=$1 dir=$2 node mount=()
+  shift 2
+  node=$(running_node)
+  [[ -n $node ]] || { echo "no running node in project $CLUSTER" >&2; return 1; }
+  [[ -z $dir ]] || mount=(-v "$dir:/w:ro")
+  ATANOR_TOKEN=$token docker run --rm --network "container:$node" "${mount[@]}" \
+    -e ATANOR_URL=http://127.0.0.1:4001 -e ATANOR_TOKEN \
+    "$(docker inspect -f '{{.Config.Image}}' "$node")" "$@"
+}
+
 container_name() { docker inspect -f '{{.Name}}' "$1" | sed 's|^/||'; }
 container_ip() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1"; }
 

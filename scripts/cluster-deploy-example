@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
-# Deploy the scoreboard example (examples/scoreboard) to the running cluster with `atanor deploy`,
+# Deploy the scoreboard example (examples/scoreboard) to the running cluster with `atanor deploy` of the node image,
 # using a token that may only deploy, activate and read the worker `scoreboard`. The operator
 # token creates it once; it is kept in cluster/secrets/deploy-token. Safe to rerun.
 set -euo pipefail
 source "$(dirname "$0")/cluster-common"
 
-atanor=$repo/_build/cli/atanor
-url=$(published_url 4001)
 worker=scoreboard
 deploy_token_file=$secrets_dir/deploy-token
 
 # The token works if the node accepts it (a new cluster has none of the old ones).
-usable() { [[ -s $deploy_token_file ]] && ATANOR_URL=$url ATANOR_TOKEN=$(<"$deploy_token_file") "$atanor" status >/dev/null 2>&1; }
+usable() { [[ -s $deploy_token_file ]] && atanor_cli "$(<"$deploy_token_file")" "" status >/dev/null 2>&1; }
 
 if ! usable; then
-  output=$(ATANOR_URL=$url ATANOR_TOKEN=$(admin_token) "$atanor" token create "$worker-deploy" \
+  output=$(atanor_cli "$(admin_token)" "" token create "$worker-deploy" \
     --description "deploys the $worker example" \
     --scope "worker:$worker:deploy" --scope "worker:$worker:activate" --scope "worker:$worker:read")
   echo "$output" | grep -v '^secret:'
@@ -22,5 +20,4 @@ if ! usable; then
   chmod 600 "$deploy_token_file"
 fi
 
-cd "$repo/examples/$worker"
-ATANOR_URL=$url ATANOR_TOKEN=$(<"$deploy_token_file") "$atanor" deploy --activate
+atanor_cli "$(<"$deploy_token_file")" "$repo/examples/$worker" deploy /w --activate
