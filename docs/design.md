@@ -1274,8 +1274,9 @@ a cell with no process on the node, which would wake it, is a 503 `overloaded`
 refused: `memory`, `disk` or `in_flight` (the ingress gates), `wake_gate` (the wake
 refused above), `awake_limit` (Alambique's `awake` limits, `{:error, :overloaded}`),
 `busy` (a cell's `max_pending` or the node's statement slots, `{:error, :busy}`),
-`disk_full` (the write found no room) and `worker_queue` (a WASM worker's `queue`,
-`worker_calls` or wait for a thread, §14.2); `overloaded` alone is a worker that
+`disk_full` (the write found no room), `worker_queue` (a WASM worker's full `queue`
+or `worker_calls`, refused as the call came, §14.2) and `queue_timeout` (the request
+waited past `http.queue_wait_ms`, below); `overloaded` alone is a worker that
 answered 503 itself. A refusal after the ingress emits `[:atanor, :http, :reject]`
 with the same `reason`. The default of 1,024 is generous on
 purpose: the memory gate is the guard, this one bounds handlers on a node whose
@@ -1286,6 +1287,48 @@ runtime page. The tests are `test/atanor/admission_test.exs` (the flood and
 the cgroup files of a temporary directory) and
 `test/atanor/admission_property_test.exs` (the pure decision function, the disk
 gate included).
+
+*Wait deadline.* Saturation does not always refuse: in round 018f a node at 0.99 CPU
+and 800 requests in flight (under the gate of 1,024) kept every request until the
+client's 10 s timeout, and a node over a slow store kept cell calls until Alambique's
+`call_timeout_ms` (15 s); neither answered a 503 the client could back off on. A request
+that `Admission.enter/1` admits now gets a deadline `http.queue_wait_ms` (5,000; 0 or
+`:infinity` turns it off) after the admission, in the process dictionary of the request
+process (`Admission.remaining/0`). The places where a request waits ask it, and
+refuse with 503 `overloaded`, `reason` `queue_timeout`, `Retry-After` and the event
+`[:atanor, :http, :reject]` (counted in `refused.queue_timeout` of `/runtime`):
+
+* `Dispatch.execute/3`, before anything is sent, and each retry of a call that did
+  not start (the owner moved, was lost before the call arrived, or is leaving);
+* the owner lookup of a cell: `Cell.owner/2` (the wake) and the lease read that
+  checks that this node still owns the cell. A cell that is not awake here wakes
+  inside Alambique's call, for as long as the store takes, and `:timeout` does not
+  bound that, so `Cell.within_deadline/5` runs such a call on a process of its own
+  that the request leaves at the deadline; the wake finishes there;
+* the cell calls of a handler (`Cell.call/4`), with the same helper for a cold cell
+  and Alambique's `:timeout` for an awake one;
+* a WASM call in the pool queue: `Atanor.Wasm` waits `min(wasm.queue_wait_ms, what the
+  deadline leaves)` and then takes the call back (`Native.withdraw/1`) if no thread
+  started it. A thread and the caller contest one atomic ticket, so a call either runs
+  or never does; a call refused at once (full queue, `worker_calls`) stays
+  `worker_queue`.
+
+The time the client takes to send the body does not run the clock
+(`Admission.excluding/1`). A handler that is running is not stopped.
+
+*What a `queue_timeout` promises.* The call did not run. That holds because the
+deadline refuses only before a call is sent, or while a read waits (nothing to undo),
+or while a WASM call is taken back from the queue. A cell write that is already sent and
+still waiting at the deadline is not refused: it may be applied, so the answer is 503
+`unknown_outcome` (the same as any write that times out) and the client reads before it
+repeats. A handler that has had a write acknowledged, or one that answered
+`outcome_unknown`, is no longer bounded, so a handler is never cut between its writes by
+the deadline. Not covered: a handler's other effects (an outbound HTTP request), and a
+call forwarded to the owner on another node, which the ingress node bounds only by
+`routing.remote_timeout_ms` once it has started. The tests are
+`test/atanor/queue_deadline_test.exs` (a slow wake, a slow read, a slow write, the
+property that no `queue_timeout` matches a committed write) and
+`test/atanor/queue_deadline_wasm_test.exs` (calls queued behind spinning guests).
 
 The listener is bounded: `http.max_connections` (16,384) is the total for the
 listener, WebSockets included, divided among `http.acceptors` (10) because
@@ -3102,7 +3145,8 @@ the node keeps serving.
 The wall clock covers the wait for host calls (cells, secrets, worker calls,
 outbound HTTP). CPU time does not include it. Overload is separate: a call
 that finds the queue full, or waits in it longer than `queue_wait_ms`
-(default 1000), fails with `:overloaded`, 503. A manifest value above a
+(default 1000, or what the request's `http.queue_wait_ms` deadline leaves, §7.1), fails
+with `:overloaded`, 503. A manifest value above a
 ceiling is lowered to it. Host resources and field sets live outside the
 linear memory, so they have their own caps. A panic in a pool thread ends
 that call with a guest error and the thread goes on serving. The node settings are
@@ -4068,8 +4112,8 @@ Three bounds, all in Rust (`admission.rs`); Elixir does not count requests.
 * **In flight.** The queue holds `queue` calls (default: as many as `max_waiting` with a memory
   limit, else 4 per thread) for the
   pool threads; a full queue refuses the call at once. A queued
-  call that waited more than `queue_wait_ms` is dropped when it gets the right
-  to run. At most `max_calls` calls are busy at once (default 4 per thread):
+  call that waited more than `queue_wait_ms` is taken back by its caller
+  (`Native.withdraw/1`) and never runs; one that a thread took first runs. At most `max_calls` calls are busy at once (default 4 per thread):
   a pool thread takes a queued call only below that number. One worker's
   prepared component has at most `worker_calls` busy calls, queued included
   (default three quarters of `max_calls`); one more is refused at once. So a

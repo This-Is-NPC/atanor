@@ -16,6 +16,13 @@ defmodule Atanor.Admission do
   it as a sampler process, which reads the cgroup every `memory: [sample_ms:]` and publishes the verdict
   in an `:atomics`, so a request pays two reads and an ETS insert.
 
+  A request that is admitted also gets a wait deadline, `http: [queue_wait_ms:]` (default 5 s) after its admission,
+  kept in the process dictionary of the request process. The places where a request waits, not where it works,
+  ask `remaining/0` and refuse with 503 `queue_timeout` once it has passed (design §7.1): before the handler
+  starts, while the cell owner is found or woken, and for a cell call or a WASM queue slot while the handler has
+  not written yet. The time that the client takes to send the body is not waiting and moves the deadline
+  (`excluding/1`).
+
   A request is an ETS row keyed by its process: the in-flight count is the table size. A handler that is
   killed does not run `after`, so the sampler also drops the rows of dead processes on every tick.
 
@@ -46,6 +53,8 @@ defmodule Atanor.Admission do
   @disk_refusing 8
   @disk_sampled_at 9
   @refused_wake 10
+  @refused_queue 11
+  @deadline {__MODULE__, :deadline}
 
   @doc "The gap, as a fraction of the limit, between the refuse and the resume marks."
   def hysteresis, do: @hysteresis
@@ -152,8 +161,49 @@ defmodule Atanor.Admission do
         {:refuse, :in_flight}
 
       true ->
+        start_clock(handle.queue_wait_ms)
         :ok
     end
+  end
+
+  defp start_clock(:infinity), do: Process.delete(@deadline)
+  defp start_clock(ms), do: Process.put(@deadline, System.monotonic_time(:millisecond) + ms)
+
+  @doc false
+  # The time the request of the calling process may still wait: `:infinity` without a deadline, otherwise
+  # the milliseconds left, zero or negative once it has passed.
+  @spec remaining() :: :infinity | integer
+  def remaining do
+    case Process.get(@deadline) do
+      nil -> :infinity
+      deadline -> deadline - System.monotonic_time(:millisecond)
+    end
+  end
+
+  @doc false
+  @spec expired?() :: boolean
+  def expired?, do: remaining() != :infinity and remaining() <= 0
+
+  @doc false
+  # Runs `fun`, which waits for the client, and gives the deadline the time it took.
+  @spec excluding((-> result)) :: result when result: term
+  def excluding(fun) do
+    started = System.monotonic_time(:millisecond)
+    result = fun.()
+
+    case Process.get(@deadline) do
+      nil -> :ok
+      deadline -> Process.put(@deadline, deadline + System.monotonic_time(:millisecond) - started)
+    end
+
+    result
+  end
+
+  @doc false
+  @spec refuse_queue_timeout(atom) :: :ok
+  def refuse_queue_timeout(name) do
+    :atomics.add(handle(name).counters, @refused_queue, 1)
+    :ok
   end
 
   @doc false
@@ -177,6 +227,7 @@ defmodule Atanor.Admission do
   @doc false
   @spec leave(atom) :: :ok
   def leave(name) do
+    Process.delete(@deadline)
     :ets.delete(handle(name).table, self())
     :ok
   end
@@ -201,7 +252,8 @@ defmodule Atanor.Admission do
   What the admission of a running node has done: the requests in flight now, the refusals by reason, the
   last working set and the limit it is judged against (`nil` when the memory gate is off), the disk use and
   budget (`nil` when the disk gate is off), whether the gates are refusing now, and `wake_refused`: the cell
-  calls refused because they would have woken a cell while the memory gate was refusing.
+  calls refused because they would have woken a cell while the memory gate was refusing. `refused.queue_timeout`
+  counts the requests refused because they waited past `http: [queue_wait_ms:]`.
   """
   @spec stats(atom) :: map
   def stats(name) do
@@ -214,7 +266,8 @@ defmodule Atanor.Admission do
       refused: %{
         memory: :atomics.get(counters, @refused_memory),
         disk: :atomics.get(counters, @refused_disk),
-        in_flight: :atomics.get(counters, @refused_in_flight)
+        in_flight: :atomics.get(counters, @refused_in_flight),
+        queue_timeout: :atomics.get(counters, @refused_queue)
       },
       working_set_bytes: if(handle.memory, do: :atomics.get(counters, @working_set)),
       limit_bytes: handle.limit,
@@ -245,8 +298,9 @@ defmodule Atanor.Admission do
     handle = %{
       pid: self(),
       table: :ets.new(__MODULE__, [:set, :public, write_concurrency: true]),
-      counters: :atomics.new(10, []),
+      counters: :atomics.new(11, []),
       max_in_flight: config.http.max_in_flight,
+      queue_wait_ms: config.http.queue_wait_ms,
       memory: memory?,
       limit: limit,
       model: model,

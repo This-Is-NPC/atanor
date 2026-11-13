@@ -39,14 +39,22 @@ defmodule Atanor.Wasm.Native do
   def prepare(_compiled, _grants), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Queues a call, or `:overloaded` when the queue is full. The call is
+  Queues a call and returns `{:ok, ticket}`, or `:overloaded` when it is refused (the queue is full, or the
+  worker has `:worker_calls` calls). The call is
   `{:http, method, scheme, authority, path_query, headers, body}`,
   `{:alarm, namespace, key, payload}`, `{:ws_open, socket, method, path, query,
   headers}`, `{:ws_message, socket, :text | :binary | :cell, data}`,
   `{:ws_local, socket, :text | :binary, data}` or `{:ws_close, socket}`.
   """
-  @spec invoke(reference, tuple, map, pid, non_neg_integer) :: :ok | :overloaded
+  @spec invoke(reference, tuple, map, pid, non_neg_integer) :: {:ok, reference} | :overloaded
   def invoke(_prepared, _request, _limits, _pid, _tag), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Takes back a call that no thread has started: `true`, and it never runs and sends no result. `false` when
+  it started or ended, and its result still arrives.
+  """
+  @spec withdraw(reference) :: boolean
+  def withdraw(_ticket), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Answers a host call. A reply of `:host_reply_dirty_bytes` or more is copied

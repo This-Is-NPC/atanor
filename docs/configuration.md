@@ -37,7 +37,7 @@ children = [
 | `alambique: [registry: [advertise:, ttl_ms:, renew_ms:]]` | Publishes this node under `<prefix>/nodes/` and connects to the others ([discovery](#discovery)). `advertise:` is the node's Erlang name (`Atom.to_string(node())`). Needs a distributed VM. |
 | `detector:`, `takeover:`, `routing:` | Failure detection, takeover and routing ([design §8.6 to §8.12](design.md#86-classifying-failures)). |
 | `stop:` | The drain: `drain_timeout_ms` 15 000 (one cell hibernating and releasing its lease), `drain_concurrency` 64 (cells at once), `shutdown_ms` 75 000 (the whole drain, not below `drain_timeout_ms`) and `exit` true (`atanor drain` and `POST /drain` stop the node when the cells are back; false leaves it running, drained) and `sigterm` `:drain` (SIGTERM drains with the listeners open, then stops the VM; `:stop` stops at once). `jobs_ms` 15 000, `connections_ms` 15 000, `sweeps_ms` 5 000 and `tasks_ms` 5 000 bound the other steps of a stop ([design §8.11](design.md#811-draining-and-stopping-gracefully)). |
-| `http:` | `retry_after_s` 1 is the `Retry-After` of every 503, `held_elsewhere` included ([design §8.4](design.md#84-when-the-node-is-lost)). |
+| `http:` | `retry_after_s` 1 is the `Retry-After` of every 503, `held_elsewhere` included ([design §8.4](design.md#84-when-the-node-is-lost)). `queue_wait_ms` 5,000 is how long an admitted request may wait before the node answers 503 `queue_timeout` ([below](#cells-limits-memory-and-store-requests)). |
 | `hot_cells:`, `tags:`, `affinity:` | The opt-in placement of hot cells ([guide](how-to-place-hot-cells.md)). |
 | `diagnostics:` | Crash breadcrumbs and reports ([guide](how-to-diagnose-a-crash.md)). |
 | `disk:` | The disk budget of `data_dir` ([below](#cells-limits-memory-and-store-requests)). |
@@ -112,6 +112,7 @@ Rules:
 | `ATANOR_LEASE_TTL_MS` | `lease_ttl_ms` | Alambique's | The cell lease time to live (`alambique: [lease_ttl_ms:]`). |
 | `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY` | `shutdown_ms`, `drain_timeout_ms`, `drain_concurrency` | 75000, 15000, 64 | `stop:` ([above](#the-instance)). The container's grace period must exceed the first. |
 | `ATANOR_DETECTOR_PAUSE_MS` | `detector_pause_ms` | 2000 | `detector: [acceptable_pause_ms:]`. |
+| `ATANOR_HTTP_QUEUE_WAIT_MS` | `http_queue_wait_ms` | 5000 | `http: [queue_wait_ms:]`: how long an admitted request may wait before the node answers 503 `queue_timeout` ([below](#cells-limits-memory-and-store-requests)). 0 turns it off. |
 | `ATANOR_GROUP` | `group` | none | The discovery group: a node dials only the nodes of its own group (`registry: [meta: %{"group" => ...}]`). A node that replaces another in a swap takes one, so that the two do not form a cluster ([how-to-replace-a-node.md](how-to-replace-a-node.md)). 1 to 64 letters, digits, `.`, `_` or `-`. |
 | `ATANOR_REGISTRY_TTL_MS` | `registry_ttl_ms` | 15000 | How long the node's entry under `<prefix>/nodes/` is live without a renewal (`alambique: [registry: [ttl_ms:]]`). A node that stopped without leaving is forgotten after it plus the skew margin (2 s). It must exceed twice the skew margin and `ATANOR_REGISTRY_RENEW_MS`. |
 | `ATANOR_REGISTRY_RENEW_MS` | `registry_renew_ms` | 3000 | How often the node renews its entry and reads the peers; a new node is found within about this time (`registry: [renew_ms:]`). It costs two small requests per period per node. |
@@ -242,6 +243,34 @@ body, when either gate is closed:
 Open WebSockets are not closed by either gate. Refusals count in
 `Atanor.Admission.stats/1` and `[:atanor, :http, :reject]` (reasons `:memory` and
 `:in_flight`, [telemetry](telemetry.md)).
+
+**Bounding the wait.** A node that is saturated does not refuse; it makes the
+request wait, until the client gives up. `http: [queue_wait_ms: 5_000]`
+(`ATANOR_HTTP_QUEUE_WAIT_MS`) bounds that wait, counted from the admission of the
+request: when it has passed and the request is still waiting, the answer is 503
+`overloaded` with `Retry-After` and `reason` `queue_timeout`, so the client can
+back off. The default is below the 10 s that clients commonly give up at and
+long enough for a request that is only behind a burst. `0` or `:infinity` turns
+it off; the settings of the WASM pool and the call timeout of Alambique then
+bound the wait alone.
+
+What counts as waiting:
+
+- before the handler starts: a request that reaches it after the deadline is
+  refused. The time the client takes to send the body is not counted;
+- for the cell owner: finding it, waking the cell (the store is read), and the
+  wait for a node that leaves;
+- for a WASM worker: the wait in the queue for a thread. The call is taken back
+  while it is queued, so it never runs after the 503;
+- for a cell call of the handler, until the handler has had a write
+  acknowledged.
+
+What does not count: a handler that runs (it is not stopped), the calls of a
+handler after its first acknowledged write, and the calls that another node runs
+for a request that was forwarded to it. A cell write that is still waiting at the
+deadline answers 503 `unknown_outcome`, not `queue_timeout`: it may be applied
+later (see [design §7.1](design.md#71-http)). Counted in
+`Atanor.Admission.stats/1` as `refused.queue_timeout`.
 
 **Disk budget.** `data_dir` is bounded too. An awake cell's `-wal` file grows
 about 17 to 32 KiB a write and is moved into the database only when it passes

@@ -71,6 +71,21 @@ defmodule Atanor.Test.ProbeWorker do
     json(200, render(result))
   end
 
+  # One write or one read of a note whose failure is a 5xx, so the ingress names it (`Atanor.Cell.mark_*`).
+  defp dispatch("write", %Request{query: "key=" <> key, body: body}, env) do
+    case Env.execute(env, {"notes", key}, "INSERT INTO notes (body) VALUES (?)", [body]) do
+      {:ok, _} -> json(200, %{written: key})
+      {:error, reason} -> json(500, %{error: inspect(reason)})
+    end
+  end
+
+  defp dispatch("read", %Request{query: "key=" <> key}, env) do
+    case Env.query(env, {"notes", key}, "SELECT body FROM notes") do
+      {:ok, %{rows: rows}} -> json(200, %{rows: rows})
+      {:error, reason} -> json(500, %{error: inspect(reason)})
+    end
+  end
+
   defp dispatch("secret", %Request{query: "name=" <> name}, env),
     do: json(200, render(Env.secret(env, name)))
 

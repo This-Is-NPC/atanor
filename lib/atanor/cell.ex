@@ -48,15 +48,33 @@ defmodule Atanor.Cell do
   short time (design §8.12).
   """
   def query(instance, address, sql, params \\ [], opts \\ []),
-    do: call(instance, address, :read, &Alambique.query(&1, &2, sql, params, opts))
+    do:
+      call(
+        instance,
+        address,
+        :read,
+        &within_deadline(&1, &2, :read, opts, fn opts -> Alambique.query(&1, &2, sql, params, opts) end)
+      )
 
   @doc "Runs a write statement. See `Alambique.execute/5`."
   def execute(instance, address, sql, params \\ [], opts \\ []),
-    do: call(instance, address, :write, &Alambique.execute(&1, &2, sql, params, opts))
+    do:
+      call(
+        instance,
+        address,
+        :write,
+        &within_deadline(&1, &2, :write, opts, fn opts -> Alambique.execute(&1, &2, sql, params, opts) end)
+      )
 
   @doc "Runs `fun` in one transaction. See `Alambique.transaction/4`."
   def transaction(instance, address, fun, opts \\ []),
-    do: call(instance, address, :write, &Alambique.transaction(&1, &2, fun, opts))
+    do:
+      call(
+        instance,
+        address,
+        :write,
+        &within_deadline(&1, &2, :write, opts, fn opts -> Alambique.transaction(&1, &2, fun, opts) end)
+      )
 
   @doc """
   Replaces the cell with its state at `target`. See `Alambique.rewind/4`. Design
@@ -94,9 +112,14 @@ defmodule Atanor.Cell do
     with {:ok, id} <- id(address) do
       config = Registry.config(instance)
 
-      with :ok <- wake_gate(instance, config, id) do
+      with :ok <- wake_gate(instance, config, id),
+           :ok <- patience() do
         if config.hot_cells.enabled, do: HotCells.hold(instance, id, config.hot_cells.move_timeout_ms)
-        Alambique.touch(config.alambique, id)
+
+        case within_deadline(config.alambique, id, :touch, [], &Alambique.touch(config.alambique, id, &1)) do
+          {:error, :timeout} -> if Admission.expired?(), do: queue_timeout(), else: {:error, :timeout}
+          result -> result
+        end
       end
     end
   end
@@ -139,17 +162,91 @@ defmodule Atanor.Cell do
   # Reads and writes are counted for the placement of hot cells (design §8.15).
   @unknown {__MODULE__, :unknown_outcome}
   @wrote {__MODULE__, :wrote}
+  @bounded {__MODULE__, :bounded}
 
   defp call(instance, address, kind, fun) do
     with {:ok, id} <- id(address), :ok <- granted(instance, address) do
       config = Registry.config(instance)
       # An admin call (hibernate, move, position) is how a node sheds cells: it is not gated.
-      with :ok <- if(kind == :admin, do: :ok, else: wake_gate(instance, config, id)) do
+      with :ok <- if(kind == :admin, do: :ok, else: wake_gate(instance, config, id)),
+           :ok <- if(kind == :admin, do: :ok, else: handler_patience()) do
         if config.hot_cells.enabled and kind != :admin, do: hot_cells(instance, config, id, kind)
-        instance |> run(id, fun, config.takeover.attempts, nil) |> wrote(kind)
+        Process.delete(@bounded)
+        instance |> run(id, fun, config.takeover.attempts, nil) |> timed_out(kind) |> wrote(kind)
       end
     end
   end
+
+  # The request deadline (`Atanor.Admission`) bounds the wait of a cell call. A call that did not start is
+  # refused with `queue_timeout`; a read that is still waiting when the deadline passes is refused the same way.
+  # A write that is still waiting may have been applied, so its timeout is an unknown outcome, as for any
+  # write that times out. A handler that has written, or whose write is unknown, is not bounded any more:
+  # refusing its next call would say that the request did not run, and the handler must finish what it began.
+  @doc false
+  # The error of a call that waited past the deadline, with the cause for the 503 body.
+  @spec queue_timeout() :: {:error, {:unavailable, :overloaded}}
+  def queue_timeout do
+    mark_overload(:queue_timeout)
+    {:error, {:unavailable, :overloaded}}
+  end
+
+  # Nothing was sent yet: a request past its deadline refuses.
+  defp patience, do: if(Admission.expired?(), do: queue_timeout(), else: :ok)
+
+  defp handler_patience, do: if(committed?(), do: :ok, else: patience())
+
+  defp committed?, do: Process.get(@wrote) == true or Process.get(@unknown) == true
+
+  @doc false
+  # Runs `call.(opts)`, a call to Alambique, within what the deadline of the request leaves. A cell that is
+  # awake here answers within Alambique's `:timeout`. A call that wakes the cell does not: the wake runs
+  # inside it, for as long as the store takes. It runs on a process of its own then, which the request
+  # leaves at the deadline and the wake finishes without it. `{:error, :timeout}` says the call did not
+  # answer in time, which for a write is an unknown outcome.
+  @spec within_deadline(atom, String.t(), :read | :write | :touch | :admin, keyword, (keyword -> term)) :: term
+  def within_deadline(alambique, id, kind, opts, call) do
+    left = if kind == :admin or committed?(), do: :infinity, else: Admission.remaining()
+
+    cond do
+      left == :infinity ->
+        call.(opts)
+
+      Alambique.load(alambique, id) == :none ->
+        Process.put(@bounded, true)
+        detached(max(left, 0), fn -> call.(opts) end)
+
+      true ->
+        Process.put(@bounded, true)
+        call.(Keyword.put(opts, :timeout, min(max(left, 1), opts[:timeout] || :infinity)))
+    end
+  end
+
+  defp detached(left, fun) do
+    alias = :erlang.alias()
+
+    spawn(fn ->
+      send(alias, {alias, try(do: {:ok, fun.()}, catch: (kind, reason -> {:raised, kind, reason, __STACKTRACE__}))})
+    end)
+
+    receive do
+      {^alias, {:ok, result}} -> result
+      {^alias, {:raised, kind, reason, stacktrace}} -> :erlang.raise(kind, reason, stacktrace)
+    after
+      left ->
+        :erlang.unalias(alias)
+        {:error, :timeout}
+    end
+  end
+
+  defp timed_out({:error, :timeout} = error, :write) do
+    Process.put(@unknown, true)
+    error
+  end
+
+  defp timed_out({:error, :timeout} = error, :read),
+    do: if(Process.get(@bounded) == true and Admission.expired?(), do: queue_timeout(), else: error)
+
+  defp timed_out(result, _kind), do: result
 
   # A handler that had a write acknowledged has part of its effect durable: a later refusal of
   # another call says the call did not run, which is no longer true of the handler, so it is unknown.

@@ -106,9 +106,12 @@ defmodule Atanor.Config do
   @calls %{max_depth: 8, max_redirects: 5, fetch_max_bytes: 8_000_000, fetch_timeout_ms: 30_000}
   # The ingress (design §7.1). `max_connections` is the total of the listener, `read_timeout_ms` the wait for
   # the next bytes of the request (header or body), the two after bound the work of matching a route, and
-  # `max_in_flight` is the requests the node serves at once before it refuses with 503 (`Atanor.Admission`).
+  # `max_in_flight` is the requests the node serves at once before it refuses with 503 (`Atanor.Admission`);
+  # `queue_wait_ms` is how long an admitted request may wait before its handler runs, 5 s, below the 10 s that
+  # clients commonly give up at (`:infinity` or 0 turns it off).
   @http %{
     retry_after_s: 1,
+    queue_wait_ms: 5_000,
     max_in_flight: 1_024,
     max_connections: 16_384,
     acceptors: 10,
@@ -817,9 +820,19 @@ defmodule Atanor.Config do
   end
 
   defp http!(opts) do
-    http = settings!(opts, @http, :http)
+    {wait, opts} = if Keyword.keyword?(opts), do: Keyword.pop(opts, :queue_wait_ms), else: {nil, opts}
+    http = settings!(opts, Map.delete(@http, :queue_wait_ms), :http)
     check!(http.acceptors <= http.max_connections, ":http :acceptors must not exceed :max_connections")
-    http
+
+    wait =
+      case wait do
+        nil -> @http.queue_wait_ms
+        value when value in [0, :infinity] -> :infinity
+        value when is_integer(value) and value > 0 -> value
+        _ -> raise ArgumentError, ":http :queue_wait_ms must be a positive integer, 0 or :infinity"
+      end
+
+    Map.put(http, :queue_wait_ms, wait)
   end
 
   defp jobs!(nil), do: @jobs

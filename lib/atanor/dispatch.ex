@@ -171,6 +171,14 @@ defmodule Atanor.Dispatch do
   """
   @spec execute(Env.t(), Cell.address() | nil, call) :: {:ok, term} | {:error, term}
   def execute(%Env{} = env, cell, call) do
+    # The wait for the handler is bounded by the deadline of the request (`Atanor.Admission`); a nested call
+    # belongs to a handler that runs.
+    if env.depth == 0 and Atanor.Admission.expired?(),
+      do: Cell.queue_timeout(),
+      else: route_call(env, cell, call)
+  end
+
+  defp route_call(env, cell, call) do
     cond do
       cell != nil and env.consistency != :strong ->
         local(env, cell, call, false)
@@ -185,7 +193,7 @@ defmodule Atanor.Dispatch do
           case ownership(env.instance, id) do
             :owned -> local(env, cell, call, false)
             {:lost, reason} when reason in [:held_elsewhere, :draining] -> Unavailable.error(env.instance, reason)
-            _ -> {:error, {:unavailable, :fenced}}
+            _ -> if Atanor.Admission.expired?(), do: Cell.queue_timeout(), else: {:error, {:unavailable, :fenced}}
           end
         end
 
@@ -347,7 +355,14 @@ defmodule Atanor.Dispatch do
   defp retry(env, _cell, _id, _call, attempts, _until, reason) when attempts <= 1,
     do: Unavailable.error(env.instance, reason)
 
-  defp retry(env, cell, id, call, attempts, until, _reason) do
+  # Whatever made the call wait did not start it, except `:unknown`: a repeat after a start is not refused.
+  defp retry(env, cell, id, call, attempts, until, reason) do
+    if reason != :unknown and env.depth == 0 and Atanor.Admission.expired?(),
+      do: Cell.queue_timeout(),
+      else: retried(env, cell, id, call, attempts, until)
+  end
+
+  defp retried(env, cell, id, call, attempts, until) do
     Process.sleep(Registry.config(env.instance).routing.retry_ms)
     owned(env, cell, id, call, attempts - 1, until)
   end
@@ -425,7 +440,9 @@ defmodule Atanor.Dispatch do
       true ->
         if config.hot_cells.enabled, do: Atanor.HotCells.hold(instance, id, config.hot_cells.move_timeout_ms)
 
-        case Alambique.query(config.alambique, id, "SELECT 1", [], verify_lease: true) do
+        query = &Alambique.query(config.alambique, id, "SELECT 1", [], &1)
+
+        case Cell.within_deadline(config.alambique, id, :read, [verify_lease: true], query) do
           {:ok, _} ->
             if Alambique.owner(config.alambique, id) == {:ok, node()} do
               Registry.put_verified(instance, id, routing.owner_check_cells)
