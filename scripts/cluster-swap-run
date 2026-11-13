@@ -144,7 +144,7 @@ def main():
         raise SystemExit("start the cluster with one node: ATANOR_CLUSTER_NODES=1 ATANOR_CLUSTER_PEERS= mise run cluster:up")
     a = ids[0]
     a_name = inspect(a, "{{.Name}}").lstrip("/")
-    if "ATANOR_NODE_PEERS=" not in inspect(a, "{{range .Config.Env}}{{println .}}{{end}}").splitlines():
+    if "ATANOR_PEERS=" not in inspect(a, "{{range .Config.Env}}{{println .}}{{end}}").splitlines():
         raise SystemExit(f"{a_name} has peers: start the cluster with ATANOR_CLUSTER_PEERS= (empty)")
     b_service = args.b or next(f"node-{n}" for n in range(1, 11) if f"atanor-cluster-node-{n}" != a_name)
     grace = int(float(inspect(a, "{{.Config.StopTimeout}}") or 10))
@@ -165,7 +165,7 @@ def main():
     env = {**os.environ, "ATANOR_CLUSTER_PEERS": ""}
     run(*COMPOSE, "up", "-d", "--no-deps", b_service, env=env)
     b = run("docker", "ps", "-aq", "--filter", LABEL, "--filter", f"name=^/?atanor-cluster-{b_service}$").split()[0]
-    if "ATANOR_NODE_PEERS=" not in inspect(b, "{{range .Config.Env}}{{println .}}{{end}}").splitlines():
+    if "ATANOR_PEERS=" not in inspect(b, "{{range .Config.Env}}{{println .}}{{end}}").splitlines():
         raise SystemExit(f"{b_service} has peers: it would form a cluster with A")
     wait_for("B ready and in rotation", lambda: inspect(b, "{{.State.Health.Status}}") == "healthy" and balancer_up() == 2, 180)
     events["b_serving_at"] = time.time()

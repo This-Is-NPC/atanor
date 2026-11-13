@@ -12,7 +12,7 @@ defmodule AtanorNode.Mesh do
   @impl true
   def init(hosts) do
     send(self(), :connect)
-    {:ok, for(host <- String.split(hosts, ",", trim: true), do: :"atanor@#{host}")}
+    {:ok, for(host <- hosts, do: :"atanor@#{host}")}
   end
 
   @impl true

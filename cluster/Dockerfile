@@ -43,7 +43,7 @@ COPY --from=build /src/atanor/cluster/node/_build/prod/rel/atanor_node /opt/atan
 COPY cluster/entrypoint /usr/local/bin/atanor-entrypoint
 # The release identity (design 17.1); last, so a new id does not rebuild anything.
 ARG RELEASE_ID=unknown
-ENV ATANOR_NODE_RELEASE=${RELEASE_ID}
+ENV ATANOR_RELEASE=${RELEASE_ID}
 USER atanor
 WORKDIR /var/lib/atanor
 EXPOSE 4000 4001 4002
