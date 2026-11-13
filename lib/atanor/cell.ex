@@ -101,11 +101,11 @@ defmodule Atanor.Cell do
     end
   end
 
-  # While the node is over its memory mark, a call for a cell with no process here would wake it (or be
-  # forwarded, which this node cannot tell apart without a lease read): it gets `overloaded` instead.
-  # `Alambique.load/2` reads the registry only; it never wakes a cell.
+  # While the node is over its memory mark, a call for a cell that no member holds awake would wake it:
+  # it gets `overloaded` instead. A cell awake here or on another node is served or forwarded.
+  # `owner/3` with `peers: true` asks the members' registries, never the store, and never wakes a cell.
   defp wake_gate(instance, config, id) do
-    if Admission.memory_refusing?(instance) and Alambique.load(config.alambique, id) == :none do
+    if Admission.memory_refusing?(instance) and not match?({:ok, _}, Alambique.owner(config.alambique, id, peers: true)) do
       Admission.refuse_wake(instance)
       unavailable(:overloaded)
     else
