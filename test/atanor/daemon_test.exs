@@ -255,7 +255,7 @@ defmodule Atanor.DaemonTest do
       on_exit(fn -> File.rm(path) end)
 
       log =
-        ExUnit.CaptureLog.capture_log(fn -> assert %{opts: opts} = Daemon.load!(env(%{"ATANOR_CONFIG" => path})) end)
+        ExUnit.CaptureLog.capture_log(fn -> assert %{opts: _} = Daemon.load!(env(%{"ATANOR_CONFIG" => path})) end)
 
       assert log =~ "effective settings"
       assert log =~ "ATANOR_LISTEN=127.0.0.1:5000"
