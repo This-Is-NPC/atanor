@@ -70,20 +70,20 @@ defmodule Atanor.MemoryTest do
 
   defp wakes(config) do
     {config.alambique_opts[:awake][:max_wakes], config.alambique_opts[:restore][:fetch_concurrency],
-     config.alambique_opts[:restore][:prefetch_bytes]}
+     config.alambique_opts[:restore][:max_inflight_bytes]}
   end
 
   @mib 1_048_576
 
   test "the wakes in flight are derived from the headroom above the refuse mark", %{tmp_dir: dir} do
     # 15% of the limit is headroom, half of it is for wakes: 38.4 MiB on 512 MiB, 153.6 MiB on 2 GiB.
-    assert wakes(build(cgroup(dir, "#{512 * @mib}\n"))) == {11, 1, 2_516_582}
-    assert wakes(build(cgroup(dir, "#{2048 * @mib}\n"))) == {11, 4, 10_066_329}
+    assert wakes(build(cgroup(dir, "#{512 * @mib}\n"))) == {14, 1, 2_516_582}
+    assert wakes(build(cgroup(dir, "#{2048 * @mib}\n"))) == {15, 4, 10_066_329}
 
     # The limit may be the option's, and the refuse mark and the share move the headroom.
-    assert wakes(build(limit_bytes: 2048 * @mib)) == {11, 4, 10_066_329}
+    assert wakes(build(limit_bytes: 2048 * @mib)) == {15, 4, 10_066_329}
     assert {w, _, _} = wakes(build(limit_bytes: 2048 * @mib, refuse_fraction: 0.5))
-    assert w == 10
+    assert w == 15
     assert {_, _, p} = wakes(build(limit_bytes: 2048 * @mib, refuse_fraction: 0.5))
     assert p == 33_554_432
     assert {_, _, p} = wakes(build(limit_bytes: 2048 * @mib, wake_fraction: 1))
@@ -93,11 +93,18 @@ defmodule Atanor.MemoryTest do
   test "an operator's wake limits win one by one", %{tmp_dir: dir} do
     memory = cgroup(dir, "#{512 * @mib}\n")
     assert wakes(build(memory, awake: [max_wakes: 100])) == {100, 1, 2_516_582}
-    assert wakes(build(memory, restore: [fetch_concurrency: 8])) == {11, 8, 2_516_582}
-    assert wakes(build(memory, restore: [prefetch_bytes: 1_000])) == {11, 1, 1_000}
+    assert wakes(build(memory, restore: [fetch_concurrency: 8])) == {14, 8, 2_516_582}
+    assert wakes(build(memory, restore: [max_inflight_bytes: 1_000])) == {14, 1, 1_000}
 
-    assert wakes(build(memory, awake: [max_wakes: 256], restore: [fetch_concurrency: 16, prefetch_bytes: 67_108_864])) ==
+    assert wakes(
+             build(memory, awake: [max_wakes: 256], restore: [fetch_concurrency: 16, max_inflight_bytes: 67_108_864])
+           ) ==
              {256, 16, 67_108_864}
+  end
+
+  test "the edges of a wake's ranges count in its cost", %{tmp_dir: dir} do
+    # 2 516 582 + 3 * 1 MiB per wake instead of 2 516 582 + 3 * 64 KiB.
+    assert wakes(build(cgroup(dir, "#{512 * @mib}\n"), restore: [edge_bytes: @mib])) == {7, 1, 2_516_582}
   end
 
   test "a node without a limit keeps Alambique's wake limits", %{tmp_dir: dir} do

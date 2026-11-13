@@ -417,13 +417,20 @@ defmodule Atanor.Config do
     awake: [
       max_cells: :positive,
       max_wakes: :positive,
+      wake_queue_ms: :positive,
+      max_wake_queue: :positive,
       max_pending: :positive,
       cache_kib: :positive,
       max_bytes: :positive_or_nil
     ],
-    wal: [checkpoint_bytes: :positive],
+    wal: [
+      checkpoint_bytes: :positive,
+      checkpoint_deadline_ms: :positive,
+      max_bytes: :positive,
+      budget_interval_ms: :positive
+    ],
     local_cache: [max_bytes: :positive, interval_ms: :positive],
-    restore: [edge_bytes: :positive, fetch_concurrency: :positive, prefetch_bytes: :positive],
+    restore: [edge_bytes: :positive, fetch_concurrency: :positive, max_inflight_bytes: :positive],
     lazy_restore: [min_bytes: :non_negative, concurrency: :positive, batch_bytes: :positive, miss_pages: :positive],
     compaction: [
       hold_bytes: :non_negative,
@@ -680,12 +687,16 @@ defmodule Atanor.Config do
         alambique
 
       budget ->
-        limits = Atanor.Memory.wake_limits(budget)
+        limits =
+          case get_in(alambique, [:restore, :edge_bytes]) do
+            nil -> Atanor.Memory.wake_limits(budget)
+            edge -> Atanor.Memory.wake_limits(budget, edge)
+          end
 
         alambique
         |> put_missing(:awake, :max_wakes, limits.max_wakes)
         |> put_missing(:restore, :fetch_concurrency, limits.fetch_concurrency)
-        |> put_missing(:restore, :prefetch_bytes, limits.prefetch_bytes)
+        |> put_missing(:restore, :max_inflight_bytes, limits.max_inflight_bytes)
     end
   end
 

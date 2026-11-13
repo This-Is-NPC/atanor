@@ -36,22 +36,28 @@ defmodule Atanor.Memory do
     end
   end
 
+  # Alambique's `restore: [edge_bytes:]` default.
+  @edge_bytes 65_536
+
   @doc """
-  The wake limits for a budget (design §4.3): `prefetch_bytes` is a sixteenth of it (1 to 64 MiB),
-  `fetch_concurrency` one request per 2 MiB of it (1 to 16), and `max_wakes` as many wakes of
-  `prefetch_bytes + fetch_concurrency` MiB (a request holds about 1 MiB) as fit (1 to 256).
-  The worst case, `max_wakes` times that, is within the budget from 2 MiB up.
+  The wake limits for a budget (design §4.3). One wake holds at most `max_inflight_bytes` of what it reads
+  plus `(fetch_concurrency + 2) * edge_bytes` (Alambique design §6.3), so: `max_inflight_bytes` is a sixteenth
+  of the budget (1 to 64 MiB), `fetch_concurrency` one request per 2 MiB of it (1 to 16), and `max_wakes` as
+  many wakes of that cost as fit (1 to 256). The worst case, `max_wakes` times the cost, is within the budget
+  once one wake's cost is. A file larger than `max_inflight_bytes` is read alone and costs its own size; the
+  limits cannot know it. Wakes above `max_wakes` wait in Alambique's queue and hold nothing; a wake that fails
+  on the store backs off before it starts again, so neither adds to the wakes in flight.
   """
-  @spec wake_limits(non_neg_integer) :: %{
+  @spec wake_limits(non_neg_integer, pos_integer) :: %{
           max_wakes: pos_integer,
           fetch_concurrency: pos_integer,
-          prefetch_bytes: pos_integer
+          max_inflight_bytes: pos_integer
         }
-  def wake_limits(budget) do
-    prefetch = budget |> div(16) |> clamp(@mib, 64 * @mib)
-    fetch = prefetch |> div(2 * @mib) |> clamp(1, 16)
-    wakes = budget |> div(prefetch + fetch * @mib) |> clamp(1, 256)
-    %{max_wakes: wakes, fetch_concurrency: fetch, prefetch_bytes: prefetch}
+  def wake_limits(budget, edge_bytes \\ @edge_bytes) do
+    inflight = budget |> div(16) |> clamp(@mib, 64 * @mib)
+    fetch = inflight |> div(2 * @mib) |> clamp(1, 16)
+    wakes = budget |> div(inflight + (fetch + 2) * edge_bytes) |> clamp(1, 256)
+    %{max_wakes: wakes, fetch_concurrency: fetch, max_inflight_bytes: inflight}
   end
 
   defp clamp(value, low, high), do: value |> max(low) |> min(high)
