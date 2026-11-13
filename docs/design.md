@@ -5438,7 +5438,7 @@ thing locally, what the tarball needs on the host, and the measured sizes and ti
 [how-to-build-the-release.md](how-to-build-the-release.md).
 
 **Limits.** Only Linux, glibc, amd64 and arm64. The arm64 build is proved by the first run of the
-workflow; it is not built locally. The tarball links the glibc and OpenSSL of its build base (Debian 13).
+workflow; it is not built locally. The tarball links the glibc and OpenSSL of its build base (Debian 13); the newest symbols are glibc 2.38 and OpenSSL 3.4.
 
 ## 18. Node releases
 
