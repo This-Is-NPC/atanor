@@ -25,7 +25,7 @@ defmodule Atanor.DaemonTest do
 
   describe "defaults" do
     test "a store and keys are enough" do
-      assert {:ok, %{opts: opts, peers: []}} = Daemon.load(env())
+      assert {:ok, %{opts: opts}} = Daemon.load(env())
       assert opts[:prefix] == "some/prefix"
       assert opts[:port] == 4000 and opts[:ip] == {0, 0, 0, 0}
       assert opts[:data_dir] == System.tmp_dir!()
@@ -79,10 +79,12 @@ defmodule Atanor.DaemonTest do
           "ATANOR_DRAIN_TIMEOUT_MS" => "9000",
           "ATANOR_DRAIN_CONCURRENCY" => "8",
           "ATANOR_DETECTOR_PAUSE_MS" => "3000",
-          "ATANOR_PEERS" => "node-1, node-2"
+          "ATANOR_ADVERTISE" => "node-a.example",
+          "ATANOR_REGISTRY_TTL_MS" => "9000",
+          "ATANOR_REGISTRY_RENEW_MS" => "1500"
         })
 
-      assert {:ok, %{opts: opts, peers: ["node-1", "node-2"]}} = Daemon.load(env)
+      assert {:ok, %{opts: opts}} = Daemon.load(env)
       config = Atanor.Config.build(opts)
       assert {Alambique.Store.S3, %{endpoint: "http://store:8333"}} = opts[:store]
       assert {config.ip, config.port} == {{127, 0, 0, 1}, 5000}
@@ -93,6 +95,7 @@ defmodule Atanor.DaemonTest do
       assert opts[:alambique][:wal][:max_bytes] == 64 * 1_048_576
       assert opts[:alambique][:node_id] == "node-a"
       assert opts[:alambique][:lease_ttl_ms] == 20_000
+      assert opts[:alambique][:registry] == [advertise: "atanor@node-a.example", ttl_ms: 9_000, renew_ms: 1_500]
 
       assert {config.stop.shutdown_ms, config.stop.drain_timeout_ms, config.stop.drain_concurrency} ==
                {50_000, 9_000, 8}
@@ -100,8 +103,30 @@ defmodule Atanor.DaemonTest do
       assert config.detector.acceptable_pause_ms == 3_000
     end
 
+    test "the registry advertises the node name, with a join time of seconds by default" do
+      {:ok, %{opts: opts}} = Daemon.load(env(%{"ATANOR_ADVERTISE" => "10.0.0.7"}))
+      assert opts[:alambique][:registry] == [advertise: "atanor@10.0.0.7", ttl_ms: 15_000, renew_ms: 3_000]
+      assert %Atanor.Config{} = Atanor.Config.build(opts)
+    end
+
+    test "a group goes to the registry's meta, and only a valid one" do
+      {:ok, %{opts: opts}} = Daemon.load(env(%{"ATANOR_ADVERTISE" => "h", "ATANOR_GROUP" => "blue-2"}))
+      assert opts[:alambique][:registry][:meta] == %{"group" => "blue-2"}
+      assert errors(env(%{"ATANOR_GROUP" => "no spaces"})) =~ "ATANOR_GROUP"
+    end
+
+    test "the registry times are checked at load" do
+      advertise = %{"ATANOR_ADVERTISE" => "h"}
+      assert errors(env(Map.put(advertise, "ATANOR_REGISTRY_TTL_MS", "3000"))) =~ "twice :skew_margin_ms"
+      assert errors(env(Map.put(advertise, "ATANOR_REGISTRY_RENEW_MS", "15000"))) =~ ":renew_ms must be less"
+    end
+
+    test "the retired peers list is refused" do
+      assert errors(env(%{"ATANOR_PEERS" => "node-1"})) =~ "unknown variable ATANOR_PEERS"
+    end
+
     test "an empty variable counts as unset" do
-      assert {:ok, %{opts: opts}} = Daemon.load(env(%{"ATANOR_SHUTDOWN_MS" => "", "ATANOR_PEERS" => ""}))
+      assert {:ok, %{opts: opts}} = Daemon.load(env(%{"ATANOR_SHUTDOWN_MS" => "", "ATANOR_REGISTRY_TTL_MS" => ""}))
       refute opts[:stop]
     end
 

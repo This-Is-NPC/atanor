@@ -40,9 +40,15 @@ defmodule Atanor.Daemon do
   @default_data_dir "/var/lib/atanor/cells"
   @default_prefix "atanor"
   @mask "***"
+  # The node name of the release (rel/env.sh.eex): `atanor@<ATANOR_ADVERTISE>`.
+  @node_base "atanor"
+  # A node joins within a renewal; a node that stopped without leaving is forgotten after the TTL plus
+  # the skew margin (2 s).
+  @registry_ttl_ms 15_000
+  @registry_renew_ms 3_000
 
   # `listen` keys take `ip:port`; `bytes` take a number of bytes, with an optional k, m or g (powers
-  # of 1024). `:boot` keys are read by the start script; `:peers` is the list of the daemon.
+  # of 1024). `:boot` keys are read by the start script.
   @keys [
     {"ATANOR_STORE", :url, "The bucket as `s3://bucket` or `s3://bucket/prefix` (prefix default `atanor`). Required."},
     {"ATANOR_S3_ENDPOINT", :string,
@@ -70,7 +76,8 @@ defmodule Atanor.Daemon do
     {"ATANOR_ADMIN_TOKEN", :secret, "The admin token, at least 32 bytes. Without it there is no admin API."},
     {"ATANOR_DASHBOARD_LISTEN", :listen, "The dashboard, `ip:port`. Default `0.0.0.0:4002`."},
     {"ATANOR_DASHBOARD_TOKEN", :secret, "The dashboard token, at least 32 bytes. Without it there is no dashboard."},
-    {"ATANOR_ADVERTISE", :boot, "The host or IP the other nodes reach this one at; the Erlang node is `atanor@<it>`."},
+    {"ATANOR_ADVERTISE", :boot,
+     "The host or IP the other nodes reach this one at; the Erlang node is `atanor@<it>`, which is what the node registry advertises."},
     {"ATANOR_NET_TICKTIME", :boot, "Seconds a silent peer goes unnoticed (Erlang's `net_ticktime`). Default 60."},
     {"ATANOR_COOKIE_FILE", :boot, "The file that holds the Erlang cookie (or give `RELEASE_COOKIE`)."},
     {"ATANOR_NODE_ID", :string, "The node's id in the leases. Default: the Erlang node name."},
@@ -85,12 +92,16 @@ defmodule Atanor.Daemon do
     {"ATANOR_DRAIN_TIMEOUT_MS", :integer, "The bound of one cell's handoff in a drain. Default 15000."},
     {"ATANOR_DRAIN_CONCURRENCY", :integer, "The cells handed off at once in a drain. Default 64."},
     {"ATANOR_DETECTOR_PAUSE_MS", :integer, "The pause the failure detector tolerates. Default 2000."},
-    {"ATANOR_PEERS", :peers, "The host names of the peers, comma separated (the daemon; removed by store discovery)."}
+    {"ATANOR_GROUP", :group,
+     "The discovery group: a node dials only the nodes of its own group. Default none. A node that replaces another in a swap takes one."},
+    {"ATANOR_REGISTRY_TTL_MS", :integer,
+     "How long the node's entry in the store is live without a renewal. Default #{@registry_ttl_ms}."},
+    {"ATANOR_REGISTRY_RENEW_MS", :integer,
+     "How often the node renews its entry and reads the peers. Default #{@registry_renew_ms}."}
   ]
 
   @secrets for {name, type, _} <- @keys, type in [:secret, :token], do: name
   @boot for {name, :boot, _} <- @keys, do: name
-  @peers_key "ATANOR_PEERS"
   @store_key "ATANOR_STORE"
   # The path of the file, read before the loader runs.
   @config_var "ATANOR_CONFIG"
@@ -105,7 +116,6 @@ defmodule Atanor.Daemon do
   # `children` are the processes to start before `{Atanor, opts}`: the holder of renewable credentials.
   @type settings :: %{
           opts: keyword,
-          peers: [String.t()],
           children: [Supervisor.child_spec()],
           effective: [{String.t(), String.t()}]
         }
@@ -129,7 +139,7 @@ defmodule Atanor.Daemon do
   @doc """
   The settings from the environment and the contents of the file (a JSON object, or `nil`).
 
-  Returns `{:ok, settings}` with `opts` (for `{Atanor, opts}`), `peers` and `effective`, the list of
+  Returns `{:ok, settings}` with `opts` (for `{Atanor, opts}`), `children` and `effective`, the list of
   `{variable, text}` in effect, secrets masked, and the source of the credentials; or `{:error, messages}` with every problem found.
   The options are `:read_file`, a function of a path that returns `{:ok, binary}` or
   `{:error, reason}`, used for the `*_FILE` variables and the shared AWS files (default `File.read/1`),
@@ -332,11 +342,10 @@ defmodule Atanor.Daemon do
 
     with [] <- errors,
          {:ok, aws} <- credentials(parsed, env, read, opts),
-         {:ok, store_opts} <- options(parsed, aws) do
+         {:ok, store_opts} <- options(parsed, aws, blank(env["ATANOR_ADVERTISE"])) do
       {:ok,
        %{
          opts: store_opts,
-         peers: Map.get(parsed, @peers_key, []),
          children: credential_children(aws),
          effective: effective(parsed, env) ++ [{"credentials", aws.source}]
        }}
@@ -394,6 +403,13 @@ defmodule Atanor.Daemon do
   defp parse(:token, text), do: {:ok, text}
   defp parse(:string, text), do: {:ok, text}
 
+  defp parse(:group, text),
+    do:
+      if(text =~ ~r/\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/,
+        do: {:ok, text},
+        else: {:error, "must be 1 to 64 letters, digits, '.', '_' or '-'"}
+      )
+
   defp parse(:integer, text) do
     if text =~ ~r/\A[0-9]+\z/, do: {:ok, String.to_integer(text)}, else: {:error, "must be a non-negative integer"}
   end
@@ -427,8 +443,6 @@ defmodule Atanor.Daemon do
     end
   end
 
-  defp parse(:peers, text), do: {:ok, String.split(text, ",", trim: true) |> Enum.map(&String.trim/1)}
-
   defp unit_bytes("k"), do: 1_024
   defp unit_bytes("m"), do: 1_048_576
   defp unit_bytes("g"), do: 1_073_741_824
@@ -445,7 +459,7 @@ defmodule Atanor.Daemon do
       if(v["ATANOR_S3_ENDPOINT"], do: Map.put(config, :endpoint, v["ATANOR_S3_ENDPOINT"]), else: config)}, prefix}
   end
 
-  defp options(v, aws) do
+  defp options(v, aws, advertise) do
     {store, prefix} = s3_store(v, aws)
 
     {ip, port} = v["ATANOR_LISTEN"] || {@any, 4000}
@@ -461,7 +475,8 @@ defmodule Atanor.Daemon do
       |> put_group(:alambique,
         lease_ttl_ms: v["ATANOR_LEASE_TTL_MS"],
         node_id: v["ATANOR_NODE_ID"],
-        wal: for(bytes <- [v["ATANOR_WAL_LIMIT"]], bytes, do: {:max_bytes, bytes})
+        wal: for(bytes <- [v["ATANOR_WAL_LIMIT"]], bytes, do: {:max_bytes, bytes}),
+        registry: registry(v, advertise)
       )
       |> put_group(:stop,
         shutdown_ms: v["ATANOR_SHUTDOWN_MS"],
@@ -486,6 +501,18 @@ defmodule Atanor.Daemon do
   end
 
   defp credential_options(%{provider: _}), do: %{credentials: &Atanor.AwsCredentials.credentials/0}
+
+  # The node registry: this node is found at its Erlang node name (`Atanor.Discovery`). Without an
+  # advertised host (a pure load) there is no registry.
+  defp registry(_v, nil), do: []
+
+  defp registry(v, advertise) do
+    [
+      advertise: "#{@node_base}@#{advertise}",
+      ttl_ms: v["ATANOR_REGISTRY_TTL_MS"] || @registry_ttl_ms,
+      renew_ms: v["ATANOR_REGISTRY_RENEW_MS"] || @registry_renew_ms
+    ] ++ if(v["ATANOR_GROUP"], do: [meta: %{"group" => v["ATANOR_GROUP"]}], else: [])
+  end
 
   defp put_unless(opts, true, _key, _value), do: opts
   defp put_unless(opts, false, key, value), do: opts ++ [{key, value}]
@@ -519,7 +546,6 @@ defmodule Atanor.Daemon do
     do: with({bucket, prefix} <- parsed[name], do: Path.join("s3://" <> bucket, prefix))
 
   defp shown(name, :listen, parsed, _env), do: with({ip, port} <- parsed[name], do: "#{:inet.ntoa(ip)}:#{port}")
-  defp shown(name, :peers, parsed, _env), do: with(peers when is_list(peers) <- parsed[name], do: Enum.join(peers, ","))
   defp shown(name, _type, parsed, _env), do: with(value when value != nil <- parsed[name], do: to_string(value))
 
   defp blank(nil), do: nil
