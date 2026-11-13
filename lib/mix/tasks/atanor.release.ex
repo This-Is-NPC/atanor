@@ -20,7 +20,8 @@ defmodule Mix.Tasks.Atanor.Release do
 
   It leaves a file that differs from what it would write, unless `--force` is given. When `atanor` is
   a `path:` dependency outside the project (the examples of this repository), the Docker build context is
-  the closest directory that holds both, and the task prints the command. docs/how-to-build-a-derived-image.md.
+  the closest directory that holds both, and the task prints the command to run from the project
+  directory (`-f` is resolved from there). docs/how-to-build-a-derived-image.md.
   """
   use Mix.Task
   require EEx
@@ -28,7 +29,7 @@ defmodule Mix.Tasks.Atanor.Release do
   @template """
   # syntax=docker/dockerfile:1
   # Written by `mix atanor.release`: the release of this app and Atanor in one VM, on the base of the
-  # product image. Build it from <%= @context_name %>:
+  # product image. Build it from the directory of this file, with <%= @context_name %> as the context:
   #   <%= @build_command %>
   # EXTRA_PACKAGES adds Debian packages to the image (for example curl, for a healthcheck).
   ARG ELIXIR_IMAGE=<%= @elixir_image %>
@@ -101,7 +102,7 @@ defmodule Mix.Tasks.Atanor.Release do
 
     Mix.shell().info("""
 
-    Build the image from #{plan.context_name}:
+    Build the image, from this directory, with #{plan.context_name} as the context:
       #{plan.build_command}
     Then see docs/how-to-build-a-derived-image.md for what the node needs to start.\
     """)
@@ -130,9 +131,9 @@ defmodule Mix.Tasks.Atanor.Release do
       build_command:
         if(git?,
           do: "docker build -t my-app .",
-          else: "docker build -f #{Path.join(app_dir, "Dockerfile")} -t my-app #{context_arg}"
+          else: "docker build -f Dockerfile -t my-app #{context_arg}"
         ),
-      context_name: if(git?, do: "this directory", else: context_arg),
+      context_name: if(git?, do: "this directory", else: "`#{context_arg}`"),
       work_dir: Path.expand(app_dir, "/src"),
       atanor_target: Path.expand(Path.join(relative(atanor, context), "native/atanor_wasm/target"), "/src"),
       alambique_target: Path.expand(Path.join(app_dir, "deps/alambique/native/alambique_nif/target"), "/src")

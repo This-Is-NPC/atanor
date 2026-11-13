@@ -38,7 +38,18 @@ defmodule Atanor.ReleaseTaskTest do
       plan = Release.plan("/repo/examples/live", "/repo")
 
       assert %{git?: false, app_dir: "examples/live", atanor_dir: ".", context_arg: "../.."} = plan
-      assert plan.build_command == "docker build -f examples/live/Dockerfile -t my-app ../.."
+      assert plan.build_command == "docker build -f Dockerfile -t my-app ../.."
+    end
+
+    test "the printed -f names a Dockerfile that exists from the project directory", %{tmp_dir: dir} do
+      app = Path.join(dir, "examples/live")
+      File.mkdir_p!(app)
+      File.write!(Path.join(app, "Dockerfile"), "")
+
+      args = String.split(Release.plan(app, dir).build_command)
+      assert ["-f", file | _] = Enum.drop_while(args, &(&1 != "-f"))
+      assert File.regular?(Path.expand(file, app))
+      assert args |> List.last() |> Path.expand(app) == dir
     end
 
     test "a path dependency in a sibling directory" do
@@ -90,6 +101,13 @@ defmodule Atanor.ReleaseTaskTest do
 
       assert run(dir, releases, ["--force"]) =~ "wrote      Dockerfile"
       assert read(dir, "Dockerfile") == before
+    end
+
+    test "prints the build command to run from the project directory", %{tmp_dir: dir} do
+      out = run(dir, atanor: [])
+
+      assert out =~ "\n  docker build -f Dockerfile -t my-app "
+      assert out =~ "Build the image, from this directory,"
     end
 
     test "a context above the project sends only the sources that are needed", %{tmp_dir: dir} do
