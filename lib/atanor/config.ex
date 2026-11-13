@@ -994,7 +994,7 @@ defmodule Atanor.Config do
       ":alambique :replicas must be false or a keyword list"
     )
 
-    registry!(Keyword.get(opts, :registry, false))
+    registry!(Keyword.get(opts, :registry, false), Keyword.get(opts, :skew_margin_ms, @alambique_skew_margin_ms))
 
     for {name, kinds} <- @alambique_limits do
       case Keyword.get(opts, name, []) do
@@ -1026,11 +1026,11 @@ defmodule Atanor.Config do
     )
   end
 
-  # `registry:` publishes this node in the store (Alambique's `peers/1`); Atanor does not use it yet. The
+  # `registry:` publishes this node in the store (Alambique's `peers/1`), and `Atanor.Discovery` connects to the peers. The
   # integers default in Alambique (`ttl_ms` to the lease TTL), and Alambique checks their ordering at start.
-  defp registry!(false), do: :ok
+  defp registry!(false, _skew), do: :ok
 
-  defp registry!(opts) do
+  defp registry!(opts, skew) do
     check!(Keyword.keyword?(opts), ":alambique :registry must be false or a keyword list")
     advertise = Keyword.get(opts, :advertise)
     check!(is_binary(advertise) and advertise != "", ":alambique :registry :advertise must be a non-empty string")
@@ -1046,6 +1046,14 @@ defmodule Atanor.Config do
 
     for key <- ints,
         do: check!(positive_integer?(opts[key]), ":alambique :registry #{inspect(key)} must be a positive integer")
+
+    ttl = opts[:ttl_ms]
+    check!(is_nil(ttl) or ttl > 2 * skew, ":alambique :registry :ttl_ms must be greater than twice :skew_margin_ms")
+
+    check!(
+      is_nil(ttl) or is_nil(opts[:renew_ms]) or opts[:renew_ms] < ttl,
+      ":alambique :registry :renew_ms must be less than :ttl_ms"
+    )
   end
 
   defp alambique_group!(name, opts, kinds) do
