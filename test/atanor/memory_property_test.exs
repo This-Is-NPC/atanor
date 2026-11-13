@@ -76,4 +76,42 @@ defmodule Atanor.MemoryPropertyTest do
       assert opts[:restore][:max_inflight_bytes] == (inflight || derived.max_inflight_bytes)
     end
   end
+
+  property "guests that wait and calls that queue never pass the memory they may hold" do
+    check all(
+            limit <- integer(1..(64 * 1024)),
+            fraction <- float(min: 0.5, max: 0.99),
+            share <- float(min: 0.0, max: 1.0),
+            guest <- integer(1..(256 * @mib)),
+            threads <- integer(1..64)
+          ) do
+      memory = %{limit_bytes: limit * @mib, refuse_fraction: fraction, wake_fraction: share}
+      budget = Memory.waiting_budget(memory)
+      {waiting, queue} = Atanor.Wasm.waiting_limits(threads, budget, guest)
+
+      # Below the cost of one guest the minimum of one stays over the budget.
+      ceiling = max(budget, guest)
+      assert waiting in 1..256
+      assert waiting * guest <= ceiling
+      assert queue * guest <= ceiling
+
+      # The wakes and the waiting guests share the headroom above the refuse mark.
+      assert budget + Memory.wake_budget(memory) <= limit * @mib * (1 - fraction) + 1
+
+      # The CPU still bounds the guests that run, and explicit values win.
+      settings = Atanor.Wasm.settings([threads: threads, max_waiting: 7, queue: 9], budget)
+      assert {settings.max_calls, settings.max_waiting, settings.queue} == {4 * threads, 7, 9}
+    end
+  end
+
+  test "a node without a memory limit keeps the CPU-derived waiting guests and queue" do
+    assert Atanor.Wasm.waiting_limits(3, nil, 2 * @mib) == {6, 12}
+  end
+
+  test "the defaults of scenarios A (1 CPU, 512 MiB) and B (2 CPU, 2 GiB)" do
+    memory = fn limit -> %{limit_bytes: limit * @mib, refuse_fraction: 0.85, wake_fraction: 0.5} end
+    guest = Atanor.Wasm.waiting_bytes()
+    assert Atanor.Wasm.waiting_limits(1, Memory.waiting_budget(memory.(512)), guest) == {19, 19}
+    assert Atanor.Wasm.waiting_limits(2, Memory.waiting_budget(memory.(2048)), guest) == {76, 76}
+  end
 end

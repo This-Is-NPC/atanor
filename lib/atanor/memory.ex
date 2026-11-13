@@ -25,16 +25,32 @@ defmodule Atanor.Memory do
   limit (`refuse_fraction` nil counts as the default 0.85). `nil` when the node has no limit.
   """
   @spec wake_budget(map) :: non_neg_integer | nil
-  def wake_budget(memory) do
+  def wake_budget(memory), do: share(memory, memory.wake_fraction)
+
+  @doc """
+  The bytes that guests waiting for I/O may hold: the rest of that headroom, `1 - wake_fraction` of it.
+  `nil` when the node has no limit.
+  """
+  @spec waiting_budget(map) :: non_neg_integer | nil
+  def waiting_budget(memory), do: share(memory, 1 - memory.wake_fraction)
+
+  defp share(memory, fraction) do
     case limit(memory) do
       {nil, _source} ->
         nil
 
       {bytes, _source} ->
         headroom = bytes * (1 - (memory.refuse_fraction || @default_refuse_fraction))
-        trunc(headroom * memory.wake_fraction)
+        trunc(headroom * fraction)
     end
   end
+
+  @doc """
+  How many guests that wait (or calls that queue for one) fit in `budget` when each holds `guest_bytes`
+  (design §14.2): 1 to 256. Below the cost of one guest the minimum of one stays over the budget.
+  """
+  @spec waiting_limit(non_neg_integer, pos_integer) :: pos_integer
+  def waiting_limit(budget, guest_bytes), do: budget |> div(guest_bytes) |> clamp(1, 256)
 
   # Alambique's `restore: [edge_bytes:]` default.
   @edge_bytes 65_536

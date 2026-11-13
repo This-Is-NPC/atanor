@@ -312,7 +312,8 @@ defmodule Atanor do
       `limit * (1 - refuse_fraction) * wake_fraction`, `max_inflight_bytes` a sixteenth of it (1 to
       64 MiB), `fetch_concurrency` one per 2 MiB of it (1 to 16) and `max_wakes` what fits
       (1 to 256). A 512 MiB node gets 14 wakes, 1 request and 2.4 MiB in flight; a 2 GiB node 15
-      wakes, 4 requests and 9.6 MiB (design §4.3). Wakes above `max_wakes` wait in Alambique's queue. Without a limit Alambique's defaults stay. The ingress
+      wakes, 4 requests and 9.6 MiB (design §4.3). The rest of the headroom, `1 - wake_fraction`, bounds the
+      WASM guests that wait and the calls that queue (`Atanor.Wasm` `:max_waiting`, `:queue`; design §14.2). Wakes above `max_wakes` wait in Alambique's queue. Without a limit Alambique's defaults stay. The ingress
       also refuses
       requests with 503 `overloaded` while the working set of the cgroup is at
       least `refuse_fraction` (0.85; `nil` turns it off) of that limit, and

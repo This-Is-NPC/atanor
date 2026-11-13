@@ -3096,7 +3096,7 @@ the node keeps serving.
 | CPU, epoch mode | manifest `limits.cpu_ms`, at most the node setting `cpu_ms` | node `cpu_ms`, 5000 ms | `:cpu`, 500 |
 | CPU, fuel mode | manifest `limits.fuel` (at most the node setting `max_fuel`), else the node setting `fuel` | 1,000,000,000 (ceiling 10,000,000,000) | `:cpu`, 500 |
 | response body | node setting `max_response_bytes` | 8,000,000 | 500 |
-| guests that wait without a call slot | node setting `max_waiting` | 2 per thread | none: a guest above it keeps its slot (§14.2) |
+| guests that wait without a call slot | node setting `max_waiting` | what the memory fits (19 on 512 MiB, 76 on 2 GiB), 2 per thread without a limit | none: a guest above it keeps its slot (§14.2) |
 
 The wall clock covers the wait for host calls (cells, secrets, worker calls,
 outbound HTTP). CPU time does not include it. Overload is separate: a call
@@ -4064,7 +4064,8 @@ Three bounds, all in Rust (`admission.rs`); Elixir does not count requests.
   no call slot and no pool thread either (see *In flight*). Permits are served in order, and the
   wait for the first one counts in `queue_wait_ms`. The CPU limit counts only
   the time the guest ran, as before: a call has a thread of its own.
-* **In flight.** The queue holds `queue` calls (default 4 per thread) for the
+* **In flight.** The queue holds `queue` calls (default: as many as `max_waiting` with a memory
+  limit, else 4 per thread) for the
   pool threads; a full queue refuses the call at once. A queued
   call that waited more than `queue_wait_ms` is dropped when it gets the right
   to run. At most `max_calls` calls are busy at once (default 4 per thread):
@@ -4076,7 +4077,7 @@ Three bounds, all in Rust (`admission.rs`); Elixir does not count requests.
 * **Waiting.** A call whose guest waits is not busy: it gives its call slot
   back, and the pool thread it holds stops counting against `max_calls`, so
   guests that wait do not cause `:overloaded` for new calls. At most
-  `max_waiting` guests do this at once (default 2 per thread). The pool has
+  `max_waiting` guests do this at once (default below). The pool has
   `max_waiting` threads more than `max_calls` for them, and a store each
   (§14.9). A guest that waits above that number keeps its slot and thread until
   it runs again, as before. A guest that wakes is never refused: it takes its
@@ -4090,6 +4091,38 @@ Three bounds, all in Rust (`admission.rs`); Elixir does not count requests.
   `max_nested_calls` in flight (default 1 per thread); one more is refused
   with `:overloaded`. A pool full of waiting callers cannot starve their
   callees, and a callee waits only for the right to run, like any call.
+
+*Waiting and queue from the memory.* A guest that waits for the store holds no CPU, so the CPU
+quota must not decide how many may wait: a node of 1 CPU that served a write in
+about 0.6 s (about 12 store round trips of 25 ms) refused about 0.5% of 10 requests/s
+with `worker_queue` while it used a third of its memory (round 018f). With a memory limit
+`max_waiting` and `queue` follow the headroom above the refuse mark, the one the wakes use
+(§4.3), split by `wake_fraction`: the wakes get that share and the waiting guests the rest.
+
+```
+waiting_budget = limit * (1 - refuse_fraction) * (1 - wake_fraction)   (nil when the node has no limit)
+max_waiting    = queue = clamp(waiting_budget / waiting_bytes, 1, 256)
+```
+
+`waiting_bytes` is a node setting of `Atanor.Wasm`, 2 MiB by default: what one waiting guest, or one
+queued call, is counted to hold (its store, instance memory, stack and request). A small guest
+(`sleep.wasm`) measured about 0.7 MiB per waiting guest (resident memory of the VM with 8, 24 and 48
+guests parked: 2.0, 0.65 and 0.69 MiB each; noisy, so a guest of your own may differ and
+`waiting_bytes` is the knob). The worst case, `max_waiting` times `waiting_bytes`, is within the
+budget once one guest's cost is; below it the minimum of one stays over it
+(`Atanor.Memory.waiting_limit/2`, checked by a property in `memory_property_test.exs`). The CPU
+still bounds the guests that run: `threads`, `max_calls` and `worker_calls` are not derived from
+the memory. A value of `max_waiting` or `queue` in `:atanor, :wasm` wins. Without a memory limit
+the old defaults hold (2 and 4 per thread). The node logs the result at start
+(`atanor: 19 waiting guests and 19 queued calls at most (2097152 bytes each), 1 guests run at once`).
+
+| Node | Waiting budget | `max_waiting` and `queue` | Pool threads and stores (`max_calls + max_waiting + max_nested_calls`) |
+| --- | --- | --- | --- |
+| A: 1 CPU, 512 MiB | 38.4 MiB | 19 | 4 + 19 + 1 = 24 |
+| B: 2 CPU, 2 GiB | 153.6 MiB | 76 | 8 + 76 + 2 = 86 |
+
+Each pool thread and store reserves address space (§14.9): 768 GiB on A, about 2.7 TiB on B, and at
+most about 10 TiB with 256 waiting guests.
 
 `Gate` is the counting rule of the second, third and fourth bounds. Its property
 tests check over random sequences that the slots held never exceed the limit,
@@ -4315,8 +4348,9 @@ chosen:
   host refuses the reservation the node does not start: the error ends with "the pooling allocator
   reserves address space for N calls: lower max_calls, max_waiting and max_nested_calls, or set pooling: false".
   With `max_calls` and `max_nested_calls` at their defaults (4 and 1 per thread, before `max_waiting` existed) the same laptop
-  reserved 1.98 TiB (5 times as many slots), and 324 MiB resident after the run. With `max_waiting` at its default
-  (2 per thread) there are 7 slots per thread, so about 2.8 TiB (scaled, not measured). Pages are returned to the kernel when a call ends. A host
+  reserved 1.98 TiB (5 times as many slots), and 324 MiB resident after the run. With `max_waiting` at its
+  default without a memory limit (2 per thread) there are 7 slots per thread, so about 2.8 TiB (scaled, not
+  measured); with a limit `max_waiting` follows the memory (§14.2). Pages are returned to the kernel when a call ends. A host
   with a limit on address space (`ulimit -v`, `vm.overcommit_memory=2`) must set
   `pooling: false` or fewer `threads` and `max_calls`.
 * A component that needs more than a slot (more than 8 memories, a table larger

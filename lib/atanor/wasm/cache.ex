@@ -71,6 +71,8 @@ defmodule Atanor.Wasm.Cache do
 
   @impl true
   def init(config) do
+    Atanor.Wasm.configure(config.memory)
+
     with :ok <- Native.configure(engine_settings()),
          :ok <- Native.configure_compile(compile_settings()) do
       :ets.new(table(config.name), [:named_table, :set, :protected, read_concurrency: true])
