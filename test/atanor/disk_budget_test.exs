@@ -76,16 +76,15 @@ defmodule Atanor.DiskBudgetTest do
     assert peak <= budget * (1 + @margin), "peak #{peak} bytes against a budget of #{budget}: #{inspect(statuses)}"
   end
 
-  # The WAL marks of 20 cells (20 MiB) do not fit in 16 MiB: the monitor hibernates idle cells at 70% and the
-  # ingress refuses at 95%.
-  test "a budget below the WAL marks is held by the monitor" do
+  # The WAL marks of 20 cells (20 MiB) do not fit in 16 MiB: Alambique's WAL budget (8 MiB) checkpoints the
+  # biggest WALs, and the ingress refuses at 95% if the files still pass the budget.
+  test "a budget below the WAL marks is held by the WAL budget" do
     budget = 16 * @mib
     node = start(disk: [max_bytes: budget, sample_ms: 20])
     test = self()
     handler = {__MODULE__, make_ref()}
 
-    :telemetry.attach(handler, [:atanor, :disk, :reclaim], &__MODULE__.reclaimed/4, test)
-
+    :telemetry.attach(handler, [:alambique, :wal, :budget], &__MODULE__.checkpointed/4, test)
     on_exit(fn -> :telemetry.detach(handler) end)
 
     {statuses, peak} = write_for(node, @run_ms)
@@ -93,18 +92,10 @@ defmodule Atanor.DiskBudgetTest do
     assert Map.keys(statuses) -- [200, 503] == [], "statuses: #{inspect(statuses)}"
     assert statuses[200] > 0
     assert peak <= budget * (1 + @margin), "peak #{peak} bytes against a budget of #{budget}: #{inspect(statuses)}"
-    assert hibernated(node.name, 0) > 0
+    assert_received :wal_budget
   end
 
-  def reclaimed(_event, measures, %{instance: name}, test), do: send(test, {:reclaim, name, measures})
-
-  defp hibernated(name, total) do
-    receive do
-      {:reclaim, ^name, %{hibernated: n}} -> hibernated(name, total + n)
-    after
-      0 -> total
-    end
-  end
+  def checkpointed(_event, _measures, _meta, test), do: send(test, :wal_budget)
 
   test "the node answers again once the writes stop" do
     node = start(disk: [max_bytes: 12 * @mib, sample_ms: 100])
