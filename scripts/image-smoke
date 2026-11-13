@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Smoke test of the product image (docs/how-to-build-the-release.md): build the `runtime` and
+# `harness` targets of the Dockerfile, then check that
+#   - a node starts from environment variables only (store, credentials through *_FILE, advertise,
+#     cookie) against SeaweedFS and answers 200 on /health/ready, and how long that takes;
+#   - it refuses to start without a cookie, and on an unknown ATANOR_ variable, with the reason in its log;
+#   - the runtime image has no curl and no iptables, runs as a user that is not root, and the harness
+#     image has the tools of cluster/.
+# Set ATANOR_SMOKE_REUSE=1 to use the images of an earlier run. Everything it creates is named
+# atanor-smoke-* and is removed by id or exact name; safe to rerun. Needs docker, curl and openssl.
+set -euo pipefail
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+runtime=atanor-smoke-runtime:local
+harness=atanor-smoke-harness:local
+net=atanor-smoke-net
+store_image=${ATANOR_SMOKE_STORE_IMAGE:-chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d}
+ready_timeout=${ATANOR_SMOKE_READY_TIMEOUT:-120}
+bucket=smoke
+
+ids=()
+tmp=$(mktemp -d)
+cleanup() {
+  [[ ${#ids[@]} -eq 0 ]] || docker rm -f "${ids[@]}" >/dev/null 2>&1 || true
+  docker network rm "$net" >/dev/null 2>&1 || true
+  rm -rf -- "${tmp:?}"
+}
+trap cleanup EXIT
+
+failures=0
+pass() { echo "ok    $*"; }
+fail() { echo "FAIL  $*" >&2; failures=$((failures + 1)); }
+now() { date +%s.%N; }
+since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
+
+# --- images -----------------------------------------------------------------
+if [[ ${ATANOR_SMOKE_REUSE:-0} != 1 ]]; then
+  for target in runtime harness; do
+    start=$(now)
+    docker build -q --target "$target" -t "atanor-smoke-$target:local" --file "$repo/Dockerfile" "$repo" >/dev/null
+    echo "built the $target image in $(since "$start") s"
+  done
+fi
+for target in runtime harness; do
+  echo "size  $target: $(docker image inspect -f '{{.Size}}' "atanor-smoke-$target:local" | awk '{ printf "%.1f MB (%d bytes)", $1 / 1e6, $1 }')"
+done
+
+# --- the image itself ---------------------------------------------------------
+if docker run --rm --entrypoint /bin/sh "$runtime" -c 'command -v curl || command -v iptables' >/dev/null 2>&1; then
+  fail "the runtime image has curl or iptables"
+else
+  pass "the runtime image has no curl and no iptables"
+fi
+if docker run --rm --entrypoint /bin/sh "$harness" -c 'command -v curl && command -v iptables && command -v tc && command -v ps' >/dev/null 2>&1; then
+  pass "the harness image has curl, iptables, tc and ps"
+else
+  fail "the harness image lacks one of curl, iptables, tc, ps"
+fi
+if [[ $(docker run --rm --entrypoint id "$runtime" -u) != 0 ]]; then
+  pass "the runtime image runs as a user that is not root"
+else
+  fail "the runtime image runs as root"
+fi
+
+# --- the store, the secrets ---------------------------------------------------
+openssl rand -hex 16 >"$tmp/access_key"
+openssl rand -hex 24 >"$tmp/secret_key"
+openssl rand -hex 24 >"$tmp/admin_token"
+openssl rand -hex 24 >"$tmp/cookie"
+for file in access_key secret_key admin_token cookie; do
+  tr -d '\n' <"$tmp/$file" >"$tmp/$file.n" && mv "$tmp/$file.n" "$tmp/$file"
+done
+chmod 755 "$tmp"
+chmod 644 "$tmp"/*
+
+docker network create "$net" >/dev/null
+store=$(docker run -d --name atanor-smoke-store --network "$net" -p 127.0.0.1::8333 \
+  -v "$tmp:/run/secrets:ro" --entrypoint /bin/sh "$store_image" -c \
+  'export AWS_ACCESS_KEY_ID="$(cat /run/secrets/access_key)" AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/secret_key)";
+   exec /entrypoint.sh mini -dir=/data -ip=atanor-smoke-store -ip.bind=0.0.0.0 -s3.port=8333 -admin.ui=false')
+ids+=("$store")
+store_url=http://$(docker port "$store" 8333/tcp | head -n 1)
+deadline=$((SECONDS + ready_timeout))
+until curl -s -o /dev/null -m 2 "$store_url/"; do
+  (( SECONDS < deadline )) || { echo "the store did not answer in ${ready_timeout}s" >&2; docker logs "$store" 2>&1 | tail -n 20 >&2; exit 1; }
+  sleep 1
+done
+code=$(curl -sS -o /dev/null -w '%{http_code}' --aws-sigv4 aws:amz:us-east-1:s3 \
+  --user "$(cat "$tmp/access_key"):$(cat "$tmp/secret_key")" -X PUT "$store_url/$bucket")
+[[ $code == 200 || $code == 409 ]] || { echo "creating the bucket answered HTTP $code" >&2; exit 1; }
+
+# The environment of a node: only what docs/configuration.md documents; no command arguments.
+node_env=(
+  -e ATANOR_STORE="s3://$bucket" -e ATANOR_S3_ENDPOINT=http://atanor-smoke-store:8333
+  -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret_key
+  -e ATANOR_ADMIN_TOKEN_FILE=/run/secrets/admin_token -e ATANOR_ADVERTISE=node-1.smoke
+  -e ATANOR_COOKIE_FILE=/run/secrets/cookie
+)
+run_node() { docker run -d --network "$net" -v "$tmp:/run/secrets:ro" "$@"; }
+
+# --- a node starts from the environment and reports ready ---------------------
+start=$(now)
+node=$(run_node -p 127.0.0.1::4001 "${node_env[@]}" "$runtime")
+ids+=("$node")
+admin=http://$(docker port "$node" 4001/tcp | head -n 1)
+ready=
+deadline=$((SECONDS + ready_timeout))
+while :; do
+  if [[ $(curl -s -o /dev/null -m 2 -w '%{http_code}' -H "authorization: Bearer $(cat "$tmp/admin_token")" "$admin/health/ready" || true) == 200 ]]; then
+    ready=$(since "$start"); break
+  fi
+  [[ $(docker inspect -f '{{.State.Running}}' "$node") == true ]] || break
+  (( SECONDS < deadline )) || break
+done
+if [[ -n $ready ]]; then
+  pass "a node started from environment variables only was ready on /health/ready in $ready s (docker run to HTTP 200)"
+else
+  fail "the node was not ready"; docker logs "$node" 2>&1 | tail -n 30 >&2
+fi
+
+# --- refusals -----------------------------------------------------------------
+refuse() { # NAME EXPECTED_TEXT ENV_ARGS...
+  local name=$1 expected=$2 id status log; shift 2
+  id=$(run_node "$@" "$runtime")
+  ids+=("$id")
+  status=$(timeout 60 docker wait "$id" || echo timeout)
+  log=$(docker logs "$id" 2>&1)
+  if [[ $status != 0 && $status != timeout && $log == *"$expected"* ]]; then
+    pass "$name: exit status $status, the log says: $(grep -m1 -F "$expected" <<<"$log")"
+  else
+    fail "$name: exit status $status, expected the log to hold '$expected'"; echo "$log" | tail -n 15 >&2
+  fi
+}
+no_cookie=()
+for ((i = 0; i < ${#node_env[@]}; i += 2)); do
+  [[ ${node_env[i + 1]} == ATANOR_COOKIE_FILE=* ]] || no_cookie+=("${node_env[i]}" "${node_env[i + 1]}")
+done
+refuse "no cookie" "no cookie" "${no_cookie[@]}"
+refuse "an unknown ATANOR_ variable" "unknown variable ATANOR_STOER; did you mean ATANOR_STORE?" "${node_env[@]}" -e ATANOR_STOER=x
+
+if [[ $failures -gt 0 ]]; then echo "image-smoke: $failures failed" >&2; exit 1; fi
+echo "image-smoke: passed"
