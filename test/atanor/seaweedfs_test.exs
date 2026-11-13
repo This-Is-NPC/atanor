@@ -121,5 +121,35 @@ defmodule Atanor.SeaweedFSTest do
 
       assert cli.(["status"]) =~ "w: active #{v1}, revision 3"
     end
+
+    test "deploy --bucket reads the node's endpoint and keys, writes to SeaweedFS and a node serves the worker", %{
+      tmp_dir: dir
+    } do
+      config = SeaweedFS.config()
+      store = {Alambique.Store.S3, config}
+      node = Node.start(store: store, prefix: "atanor", poll_interval_ms: 50)
+      on_exit(fn -> Node.stop(node) end)
+
+      File.cp!("test/fixtures/wasm/hello.wasm", Path.join(dir, "hello.wasm"))
+      manifest = Manifests.wasm("hello", "hello", routes: [{"127.0.0.1", "/hello"}])
+      File.write!(Path.join(dir, "atanor.json"), Jason.encode!(manifest))
+
+      # No node, no admin token: only the endpoint and the keys, as a node reads them.
+      env = %{
+        "ATANOR_S3_ENDPOINT" => config.endpoint,
+        "AWS_ACCESS_KEY_ID" => config.access_key_id,
+        "AWS_SECRET_ACCESS_KEY" => config.secret_access_key
+      }
+
+      ctx = %{env: env, cwd: dir, stdin: fn _ -> :eof end}
+      assert {0, out, ""} = CLI.run(["deploy", dir, "--bucket", "s3://#{config.bucket}", "--activate"], ctx)
+      id = id_of(out)
+
+      assert until(fn -> match?({:ok, %{id: ^id}}, Registry.deployment(node.name, "hello")) end)
+      assert Req.get!(node.url <> "/hello/ann", retry: false).status == 200
+
+      handle = Store.open(store, "atanor")
+      assert {:ok, %{active: ^id}} = Deployments.head(handle, "hello")
+    end
   end
 end

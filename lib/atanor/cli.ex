@@ -2,19 +2,26 @@ defmodule Atanor.CLI do
   @moduledoc """
   The `atanor` command (design §5.4, docs/cli.md): a client of the admin API
   that logs in to a node, deploys, activates and rolls back workers, reads
-  their status and manages scoped tokens. It never touches the bucket.
+  their status and manages scoped tokens. Only `deploy --bucket` touches the
+  bucket: it publishes a WASM worker straight to the store, with the node's
+  rules for the endpoint, the region and the AWS credentials
+  (`Atanor.Daemon.store/3`), and needs no node.
 
-  `main/1` is the escript entry point (`mise run build:cli`). `run/2` does the
-  work for an argument list and a context and returns `{exit_code, stdout,
-  stderr}`, so tests run it in-process with their own environment, working
-  directory and standard input. The context is `%{env:, cwd:, stdin:}`, where
-  `stdin` is a function from a prompt to a line (or `:eof`).
+  `main/1` is the escript entry point (`mise run build:cli`); the release runs
+  it too (`bin/atanor-entrypoint`). `run/2` does the work for an argument list
+  and a context and returns `{exit_code, stdout, stderr}`, so tests run it
+  in-process with their own environment, working directory and standard input.
+  The context is `%{env:, cwd:, stdin:}`, where `stdin` is a function from a
+  prompt to a line (or `:eof`); `open_store:`, a function of the `--bucket` URL
+  and the environment that returns `{:ok, store_handle, children}`, replaces the
+  bucket for tests.
 
   Exit codes: 0 done, 1 failed, 2 wrong usage.
   """
 
   alias Atanor.CLI.{Client, Config}
-  alias Atanor.{Manifest, Package}
+  alias Atanor.Deployments.Service
+  alias Atanor.{Daemon, Manifest, Package, Store}
 
   @version Mix.Project.config()[:version]
   @default_profile "default"
@@ -71,13 +78,32 @@ defmodule Atanor.CLI do
     },
     %{
       name: "deploy",
-      args: "",
+      args: "[DIR]",
       summary: "Build the package of a worker project and upload it.",
       doc:
-        "Reads the manifest, builds the package here, computes its SHA-256 and uploads it. For a native worker the package holds the MD5 of the compiled module, read from the project's `.beam` file. Needs the `deploy` scope of the worker, and `activate` too with `--activate`.",
+        "Reads the manifest of DIR (default: the current directory), builds the package here, computes its SHA-256 and uploads it, through the admin API of a node or, with `--bucket`, straight to the store. For a native worker the package holds the MD5 of the compiled module, read from the project's `.beam` file. Through the admin API it needs the `deploy` scope of the worker, and `activate` too with `--activate`. `--bucket` needs no node and no token, only write access to the bucket: it takes the endpoint, region and credentials as a node does (docs/configuration.md); it deploys WASM workers only, because a native worker needs its module in the node's release, which only a node can check. `--bucket` cannot be combined with `--url`, `--profile` or `--timeout`. The nodes apply the new head at their next poll.",
       options: [
-        %{flag: :manifest, type: :string, arg: "FILE", default: "atanor.json", doc: "The manifest of the worker."},
+        %{
+          flag: :manifest,
+          type: :string,
+          arg: "FILE",
+          default: "atanor.json",
+          doc: "The manifest of the worker, in DIR."
+        },
         %{flag: :activate, type: :boolean, doc: "Also make the package the active one."},
+        %{
+          flag: :bucket,
+          type: :string,
+          arg: "URL",
+          doc:
+            "Publish to the store `s3://bucket` or `s3://bucket/prefix` (prefix default `atanor`), not through a node."
+        },
+        %{
+          flag: :url,
+          type: :string,
+          arg: "URL",
+          doc: "The admin API URL; replaces the URL of the profile (or ATANOR_URL)."
+        },
         %{
           flag: :ebin,
           type: :keep,
@@ -272,7 +298,13 @@ defmodule Atanor.CLI do
   defp run_command("login", opts, [], ctx), do: login(opts, ctx)
   defp run_command("logout", opts, [], ctx), do: logout(opts, ctx)
 
-  defp run_command("deploy", opts, [], ctx), do: with_conn(opts, ctx, :upload, &deploy(&1, opts, ctx))
+  defp run_command("deploy", opts, args, ctx) when length(args) <= 1 do
+    case opts[:bucket] do
+      nil -> with_conn(opts, ctx, :upload, &deploy(&1, opts, args, ctx))
+      bucket -> with :ok <- exclusive(opts), do: deploy_to_bucket(bucket, opts, args, ctx)
+    end
+  end
+
   defp run_command("status", opts, [], ctx), do: with_conn(opts, ctx, :request, &status(&1, nil))
   defp run_command("status", opts, [w], ctx), do: with_conn(opts, ctx, :request, &status(&1, w))
   defp run_command("rollback", opts, [w], ctx), do: with_conn(opts, ctx, :request, &rollback(&1, w))
@@ -341,7 +373,7 @@ defmodule Atanor.CLI do
     name = profile(opts, env)
 
     with {:ok, stored} <- stored_profile(env, name),
-         {:ok, url} <- present(blank(env["ATANOR_URL"]) || stored["url"], name),
+         {:ok, url} <- present(opts[:url] || blank(env["ATANOR_URL"]) || stored["url"], name),
          {:ok, token} <- present(blank(env["ATANOR_TOKEN"]) || stored["token"], name),
          :ok <- token_for_url(env, stored, url),
          {:ok, url} <- check_url(url),
@@ -473,11 +505,9 @@ defmodule Atanor.CLI do
     end
   end
 
-  defp deploy(conn, opts, ctx) do
-    manifest_path = Path.expand(opts[:manifest] || "atanor.json", ctx.cwd)
-    dir = Path.dirname(manifest_path)
-
-    with {:ok, map} <- Manifest.read_file(manifest_path),
+  defp deploy(conn, opts, args, ctx) do
+    with {:ok, dir, manifest_path} <- project(opts, args, ctx),
+         {:ok, map} <- Manifest.read_file(manifest_path),
          {:ok, package} <- build(map, dir, ebin(opts, ctx, dir)),
          {:ok, body} <-
            Client.request(conn, :post, "/workers/#{package.manifest.name}/packages",
@@ -489,6 +519,126 @@ defmodule Atanor.CLI do
       {:ok, ["package #{body["package_id"]} (#{body["worker"]}, #{body["kind"]}, #{body["size"]} bytes)"] ++ head}
     end
   end
+
+  # The project directory is the argument or the working directory; the manifest is in it, and so are
+  # the component and the compiled modules the manifest names.
+  defp project(opts, args, ctx) do
+    dir = Path.expand(List.first(args) || ".", ctx.cwd)
+    manifest = Path.expand(opts[:manifest] || "atanor.json", dir)
+    {:ok, Path.dirname(manifest), manifest}
+  end
+
+  # The bucket is written without a node, so nothing checks what a node would: a native worker is
+  # refused because its module has to be in the node's release (Atanor.Deployments.Service.check_module/1).
+  defp deploy_to_bucket(bucket, opts, args, ctx) do
+    open_store = ctx[:open_store] || (&open_store/2)
+
+    with {:ok, _dir, manifest_path} <- project(opts, args, ctx),
+         {:ok, map} <- Manifest.read_file(manifest_path),
+         :ok <- wasm_only(map),
+         {:ok, package} <- build(map, Path.dirname(manifest_path), []),
+         {:ok, store, children} <- open_store.(bucket, ctx.env) do
+      with_children(children, fn ->
+        case Service.deploy(store, package, opts[:activate] == true, %{"type" => "bucket"}) do
+          {:ok, package, head} -> {:ok, bucket_lines(package, head, bucket)}
+          {:error, {stage, reason}} -> {:error, bucket_error(stage, reason, package, bucket)}
+        end
+      end)
+    end
+  end
+
+  defp exclusive(opts) do
+    case Enum.find([:url, :profile, :timeout], &Keyword.has_key?(opts, &1)) do
+      nil ->
+        :ok
+
+      flag ->
+        {:usage,
+         "--bucket writes the store directly and --#{flag} is for the admin API of a node: give one or the other"}
+    end
+  end
+
+  defp wasm_only(map) do
+    case Manifest.parse(map) do
+      {:ok, %Manifest{kind: :native, name: name}} ->
+        {:error,
+         "--bucket deploys WASM workers only: #{name} is native, and a node can run it only if its release holds the module, which the bucket cannot check. Deploy it through a node with --url or a profile, after rolling the nodes to a release that has the module"}
+
+      _ ->
+        :ok
+    end
+  end
+
+  # Credentials, endpoint and region as the node reads them.
+  defp open_store(bucket, env) do
+    case Daemon.store(bucket, env) do
+      {:ok, %{store: store, prefix: prefix, children: children}} ->
+        {:ok, Store.open(store, prefix), children}
+
+      {:error, messages} ->
+        {:error, Enum.map_join(messages, "; ", &String.replace_prefix(&1, "ATANOR_STORE: ", "--bucket: "))}
+    end
+  end
+
+  # Renewable credentials are held by a process that has to run while the store is written.
+  defp with_children([], fun), do: fun.()
+
+  defp with_children(children, fun) do
+    trapping = Process.flag(:trap_exit, true)
+
+    try do
+      case Supervisor.start_link(children, strategy: :one_for_one) do
+        {:ok, supervisor} ->
+          try do
+            fun.()
+          after
+            Supervisor.stop(supervisor)
+          end
+
+        {:error, {:shutdown, {:failed_to_start_child, _, {:aws_credentials, source, reason}}}} ->
+          {:error, "cannot get the AWS credentials (#{source}): #{inspect(reason)}"}
+
+        {:error, reason} ->
+          {:error, "cannot start the AWS credentials: #{inspect(reason)}"}
+      end
+    after
+      Process.flag(:trap_exit, trapping)
+
+      receive do
+        {:EXIT, _, _} -> :ok
+      after
+        0 -> :ok
+      end
+    end
+  end
+
+  defp bucket_lines(package, head, bucket) do
+    first =
+      "package #{package.id} (#{package.manifest.name}, #{package.manifest.kind}, #{byte_size(package.bytes)} bytes)"
+
+    case head do
+      nil ->
+        [first, "stored in #{bucket}; this run did not activate it: add --activate"]
+
+      head ->
+        [
+          first,
+          head_line(%{
+            "worker" => head.worker,
+            "active" => head.active,
+            "revision" => head.revision,
+            "previous" => head.previous
+          }),
+          "stored in #{bucket}; the nodes apply it at their next poll"
+        ]
+    end
+  end
+
+  defp bucket_error(:publish, reason, _package, bucket), do: "cannot write the package to #{bucket}: #{inspect(reason)}"
+
+  defp bucket_error(:activate, reason, package, bucket),
+    do:
+      "package #{package.id} is stored in #{bucket} but cannot be activated: #{inspect(reason)}. Nothing changed for the nodes"
 
   defp ebin(opts, ctx, dir) do
     case Keyword.get_values(opts, :ebin) do

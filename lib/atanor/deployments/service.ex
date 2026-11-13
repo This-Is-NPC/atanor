@@ -1,8 +1,9 @@
 defmodule Atanor.Deployments.Service do
   @moduledoc """
   The writes of a deploy (design §5.4), made by the nodes for the admin API:
-  deployers never reach the bucket, they send packages to a node (the `atanor`
-  command, docs/cli.md).
+  deployers send packages to a node (the `atanor` command, docs/cli.md).
+  `deploy/4` is also what `atanor deploy --bucket` calls with a store handle,
+  for a deployer that holds the bucket credentials.
 
   `upload/5` takes package bytes from outside: it enforces the size limit,
   checks the SHA-256 the client expects, parses and validates the manifest
