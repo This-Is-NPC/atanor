@@ -252,6 +252,86 @@ defmodule Atanor.DaemonTest do
     end
   end
 
+  describe "store/3" do
+    test "is the store the node builds from the same URL, endpoint, region and keys" do
+      extra = %{
+        "ATANOR_S3_ENDPOINT" => "http://s3.test:9000",
+        "AWS_REGION" => "eu-west-1",
+        "AWS_SESSION_TOKEN" => "temporary"
+      }
+
+      {:ok, %{opts: opts}} = Daemon.load(env(extra))
+      {:ok, found} = Daemon.store("s3://bucket/some/prefix", env(extra))
+
+      assert found.store == opts[:store]
+      assert found.prefix == opts[:prefix]
+      assert found.children == [] and found.credentials == "env"
+      assert {_, %{region: "eu-west-1", endpoint: "http://s3.test:9000", session_token: "temporary"}} = found.store
+    end
+
+    test "gives the bucket the default prefix, and the region the node's precedence" do
+      assert {:ok, %{prefix: "atanor", store: {_, %{region: "us-east-1", bucket: "b"}}}} = Daemon.store("s3://b", env())
+
+      for {extra, region} <- [
+            {%{"AWS_DEFAULT_REGION" => "d"}, "d"},
+            {%{"AWS_DEFAULT_REGION" => "d", "AWS_REGION" => "r"}, "r"},
+            {%{"AWS_DEFAULT_REGION" => "d", "AWS_REGION" => "r", "ATANOR_S3_REGION" => "a"}, "a"}
+          ] do
+        assert {:ok, %{store: {_, %{region: ^region}}}} = Daemon.store("s3://b", env(extra))
+      end
+    end
+
+    test "the URL given wins over ATANOR_STORE of the environment" do
+      assert {:ok, %{prefix: "other", store: {_, %{bucket: "elsewhere"}}}} =
+               Daemon.store("s3://elsewhere/other", env())
+    end
+
+    test "keeps the renewable credentials of the chain in a child to start" do
+      env = Map.drop(env(), ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"])
+
+      assert {:ok, %{children: [{Atanor.AwsCredentials, {{:imds, _}, _}}], credentials: "EC2 metadata"} = found} =
+               Daemon.store("s3://b", env)
+
+      assert {_, %{credentials: fun}} = found.store
+      assert is_function(fun, 0)
+    end
+
+    test "reads a secret from its file, and ignores a setting that is not the store's" do
+      assert {:error, [message]} =
+               Daemon.store("s3://b", env(%{"ATANOR_LISTEN" => "nowhere"}) |> Map.put("ATANOR_X", "1"))
+
+      assert message =~ "unknown variable ATANOR_X"
+
+      files = %{"/run/key" => "from-file\n"}
+
+      env =
+        env(%{"ATANOR_LISTEN" => "nowhere", "AWS_SECRET_ACCESS_KEY_FILE" => "/run/key"})
+        |> Map.delete("AWS_SECRET_ACCESS_KEY")
+
+      assert {:ok, %{store: {_, %{secret_access_key: "from-file"}}}} =
+               Daemon.store("s3://b", env,
+                 read_file: fn path -> with :error <- Map.fetch(files, path), do: {:error, :enoent} end
+               )
+    end
+
+    test "refuses what the node refuses" do
+      assert {:error, [message]} = Daemon.store("http://bucket", env())
+      assert message =~ "ATANOR_STORE: must be s3://bucket"
+
+      assert {:error, [message]} = Daemon.store("s3://b/Not A Prefix", env())
+      assert message =~ ":prefix"
+
+      assert {:error, [message]} =
+               Daemon.store(
+                 "s3://b",
+                 Map.drop(env(), ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"])
+                 |> Map.put("AWS_EC2_METADATA_DISABLED", "true")
+               )
+
+      assert message =~ "no AWS credentials"
+    end
+  end
+
   describe "load!/1" do
     test "reads the file named by ATANOR_CONFIG and logs once" do
       path = Path.join(System.tmp_dir!(), "atanor-daemon-#{System.unique_integer([:positive])}.json")
