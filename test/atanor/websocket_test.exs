@@ -85,10 +85,17 @@ defmodule Atanor.WebSocketTest do
       :telemetry.attach(id, [:atanor, :ws, :disconnect], &__MODULE__.forward/4, self())
       on_exit(fn -> :telemetry.detach(id) end)
 
-      node = start([manifest()])
+      # Telemetry is VM-wide: a socket of another node, dropped by its client, reports to this handler too.
+      decoy = start([manifest()])
+      WSClient.close(connect(decoy))
+      assert_receive {:telemetry, _, %{worker: "chat", reason: {:error, :closed}}}, 1_000
+
+      # So the worker name, unique to this test, tells our socket from the others.
+      name = "chat-#{System.unique_integer([:positive])}"
+      node = start([manifest(name)])
       client = WSClient.send_frame(connect(node), {:text, "bye"})
       WSClient.recv(client, 5_000)
-      assert_receive {:telemetry, %{duration: d}, %{worker: "chat", reason: reason}}, 1_000
+      assert_receive {:telemetry, %{duration: d}, %{worker: ^name, reason: reason}}, 1_000
       assert reason in [:normal, :shutdown]
       assert d > 0
     end
