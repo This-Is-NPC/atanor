@@ -21,6 +21,7 @@ defmodule Atanor.Test.CounterWorker do
   @impl true
   def route_key(%Request{path: "/c/direct/" <> _}, _env), do: :none
   def route_key(%Request{path: "/c/" <> cell}, _env), do: {:cell, "log", cell}
+  def route_key(%Request{path: "/v/" <> cell}, _env), do: {:cell, "log", cell}
 
   def route_key(%Request{path: "/r/" <> cell, query: "ms=" <> ms}, _env),
     do: {:cell, "log", cell, consistency: {:bounded, String.to_integer(ms)}}
@@ -56,26 +57,14 @@ defmodule Atanor.Test.CounterWorker do
   end
 
   # No routing key: the handler runs on the ingress node and reaches the cell by itself.
-  def handle_request(%Request{method: "GET", path: "/c/direct/" <> cell}, env) do
-    case Env.query(env, {"log", cell}, "SELECT n FROM log ORDER BY id") do
-      {:ok, %{rows: rows}} -> json(200, %{node: node(), rows: List.flatten(rows)})
-      {:error, reason} -> json(500, %{node: node(), error: inspect(reason)})
-    end
-  end
+  def handle_request(%Request{method: "GET", path: "/c/direct/" <> cell}, env), do: read(env, cell, [])
 
-  def handle_request(%Request{method: "GET", path: "/c/" <> cell}, env) do
-    case Env.query(env, {"log", cell}, "SELECT n FROM log ORDER BY id") do
-      {:ok, %{rows: rows}} -> json(200, %{node: node(), rows: List.flatten(rows)})
-      {:error, reason} -> json(500, %{node: node(), error: inspect(reason)})
-    end
-  end
+  def handle_request(%Request{method: "GET", path: "/c/" <> cell}, env), do: read(env, cell, [])
 
-  def handle_request(%Request{method: "GET", path: "/r/" <> cell}, env) do
-    case Env.query(env, {"log", cell}, "SELECT n FROM log ORDER BY id") do
-      {:ok, %{rows: rows}} -> json(200, %{node: node(), rows: List.flatten(rows)})
-      {:error, reason} -> json(500, %{node: node(), error: inspect(reason)})
-    end
-  end
+  # A read that sees every acknowledged write, also on a node that lost the cell and has not heard (design §8.12).
+  def handle_request(%Request{method: "GET", path: "/v/" <> cell}, env), do: read(env, cell, verify_lease: true)
+
+  def handle_request(%Request{method: "GET", path: "/r/" <> cell}, env), do: read(env, cell, [])
 
   def handle_request(%Request{method: "POST", path: "/r/" <> cell, body: body}, env) do
     case Env.execute(env, {"log", cell}, "INSERT INTO log (n) VALUES (?)", [String.to_integer(body)]) do
@@ -85,6 +74,13 @@ defmodule Atanor.Test.CounterWorker do
   end
 
   def handle_request(_request, _env), do: json(404, %{error: "not_found"})
+
+  defp read(env, cell, opts) do
+    case Env.query(env, {"log", cell}, "SELECT n FROM log ORDER BY id", [], opts) do
+      {:ok, %{rows: rows}} -> json(200, %{node: node(), rows: List.flatten(rows)})
+      {:error, reason} -> json(500, %{node: node(), error: inspect(reason)})
+    end
+  end
 
   defp json(status, term),
     do: %Response{status: status, headers: [{"content-type", "application/json"}], body: Jason.encode!(term)}

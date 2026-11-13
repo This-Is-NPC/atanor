@@ -65,12 +65,15 @@ defmodule Atanor.Test.C1 do
     end
   end
 
-  @doc "The numbers stored in the counter cell, read through the first of `names` that answers, within `within_ms`."
+  @doc """
+  The numbers stored in the counter cell, read through the first of `names` that answers, within `within_ms`.
+  The read verifies the lease: a plain read on a node that lost the cell and was not told yet is stale (design §8.12).
+  """
   def read_when_available(cluster, names, cell, within_ms) do
     Await.until(
       fn ->
         Enum.find_value(names, fn node ->
-          with {:ok, %{status: 200, body: body}} <- request(cluster, node, :get, "/c/#{cell}", []) do
+          with {:ok, %{status: 200, body: body}} <- request(cluster, node, :get, "/v/#{cell}", []) do
             Jason.decode!(body)["rows"]
           else
             _ -> nil
