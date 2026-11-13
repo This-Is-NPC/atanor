@@ -47,6 +47,26 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
     end
   end
 
+  test "the registry is off by default and its options are checked" do
+    assert build([]).alambique_opts[:registry] == nil
+    assert build(registry: false).alambique_opts[:registry] == false
+
+    registry = [advertise: "10.0.0.1:4000", meta: %{"zone" => "a"}, ttl_ms: 30_000, renew_ms: 10_000, sweep_ms: 60_000]
+    assert build(registry: registry).alambique_opts[:registry] == registry
+
+    for bad <- [
+          [registry: true],
+          [registry: []],
+          [registry: [advertise: ""]],
+          [registry: [advertise: "a", meta: []]],
+          [registry: [advertise: "a", ttl_ms: 0]],
+          [registry: [advertise: "a", page_size: 1.5]],
+          [registry: [advertise: "a", other: 1]]
+        ] do
+      assert_raise ArgumentError, ~r/:registry/, fn -> build(bad) end
+    end
+  end
+
   test "compaction and feed options are passed through, zero is allowed" do
     config =
       build(

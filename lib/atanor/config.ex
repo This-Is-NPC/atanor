@@ -455,6 +455,8 @@ defmodule Atanor.Config do
     max_object_bytes: :positive
   ]
 
+  @alambique_registry_ints [:ttl_ms, :renew_ms, :refresh_ms, :page_size, :sweep_ms]
+
   # Groups that `false` turns off.
   @alambique_switchable [:local_cache, :lazy_restore]
 
@@ -992,6 +994,8 @@ defmodule Atanor.Config do
       ":alambique :replicas must be false or a keyword list"
     )
 
+    registry!(Keyword.get(opts, :registry, false))
+
     for {name, kinds} <- @alambique_limits do
       case Keyword.get(opts, name, []) do
         false when name in @alambique_switchable -> :ok
@@ -1020,6 +1024,28 @@ defmodule Atanor.Config do
       ":alambique :feed :linger_ms (#{feed[:linger_ms]}) must be at most 1/#{@linger_ratio} of :window_ms (#{window}); " <>
         "lower :linger_ms, raise :window_ms, or set :object_batches to 1"
     )
+  end
+
+  # `registry:` publishes this node in the store (Alambique's `peers/1`); Atanor does not use it yet. The
+  # integers default in Alambique (`ttl_ms` to the lease TTL), and Alambique checks their ordering at start.
+  defp registry!(false), do: :ok
+
+  defp registry!(opts) do
+    check!(Keyword.keyword?(opts), ":alambique :registry must be false or a keyword list")
+    advertise = Keyword.get(opts, :advertise)
+    check!(is_binary(advertise) and advertise != "", ":alambique :registry :advertise must be a non-empty string")
+    check!(is_map(Keyword.get(opts, :meta, %{})), ":alambique :registry :meta must be a map")
+
+    ints = Enum.filter(@alambique_registry_ints, &Keyword.has_key?(opts, &1))
+    rest = Keyword.drop(opts, [:advertise, :meta | ints])
+
+    check!(
+      rest == [],
+      ":alambique :registry has no option #{inspect(Keyword.keys(rest))} (known: #{inspect([:advertise, :meta | @alambique_registry_ints])})"
+    )
+
+    for key <- ints,
+        do: check!(positive_integer?(opts[key]), ":alambique :registry #{inspect(key)} must be a positive integer")
   end
 
   defp alambique_group!(name, opts, kinds) do

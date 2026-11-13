@@ -87,6 +87,9 @@ on `:alambique` too. With the override both resolve to the pinned release.
 
 ## Options a new pin leaves alone
 
+The `registry` option (0.6) is off and Atanor does not use `Alambique.peers/1`
+yet; it only checks the keys.
+
 The memory (`awake: [cache_kib:, max_bytes:,
 max_pending:]`), snapshot, restore and feed options keep Alambique's
 defaults, and Atanor checks their keys at start

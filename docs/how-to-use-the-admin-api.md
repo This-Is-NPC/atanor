@@ -57,8 +57,16 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    ```
 
    ```json
-   {"node":"nonode@nohost","status":"ok","nodes":["nonode@nohost"],"workers":1}
+   {"node":"nonode@nohost","status":"ok","nodes":["nonode@nohost"],"workers":1,"store":{"<location>":{"state":"closed","since_ms":1731456000000,"failures":0}}}
    ```
+
+   `store` is the circuit breaker of each store location: `closed`, `open`
+   (requests fail at once with 503 `store_unavailable`) or `half_open` (the next
+   request is the probe), since when (`since_ms`, Unix milliseconds) and the
+   failures in a row. It is read from the node without a request to the store.
+   An open breaker does not change `status` or the readiness paths below: the
+   node still serves its awake cells, and the other nodes share the store
+   ([design §10.2](design.md#102-admin-api)).
 
    Ask whether the node serves. A load balancer or a rolling restart polls
    this path on the admin port (the HTTP ingress has no health path of its
@@ -212,7 +220,8 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    admission counters (`admission`: requests in flight, refusals by reason (`memory`, `disk`,
    `in_flight`), the last working set, the disk use of `data_dir` against its budget,
    and whether the node is refusing, see
-   [configuration](configuration.md)). A
+   [configuration](configuration.md)) and `store`, the circuit breaker of
+   each store location as in `/health`. A
    cgroup field is `null` when its file cannot be read. The load harness samples it
    ([how-to-run-the-load-tests.md](how-to-run-the-load-tests.md)).
 

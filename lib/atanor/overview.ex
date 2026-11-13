@@ -29,8 +29,19 @@ defmodule Atanor.Overview do
       status: status(Registry.state(name)),
       node: node(),
       nodes: nodes(name),
-      workers: length(Registry.deployments(name))
+      workers: length(Registry.deployments(name)),
+      store: store_breakers(name)
     }
+  end
+
+  @doc """
+  The circuit breaker of each store location, read from its state without a request (design §10.2).
+  It never changes `ready/1`: see design §10.2 for why an open breaker does not take the node out.
+  """
+  def store_breakers(name) do
+    for {location, breaker} <- Alambique.breaker_status(alambique(name)), into: %{} do
+      {location, %{breaker | state: Atom.to_string(breaker.state)}}
+    end
   end
 
   @doc "The state of this node's drain, as the admin API shows it (design §8.11)."
