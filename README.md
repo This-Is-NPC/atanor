@@ -107,10 +107,12 @@ shell, in an empty directory.
    hello GET /hello/world? authority=localhost body=
    ```
 
-7. Remove everything this section created.
+7. Remove everything this section created, the downloaded images included. If you use the SeaweedFS
+   image for something else, leave out its name on the `docker rmi` line.
 
    ```sh
    docker rm -f atanor-node atanor-store && docker network rm atanor-net
+   docker rmi "$IMAGE" chrislusf/seaweedfs:4.48
    rm -rf atanor-src atanor-hello atanor-secrets
    ```
 
