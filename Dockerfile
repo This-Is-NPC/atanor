@@ -6,6 +6,8 @@
 #   docker build --target runtime .   the product image (the default target)
 #   docker build --target harness .   the same plus the tools of cluster/ (chaos, tc, healthchecks)
 #   docker build --target artifact --output type=local,dest=out .   the release directory only
+# The entry point runs the `atanor` CLI for its commands (docker run IMAGE deploy /w --bucket ...) and
+# starts the node with no arguments.
 # How to build and what the tarball needs: docs/how-to-build-the-release.md.
 
 ARG ELIXIR_IMAGE=hexpm/elixir:1.20.4-erlang-28.5.0.7-debian-trixie-20261005-slim
@@ -62,7 +64,7 @@ ENV ATANOR_RELEASE=${RELEASE_ID}
 USER atanor
 WORKDIR /var/lib/atanor
 EXPOSE 4000 4001 4002
-ENTRYPOINT ["/opt/atanor/bin/atanor"]
+ENTRYPOINT ["/opt/atanor/bin/atanor-entrypoint"]
 CMD ["start"]
 
 FROM base AS runtime
@@ -73,5 +75,5 @@ ENV ATANOR_RELEASE=${RELEASE_ID}
 USER atanor
 WORKDIR /var/lib/atanor
 EXPOSE 4000 4001 4002
-ENTRYPOINT ["/opt/atanor/bin/atanor"]
+ENTRYPOINT ["/opt/atanor/bin/atanor-entrypoint"]
 CMD ["start"]

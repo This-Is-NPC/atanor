@@ -3,6 +3,8 @@
 # `harness` targets of the Dockerfile, then check that
 #   - a node starts from environment variables only (store, credentials through *_FILE, advertise,
 #     cookie) against SeaweedFS and answers 200 on /health/ready, and how long that takes;
+#   - `docker run IMAGE deploy /w --bucket s3://...` publishes and activates the scoreboard example (built by
+#     the build:scoreboard task) with no node of its own, and the running node then serves it;
 #   - it refuses to start without a cookie, and on an unknown ATANOR_ variable, with the reason in its log;
 #   - the runtime image has no curl and no iptables, runs as a user that is not root, and the harness
 #     image has the tools of cluster/.
@@ -100,7 +102,7 @@ run_node() { docker run -d --network "$net" -v "$tmp:/run/secrets:ro" "$@"; }
 
 # --- a node starts from the environment and reports ready ---------------------
 start=$(now)
-node=$(run_node -p 127.0.0.1::4001 "${node_env[@]}" "$runtime")
+node=$(run_node -p 127.0.0.1::4000 -p 127.0.0.1::4001 "${node_env[@]}" "$runtime")
 ids+=("$node")
 admin=http://$(docker port "$node" 4001/tcp | head -n 1)
 ready=
@@ -116,6 +118,43 @@ if [[ -n $ready ]]; then
   pass "a node started from environment variables only was ready on /health/ready in $ready s (docker run to HTTP 200)"
 else
   fail "the node was not ready"; docker logs "$node" 2>&1 | tail -n 30 >&2
+fi
+
+# --- a worker deployed through the bucket is served by the node --------------------
+# The image runs the CLI for its commands. It needs the bucket and its keys, with no cookie and no node.
+if [[ -n $ready ]]; then
+  worker=scoreboard
+  deploy_env=(-e ATANOR_S3_ENDPOINT=http://atanor-smoke-store:8333
+    -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret_key)
+  ingress=http://$(docker port "$node" 4000/tcp | head -n 1)
+  if out=$(docker run --rm --network "$net" -v "$tmp:/run/secrets:ro" -v "$repo/examples/$worker:/w:ro" "${deploy_env[@]}" \
+    "$runtime" deploy /w --bucket "s3://$bucket" --activate 2>&1); then
+    id=$(sed -n 's/^package \([0-9a-f]\{64\}\) .*/\1/p' <<<"$out")
+    start=$(now)
+    served=
+    deadline=$((SECONDS + ready_timeout))
+    while :; do
+      if [[ $(curl -s -o /dev/null -m 2 -w '%{http_code}' -H 'Host: scoreboard.localhost' "$ingress/rooms/smoke" || true) == 200 ]] \
+        && curl -s -m 2 -H "authorization: Bearer $(cat "$tmp/admin_token")" "$admin/workers/$worker/status" | grep -q "\"applied\":\"$id\""; then
+        served=$(since "$start"); break
+      fi
+      (( SECONDS < deadline )) || break
+      sleep 1
+    done
+    if [[ -n $id && -n $served ]]; then
+      pass "docker run IMAGE deploy published and activated $worker $id; the node served it $served s later (its poll)"
+    else
+      fail "the node did not serve the worker deployed through the bucket"; echo "$out" >&2
+    fi
+  else
+    fail "docker run IMAGE deploy failed"; echo "$out" >&2
+  fi
+fi
+status=$(docker run --rm "$runtime" deploy /w --bucket s3://x --profile ops >/dev/null 2>"$tmp/usage.log" || echo $?)
+if [[ $status == 2 ]] && grep -q -- "--bucket writes the store directly" "$tmp/usage.log"; then
+  pass "the CLI refuses --bucket with --profile (exit status 2), with no node and no cookie"
+else
+  fail "the CLI did not refuse --bucket with --profile (exit status ${status:-0})"; cat "$tmp/usage.log" >&2
 fi
 
 # --- refusals -----------------------------------------------------------------
