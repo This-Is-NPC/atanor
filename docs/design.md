@@ -5529,6 +5529,28 @@ because this image is built with it. [how-to-build-a-derived-image.md](how-to-bu
 thing locally, what the tarball needs on the host, and the measured sizes and times are in
 [how-to-build-the-release.md](how-to-build-the-release.md).
 
+**Startup time.** From `docker run` to `GET /health/ready` answering 200, one node with a SeaweedFS already up,
+measured on a laptop (12 logical processors, Docker, linux/amd64), polling every 0.25 s with
+`ATANOR_ADVERTISE` of a name that does not resolve:
+
+| Condition | Time to ready |
+| --- | --- |
+| Bucket already used | 0.8 s |
+| Fresh bucket | 1.7 s to 3.4 s (three runs) |
+| Fresh bucket, upstream DNS unreachable (`--dns 192.0.2.1`) | 1.6 s |
+| Brand-new SeaweedFS, node started right after creating the bucket | 1.7 s |
+| Fresh bucket, container limited to 1 CPU | 2.1 s |
+| Fresh bucket, container limited to 0.25 CPU | 6.2 s |
+
+Where the time goes: the VM boots and logs the effective settings after about 0.6 s; the admin port then answers
+503 `joining the cluster` until the `ready` child (`Alambique.join` and `Registry.ready`) finishes, which took
+about 1 s in each run. A slow DNS, a new bucket and a new store did not lengthen it, and a quarter of a CPU
+gives 6 s. The 31 to 45 s measured on the project VM (the image smoke tests and the derived image smoke test) is **not
+reproduced on the laptop and is still being investigated**; it is not explained by anything above, so read it as the
+figure of that machine until it is measured again elsewhere. To measure a start: run the node, poll
+`/health/ready` with the admin token every 0.25 s from the moment of `docker run`, and read the
+`atanor: effective settings` line of `docker logs -t`.
+
 **Limits.** Only Linux, glibc, amd64 and arm64. The arm64 build is proved by the first run of the
 workflow; it is not built locally. The tarball links the glibc and OpenSSL of its build base (Debian 13); the newest symbols are glibc 2.38 and OpenSSL 3.4.
 
