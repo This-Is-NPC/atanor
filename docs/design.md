@@ -3062,6 +3062,13 @@ it and deletes it when it drains or stops. `Alambique.peers/1` lists the other l
   group, dialling a peer twice, and remembering a peer after it left the listing; a `Node.disconnect` on
   `:left` is caught by the cluster test.
 
+Measured on the VM (4 vCPU, Docker, three nodes of the harness image over SeaweedFS, defaults: TTL 15 s,
+renewal 3 s; no list of peers; one run): `cluster:up` with all three nodes seeing three; `docker stop` of
+one: the others saw two nodes after 0.1 s (the node announces that it leaves) and dropped it from the
+registry after 0.5 s; `docker start`: the others saw it after 1.3 s, and it saw three after 0.05 s more;
+`docker kill`: the others saw two nodes after 0.1 s (the detector, from the closed connection) and the
+registry forgot it after 17.0 s (the TTL plus the 2 s skew margin).
+
 Limits: a node found by the store but unreachable (a closed port, a name that does not resolve) is retried
 every round and logged once. The join time is the renewal period of the peer plus one connect.
 
