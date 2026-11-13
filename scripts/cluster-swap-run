@@ -22,7 +22,8 @@ The trigger:
 container is removed at the end (by id). Results go to --out (default /tmp/atanor-swap-TRIGGER-TIME) and,
 as one JSON line, to stdout last. Exit status is 1 when an acknowledged write was lost or duplicated, a
 refused write was stored, any answer was not a 503 with Retry-After (or a refused connection), or A did
-not exit with status 0.
+not exit with status 0. A B that exits or turns unhealthy before it serves ends the run at once with B's exit
+status (1 when it was 0) and its last log lines on stderr.
 """
 import argparse
 import atexit
@@ -98,6 +99,28 @@ def wait_for(what, check, timeout):
     raise SystemExit(f"timeout waiting for {what}")
 
 
+def logs_tail(container, lines=20):
+    done = subprocess.run(["docker", "logs", "--tail", str(lines), container], text=True, capture_output=True)
+    return (done.stdout + done.stderr).strip()
+
+
+def wait_for_b(b, name, timeout):
+    """Wait until B is healthy and in rotation. A B that exited or is unhealthy ends the run at once, with its exit code and last log lines."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status, code, health = (inspect(b, "{{.State.Status}} {{.State.ExitCode}} {{if .State.Health}}{{.State.Health.Status}}{{end}}").split() + [""])[:3]
+        if status in ("exited", "dead") or health == "unhealthy":
+            print(f"{name} is {'unhealthy' if status not in ('exited', 'dead') else f'{status} with status {code}'}; last log lines:\n{logs_tail(b)}", file=sys.stderr)
+            sys.exit(int(code) or 1)
+        try:
+            if health == "healthy" and balancer_up() == 2:
+                return
+        except Exception:
+            pass
+        time.sleep(0.2)
+    raise SystemExit("timeout waiting for B ready and in rotation")
+
+
 def spawn(command, log):
     process = subprocess.Popen(command, stdout=open(log, "w"), stderr=subprocess.STDOUT)
     children.append(process)
@@ -167,7 +190,7 @@ def main():
     b = run("docker", "ps", "-aq", "--filter", LABEL, "--filter", f"name=^/?atanor-cluster-{b_service}$").split()[0]
     if "ATANOR_GROUP=b" not in inspect(b, "{{range .Config.Env}}{{println .}}{{end}}").splitlines():
         raise SystemExit(f"{b_service} is not in group b: it would form a cluster with A")
-    wait_for("B ready and in rotation", lambda: inspect(b, "{{.State.Health.Status}}") == "healthy" and balancer_up() == 2, 180)
+    wait_for_b(b, b_service, 180)
     events["b_serving_at"] = time.time()
     say(f"B ({b[:12]}) is in rotation {events['b_serving_at'] - events['b_start_at']:.1f}s after the start; "
         f"nodes seen by A: {len(exec_admin(a, 'GET', '/health')['nodes'])}, by B: {len(exec_admin(b, 'GET', '/health')['nodes'])}")
@@ -226,4 +249,5 @@ def main():
 
 
 started = time.time()
-main()
+if __name__ == "__main__":
+    main()

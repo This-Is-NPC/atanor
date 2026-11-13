@@ -18,6 +18,13 @@ machine say how the harness works, not what a release holds: run the real ramps 
 | `load:cells`: cells written once every 10 s, all awake together | cells | memory at 90% of the limit, or p99 > 250 ms | MB per hot cell |
 | `load:swap`: node A replaced by B under load | none (one run at the last approved `http-wasm` rate) | an acknowledged write lost or duplicated, or an answer other than 503 with `Retry-After` | swap duration and p99 peak |
 
+Every `load:*` task exits with status 1 when a step ended INVALID (the lab, not the node, broke: there is no
+verdict), and `load:swap`, which is a single check and not a ramp, also exits 1 when the swap failed. A failed step
+of a ramp, a stopped node and an approved value are results, and the task exits 0. `load:swap` starts node B from
+the image of the load environment (`atanor-cluster-load:local`, set once in `scripts/load-common`); if B exits or
+turns unhealthy before it serves, the swap stops at once with B's exit status and its last log lines. The reason is
+in `stop_reason` of the step file and in `swap-TIME.log` next to it.
+
 ## How the environment is built
 
 One container per service, all of the project `atanor-cluster` (`scripts/cluster-*`), plus the throwaway
@@ -230,6 +237,10 @@ swap at 10.0 req/s: ok; swap 3.7 s, p99 peak 320 ms
   processes share the rate, or stop other work on the host.
 - **A ws ramp past about 28,000 connections.** One generator address has about 28,000 ephemeral ports towards
   one node address; the generator reports connection errors before the node does.
+
+- **`load:swap` stops with `node-2 is exited with status 127`.** Node B did not start; the log lines under that message
+  say why. Status 127 with `/opt/atanor/bin/atanor: not found` means B used an image without the release, not the load
+  image: run `scripts/load-env swap`, not `scripts/cluster-swap-run`, in the load environment.
 
 ## Limits
 

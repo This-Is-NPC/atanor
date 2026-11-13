@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The environment of the load tests: up | latency | deploy | rtt | check-swap | info | down. Settings: ATANOR_LOAD_*
+# The environment of the load tests: up | latency | deploy | rtt | check-swap | info | swap | reset | down. Settings: ATANOR_LOAD_*
 # (docs/how-to-run-the-load-tests.md). Safe to rerun; touches only the project atanor-cluster
 # and the container atanor-load-tc, by id or exact name.
 #
@@ -10,6 +10,7 @@
 #   rtt      print the round trip from the node to the store in ms (median of three); empty when unknown
 #   check-swap [ID...]  refuse (exit 1) a container that may swap; default: the running nodes, store and lb
 #   info     print the containers, addresses and cgroup directories as JSON
+#   swap [ARGS]  scripts/cluster-swap-run ARGS with the nodes' image (node B starts from the load image)
 #   reset    down, then up: a new node and a new store with empty data (the next step starts from nothing)
 #   down     remove the containers, network and volumes
 set -euo pipefail
@@ -36,7 +37,7 @@ store_rtt() {
 tc_store() {
   local store=$1; shift
   docker run --rm --name "$TC" --net "container:$store" --cap-add NET_ADMIN --user root --entrypoint tc \
-    "${ATANOR_CLUSTER_IMAGE:-atanor-cluster-node:local}" qdisc "$@" >/dev/null 2>&1 || true
+    "$ATANOR_CLUSTER_IMAGE" qdisc "$@" >/dev/null 2>&1 || true
 }
 
 # netem on the store's side of its network: every answer it sends waits LATENCY ms, so each trip to
@@ -109,8 +110,8 @@ bring_up() {
     --build-arg EXTRA_PACKAGES="curl iproute2 iptables procps" \
     --build-arg RELEASE_ID="${ATANOR_CLUSTER_RELEASE:-$(cluster_release_id)}" \
     --build-arg CARGO_BUILD_JOBS="${ATANOR_CLUSTER_BUILD_JOBS:-6}" \
-    -t atanor-cluster-load:local "$repo"
-  ATANOR_CLUSTER_IMAGE=atanor-cluster-load:local "$repo/scripts/cluster-up"
+    -t "$ATANOR_CLUSTER_IMAGE" "$repo"
+  "$repo/scripts/cluster-up"
   latency
   deploy
 }
@@ -125,11 +126,12 @@ case ${1:-} in
   reset)
     tear_down
     bring_up ;;
+  swap) shift; exec "$repo/scripts/cluster-swap-run" "$@" ;;
   latency) latency ;;
   deploy) deploy ;;
   rtt) store_rtt "$(node_id)"; echo ;;
   check-swap) shift; check_swap "$@" ;;
   info) info ;;
   down) tear_down ;;
-  *) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

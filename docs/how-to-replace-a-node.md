@@ -206,7 +206,9 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    for A to exit, keeps the load `--settle` 30 s, and runs the checker. It
    exits 1 when an acknowledged write is lost or duplicated, a refused write is
    stored, any answer was not a 503 with `Retry-After` or a refused connection,
-   or A did not exit with status 0. Results are in `--out`.
+   or A did not exit with status 0. If B exits or turns unhealthy before it
+   serves, it stops at once with B's exit status and its last log lines. Results
+   are in `--out`.
 
    Measured on this repository (one Ryzen AI 5 340, 12 schedulers, nodes at
    1.5 CPUs, data in memory, host load average 2 to 5), one run each:

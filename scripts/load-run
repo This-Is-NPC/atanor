@@ -21,6 +21,9 @@ the node's), delivery under 95% of the plan (INVALID, the round stops: the gener
 that stopped is judged first and still records the store's tmpfs share. The host swap used is only recorded. A container that may swap refuses the run before the first step.
 After the first failing step the ramp refines between the last good value and the failing one (--refine
 bisections, each on a fresh node and store), then repeats the best good step once to confirm it, also fresh. Environment: ATANOR_LOAD_* give defaults.
+
+Exit status: 1 when a step ended INVALID (the lab, not the node: there is no verdict) and, for swap, which is a single
+check and not a ramp, also when it failed; 0 when the measure recorded a verdict, a failed step or a stopped node included.
 """
 import argparse
 import http.client
@@ -722,6 +725,17 @@ def ramp(round_, args):
 
 # ---- the swap ------------------------------------------------------------------------------------------
 
+def swap_command(args, rate, run_dir):
+    """cluster-swap-run through load-env, so that node B starts from the image of the load environment."""
+    return [f"{ROOT}/scripts/load-env", "swap", "--trigger", args.trigger, "--rate", str(rate), "--workers", str(args.swap_workers),
+            "--warmup", str(args.swap_warmup), "--overlap", str(args.swap_overlap), "--settle", str(args.swap_settle), "--out", run_dir]
+
+
+def exit_status(measure, summary):
+    """1 when the measure has no trustworthy verdict (a step INVALID), and when the swap, a single check, did not pass; else 0."""
+    return 1 if summary.get("invalid") or (measure == "swap" and summary.get("status") != "ok") else 0
+
+
 def swap(round_, args, info):
     rate = args.rate
     if not rate:
@@ -736,8 +750,7 @@ def swap(round_, args, info):
     sampler.start()
     began = time.time()
     run_dir = os.path.join(args.out, f"swap-{int(began)}")
-    command = [f"{ROOT}/scripts/cluster-swap-run", "--trigger", args.trigger, "--rate", str(rate), "--workers", str(args.swap_workers),
-               "--warmup", str(args.swap_warmup), "--overlap", str(args.swap_overlap), "--settle", str(args.swap_settle), "--out", run_dir]
+    command = swap_command(args, rate, run_dir)
     process = subprocess.Popen(command, stdout=open(f"{args.out}/swap-{int(began)}.log", "w"), stderr=subprocess.STDOUT)
     sampler.pids = [process.pid]
     try:
@@ -787,7 +800,8 @@ def swap(round_, args, info):
     write_json(os.path.join(args.out, f"{round_.scenario}_swap_01-swap-{rate}.json"), record)
     say(f"swap at {rate} req/s: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")
         + f"; swap {record['swap']['a_exit_s']} s, p99 peak {p99_peak} ms")
-    return {"approved": rate if record["status"] == "ok" else None, "confirmed": None, "stopped_by": record["stop_reason"], "invalid": None}
+    return {"approved": rate if record["status"] == "ok" else None, "confirmed": None, "stopped_by": record["stop_reason"],
+            "invalid": record["stop_reason"] if record["status"] == "invalid" else None, "status": record["status"]}
 
 
 def main():
@@ -854,6 +868,7 @@ def main():
     summary.update(scenario=info["scenario"], measure=args.measure, command=args.command)
     write_json(os.path.join(args.out, f"{info['scenario']}_{args.measure}.summary.json"), summary)
     say(f"summary: {json.dumps(summary)}")
+    sys.exit(exit_status(args.measure, summary))
 
 
 if __name__ == "__main__":
