@@ -74,12 +74,20 @@ shell, in an empty directory.
      -e ATANOR_ADMIN_TOKEN_FILE=/run/secrets/admin_token -e ATANOR_COOKIE_FILE=/run/secrets/cookie \
      -e ATANOR_ADVERTISE=atanor-node.local "$IMAGE"
    until [ "$(curl -s -o /dev/null -w '%{http_code}' -H "authorization: Bearer $(cat atanor-secrets/admin_token)" \
-     http://127.0.0.1:4001/health/ready)" = 200 ]; do sleep 1; done; echo ready
+     http://127.0.0.1:4001/health/ready)" = 200 ]; do
+     [ "$(docker inspect -f '{{.State.Running}}' atanor-node 2>/dev/null)" = true ] \
+       || { docker logs atanor-node; echo "atanor-node is not running" >&2; break; }
+     sleep 1
+   done; docker ps -q -f name=atanor-node | grep -q . && echo ready
    ```
 
    ```text
    ready
    ```
+
+   If the loop prints `atanor-node is not running` instead, read the log above it. A failed
+   pull or a wrong `IMAGE` leaves no container to wait for. If a container was created, remove it with
+   `docker rm -f atanor-node` before you run the step again.
 
 5. Deploy the worker. The image holds the `atanor` command; `--bucket` writes the package into the
    bucket, and the node applies it at its next poll (at most 5 seconds).
@@ -108,17 +116,21 @@ shell, in an empty directory.
    ```
 
 7. Remove everything this section created, the downloaded images included. If you use the SeaweedFS
-   image for something else, leave out its name on the `docker rmi` line.
+   image for something else, leave out its name on the `docker rmi` line. `-v` also removes the
+   anonymous volume that the SeaweedFS image declares.
 
    ```sh
-   docker rm -f atanor-node atanor-store && docker network rm atanor-net
+   docker rm -fv atanor-node atanor-store && docker network rm atanor-net
    docker rmi "$IMAGE" chrislusf/seaweedfs:4.48
    rm -rf atanor-src atanor-hello atanor-secrets
    ```
 
 Measured from a clean container with Docker on a laptop (linux/amd64, images already pulled), the
 steps take 12.9 s in all: step 3 1.3 s, step 4 2.4 s, step 5 3.8 s, step 6 5.0 s (the node applies the new
-deployment at its next poll). The image is 55 MB to pull (compressed) and 224 MB on disk once
+deployment at its next poll). The times leave out the image pulls (the SeaweedFS image is about
+725 MB). On a clean 2 vCPU, 3 GB virtual machine the first start of the node in step 4 took 38.6 s,
+the next two 15.2 s and about 6.4 s, against 2.4 s on the laptop; the whole sequence took about 51 s
+there, pulls excluded. The image is 55 MB to pull (compressed) and 224 MB on disk once
 unpacked. The `package` id and the byte count in your output may differ.
 
 From here: [deploy changes and roll back](docs/how-to-deploy-a-worker.md), [write your own WASM

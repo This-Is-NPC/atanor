@@ -106,8 +106,8 @@ is not a supported way to install it.
    wrote      Dockerfile
    wrote      Dockerfile.dockerignore
 
-   Build the image from ../..:
-     docker build -f examples/live-counter/Dockerfile -t my-app ../..
+   Build the image, from this directory, with `../..` as the context:
+     docker build -f Dockerfile -t my-app ../..
    ```
 
    The two `rel/` files are copies of the product's (`daemon/rel`); the
@@ -116,14 +116,15 @@ is not a supported way to install it.
    (uid 10001). Commit them. The task leaves a file that differs from what it
    would write; `--force` replaces it. Rerun it after you update Atanor.
    In a project with Atanor in `deps/` the build context is the project
-   directory and the command is `docker build -t my-app .`. The build argument
+   directory and the command is `docker build -t my-app .`. `-f` is resolved from the
+   directory where you run the command, so run the printed command from the project directory. The build argument
    `EXTRA_PACKAGES` adds Debian packages (for example `curl`), `RELEASE_ID`
    sets the id the node reports ([design 17.1](design.md#171-release-identity)).
 
-6. Build the image:
+6. Build the image, from the same directory (`examples/live-counter`):
 
    ```sh
-   docker build -f examples/live-counter/Dockerfile -t live-counter ../..
+   docker build -f Dockerfile -t live-counter ../..
    ```
 
 7. Start it. The node needs the same environment as the product image
@@ -157,6 +158,16 @@ is not a supported way to install it.
    docker run --rm --network container:live-counter -v "$PWD:/w:ro" \
      -e ATANOR_URL=http://127.0.0.1:4001 -e ATANOR_TOKEN="$(cat <secrets dir>/admin_token)" \
      live-counter deploy /w --ebin /opt/atanor/lib/live_counter-0.1.0/ebin --activate
+   ```
+
+   The `deploy` command takes about 15 s to start (it runs in a BEAM `eval`); the 0.4 s of
+   [What it costs](#what-it-costs) starts after it ends. The route of
+   [atanor.json](../examples/live-counter/atanor.json) is the host `counter.localhost` and the path
+   `/counter`, so call it on port 4000 with that host:
+
+   ```sh
+   curl -H 'Host: counter.localhost' http://127.0.0.1:4000/counter                # read the count
+   curl -H 'Host: counter.localhost' -X POST http://127.0.0.1:4000/counter        # add one
    ```
 
    Here the command shares the node's network, so the URL is loopback (the CLI

@@ -5552,9 +5552,11 @@ measured on a laptop (12 logical processors, Docker, linux/amd64), polling every
 Where the time goes: the VM boots and logs the effective settings after about 0.6 s; the admin port then answers
 503 `joining the cluster` until the `ready` child (`Alambique.join` and `Registry.ready`) finishes, which took
 about 1 s in each run. A slow DNS, a new bucket and a new store did not lengthen it, and a quarter of a CPU
-gives 6 s. The 31 to 45 s measured on the project VM (the image smoke tests and the derived image smoke test) is **not
-reproduced on the laptop and is still being investigated**; it is not explained by anything above, so read it as the
-figure of that machine until it is measured again elsewhere. To measure a start: run the node, poll
+gives 6 s. The 31 to 45 s measured on the project VM (the image smoke tests and the derived image smoke test) is
+reproduced on a clean 2 vCPU, 3 GB machine: the node's first start there took 38.6 s, then 15.2 s, then about
+6.4 s, so it is the cold first start. It is dominated by `docker run` itself, not by Atanor: the first line of the
+log appeared about 1.7 s after the container started, and on a warm start the node was ready 1.0 s after
+`docker run` returned. To measure a start: run the node, poll
 `/health/ready` with the admin token every 0.25 s from the moment of `docker run`, and read the
 `atanor: effective settings` line of `docker logs -t`.
 

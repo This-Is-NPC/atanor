@@ -159,6 +159,7 @@ files of this repository after the pin of Alambique v0.6.0:
 | `docker build --target runtime`, first build on that VM | 665 s |
 | The same, after a change to Atanor and Alambique, with the Cargo caches kept | 390 s |
 | `docker build --target harness` right after, the layers cached | 202 s (almost all of it pulling base metadata, installing the tools and exporting; the build stage was cached) |
+| `docker build --target runtime` on a clean 2 vCPU, 3 GB machine, default Cargo jobs | 1236 s, no out-of-memory |
 | `docker run` to HTTP 200 on `/health/ready`, one node, SeaweedFS already up | 34.0 s and 34.5 s (two runs) |
 | `cluster:up` with two nodes, build of the harness image included | 492 s |
 
