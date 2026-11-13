@@ -128,10 +128,19 @@ defmodule Atanor.Cluster.RehearsalTest do
 
     :ok = Cluster.heal_store(cluster, :n1)
 
-    assert {202, %{"id" => next}} =
-             start_rehearsal(cluster, :n1, candidate(cluster, "ALTER TABLE notes ADD COLUMN tag TEXT"))
+    # Alambique's store breaker stays open for its cool-down, and the cells that failed to wake during the cut
+    # stay in backoff: a rehearsal started too early fails at sampling with `store_unavailable`. Start again.
+    candidate = candidate(cluster, "ALTER TABLE notes ADD COLUMN tag TEXT")
 
     assert %{"state" => "done"} =
-             Await.until(fn -> (r = record(cluster, :n1, next)) && r["state"] != "running" && r end, 60_000)
+             Await.until(
+               fn ->
+                 {202, %{"id" => next}} = start_rehearsal(cluster, :n1, candidate)
+
+                 r = Await.until(fn -> (r = record(cluster, :n1, next)) && r["state"] != "running" && r end, 60_000)
+                 r["state"] == "done" && r
+               end,
+               60_000
+             )
   end
 end

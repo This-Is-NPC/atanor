@@ -682,7 +682,8 @@ defmodule Atanor.SweepsUndoTest do
 
     @tag :capture_log
     test "a retry after a partial failure rewinds only the cells that are left" do
-      {node, op} = reported()
+      # The fault is one cell's; Alambique's store breaker counts failures of the whole store, so keep it shut.
+      {node, op} = reported(~w(a b c), alambique: [breaker: [failures: 1_000_000]])
       sleep(node, ~w(a b c))
       assert report(node, op["id"])["state"] == "done"
       sleep(node, ~w(a b c))
