@@ -1,7 +1,8 @@
 # Configuring an Atanor instance
 
 **The question:** Which options does an Atanor instance take, what do they
-bound, and where is each one explained?
+bound, where is each one explained, and which environment variables and file
+keys configure a node run as a daemon?
 
 This page is a map. The full list of options, with defaults, is the
 documentation of the `Atanor` module (`h Atanor` in IEx); an invalid option
@@ -46,6 +47,75 @@ store: each worker's head names the package, identified by its hash, that is
 active. The `atanor` command moves heads through the admin API with a scoped
 token, so deployers never hold the bucket credentials
 ([how to deploy a worker](how-to-deploy-a-worker.md)).
+
+## The daemon: environment and file
+
+A node run as a daemon (the release in [cluster/node](../cluster/node), and the images derived from it)
+has no Elixir to write: `Atanor.Daemon` turns environment variables, plus an optional JSON file, into the
+options above and checks them with the same validator as `{Atanor, opts}`.
+
+```elixir
+settings = Atanor.Daemon.load!()      # raises ArgumentError, listing every problem
+children = [{Atanor, settings.opts}]
+```
+
+Rules:
+
+- **One namespace.** `ATANOR_CONFIG=/etc/atanor.json` names the file. Its keys are the variable names in
+  lowercase without `ATANOR_` (`ATANOR_LISTEN` is `listen`); `AWS_*` keep their prefix
+  (`aws_access_key_id`). Values are strings or integers. The environment overrides the file, key by key.
+  An empty variable counts as unset.
+- **Strict.** An `ATANOR_` variable that is not in the table fails the start. The error names it and the
+  closest key: `unknown variable ATANOR_LISTN; did you mean ATANOR_LISTEN?`. So does an unknown key of
+  the file. The only exceptions are the variables of the [CLI](cli.md), listed one by one:
+  `ATANOR_URL`, `ATANOR_TOKEN`, `ATANOR_PROFILE`, `ATANOR_CONNECT_TIMEOUT`, `ATANOR_TIMEOUT`,
+  `ATANOR_UPLOAD_TIMEOUT` and `ATANOR_DRAIN_TIMEOUT`.
+- **Secrets from files.** Each secret has a `_FILE` variant (`AWS_SECRET_ACCESS_KEY_FILE`, in the file
+  `aws_secret_access_key_file`) that names a file with the value, so it does not show in `docker inspect`.
+  Giving both forms in one place is an error. The environment's form replaces the file's.
+- **Checked once.** The options go through `Atanor.Config.build/1`, so a value out of range fails with the
+  message of the option (`:admin :token must be at least 32 bytes ...`).
+- **Logged once.** At start the node logs `atanor: effective settings KEY=value ...` with the secrets
+  as `***`.
+- **Before the VM boots.** `ATANOR_ADVERTISE`, `ATANOR_NET_TICKTIME` and the cookie are read by
+  `rel/env.sh.eex`, so they come from the environment only; in the file they are an error.
+
+| Variable | File key | Default | What it sets |
+| --- | --- | --- | --- |
+| `ATANOR_STORE` | `store` | required | The bucket: `s3://bucket` or `s3://bucket/prefix`. The prefix is the instance `prefix:` (default `atanor`). |
+| `ATANOR_S3_ENDPOINT` | `s3_endpoint` | `https://s3.<region>.amazonaws.com` | The S3 endpoint URL; give it for SeaweedFS, R2 or MinIO. |
+| `ATANOR_S3_REGION` | `s3_region` | `us-east-1` | The signing region. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | `aws_access_key_id`, `aws_secret_access_key` | required | Static S3 credentials. The `_FILE` variants read them from files. `AWS_SESSION_TOKEN` fails the start: the S3 store takes no session token yet. |
+| `ATANOR_LISTEN` | `listen` | `0.0.0.0:4000` | `ip:port` of the cell ingress. |
+| `ATANOR_ADMIN_TOKEN` | `admin_token` | none | The admin token, 32 bytes or more. Without it there is no admin API. |
+| `ATANOR_ADMIN_LISTEN` | `admin_listen` | `0.0.0.0:4001` | `ip:port` of the admin API. Needs the token. |
+| `ATANOR_DASHBOARD_TOKEN` | `dashboard_token` | none | The dashboard token, 32 bytes or more. Without it there is no dashboard, which needs its [dependencies](how-to-open-the-dashboard.md). |
+| `ATANOR_DASHBOARD_LISTEN` | `dashboard_listen` | `0.0.0.0:4002` | `ip:port` of the dashboard. Needs the token. |
+| `ATANOR_ADVERTISE` | environment only | required | The host name or IP the other nodes reach this node at. The Erlang node is `atanor@<it>`, with long names. Between nodes: epmd 4369 and the distribution ports 9100 to 9110. |
+| `ATANOR_COOKIE_FILE` or `RELEASE_COOKIE` | environment only | required | The Erlang cookie, from a file or inline; both is an error, and the node does not start without one. The cookie generated at build is never used. |
+| `ATANOR_NET_TICKTIME` | environment only | `60` | Seconds a silent peer goes unnoticed (Erlang `net_ticktime`). |
+| `ATANOR_NODE_ID` | `node_id` | the Erlang node name | The node's id in the leases. Two nodes that share a store must not share an id. |
+| `ATANOR_DATA_DIR` | `data_dir` | `/var/lib/atanor/cells` | The directory of the local copies of cells. |
+| `ATANOR_MEMORY_LIMIT` | `memory_limit` | the cgroup limit | The memory the node may use (`memory: [limit_bytes:]`). Bytes, or a number with `k`, `m` or `g` (powers of 1024). |
+| `ATANOR_DISK_LIMIT` | `disk_limit` | 80% of the file system | The disk budget of the data directory (`disk: [max_bytes:]`). Same units. |
+| `ATANOR_WAL_LIMIT` | `wal_limit` | derived from the disk budget | The write-ahead log a node may hold (`alambique: [wal: [max_bytes:]]`). Same units. |
+| `ATANOR_RELEASE` | `release` | `atanor-<version>` | The release id reported by `GET /deployments`. |
+| `ATANOR_LEASE_TTL_MS` | `lease_ttl_ms` | Alambique's | The cell lease time to live (`alambique: [lease_ttl_ms:]`). |
+| `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY` | `shutdown_ms`, `drain_timeout_ms`, `drain_concurrency` | 75000, 15000, 64 | `stop:` ([above](#the-instance)). The container's grace period must exceed the first. |
+| `ATANOR_DETECTOR_PAUSE_MS` | `detector_pause_ms` | 2000 | `detector: [acceptable_pause_ms:]`. |
+| `ATANOR_PEERS` | `peers` | none | The host names of the peers, comma separated. Read by `cluster/node` only, not by `Atanor.Daemon`'s options; it goes away with discovery through the store. |
+
+Before this page, the container cluster named these `ATANOR_NODE_*` (`ATANOR_NODE_BUCKET`,
+`ATANOR_NODE_S3_ENDPOINT`, `ATANOR_NODE_S3_ACCESS_KEY`, ...). They fail now, with the closest key in the error:
+
+| Old | New |
+| --- | --- |
+| `ATANOR_NODE_S3_ENDPOINT`, `ATANOR_NODE_BUCKET` | `ATANOR_S3_ENDPOINT`, `ATANOR_STORE=s3://<bucket>` |
+| `ATANOR_NODE_S3_ACCESS_KEY`, `ATANOR_NODE_S3_SECRET_KEY` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+| `ATANOR_NODE_ADMIN_TOKEN`, `ATANOR_NODE_DASHBOARD_TOKEN` | `ATANOR_ADMIN_TOKEN`, `ATANOR_DASHBOARD_TOKEN` |
+| `ATANOR_NODE_PEERS`, `ATANOR_NODE_ID`, `ATANOR_NODE_RELEASE` | `ATANOR_PEERS`, `ATANOR_NODE_ID`, `ATANOR_RELEASE` |
+| `ATANOR_NODE_SHUTDOWN_MS`, `_DRAIN_TIMEOUT_MS`, `_DRAIN_CONCURRENCY`, `_LEASE_TTL_MS`, `_DETECTOR_PAUSE_MS` | `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY`, `ATANOR_LEASE_TTL_MS`, `ATANOR_DETECTOR_PAUSE_MS` |
+| `ATANOR_NODE_HOST`, `ATANOR_NODE_NET_TICKTIME`, `RELEASE_COOKIE` from the entrypoint | `ATANOR_ADVERTISE`, `ATANOR_NET_TICKTIME`, `ATANOR_COOKIE_FILE` |
 
 ## What a manifest may grant
 

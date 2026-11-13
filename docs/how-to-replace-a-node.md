@@ -36,7 +36,7 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
   (default: the Erlang node name, `atanor@node-1`). With the same id, B would
   treat A's lease as its own and both nodes would write the same cell. Atanor
   cannot detect this; keep the names distinct.
-- **No peers between them.** Do not give B A's name in `ATANOR_NODE_PEERS` (or
+- **No peers between them.** Do not give B A's name in `ATANOR_PEERS` (or
   your equivalent of `AtanorNode.Mesh`), and do not start both with the same
   list. If they connect, they are a cluster and the swap is a different
   operation ([how-to-run-a-cluster.md](how-to-run-a-cluster.md)).
@@ -69,7 +69,7 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    scoreboard: active 55c8cdbc30d325d5628e54486c7ddb7bf3528f6355afe153817dafefb7f4061f, revision 1, previous none
    ```
 
-   Outside the container cluster, the same is: `ATANOR_NODE_PEERS` empty (or
+   Outside the container cluster, the same is: `ATANOR_PEERS` empty (or
    unset) on both, and a node name and `ATANOR_NODE_ID` of their own.
 
 2. Start B: another Compose service of the same project (`node-2`: hostname
@@ -98,9 +98,9 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
        hostname: node-1                      # node atanor@node-1
        stop_grace_period: 90s                # more than stop.shutdown_ms (75 s)
        environment: &env
-         ATANOR_NODE_PEERS: ""               # no peers
-         ATANOR_NODE_S3_ENDPOINT: http://store:8333
-         ATANOR_NODE_BUCKET: atanor          # the same store and prefix
+         ATANOR_PEERS: ""               # no peers
+         ATANOR_S3_ENDPOINT: http://store:8333
+         ATANOR_STORE: s3://atanor           # the same store and prefix
          ATANOR_NODE_ID: atanor@node-1       # optional; distinct from B's
      node-2:
        <<: *node
@@ -261,7 +261,7 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
   node its own name or id before they share a store; there is no check at
   start.
 - **`/health` on A or B lists the other node.** They are connected as a
-  cluster: remove the other from `ATANOR_NODE_PEERS` and restart.
+  cluster: remove the other from `ATANOR_PEERS` and restart.
 - **Many 503 `held_elsewhere` before the drain.** Both nodes are in rotation
   while A holds the cells. Drain A right after B serves, or add B to the
   balancer only when you drain.
