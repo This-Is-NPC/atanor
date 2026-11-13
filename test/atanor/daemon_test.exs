@@ -53,9 +53,11 @@ defmodule Atanor.DaemonTest do
       refute Map.has_key?(s3, :endpoint)
     end
 
-    test "the store, the keys and nothing else are required" do
-      message = errors(%{})
-      for name <- ["ATANOR_STORE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"], do: assert(message =~ name)
+    test "only the store is required: the credentials come from the chain" do
+      assert errors(%{"AWS_EC2_METADATA_DISABLED" => "true"}) =~ "ATANOR_STORE"
+
+      assert {:ok, %{children: [_]}} =
+               Daemon.load(Map.delete(env(), "AWS_ACCESS_KEY_ID") |> Map.delete("AWS_SECRET_ACCESS_KEY"))
     end
   end
 
@@ -126,9 +128,11 @@ defmodule Atanor.DaemonTest do
       assert errors(env(), ~s({"advertise": "10.0.0.1"})) =~ "set it in the environment"
     end
 
-    test "a session token is refused" do
-      assert errors(env(%{"AWS_SESSION_TOKEN" => "tok"})) =~ "AWS_SESSION_TOKEN"
-      assert errors(env(), ~s({"aws_session_token": "tok"})) =~ "session token"
+    test "a session token goes to the store with the keys" do
+      {:ok, %{opts: opts}} = Daemon.load(env(%{"AWS_SESSION_TOKEN" => "tok"}))
+      assert {_, %{session_token: "tok"}} = opts[:store]
+      {:ok, %{opts: opts}} = Daemon.load(env(), ~s({"aws_session_token": "tok2"}))
+      assert {_, %{session_token: "tok2"}} = opts[:store]
     end
   end
 

@@ -13,10 +13,12 @@ defmodule AtanorDaemon.Application do
   def start(_type, _args) do
     settings = Atanor.Daemon.load!()
 
-    children = [
-      {AtanorDaemon.Mesh, settings.peers},
-      {Atanor, Keyword.put(settings.opts, :name, AtanorDaemon.Atanor)}
-    ]
+    children =
+      settings.children ++
+        [
+          {AtanorDaemon.Mesh, settings.peers},
+          {Atanor, Keyword.put(settings.opts, :name, AtanorDaemon.Atanor)}
+        ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: AtanorDaemon.Supervisor)
   end
