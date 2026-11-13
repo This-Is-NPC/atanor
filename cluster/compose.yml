@@ -1,7 +1,7 @@
 # An Atanor cluster in containers: N nodes, SeaweedFS as the store, HAProxy in front.
 # Use it through `mise run cluster:up` (docs/how-to-run-a-cluster-in-containers.md): the scripts
-# generate the secrets in cluster/secrets and the Alambique checkout (cluster/.build/alambique) the
-# image needs. The nodes are the services node-1 to node-10 (cluster:up starts the first
+# generate the secrets in cluster/secrets and build the `harness` target of the Dockerfile at the
+# repository root (the product image plus the tools of this directory). The nodes are the services node-1 to node-10 (cluster:up starts the first
 # ATANOR_CLUSTER_NODES): each has a fixed hostname and a network alias node-N.cluster, which is the
 # advertised host of the node and so the name of the Erlang node (atanor@node-N.cluster): long names
 # need a dot.
@@ -57,13 +57,18 @@ services:
     image: ${ATANOR_CLUSTER_IMAGE:-atanor-cluster-node:local}
     build:
       context: ..
-      dockerfile: cluster/Dockerfile
-      additional_contexts:
-        alambique: ./.build/alambique
+      dockerfile: Dockerfile
+      target: harness
       args:
         RELEASE_ID: ${ATANOR_CLUSTER_RELEASE:-local}
         CARGO_BUILD_JOBS: ${ATANOR_CLUSTER_BUILD_JOBS:-6}
     init: true
+    # The node is atanor@<hostname>.cluster: the hostname set by Compose (node-N) with the network
+    # alias below, which a restart keeps even when the address changes. Long names need a dot.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - export ATANOR_ADVERTISE="$$(hostname).cluster"; exec /opt/atanor/bin/atanor start
     hostname: node-1
     container_name: atanor-cluster-node-1
     networks:

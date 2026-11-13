@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Build the node image of the cluster: the `harness` target of the Dockerfile at the repository root
+# (tag ATANOR_CLUSTER_IMAGE, default atanor-cluster-node:local). The release id is
+# ATANOR_CLUSTER_RELEASE, default the commit. Safe to rerun.
+set -euo pipefail
+source "$(dirname "$0")/cluster-common"
+
+export ATANOR_CLUSTER_RELEASE=${ATANOR_CLUSTER_RELEASE:-$(cluster_release_id)}
+compose build node-1
