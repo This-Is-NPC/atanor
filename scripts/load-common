@@ -25,8 +25,8 @@ LOAD_STORE_LATENCY_MS=${ATANOR_LOAD_STORE_LATENCY_MS:-25}   # added to every tri
 LOAD_TMPFS_SIZE=${ATANOR_LOAD_TMPFS_SIZE:-256m}             # the node's data dir; its limit is the scenario memory plus this
 LOAD_STORE_TMPFS_SIZE=${ATANOR_LOAD_STORE_TMPFS_SIZE:-1g}   # the store's data; its limit is its memory plus this
 
-# The cluster settings of the scenario: one node, no peers, data in tmpfs, a balancer that is not the limit.
-export ATANOR_CLUSTER_NODES=1 ATANOR_CLUSTER_PEERS= ATANOR_CLUSTER_TMPFS=1
+# The cluster settings of the scenario: one node, data in tmpfs, a balancer that is not the limit.
+export ATANOR_CLUSTER_NODES=1 ATANOR_CLUSTER_TMPFS=1
 # A tmpfs counts against its container's memory limit. It is a lab artifact, so the limit is the scenario
 # memory plus the tmpfs: the scenario memory stays what the service gets (memory.current - shmem is measured against it).
 LOAD_STORE_MEMORY=${ATANOR_LOAD_STORE_MEMORY:-2g}

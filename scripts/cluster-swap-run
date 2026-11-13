@@ -4,14 +4,14 @@
   cluster-swap-run [--trigger sigterm|api] [--b node-N] [--rooms N] [--workers W] [--rate RPS] [--warmup S]
                    [--overlap S] [--settle S] [--timeout S] [--drain-wait S] [--keep-a] [--out DIR]
 
-The cluster must be up with ONE node and no peers, and the scoreboard deployed:
+The cluster must be up with ONE node, and the scoreboard deployed:
 
-  ATANOR_CLUSTER_NODES=1 ATANOR_CLUSTER_PEERS= mise run cluster:up && mise run cluster:deploy-example
+  ATANOR_CLUSTER_NODES=1 mise run cluster:up && mise run cluster:deploy-example
 
 A is that node. The runner starts the load (scripts/scoreboard-check write over --rooms rooms, --workers
 concurrent requests, at most --rate requests per second; --workers is limited to 12), waits --warmup
-seconds, starts B (the service --b, default the next free node-N) with ATANOR_CLUSTER_PEERS empty so that
-A and B form no cluster, waits until B serves, lets both serve for --overlap seconds, drains A, waits until
+seconds, starts B (the service --b, default the next free node-N) in the discovery group "b"
+(ATANOR_CLUSTER_GROUP=b) so that A and B form no cluster, though they share the store and its cells, waits until B serves, lets both serve for --overlap seconds, drains A, waits until
 A has exited, keeps the load for --settle more seconds, stops it by PID and runs `scoreboard-check verify`.
 
 The trigger:
@@ -141,11 +141,11 @@ def main():
 
     ids = node_ids()
     if len(ids) != 1 or inspect(ids[0], "{{.State.Running}}") != "true":
-        raise SystemExit("start the cluster with one node: ATANOR_CLUSTER_NODES=1 ATANOR_CLUSTER_PEERS= mise run cluster:up")
+        raise SystemExit("start the cluster with one node: ATANOR_CLUSTER_NODES=1 mise run cluster:up")
     a = ids[0]
     a_name = inspect(a, "{{.Name}}").lstrip("/")
-    if "ATANOR_PEERS=" not in inspect(a, "{{range .Config.Env}}{{println .}}{{end}}").splitlines():
-        raise SystemExit(f"{a_name} has peers: start the cluster with ATANOR_CLUSTER_PEERS= (empty)")
+    if "ATANOR_GROUP=" not in inspect(a, "{{range .Config.Env}}{{println .}}{{end}}").splitlines():
+        raise SystemExit(f"{a_name} is in a discovery group: start the cluster without ATANOR_CLUSTER_GROUP")
     b_service = args.b or next(f"node-{n}" for n in range(1, 11) if f"atanor-cluster-node-{n}" != a_name)
     grace = int(float(inspect(a, "{{.Config.StopTimeout}}") or 10))
 
@@ -160,13 +160,13 @@ def main():
     time.sleep(args.warmup)
 
     events = {}
-    say(f"starting {b_service} with no peers")
+    say(f"starting {b_service} in another discovery group")
     events["b_start_at"] = time.time()
-    env = {**os.environ, "ATANOR_CLUSTER_PEERS": ""}
+    env = {**os.environ, "ATANOR_CLUSTER_GROUP": "b"}
     run(*COMPOSE, "up", "-d", "--no-deps", b_service, env=env)
     b = run("docker", "ps", "-aq", "--filter", LABEL, "--filter", f"name=^/?atanor-cluster-{b_service}$").split()[0]
-    if "ATANOR_PEERS=" not in inspect(b, "{{range .Config.Env}}{{println .}}{{end}}").splitlines():
-        raise SystemExit(f"{b_service} has peers: it would form a cluster with A")
+    if "ATANOR_GROUP=b" not in inspect(b, "{{range .Config.Env}}{{println .}}{{end}}").splitlines():
+        raise SystemExit(f"{b_service} is not in group b: it would form a cluster with A")
     wait_for("B ready and in rotation", lambda: inspect(b, "{{.State.Health.Status}}") == "healthy" and balancer_up() == 2, 180)
     events["b_serving_at"] = time.time()
     say(f"B ({b[:12]}) is in rotation {events['b_serving_at'] - events['b_start_at']:.1f}s after the start; "

@@ -94,8 +94,11 @@ services:
       ATANOR_ADMIN_TOKEN_FILE: /run/secrets/admin_token
       ATANOR_DASHBOARD_TOKEN_FILE: /run/secrets/dashboard_token
       ATANOR_COOKIE_FILE: /run/secrets/cookie
-      # Empty (ATANOR_CLUSTER_PEERS=): the nodes form no cluster, as when one replaces another.
-      ATANOR_PEERS: ${ATANOR_CLUSTER_PEERS-node-1.cluster,node-2.cluster,node-3.cluster,node-4.cluster,node-5.cluster,node-6.cluster,node-7.cluster,node-8.cluster,node-9.cluster,node-10.cluster}
+      # The nodes find each other through the store. A node of another group (ATANOR_CLUSTER_GROUP) does not
+      # join the others: cluster:swap-run starts the replacement so.
+      ATANOR_GROUP: ${ATANOR_CLUSTER_GROUP:-}
+      ATANOR_REGISTRY_TTL_MS: ${ATANOR_CLUSTER_REGISTRY_TTL_MS:-}
+      ATANOR_REGISTRY_RENEW_MS: ${ATANOR_CLUSTER_REGISTRY_RENEW_MS:-}
       ATANOR_SHUTDOWN_MS: ${ATANOR_CLUSTER_SHUTDOWN_MS:-}
       ATANOR_DRAIN_TIMEOUT_MS: ${ATANOR_CLUSTER_DRAIN_TIMEOUT_MS:-}
       ATANOR_DRAIN_CONCURRENCY: ${ATANOR_CLUSTER_DRAIN_CONCURRENCY:-}
