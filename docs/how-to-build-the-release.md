@@ -15,7 +15,8 @@ for the design, [design.md §17.4](design.md#174-the-release-as-the-product-arti
 The product is a Mix release named `atanor`, built from [daemon](../daemon): the
 Erlang runtime, both native libraries (`atanor_wasm.so` and `alambique_nif.so`)
 and the dashboard. It starts one node from environment variables and runs
-WASM workers. It holds no worker of yours.
+WASM workers. It holds no worker of yours, and none of your Elixir code: to run Phoenix, LiveView
+or a native worker's module in the same VM, [build a derived image](how-to-build-a-derived-image.md).
 
 The [Dockerfile](../Dockerfile) at the root builds it from public sources only
 (Hex, crates.io and the git tag of Alambique in `alambique.ref`). Its targets:
@@ -98,6 +99,9 @@ ok    an unknown ATANOR_ variable: exit status 1, the log says:   unknown variab
 image-smoke: passed
 ```
 
+`mise run image:derived-smoke` does the same for the [derived image](how-to-build-a-derived-image.md#check-the-image)
+of `examples/live-counter`. Both scripts share `scripts/smoke-common`, which starts the disposable SeaweedFS.
+
 ## Build the tarball
 
 The same release, without the image, as a directory:
@@ -178,3 +182,4 @@ The arm64 image and tarball are not measured: the first release run builds them.
   several nodes of the harness image over SeaweedFS.
 - [configuration.md](configuration.md#the-daemon-environment-and-file) lists every variable.
 - [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md) deploys a worker to a running node.
+- [how-to-build-a-derived-image.md](how-to-build-a-derived-image.md) adds your own Elixir code, Phoenix and LiveView included, to the same VM.

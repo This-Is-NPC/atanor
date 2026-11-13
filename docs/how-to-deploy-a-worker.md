@@ -275,7 +275,8 @@ checks that a node then serves the worker.
 
 A native package holds the MD5 of the module's compiled code, and a node
 applies it only if its loaded module has the same MD5. To ship new native
-code: build the release, roll the nodes to it, then deploy and activate. A
+code: build the release (an [image derived from the product image](how-to-build-a-derived-image.md) when the
+nodes run containers), roll the nodes to it, then deploy and activate with `--url` or a profile. A
 node that still runs the old code keeps the previous version serving and
 reports the problem in `Atanor.Deployments.status/1`, for example
 `{:code_mismatch, "<package md5>", "<loaded md5>"}`.

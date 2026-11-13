@@ -65,6 +65,11 @@ declare it unless you want to move it ([how](docs/how-to-update-alambique.md);
 the release Atanor is built against is the tag in `alambique.ref`). The first
 compile builds the Rust crates, which takes a few minutes ([requirements](#requirements)).
 
+To run Elixir code of your own next to a node, Phoenix and LiveView included, build an image derived from
+Atanor: your app starts the node in its supervision tree, `mix atanor.release` writes the Dockerfile, and
+both run in one VM ([how](docs/how-to-build-a-derived-image.md), with the example
+[examples/live-counter](examples/live-counter)). This dependency is what that image is built with.
+
 To work on Atanor itself, or to try a checkout, use a path dependency instead:
 `{:atanor, path: "path/to/atanor"}`.
 
@@ -149,6 +154,7 @@ Atanor listening on http://127.0.0.1:4000
 - [Write a native worker](docs/how-to-write-a-native-worker.md) or [a WASM worker](docs/how-to-write-a-wasm-worker.md).
 - [Configure an instance](docs/configuration.md).
 - [Deploy a worker](docs/how-to-deploy-a-worker.md) with the `atanor` command, through a node or straight into the bucket ([reference](docs/cli.md)).
+- [Build a derived image](docs/how-to-build-a-derived-image.md) with your Elixir code, Phoenix and LiveView included, in the same VM as the node.
 - [Run a cluster](docs/how-to-run-a-cluster.md).
 - [Open the dashboard](docs/how-to-open-the-dashboard.md) and [read the telemetry](docs/telemetry.md).
 - [Design](docs/design.md) and [build and test](docs/how-to-build-and-test.md), for contributors.
