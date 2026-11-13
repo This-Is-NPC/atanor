@@ -1,0 +1,17 @@
+#!/bin/sh
+# The entry point of the release and of its image. The commands of the `atanor` CLI (Atanor.CLI) run
+# in a VM of their own that starts no node; anything else (start, stop, eval, ...) goes to bin/atanor,
+# and no argument starts the node. The list is the CLI's commands (test/atanor/entrypoint_test.exs).
+set -e
+bin=$(cd "$(dirname "$0")" && pwd -P)
+
+case "${1:-start}" in
+  login | logout | deploy | activate | rollback | status | versions | drain | token)
+    # `eval` puts the arguments after a `--`.
+    exec "$bin/atanor" eval 'Atanor.CLI.main(tl(System.argv()))' -- "$@"
+    ;;
+  *)
+    [ $# -gt 0 ] || set -- start
+    exec "$bin/atanor" "$@"
+    ;;
+esac

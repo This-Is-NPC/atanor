@@ -1,7 +1,7 @@
 defmodule AtanorLoad.Worker do
   @moduledoc """
   The native worker of the load tests (scripts/load-run, docs/how-to-run-the-load-tests.md). A native
-  module must be loaded in the node: cluster/load/Dockerfile adds it to the image, and it is active
+  module must be loaded in the node: cluster/load is a derived image (mix atanor.release) that holds it, and it is active
   only after `scripts/load-env` deploys cluster/load/atanor.json.
 
     * `GET /native/CELL`: counts the rows of the cell `CELL` (a read).
