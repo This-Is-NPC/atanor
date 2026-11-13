@@ -232,6 +232,32 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    rotation are not part of the swap. The `draining` reason did not appear:
    with this few cells A finished before a request met it.
 
+### A swap with a slow store and many busy cells
+
+The four runs above had no unknown outcome because the store answered in under a
+millisecond. With the store 25 ms away (load scenario A, one CPU and 512 MB per
+node, 12 rooms, 750 requests per second), 4 of 4 swaps in `mise run load:swap`
+(`scripts/cluster-swap-run`) left 22 to 36 requests with no answer, always from
+the same 4 of the 12 rooms, each hanging again every 10 to 11 s until B had
+woken them, 25 to 32 s after the drain. They are client timeouts at 10 s, not
+resets, and no acknowledged write was lost or duplicated.
+
+The leases were not the cause. A released all 12 of them in 0.1 s (12 releases
+in the node's telemetry, `errors: 0`), and B acquired each one at once. B then
+spent 25 to 32 s restoring those 4 cells: 449 to 822 segments each, one object
+per commit, read one at a time (`restore: [fetch_concurrency: 1]` on a 512 MB
+node) at 25 ms. The other 8 cells restored from 13 to 73 segments in 1 to 4 s,
+because Alambique's compactor had merged them while A served. The compactor
+takes the first 8 ready cells of its table at each tick, in table order, and
+12 busy cells are all ready again at the next one, so the same 4 cells are never
+compacted (open defect in Alambique 0.6.1, see
+[what-does-not-work.md](what-does-not-work.md)). A request for such a cell waits
+for its wake and has no deadline, so its client gives up first.
+
+`cluster:swap-run` now writes the balancer's request log (`docker-lb.log`) and
+adds `no_answer_by_server` and `no_answer_requests` (id, room, node, balancer
+state) to `result.json`, so a timeout is tied to the node that held it.
+
 ## Job claims and alarms during the swap
 
 - **Jobs.** The drain releases the claims of the jobs A did not finish while
