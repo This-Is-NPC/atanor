@@ -84,7 +84,15 @@ It prints the image sizes, the build times and the time from `docker run` to rea
 `ATANOR_SMOKE_REUSE=1` skips the builds and uses the images of the last run.
 
 ```text
-SMOKE_OUTPUT
+size  runtime: 55.0 MB (54984954 bytes)
+size  harness: 63.5 MB (63471497 bytes)
+ok    the runtime image has no curl and no iptables
+ok    the harness image has curl, iptables, tc and ps
+ok    the runtime image runs as a user that is not root
+ok    a node started from environment variables only was ready on /health/ready in 34.0 s (docker run to HTTP 200)
+ok    no cookie: exit status 1, the log says: atanor: no cookie: set RELEASE_COOKIE or ATANOR_COOKIE_FILE
+ok    an unknown ATANOR_ variable: exit status 1, the log says:   unknown variable ATANOR_STOER; did you mean ATANOR_STORE?
+image-smoke: passed
 ```
 
 ## Build the tarball
@@ -101,10 +109,11 @@ environment variables as the image, and `atanor/bin/atanor remote` attaches to a
 Set the cookie with `RELEASE_COOKIE` or `ATANOR_COOKIE_FILE`, as for the image.
 
 **What the tarball needs on the host.** It is built in the Debian 13 (trixie)
-base of the image, and its native code links that base's libraries. The host
-needs glibc and OpenSSL at least as new as Debian 13 has (glibc LIBC_VERSION,
-OpenSSL 3), `libstdc++6` and `libncurses6`. It does not run on musl (Alpine) or on an
-older distribution; use the image there. It does not need Erlang, Elixir or Rust.
+base of the image, and its native code links that base's libraries. The newest symbol
+versions it uses are glibc 2.38 and OpenSSL 3.4 (observed with `objdump -T` on the amd64 build;
+Debian 13 has glibc 2.41 and OpenSSL 3.5). The host needs at least those, plus `libstdc++6` and
+`libncurses6`. It does not run on musl (Alpine) or on an older distribution; use the image there.
+It does not need Erlang, Elixir or Rust.
 
 ## What a release publishes
 
@@ -130,7 +139,22 @@ locally: the first release run is its proof.
 
 ## What it costs
 
-MEASUREMENTS
+Measured on the VM of the project (4 vCPU, about 6 GB, Docker 29.7, linux/amd64), with the
+files of this repository after the pin of Alambique v0.6.0:
+
+| What | Result |
+| --- | --- |
+| Image size, `runtime` | 55.0 MB (54 984 954 bytes) |
+| Image size, `harness` | 63.5 MB (63 471 497 bytes) |
+| Release directory | 65 MB; the tarball is 20.4 MB (amd64) |
+| `docker build --target runtime`, first build on that VM | 665 s |
+| The same, after a change to Atanor and Alambique, with the Cargo caches kept | 390 s |
+| `docker build --target harness` right after, the layers cached | 202 s (almost all of it pulling base metadata, installing the tools and exporting; the build stage was cached) |
+| `docker run` to HTTP 200 on `/health/ready`, one node, SeaweedFS already up | 34.0 s and 34.5 s (two runs) |
+| `cluster:up` with two nodes, build of the harness image included | 492 s |
+
+The times are of one machine under no other load, and a build on a faster host is shorter.
+The arm64 image and tarball are not measured: the first release run builds them.
 
 ## Troubleshooting
 
