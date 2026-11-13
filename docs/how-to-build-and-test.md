@@ -151,7 +151,8 @@ from the Conventional Commits on `master` (`.github/workflows/release.yml`).
 Each push to `master` updates a release pull request with the next version and
 its `CHANGELOG.md` entry. Merging that pull request tags `vX.Y.Z` and publishes
 the GitHub release. Before 1.0, `feat` bumps the minor version and `fix` the
-patch. The version lives in `mix.exs` and `testkit/mix.exs`. The Rust crates
+patch. The version lives in `mix.exs`, `testkit/mix.exs` and `daemon/mix.exs`. The same
+workflow then builds the image and the tarballs ([how-to-build-the-release.md](how-to-build-the-release.md)). The Rust crates
 are internal and keep their own version.
 
 ## Next steps

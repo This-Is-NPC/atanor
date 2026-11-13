@@ -37,7 +37,7 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
   treat A's lease as its own and both nodes would write the same cell. Atanor
   cannot detect this; keep the names distinct.
 - **No peers between them.** Do not give B A's name in `ATANOR_PEERS` (or
-  your equivalent of `AtanorNode.Mesh`), and do not start both with the same
+  your equivalent of `AtanorDaemon.Mesh`), and do not start both with the same
   list. If they connect, they are a cluster and the swap is a different
   operation ([how-to-run-a-cluster.md](how-to-run-a-cluster.md)).
 - **A grace period longer than the drain.** The drain is bounded by

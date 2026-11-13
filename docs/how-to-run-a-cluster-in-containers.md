@@ -15,14 +15,14 @@ Everything belongs to the Compose project `atanor-cluster` ([cluster/compose.yml
 
 | Container | What it is |
 | --- | --- |
-| `atanor-cluster-node-1..N` | A release of [cluster/node](../cluster/node), built by [cluster/Dockerfile](../cluster/Dockerfile) in two stages (Elixir, Rust for both NIFs, then a Debian slim runtime). One Compose service per node (`node-1` to `node-10`), each with the hostname `node-N` and the network alias `node-N.cluster`. N is 3 by default, at most 10. |
+| `atanor-cluster-node-1..N` | The Atanor release ([daemon](../daemon)), in the `harness` image: the `harness` target of the [Dockerfile](../Dockerfile) at the repository root, which is the product image plus `curl`, `tc`, `iptables` and `ps` for the faults and healthchecks ([how to build it](how-to-build-the-release.md)). One Compose service per node (`node-1` to `node-10`), each with the hostname `node-N` and the network alias `node-N.cluster`. N is 3 by default, at most 10. |
 | `atanor-cluster-store-1` | SeaweedFS `chrislusf/seaweedfs:4.48`, pinned by digest, with a volume. |
 | `atanor-cluster-bucket-1` | Creates the bucket once, then exits. |
 | `atanor-cluster-lb-1` | HAProxy. A node is in rotation only while `GET /health/serving` on its admin port answers 200: the node is ready and has a quorum ([design §10](design.md#102-admin-api)). It adds the header `x-atanor-server` (the balancer's slot) to every answer. |
 
-A node is named `atanor@node-N.cluster` (`ATANOR_ADVERTISE`, set by the image's entrypoint to its hostname plus `.cluster`; long names need a dot). Docker's DNS resolves
+A node is named `atanor@node-N.cluster` (`ATANOR_ADVERTISE`, set by the Compose service to its hostname plus `.cluster`; long names need a dot). Docker's DNS resolves
 `node-N.cluster` while the container runs, and each node tries every name in
-`ATANOR_PEERS` once a second ([cluster/node/lib/atanor_node/mesh.ex](../cluster/node/lib/atanor_node/mesh.ex)),
+`ATANOR_PEERS` once a second ([daemon/lib/atanor_daemon/mesh.ex](../daemon/lib/atanor_daemon/mesh.ex)),
 so a container that restarts with another address is the same node. The Erlang cookie, the admin and dashboard tokens and the S3 keys
 are generated in `cluster/secrets` (git-ignored, mode 700) and mounted as
 Compose secrets; the nodes read them through the `*_FILE` variables
@@ -36,11 +36,9 @@ nodes are not published; the load balancer publishes everything on
 ## Prerequisites
 
 - Docker with Compose v2 and BuildKit, `curl`, `jq`, `openssl`, `python3`.
-- The tools of the [README](../README.md#requirements) (`mise install`) and
-  `git` access to the public Alambique repository (`scripts/cluster-context`
-  fetches the tag in `alambique.ref` into `cluster/.build/alambique`; set
-  `ALAMBIQUE_SOURCE` to another URL or a local checkout to fetch from there).
-- Internet for the first build (base images, Hex, crates). It took about three
+- The tools of the [README](../README.md#requirements) (`mise install`).
+- Internet for the first build (base images, Hex, crates, and the public
+  Alambique repository at the tag in `alambique.ref`). It took about three
   minutes on 12 cores with 6 Cargo jobs.
 - Free host ports 18080 to 18083 (or set the ports below).
 - Node.js 22 or later for the WebSocket client (optional).
@@ -58,6 +56,7 @@ Set these in the environment of `mise run`; the defaults are in `compose.yml`.
 | `ATANOR_CLUSTER_HTTP_PORT`, `_ADMIN_PORT`, `_DASHBOARD_PORT`, `_STATS_PORT` | 18080 to 18083 | Host ports of the load balancer. |
 | `ATANOR_CLUSTER_BIND` | 127.0.0.1 | Host address the ports bind to. Keep loopback. |
 | `ATANOR_CLUSTER_STORE_IMAGE`, `_LB_IMAGE` | pinned digests | Images. |
+| `ATANOR_CLUSTER_IMAGE` | `atanor-cluster-node:local`, built by `cluster:up` | The node image. When you set it, `cluster:up` does not build: it uses that image, which needs `curl` (the `harness` target has it). The load tests use it for their derived image ([cluster/load/Dockerfile](../cluster/load/Dockerfile)). |
 | `ATANOR_CLUSTER_LEASE_TTL_MS`, `_NET_TICKTIME` | 30000, 60 | Cell lease and Erlang net tick time (seconds). |
 | `ATANOR_CLUSTER_PEERS` | `node-1.cluster`..`node-10.cluster` | Advertised hosts each node connects to (`ATANOR_PEERS`). Set it empty and the nodes form no cluster, which `cluster:swap-run` needs ([how-to-replace-a-node.md](how-to-replace-a-node.md)). |
 | `ATANOR_CLUSTER_STOP_GRACE` | 90s | Time `docker stop` waits for a node to drain; keep it above the drain (`stop.shutdown_ms`, 75 s). |
@@ -136,7 +135,6 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
    ```text
    generated cluster/secrets/cookie
    ...
-   alambique 3dc2686bb2727ccdb3148c4cd6d75187b64f1e10 in cluster/.build/alambique
     Container atanor-cluster-store-1 Healthy
     Container atanor-cluster-bucket-1 Exited
    waiting for 3 nodes...
@@ -436,10 +434,8 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
 
 ## Troubleshooting
 
-- **`cluster:up` stops in `scripts/cluster-context` with a git error.** The
-  script clones Alambique and checks out the tag in `alambique.ref`. Check
-  the network, or point `ALAMBIQUE_SOURCE` at a URL or a local checkout that
-  contains that commit.
+- **The image build stops with a git error.** `mix deps.get` clones Alambique
+  at the tag in `alambique.ref` from the public repository. Check the network.
 - **The build fails fetching crates or packages.** The build needs the
   internet; run `mise run cluster:up` again, the Rust build resumes from its
   cache.

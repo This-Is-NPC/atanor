@@ -5402,6 +5402,44 @@ start a new rehearsal after a `stale` one. A migration that cannot be undone
 still needs a backup or Alambique's point-in-time restore. Evidence:
 `test/atanor/rehearsal_test.exs`, `test/cluster/rehearsal_test.exs`.
 
+### 17.4 The release as the product artifact
+
+The product is one artifact: a Mix release named `atanor`, built from `daemon/` (the
+application `atanor_daemon`), which starts one instance from `Atanor.Daemon` (the configuration is
+[configuration.md](configuration.md#the-daemon-environment-and-file)). It holds the Erlang runtime,
+`atanor_wasm.so` and `alambique_nif.so`, and the dashboard (Phoenix, LiveView, LiveDashboard). It holds
+no worker: a WASM worker is deployed to a running node, and a native worker needs an image derived
+from this one, because its module has to be loaded in the node.
+
+**Layout.** `daemon/` is a Mix project of its own, next to the library, so that the library keeps its
+optional dependencies optional and its `Atanor.Application` starts no instance. Its `mix.exs` reads
+the lock of the repository root (`lockfile: "../mix.lock"`): one set of versions is tested and shipped.
+Its version is kept in step with Atanor's by release-please (`extra-files` of
+`release-please-config.json`).
+
+**Image.** The `Dockerfile` at the root has these targets: `runtime`, the product image (the default
+target), with only the libraries the release links (libssl3, libstdc++6, libncurses6, ca-certificates);
+`harness`, the same plus `curl`, `iproute2`, `iptables` and `procps`, which `cluster/` needs for
+faults, `tc` and healthchecks; and `artifact`, a scratch image with the release directory, from which
+the tarball is cut. Both images run as the user `atanor` (uid 10001), with the data directory
+`/var/lib/atanor/cells` owned by it, and start `/opt/atanor/bin/atanor start`. There is no entrypoint
+script: the settings are environment variables, the secrets come through the `*_FILE` variables, and
+the start script `rel/env.sh.eex` checks the cookie and names the node before the VM boots.
+
+**Sources.** The build uses public sources only: Hex, crates.io and the git tag of Alambique in
+`alambique.ref`, which `mix deps.get` clones. Nothing is rewritten in `mix.lock`.
+
+**Publication.** When release-please creates a release, `.github/workflows/release.yml` builds the
+`runtime` target on a native runner per architecture (`ubuntu-latest` for linux/amd64,
+`ubuntu-24.04-arm` for linux/arm64; no emulation), pushes each image by digest to
+`ghcr.io/this-is-npc/atanor`, tags a manifest list `<version>` and `latest`, and attaches
+`atanor-<version>-linux-<arch>.tar.gz` (with its `.sha256`) to the GitHub Release. How to build the same
+thing locally, what the tarball needs on the host, and the measured sizes and times are in
+[how-to-build-the-release.md](how-to-build-the-release.md).
+
+**Limits.** Only Linux, glibc, amd64 and arm64. The arm64 build is proved by the first run of the
+workflow; it is not built locally. The tarball links the glibc and OpenSSL of its build base (Debian 13).
+
 ## 18. Node releases
 
 Atanor has no gate for rolling out node releases: a new build replaces the
