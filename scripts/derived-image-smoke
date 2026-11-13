@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Smoke test of a derived image (docs/how-to-build-a-derived-image.md): build the image of
+# examples/live-counter, the Phoenix and LiveView app and Atanor in one release, then check that
+#   - a node started from environment variables only is ready on /health/ready, and how long that takes;
+#   - the page answers HTTP 200 before any worker is deployed, and says so;
+#   - `docker run --network container:NODE IMAGE deploy` activates the native worker `counter` through the
+#     node (--url), from the module in the image, and the ingress of the node then serves it;
+#   - the LiveView, mounted over a WebSocket, shows the count the worker serves and renders the next one
+#     after a click (scripts/liveview-click): the page and Atanor share one VM;
+#   - Phoenix and Atanor run in one BEAM: the release has one node, with both applications started.
+# Set ATANOR_SMOKE_REUSE=1 to use the image of an earlier run. Everything it creates is named
+# atanor-smoke-derived-* and is removed by id or exact name; safe to rerun. Needs docker, curl, openssl and python3.
+set -euo pipefail
+SMOKE_PREFIX=atanor-smoke-derived
+source "$(dirname "${BASH_SOURCE[0]}")/smoke-common"
+
+image=atanor-smoke-derived-live:local
+example=examples/live-counter
+
+if [[ ${ATANOR_SMOKE_REUSE:-0} != 1 ]]; then
+  start=$(now)
+  docker build -q -f "$repo/$example/Dockerfile" -t "$image" "$repo" >/dev/null
+  echo "built the derived image in $(since "$start") s"
+fi
+echo "size  derived image: $(docker image inspect -f '{{.Size}}' "$image" | awk '{ printf "%.1f MB (%d bytes)", $1 / 1e6, $1 }')"
+
+smoke_store_up
+
+# --- a node starts from the environment, Phoenix with it -------------------------
+start=$(now)
+node=$(run_node --name "$SMOKE_PREFIX-node" --network-alias node-1.smoke -p 127.0.0.1::4000 -p 127.0.0.1::4001 -p 127.0.0.1::4010 "${node_env[@]}" \
+  -e SECRET_KEY_BASE="$(openssl rand -hex 32)" "$image")
+ids+=("$node")
+published() { echo "http://$(docker port "$node" "$1/tcp" | head -n 1)"; }
+admin=$(published 4001) ingress=$(published 4000) page=$(published 4010)
+token=$(cat "$tmp/admin_token")
+ready=
+deadline=$((SECONDS + ready_timeout))
+while :; do
+  if [[ $(curl -s -o /dev/null -m 2 -w '%{http_code}' -H "authorization: Bearer $token" "$admin/health/ready" || true) == 200 ]]; then
+    ready=$(since "$start"); break
+  fi
+  [[ $(docker inspect -f '{{.State.Running}}' "$node") == true ]] || break
+  (( SECONDS < deadline )) || break
+done
+if [[ -n $ready ]]; then
+  pass "the node of the derived image was ready on /health/ready in $ready s (docker run to HTTP 200)"
+else
+  fail "the node was not ready"; docker logs "$node" 2>&1 | tail -n 30 >&2
+  exit 1
+fi
+
+code=$(curl -s -o "$tmp/page.html" -m 5 -w '%{http_code}' "$page/" || true)
+if [[ $code == 200 ]] && grep -q 'not deployed' "$tmp/page.html"; then
+  pass "the LiveView page answered 200 on port 4010 and said the counter worker is not deployed yet"
+else
+  fail "the page answered HTTP $code"; head -c 600 "$tmp/page.html" >&2
+fi
+
+# --- a native worker deployed through the node is served by it ---------------------
+# The deploy shares the node's network namespace, so the admin URL is loopback: the CLI refuses a token over plain http elsewhere.
+if out=$(docker run --rm --network "container:$node" -v "$repo/$example:/w:ro" -e ATANOR_URL=http://127.0.0.1:4001 \
+  -e ATANOR_TOKEN="$token" "$image" deploy /w --ebin /opt/atanor/lib/live_counter-0.1.0/ebin --activate 2>&1); then
+  id=$(sed -n 's/^package \([0-9a-f]\{64\}\) .*/\1/p' <<<"$out")
+  start=$(now)
+  served=
+  deadline=$((SECONDS + ready_timeout))
+  while :; do
+    body=$(curl -s -m 2 -H 'Host: counter.localhost' "$ingress/counter" || true)
+    if [[ $body == '{"count":0}' ]]; then served=$(since "$start"); break; fi
+    (( SECONDS < deadline )) || break
+    sleep 1
+  done
+  if [[ -n $id && -n $served ]]; then
+    pass "deploy --url activated the native worker counter $id; the ingress served $body $served s later"
+  else
+    fail "the ingress did not serve the worker (last answer: $body)"; echo "$out" >&2
+  fi
+else
+  fail "deploy failed"; echo "$out" >&2
+fi
+
+# --- the page and the worker share the VM ------------------------------------------
+curl -s -m 5 -X POST -H 'Host: counter.localhost' "$ingress/counter" >/dev/null
+if curl -s -m 5 "$page/" | grep -q 'id="count">1<'; then
+  pass "a POST to the worker on the ingress (port 4000) shows on the page (port 4010): the page read the cell through the worker"
+else
+  fail "the page does not show the count that the worker serves"
+fi
+if line=$(python3 -I "$repo/scripts/liveview-click" "$page/" 2>&1); then
+  pass "LiveView: $line"
+  [[ $(curl -s -m 5 -H 'Host: counter.localhost' "$ingress/counter") == '{"count":2}' ]] \
+    && pass "the click reached the cell: the worker now serves {\"count\":2}" \
+    || fail "the click did not reach the worker's cell"
+else
+  fail "LiveView over a WebSocket: $line"
+fi
+
+# --- one BEAM -----------------------------------------------------------------------
+apps=$(docker exec "$node" /opt/atanor/bin/atanor rpc 'IO.puts(Enum.join(for(a <- [:atanor, :phoenix, :phoenix_live_view, :live_counter], List.keymember?(Application.started_applications(), a, 0), do: a), " ") <> " on " <> to_string(node()))' 2>&1 || true)
+if [[ $apps == "atanor phoenix phoenix_live_view live_counter on atanor@node-1.smoke" ]]; then
+  pass "one VM runs: $apps"
+else
+  fail "the applications of the node: $apps"
+fi
+
+if [[ $failures -gt 0 ]]; then echo "derived-image-smoke: $failures failed" >&2; exit 1; fi
+echo "derived-image-smoke: passed"

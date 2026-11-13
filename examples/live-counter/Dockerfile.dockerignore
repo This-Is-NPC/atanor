@@ -1,0 +1,15 @@
+*
+!mix.exs
+!alambique.ref
+!lib
+!native
+!wit
+!examples/live-counter
+.git
+**/_build
+**/deps
+**/target
+**/node_modules
+**/erl_crash.dump*
+**/.env
+**/.env.*

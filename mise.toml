@@ -202,6 +202,10 @@ description = "Build the runtime and harness images and check them: a node start
 depends = ["build:scoreboard"]
 run = "scripts/image-smoke"
 
+[tasks."image:derived-smoke"]
+description = "Build the derived image of examples/live-counter (Phoenix, LiveView and Atanor in one release) and check it: the node is ready, the page answers, a native worker deployed with --url is served by the ingress, and the LiveView mounted over a WebSocket shows and changes the worker's cell, all in one VM (needs Docker and python3; reports size and times; ATANOR_SMOKE_REUSE=1 reuses the image)"
+run = "scripts/derived-image-smoke"
+
 [tasks."cluster:up"]
 description = "Build the node image if needed, start the container cluster (project atanor-cluster) and wait until it serves (env: ATANOR_CLUSTER_NODES, _NODE_CPUS, _NODE_MEMORY, _HTTP_PORT, _TMPFS=1 for data in memory, ...)"
 run = "scripts/cluster-up"
