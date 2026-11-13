@@ -73,10 +73,12 @@ Rules:
 - **Secrets from files.** Each secret has a `_FILE` variant (`AWS_SECRET_ACCESS_KEY_FILE`, in the file
   `aws_secret_access_key_file`) that names a file with the value, so it does not show in `docker inspect`.
   Giving both forms in one place is an error. The environment's form replaces the file's.
+- **`AWS_*` are the AWS SDK's names.** They are not subject to the `ATANOR_` strictness, but the table lists
+  every one the daemon reads, and an unknown key in the file still fails.
 - **Checked once.** The options go through `Atanor.Config.build/1`, so a value out of range fails with the
   message of the option (`:admin :token must be at least 32 bytes ...`).
 - **Logged once.** At start the node logs `atanor: effective settings KEY=value ...` with the secrets
-  as `***`.
+  as `***`, and `credentials=<source>` for the source of the S3 credentials.
 - **Before the VM boots.** `ATANOR_ADVERTISE`, `ATANOR_NET_TICKTIME` and the cookie are read by
   `rel/env.sh.eex`, so they come from the environment only; in the file they are an error.
 
@@ -84,8 +86,12 @@ Rules:
 | --- | --- | --- | --- |
 | `ATANOR_STORE` | `store` | required | The bucket: `s3://bucket` or `s3://bucket/prefix`. The prefix is the instance `prefix:` (default `atanor`). |
 | `ATANOR_S3_ENDPOINT` | `s3_endpoint` | unset: Alambique derives `https://s3.<region>.amazonaws.com` from the region | The S3 endpoint URL; give it for SeaweedFS, R2 or MinIO. |
-| `ATANOR_S3_REGION` | `s3_region` | `us-east-1` | The signing region. |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | `aws_access_key_id`, `aws_secret_access_key` | required | Static S3 credentials. The `_FILE` variants read them from files. `AWS_SESSION_TOKEN` fails the start: the S3 store takes no session token yet. |
+| `ATANOR_S3_REGION`, `AWS_REGION`, `AWS_DEFAULT_REGION` | `s3_region`, `aws_region`, `aws_default_region` | `us-east-1` | The signing region; the first one set wins, in this order ([credentials](#aws-credentials)). |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token` | none: the [chain](#aws-credentials) goes on | Static S3 credentials, the first source. The `_FILE` variants read them from files. |
+| `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_ROLE_ARN`, `AWS_ROLE_SESSION_NAME`, `AWS_ENDPOINT_URL_STS` | `aws_web_identity_token_file`, `aws_role_arn`, `aws_role_session_name`, `aws_endpoint_url_sts` | none; session name `atanor`; STS derived from the region | Web identity, the second source. |
+| `AWS_PROFILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE` | `aws_profile`, `aws_shared_credentials_file`, `aws_config_file` | `default`, `~/.aws/credentials`, `~/.aws/config` | The shared files, the third source: static keys only. |
+| `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, `AWS_CONTAINER_CREDENTIALS_FULL_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN` | `aws_container_credentials_relative_uri`, `aws_container_credentials_full_uri`, `aws_container_authorization_token` | none | Container credentials (ECS, EKS Pod Identity), the fourth source. The token has a `_FILE` variant, read again at every refresh. |
+| `AWS_EC2_METADATA_DISABLED`, `AWS_EC2_METADATA_SERVICE_ENDPOINT` | `aws_ec2_metadata_disabled`, `aws_ec2_metadata_service_endpoint` | not disabled; `http://169.254.169.254` | EC2 metadata (IMDSv2), the last source. `true` turns it off. |
 | `ATANOR_LISTEN` | `listen` | `0.0.0.0:4000` | `ip:port` of the cell ingress. |
 | `ATANOR_ADMIN_TOKEN` | `admin_token` | none | The admin token, 32 bytes or more. Without it there is no admin API. |
 | `ATANOR_ADMIN_LISTEN` | `admin_listen` | `0.0.0.0:4001` | `ip:port` of the admin API. Needs the token. |
@@ -104,6 +110,27 @@ Rules:
 | `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY` | `shutdown_ms`, `drain_timeout_ms`, `drain_concurrency` | 75000, 15000, 64 | `stop:` ([above](#the-instance)). The container's grace period must exceed the first. |
 | `ATANOR_DETECTOR_PAUSE_MS` | `detector_pause_ms` | 2000 | `detector: [acceptable_pause_ms:]`. |
 | `ATANOR_PEERS` | `peers` | none | The host names of the peers, comma separated. Read by the daemon (`daemon/lib/atanor_daemon/mesh.ex`) only, not by `Atanor.Daemon`'s options; it goes away with discovery through the store. |
+
+### AWS credentials
+
+`Atanor.AwsCredentials` finds the S3 credentials the way the AWS SDKs do. The first source that is configured
+supplies them; if it is configured and fails, the start fails with that error and the chain does not go on.
+
+| Order | Source | Configured by | `credentials=` in the log |
+| --- | --- | --- | --- |
+| 1 | Environment (or file keys) | `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN` | `env` |
+| 2 | Web identity | `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` (STS `AssumeRoleWithWebIdentity`, unsigned; the token file is read again at each refresh) | `web identity` |
+| 3 | Shared files | a profile in `~/.aws/credentials` or `~/.aws/config` (`AWS_PROFILE`, default `default`), with static keys. SSO, `credential_process` and roles fail with a message saying so. A named profile that does not exist fails; a missing default one is skipped | `profile <name>` |
+| 4 | Container credentials | `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` (on `169.254.170.2`) or `AWS_CONTAINER_CREDENTIALS_FULL_URI`, with `AWS_CONTAINER_AUTHORIZATION_TOKEN` or its `_FILE` | `container credentials` |
+| 5 | EC2 IMDSv2 | nothing: it is the fallback, with 1 second timeouts, unless `AWS_EC2_METADATA_DISABLED=true` | `EC2 metadata` |
+
+Temporary keys (sources 2, 4 and 5) are kept by one process and handed to the S3 store as a function. They are
+fetched again when less than 5 minutes remain, one refresh at a time. A failed refresh keeps the old keys until
+they expire, logs a warning, and is tried again after 30 seconds. If no credentials can be fetched at start, the
+node does not start. Neither the log line nor the warnings print a key, a token or the web identity token.
+
+The region is `ATANOR_S3_REGION`, else `AWS_REGION`, else `AWS_DEFAULT_REGION`, else `us-east-1`. Without
+`ATANOR_S3_ENDPOINT` the endpoint is `https://s3.<region>.amazonaws.com`.
 
 Before this page, the container cluster named these `ATANOR_NODE_*` (`ATANOR_NODE_BUCKET`,
 `ATANOR_NODE_S3_ENDPOINT`, `ATANOR_NODE_S3_ACCESS_KEY`, ...). They fail now, with the closest key in the error:
