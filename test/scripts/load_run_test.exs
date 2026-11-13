@@ -72,7 +72,14 @@ defmodule Atanor.LoadRunTest do
 
     assert record["admission"]["refuse_at_bytes"] == 400 * 1_048_576
     assert record["admission"]["refusing_seen"] == true
-    assert record["admission"]["refused"] == %{"memory" => 10 * (n - 1), "in_flight" => n - 1, "disk" => 0}
+
+    assert record["admission"]["refused"] == %{
+             "memory" => 10 * (n - 1),
+             "in_flight" => n - 1,
+             "disk" => 0,
+             "queue_timeout" => 0
+           }
+
     assert record["store"]["tmpfs_max_pct"] == 50.0
     assert record["store"]["limit_mb"] == 1280.0
     assert r["rtt_fails"]["record"]["series"] |> Enum.all?(&(&1["working_set"] == :null))

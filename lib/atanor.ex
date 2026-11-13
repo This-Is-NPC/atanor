@@ -264,6 +264,9 @@ defmodule Atanor do
     * `:http` - the ingress (design §7.1): `:retry_after_s` (1, the
       `Retry-After` of a 503 for expected unavailability, `held_elsewhere` included; design §8.4);
       `:max_in_flight` (1 024, the requests served at once on the node; above it, 503 `overloaded`);
+      `:queue_wait_ms` (5 000, how long an admitted request may wait for its handler, a WASM thread, the owner
+      of its cell or a cell call before it is a 503 `overloaded` with reason `queue_timeout`; a write that
+      is already sent and still waiting is a 503 `unknown_outcome`; `0` or `:infinity` turns it off);
       `:max_connections` (16 384, the total of open connections, WebSockets
       included) shared by `:acceptors` (10); `:read_timeout_ms` (10 000, how
       long the listener waits for the next bytes of a request, header or body,

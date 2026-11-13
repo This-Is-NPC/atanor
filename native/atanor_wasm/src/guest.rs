@@ -2,13 +2,14 @@
 //! and the collected response.
 
 use std::fmt;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use rustler::{Encoder, LocalPid, NifMap, OwnedEnv, ResourceArc};
+use rustler::{Encoder, LocalPid, NifMap, OwnedEnv, Resource, ResourceArc};
 use wasmtime::component::ResourceTable;
 use wasmtime::{ResourceLimiter, Store, Trap, UpdateDeadline};
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
@@ -220,6 +221,37 @@ fn bin(it: &mut std::vec::IntoIter<Wire>) -> Option<Vec<u8>> {
     }
 }
 
+/// The right to start a queued call, which the thread that takes it and the caller that gives up
+/// contest: whoever moves it out of `QUEUED` first wins, so a call either runs or never does.
+pub struct Ticket(AtomicU8);
+
+const QUEUED: u8 = 0;
+const STARTED: u8 = 1;
+const WITHDRAWN: u8 = 2;
+
+#[rustler::resource_impl]
+impl Resource for Ticket {}
+
+impl Ticket {
+    pub fn new() -> Self {
+        Ticket(AtomicU8::new(QUEUED))
+    }
+
+    /// Called by the thread that takes the call: false when the caller withdrew it.
+    pub fn start(&self) -> bool {
+        self.0
+            .compare_exchange(QUEUED, STARTED, AcqRel, Acquire)
+            .is_ok()
+    }
+
+    /// Called by the caller: true when the call had not started and now never will.
+    pub fn withdraw(&self) -> bool {
+        self.0
+            .compare_exchange(QUEUED, WITHDRAWN, AcqRel, Acquire)
+            .is_ok()
+    }
+}
+
 pub struct Job {
     pub pre: ResourceArc<Prepared>,
     pub call: Call,
@@ -227,6 +259,7 @@ pub struct Job {
     pub pid: LocalPid,
     pub tag: u64,
     pub queued_at: Instant,
+    pub ticket: ResourceArc<Ticket>,
     /// Held until the call is over; the call counts against its worker's `worker_calls`.
     pub slot: Option<Slot>,
 }
@@ -487,6 +520,12 @@ impl Timing {
 
 /// Runs a job and sends the result to the process that submitted it.
 pub async fn run(mut job: Job) {
+    if !job.ticket.start() {
+        // The caller gave up while the call was queued and has its answer: nothing to run or to report.
+        stats::bump(&stats::REJECTED);
+        drop(job.slot.take());
+        return;
+    }
     let runtime = engine::runtime().expect("configured");
     let started = tokio::time::Instant::now();
     let mut timing = Timing::default();
@@ -961,6 +1000,19 @@ fn build_request(r: &ReqData) -> Result<http::Request<Full<Bytes>>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_queued_call_runs_or_is_withdrawn_never_both() {
+        let withdrawn = Ticket::new();
+        assert!(withdrawn.withdraw());
+        assert!(!withdrawn.start());
+        assert!(!withdrawn.withdraw());
+
+        let started = Ticket::new();
+        assert!(started.start());
+        assert!(!started.withdraw());
+        assert!(!started.start());
+    }
 
     #[test]
     fn growing_memory_past_the_cap_is_the_memory_limit() {

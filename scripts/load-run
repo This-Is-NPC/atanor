@@ -365,7 +365,7 @@ def admission_summary(samples):
     if not seen:
         return None
     first, last = seen[0], seen[-1]
-    delta = {k: (last.get("refused") or {}).get(k, 0) - (first.get("refused") or {}).get(k, 0) for k in ("memory", "in_flight", "disk")}
+    delta = {k: (last.get("refused") or {}).get(k, 0) - (first.get("refused") or {}).get(k, 0) for k in ("memory", "in_flight", "disk", "queue_timeout")}
     return {"refused": delta, "refusing_seen": any(a.get("refusing") or a.get("disk_refusing") for a in seen),
             "in_flight_max": max((a.get("in_flight") or 0 for a in seen), default=None), "working_set_max_bytes": max((a.get("working_set_bytes") or 0 for a in seen), default=None),
             **{k: last.get(k) for k in ("limit_bytes", "refuse_at_bytes", "max_in_flight", "disk_budget_bytes")}}
