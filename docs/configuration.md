@@ -34,6 +34,7 @@ children = [
 | `allow_private_hosts:` | Which private addresses outbound HTTP may reach. |
 | `package:` | The size limits of `atanor.json` (`max_manifest_bytes`, 262,144) and of a WASM component (`max_component_bytes`, 8,388,608). |
 | `auth:` | The issuer, audience and scopes per route ([OIDC guide](how-to-protect-a-route-with-oidc.md)). |
+| `alambique: [registry: [advertise:, ttl_ms:, renew_ms:]]` | Publishes this node under `<prefix>/nodes/` and connects to the others ([discovery](#discovery)). `advertise:` is the node's Erlang name (`Atom.to_string(node())`). Needs a distributed VM. |
 | `detector:`, `takeover:`, `routing:` | Failure detection, takeover and routing ([design §8.6 to §8.12](design.md#86-classifying-failures)). |
 | `stop:` | The drain: `drain_timeout_ms` 15 000 (one cell hibernating and releasing its lease), `drain_concurrency` 64 (cells at once), `shutdown_ms` 75 000 (the whole drain, not below `drain_timeout_ms`) and `exit` true (`atanor drain` and `POST /drain` stop the node when the cells are back; false leaves it running, drained) and `sigterm` `:drain` (SIGTERM drains with the listeners open, then stops the VM; `:stop` stops at once). `jobs_ms` 15 000, `connections_ms` 15 000, `sweeps_ms` 5 000 and `tasks_ms` 5 000 bound the other steps of a stop ([design §8.11](design.md#811-draining-and-stopping-gracefully)). |
 | `http:` | `retry_after_s` 1 is the `Retry-After` of every 503, `held_elsewhere` included ([design §8.4](design.md#84-when-the-node-is-lost)). |
@@ -99,7 +100,7 @@ Rules:
 | `ATANOR_ADMIN_LISTEN` | `admin_listen` | `0.0.0.0:4001` | `ip:port` of the admin API. Needs the token. |
 | `ATANOR_DASHBOARD_TOKEN` | `dashboard_token` | none | The dashboard token, 32 bytes or more. Without it there is no dashboard, which needs its [dependencies](how-to-open-the-dashboard.md). |
 | `ATANOR_DASHBOARD_LISTEN` | `dashboard_listen` | `0.0.0.0:4002` | `ip:port` of the dashboard. Needs the token. |
-| `ATANOR_ADVERTISE` | environment only | required | The host name or IP the other nodes reach this node at. The Erlang node is `atanor@<it>`, with long names. Between nodes: epmd 4369 and the distribution ports 9100 to 9110. |
+| `ATANOR_ADVERTISE` | environment only | required | The host name or IP the other nodes reach this node at. The Erlang node is `atanor@<it>`, with long names, and that node name is what the node publishes in the store for the others to dial ([discovery](#discovery)). Between nodes: epmd 4369 and the distribution ports 9100 to 9110. |
 | `ATANOR_COOKIE_FILE` or `RELEASE_COOKIE` | environment only | required | The Erlang cookie, from a file or inline; both is an error, and the node does not start without one. The cookie generated at build is never used. |
 | `ATANOR_NET_TICKTIME` | environment only | `60` | Seconds a silent peer goes unnoticed (Erlang `net_ticktime`). |
 | `ATANOR_NODE_ID` | `node_id` | the Erlang node name | The node's id in the leases. Two nodes that share a store must not share an id. |
@@ -111,7 +112,9 @@ Rules:
 | `ATANOR_LEASE_TTL_MS` | `lease_ttl_ms` | Alambique's | The cell lease time to live (`alambique: [lease_ttl_ms:]`). |
 | `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY` | `shutdown_ms`, `drain_timeout_ms`, `drain_concurrency` | 75000, 15000, 64 | `stop:` ([above](#the-instance)). The container's grace period must exceed the first. |
 | `ATANOR_DETECTOR_PAUSE_MS` | `detector_pause_ms` | 2000 | `detector: [acceptable_pause_ms:]`. |
-| `ATANOR_PEERS` | `peers` | none | The host names of the peers, comma separated. Read by the daemon (`daemon/lib/atanor_daemon/mesh.ex`) only, not by `Atanor.Daemon`'s options; it goes away with discovery through the store. |
+| `ATANOR_GROUP` | `group` | none | The discovery group: a node dials only the nodes of its own group (`registry: [meta: %{"group" => ...}]`). A node that replaces another in a swap takes one, so that the two do not form a cluster ([how-to-replace-a-node.md](how-to-replace-a-node.md)). 1 to 64 letters, digits, `.`, `_` or `-`. |
+| `ATANOR_REGISTRY_TTL_MS` | `registry_ttl_ms` | 15000 | How long the node's entry under `<prefix>/nodes/` is live without a renewal (`alambique: [registry: [ttl_ms:]]`). A node that stopped without leaving is forgotten after it plus the skew margin (2 s). It must exceed twice the skew margin and `ATANOR_REGISTRY_RENEW_MS`. |
+| `ATANOR_REGISTRY_RENEW_MS` | `registry_renew_ms` | 3000 | How often the node renews its entry and reads the peers; a new node is found within about this time (`registry: [renew_ms:]`). It costs two small requests per period per node. |
 
 ### AWS credentials
 
@@ -142,9 +145,34 @@ Before this page, the container cluster named these `ATANOR_NODE_*` (`ATANOR_NOD
 | `ATANOR_NODE_S3_ENDPOINT`, `ATANOR_NODE_BUCKET` | `ATANOR_S3_ENDPOINT`, `ATANOR_STORE=s3://<bucket>` |
 | `ATANOR_NODE_S3_ACCESS_KEY`, `ATANOR_NODE_S3_SECRET_KEY` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
 | `ATANOR_NODE_ADMIN_TOKEN`, `ATANOR_NODE_DASHBOARD_TOKEN` | `ATANOR_ADMIN_TOKEN`, `ATANOR_DASHBOARD_TOKEN` |
-| `ATANOR_NODE_PEERS`, `ATANOR_NODE_ID`, `ATANOR_NODE_RELEASE` | `ATANOR_PEERS`, `ATANOR_NODE_ID`, `ATANOR_RELEASE` |
+| `ATANOR_NODE_PEERS` (`ATANOR_PEERS` after that) | none: the nodes find each other through the store ([discovery](#discovery)) |
+| `ATANOR_NODE_ID`, `ATANOR_NODE_RELEASE` | `ATANOR_NODE_ID`, `ATANOR_RELEASE` |
 | `ATANOR_NODE_SHUTDOWN_MS`, `_DRAIN_TIMEOUT_MS`, `_DRAIN_CONCURRENCY`, `_LEASE_TTL_MS`, `_DETECTOR_PAUSE_MS` | `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY`, `ATANOR_LEASE_TTL_MS`, `ATANOR_DETECTOR_PAUSE_MS` |
 | `ATANOR_NODE_HOST`, `ATANOR_NODE_NET_TICKTIME`, `RELEASE_COOKIE` from the entrypoint | `ATANOR_ADVERTISE`, `ATANOR_NET_TICKTIME`, `ATANOR_COOKIE_FILE` |
+
+### Discovery
+
+Nodes find each other through the store; there is no list of peers. A node that has
+`alambique: [registry: [advertise: ...]]` writes an entry `<prefix>/nodes/<node_id>`, renews it every
+`renew_ms` and deletes it when it drains or stops. `Atanor.Discovery` reads the other live entries and
+runs `Node.connect/1` for each one it is not connected to, when the list changes and every `renew_ms`.
+The daemon turns it on from `ATANOR_ADVERTISE`; the rule is one:
+
+- **`advertise` is the Erlang node name.** In the daemon it is `atanor@<ATANOR_ADVERTISE>`, so
+  `ATANOR_ADVERTISE` is the host or IP that the other nodes can reach, and it must resolve from them.
+  An embedded instance gives its own `Atom.to_string(node())`.
+- **Timings.** A new node is found within `ATANOR_REGISTRY_RENEW_MS` (3 s), plus the connect. A node
+  that stops by `SIGTERM`, a drain or a stop leaves the list at the next read. A node that dies is
+  forgotten after `ATANOR_REGISTRY_TTL_MS` plus the skew margin (15 s plus 2 s). The detector declares
+  a dead node down on its own, in about 5 s ([design §8.7](design.md#87-the-phi-accrual-detector)),
+  so the cells do not wait for the registry.
+- **Nothing is disconnected.** Leaving the registry never disconnects a node: the failure detector is
+  the authority on a peer that is down ([design §8.16](design.md#816-discovery-through-the-store)).
+- **Trust.** Whoever can write `<prefix>/nodes/` decides whom the nodes dial. The cookie still gates the
+  handshake, so a stranger cannot join, but write access to the bucket must be as trusted as the
+  cluster itself. Keep the cookie out of the bucket and of the registry.
+- **Ports.** Between nodes: `epmd` on 4369 and the distribution ports 9100 to 9110. Nothing else is
+  needed between them; the store, the admin API and the ingress are separate.
 
 ## What a manifest may grant
 
