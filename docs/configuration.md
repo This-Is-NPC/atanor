@@ -223,6 +223,10 @@ node gets 10 wakes and 2.4 MiB in flight; a 2 GiB node 14 and 9.6 MiB;
 `restore: [fetch_concurrency:]` keeps Alambique's 16 and the bytes budget is the
 limit; formula in [design §4.3](design.md)), so a store that fails cannot make
 every queued request restore a cell at once.
+The S3 store keeps its own pool of `pool_size` connections (256 by default).
+The derived `max_wakes` (at most 14) times 16 requests is at most 224, inside
+that pool. A node with no memory limit keeps `max_wakes: 256`, which can ask for
+more than the pool holds; the extra requests wait for a connection.
 
 **Refusing requests before the node dies.** The ingress refuses with 503
 `overloaded` and `Retry-After`, before it reads the route, the token or the
