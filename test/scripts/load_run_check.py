@@ -69,13 +69,14 @@ def run_generators(self, value, sampler):
 
 
 m.Round.run_generators = run_generators
+real_take = m.Sampler.take
 
 
 def new_round(name):
     out = os.path.join(work, name)
     os.makedirs(out)
     args = argparse.Namespace(out=out, measure=measure[0], step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1e9, min_available_gb=0.0,
-                              sample_s=0.05, repeat_invalid=0, host_wait=0.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
+                              sample_s=0.05, quiet_window=0.0, quiet_max_wait=5.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
                               max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, max_store_tmpfs_pct=90.0)
     pid = os.getpid()
     info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"ip": "127.0.0.1", "pid": pid},
@@ -253,4 +254,68 @@ def swap_usage(start, peak):
 
 results["host_swap"] = {"flat": m.judge_swap(swap_usage(3380, 3380), 16, 256), "grows": m.judge_swap(swap_usage(3380, 3680), 16, 256)}
 
+# The quiet wait: a decision on intervals (start, end, foreign load), and the foreign load counts the harness itself as the lab's own.
+results["is_quiet"] = {"empty": m.is_quiet([], 1, 60), "short": m.is_quiet([(0, 30, 0.2)], 1, 60), "long": m.is_quiet([(0, 30, 0.2), (30, 61, 0.9)], 1, 60),
+                       "burst_resets": m.is_quiet([(0, 40, 0.2), (40, 50, 1.6), (50, 100, 0.2)], 1, 60), "burst_last": m.is_quiet([(0, 100, 0.2), (100, 110, 1.0)], 1, 60)}
+results["judge_host"] = {"over": m.judge_host(1.6, 1.0), "at": m.judge_host(1.0, 1.0), "unknown": m.judge_host(None, 1.0)}
+
+
+def load_sample(t, busy_cores, self_cpu_s=0.0, node_cpu_s=0.0):
+    idle = 100 * m.CORES * t - busy_cores * 100 * t  # 100 ticks per core and second
+    host = {"cpu_total": 100 * m.CORES * t, "cpu_idle": idle, "loadavg1": 0.0, "available_gb": 8.0, "swap_used_mb": 0}
+    return {"t": float(t), "host": host, "node": {"cpu_s": node_cpu_s}, "store": {}, "lb": {}, "gen_cpu_s": 0.0, "self_cpu_s": self_cpu_s}
+
+
+# 3 cores busy: 1 is the harness, 1 the node, 1 is foreign.
+busy, foreign = m.net_load(load_sample(0, 0), load_sample(10, 3, self_cpu_s=10.0, node_cpu_s=10.0))
+results["net_load"] = {"busy": round(busy, 2), "foreign": round(foreign, 2)}
+
+
+def wait_scenario(busy_cores):
+    real, real_cpu = (m.host_sample, m.cgroup_dir), m.process_cpu
+    clock = {"t": 0.0}
+
+    def fake_host():
+        clock["t"] += 1.0
+        return load_sample(clock["t"], busy_cores)["host"]
+
+    m.host_sample, m.cgroup_dir, m.process_cpu = fake_host, lambda pid: work + "/no-cgroup", lambda pid: 0.0
+    args = argparse.Namespace(sample_s=0.01, host_load_max=1.0, quiet_window=0.05, quiet_max_wait=0.3)
+    try:
+        quiet, load = m.wait_quiet(args, {"node": {"pid": 1}, "store": {"pid": 1}, "lb": {"pid": 1}})
+    finally:
+        (m.host_sample, m.cgroup_dir), m.process_cpu = real, real_cpu
+    return {"quiet": quiet, "load": load}
+
+
+results["wait_quiet"] = {"idle": wait_scenario(0.2), "busy": wait_scenario(2.5)}
+
+# A busy host that never calms stops the step as "host busy", with no generator run; a contaminated step is INVALID with the load named.
+def host_scenario(name, busy_cores):
+    container()
+    runs = []
+    real = m.host_sample, m.Round.run_generators
+    hook.update(during=lambda: (runs.append(1), time.sleep(0.3)), error=None)  # the sampler ticks while the generators "run"
+    round_, args = new_round(name)
+    args.host_load_max, args.quiet_window, args.quiet_max_wait = 1.0, 0.05, 0.3
+    args.sample_s = 0.01
+    ticks = {"total": 0, "idle": 0}
+
+    def fake_host():  # cumulative ticks: every call is one second of the host with busy_cores busy
+        ticks["total"] += 100 * m.CORES
+        ticks["idle"] += round(100 * (m.CORES - busy_cores(len(runs))))
+        return {"cpu_total": ticks["total"], "cpu_idle": ticks["idle"], "loadavg1": 0.0, "available_gb": 8.0, "swap_used_mb": 0}
+
+    real_cpu = m.process_cpu
+    m.host_sample, m.Sampler.take, m.process_cpu = fake_host, real_take, lambda pid: 0.0  # the harness's own CPU is not under test here
+    try:
+        record = round_.step(10, "ramp")
+    finally:
+        m.host_sample, m.process_cpu = real[0], real_cpu
+        m.Sampler.take = lambda self: memory_sample(time.time(), 650, 256)
+    return {"status": record["status"], "valid": record["valid"], "stop_reason": record["stop_reason"], "generator_runs": len(runs)}
+
+
+results["host_busy"] = host_scenario("host_busy", lambda ran: 2.5)
+results["host_contaminated"] = host_scenario("host_contaminated", lambda ran: 2.5 if ran else 0.2)
 print(json.dumps(results))

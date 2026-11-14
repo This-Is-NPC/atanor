@@ -48,10 +48,16 @@ Every sample (default every 5 s) reads the node's cgroup (`memory.current`, `mem
 Prometheus counters (`SeaweedFS_s3_request_seconds_count` and bucket traffic, for trips and bytes), `/proc/stat`
 and `/proc/meminfo`. Per step, in this order:
 
+0. **Quiet host.** Other sessions on the machine (a `cargo test`, a build) run heavy jobs that nobody
+   coordinates with the lab. Before every step (after the reset of a fresh node) and before the swap,
+   `load-run` samples the net host load every `--sample-s` and waits until it stays below 1 core for 60 s
+   in a row; a burst restarts the window. If that does not happen within 1800 s the measure stops with
+   `host busy: ...` and exits 1. The wait measures the same net load as the step, with the lab's own CPU
+   (node, store, balancer, harness) counted out.
 1. **Host memory.** `MemAvailable` below 6 GB: the round stops cleanly.
 2. **Host load.** Net host load is the cores busy on the host minus the cores the test itself used (node,
-   store, balancer, generator), averaged over the step. Above 6, the step is invalid and is repeated (twice,
-   after 30 s); then the round stops.
+   store, balancer, generator and the harness), averaged over the step. Above 1 core, the step is invalid
+   (`host contaminated: net load 1.6 > 1`), the round stops and `load-run` exits 1. Nothing repeats silently.
 3. **Swap.** The step is INVALID (not a failure of the node; the round stops) when any of these holds:
    - a measured container (node, store or balancer) swapped: its cgroup `memory.swap.current` was above 0 at any sample. It is read from the host through the cgroup of the container's init PID, with the other cgroup reads. When it is unreadable it is recorded as null and not judged;
    - the `VmSwap` of the load generators (`/proc/PID/status`, summed over the processes `load-run` started and their children) grew by more than 16 MB (`ATANOR_LOAD_MAX_GENERATOR_SWAP_MB`);
@@ -153,7 +159,9 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_P99_MS` | 250 | p99 that fails an http or cells step. |
 | `ATANOR_LOAD_MEMORY_PCT`, `_FD_PCT` | 90, 90 | Share of the limits that fails a ws or cells step. |
 | `ATANOR_LOAD_DELIVERY` | 0.95 | Achieved/planned below which a step is invalid. |
-| `ATANOR_LOAD_HOST_LOAD_MAX`, `_MIN_AVAILABLE_GB` | 6, 6 | Net host load and free host memory limits. |
+| `ATANOR_LOAD_HOST_LOAD_MAX` | 1 | Net host load (cores) below which the host is quiet; a step whose mean is above it is invalid and stops the round. |
+| `ATANOR_LOAD_QUIET_WINDOW`, `_QUIET_MAX_WAIT` | 60, 1800 | Seconds the net host load must stay below the limit before each step, and the longest wait for it (then `host busy`, exit 1). |
+| `ATANOR_LOAD_MIN_AVAILABLE_GB` | 6 | Free host memory below which the round stops. |
 | `ATANOR_LOAD_MAX_GENERATOR_SWAP_MB` | 16 | Growth of the load generators' `VmSwap` during a step above which the step is invalid. |
 | `ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB` | 256 | Growth of the host swap used during a step above which the step is invalid; its level is only recorded. |
 | `ATANOR_LOAD_MAX_STORE_TMPFS_PCT` | 90 | Share of the store's tmpfs size, at any sample, above which the step is invalid (before the criteria). |
@@ -166,7 +174,7 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 - Docker with Compose (the host needs no `tc`), `jq`, `curl`, Python 3 and the tools of the
   [README](../README.md#requirements) (`mise install`).
 - About 4 GB of free memory for the containers and the generator, and an idle host: the harness measures
-  the host load and refuses a busy one.
+  the host load: it waits for a quiet host before each step and stops when the host does not calm down.
 - The first `load:up` builds the node image (several minutes: two Rust NIFs) and the scoreboard. Both workers are deployed with the `atanor` command of that image, so no host CLI is needed.
 
 ## Steps
@@ -225,8 +233,7 @@ mise run load:report -- "$ATANOR_LOAD_OUT"
 mise run load:down
 ```
 
-Observed on a busy development machine in scenario A (one line per step; a step repeated for host load is
-not shown):
+Observed on a busy development machine in scenario A (one line per step):
 
 ```text
 http-native 20 req/s: ok; planned 300, achieved 300, p99 192.5 ms -> A_http-native_02-ramp-20.json
@@ -239,8 +246,9 @@ swap at 10.0 req/s: ok; swap 3.7 s, p99 peak 320 ms
 
 - **`the added latency is not visible`.** The store's qdisc was not applied: the host kernel lacks `sch_netem`
   (`modprobe sch_netem`) or Docker refused `NET_ADMIN`. Run `scripts/load-env latency` to see the round trips.
-- **Every step is invalid with `host load`.** Another job keeps the host busy; wait or raise
-  `ATANOR_LOAD_HOST_LOAD_MAX` and say so in the result.
+- **`host busy` or `host contaminated`.** Another job kept the host busy: before a step for longer than
+  `--quiet-max-wait`, or during it above `--host-load-max`. Stop the other work and run the measure again;
+  raising `ATANOR_LOAD_HOST_LOAD_MAX` weakens the result, so say so.
 - **A ramp ends at the first step.** Read `stop_reason` in its JSON. A 404 or an error on the first request
   means a worker is not deployed: run `scripts/load-env deploy`.
 - **`delivery ... < 95%` on a quiet node.** The generator is the limit. Lower `--rate-per-proc` so that more

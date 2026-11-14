@@ -121,6 +121,26 @@ defmodule Atanor.LoadRunTest do
     assert r["host_swap"]["flat"] == :null
     assert r["host_swap"]["grows"] == "host swap grew 300 MB > 256 MB"
 
+    # the quiet wait and the contamination rule
+    assert r["is_quiet"] == %{
+             "empty" => false,
+             "short" => false,
+             "long" => true,
+             "burst_resets" => false,
+             "burst_last" => false
+           }
+
+    assert r["judge_host"] == %{"over" => "host contaminated: net load 1.6 > 1", "at" => :null, "unknown" => :null}
+    assert r["net_load"] == %{"busy" => 3.0, "foreign" => 1.0}
+    assert %{"quiet" => true} = r["wait_quiet"]["idle"]
+    assert %{"quiet" => false} = r["wait_quiet"]["busy"]
+    assert r["host_busy"]["status"] == "invalid"
+    assert r["host_busy"]["stop_reason"] =~ "host busy"
+    assert r["host_busy"]["generator_runs"] == 0
+    assert r["host_contaminated"]["status"] == "invalid"
+    assert r["host_contaminated"]["stop_reason"] =~ ~r/^host contaminated: net load [\d.]+ > 1$/
+    assert r["host_contaminated"]["generator_runs"] == 1
+
     assert [%{"name" => "high"}] = r["peak"]["at_peak"]["ets"]
     assert r["peak"]["samples"] == 2
 
