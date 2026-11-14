@@ -4615,7 +4615,10 @@ outcome or a read that timed out. A handler's `{:error, reason}` is an infrastru
 `reason` is, term for term (`===`), one of them; `Dispatch` then turns it into the matching availability
 error. A handler has to return the error it got from the Atanor call unchanged: wrapping or replacing
 it, or making up `:timeout`, `:no_quorum` or `{:unavailable, _}`, makes it a handler failure, even when a
-cell call failed earlier in the same attempt. it counts as an attempt. Not covered:
+cell call failed earlier in the same attempt: it counts as an attempt. A WASM guest's host calls run in the process
+that `Dispatch` reads, but the guest's error leaves as `{:error, {:guest, message}}`, a term it cannot match against the
+recorded ones. Limit: a WASM job that fails after a cell call failed for an availability reason, an unknown outcome or a
+timed out read counts as an infrastructure error, even when it handled that error and failed for its own reason. Not covered:
 if the write that ends the attempt is itself lost, the claim expires and the run that follows
 counts as an attempt, as after the death of a node. A claim that is still live when its node dies expires at
 `claim_ms`, or earlier when the takeover releases it (§15.11). `jobs.timeout_ms` bounds one attempt with a watchdog

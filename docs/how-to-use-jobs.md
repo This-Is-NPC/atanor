@@ -47,6 +47,9 @@ in step 6.
    makes up, such as `{:error, :timeout}` for a slow web service: it counts as an attempt, even when a
    cell call failed earlier in the same attempt.
 
+   For a WASM job the term cannot be compared: a failed job after a cell call failed for such a reason is
+   treated as an infrastructure error, even if the guest handled that error and failed for its own reason.
+
 2. Enqueue in the same transaction as the data. Use
    `Atanor.Jobs.enqueue/4` with the `Alambique.Tx` from `Env.transaction/4`:
 
