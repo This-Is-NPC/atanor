@@ -14,13 +14,12 @@ defmodule Atanor.MemoryPropertyTest do
 
   property "the limits stay in range and their worst case fits the budget" do
     check all(bytes <- budget()) do
-      %{max_wakes: wakes, fetch_concurrency: fetch, max_inflight_bytes: inflight} = Memory.wake_limits(bytes)
+      %{max_wakes: wakes, max_inflight_bytes: inflight} = Memory.wake_limits(bytes)
 
       assert wakes in 1..256
-      assert fetch in 1..16
       assert inflight in @mib..(64 * @mib)
       # Below the cost of one wake the minimum of one wake is already over the budget.
-      cost = inflight + (fetch + 2) * 65_536
+      cost = inflight + (16 + 2) * 65_536
       if bytes >= cost, do: assert(wakes * cost <= bytes)
     end
   end
@@ -29,7 +28,6 @@ defmodule Atanor.MemoryPropertyTest do
     check all(a <- budget(), b <- budget()) do
       {small, big} = {Memory.wake_limits(min(a, b)), Memory.wake_limits(max(a, b))}
       assert small.max_inflight_bytes <= big.max_inflight_bytes
-      assert small.fetch_concurrency <= big.fetch_concurrency
     end
   end
 
@@ -52,11 +50,10 @@ defmodule Atanor.MemoryPropertyTest do
     check all(
             limit <- integer(64..(64 * 1024)),
             wakes <- one_of([constant(nil), integer(1..1000)]),
-            fetch <- one_of([constant(nil), integer(1..64)]),
             inflight <- one_of([constant(nil), integer(1..(1024 * @mib))])
           ) do
       awake = if wakes, do: [max_wakes: wakes], else: []
-      restore = Enum.reject([fetch_concurrency: fetch, max_inflight_bytes: inflight], &(elem(&1, 1) == nil))
+      restore = Enum.reject([max_inflight_bytes: inflight], &(elem(&1, 1) == nil))
 
       config =
         Config.build(
@@ -72,7 +69,6 @@ defmodule Atanor.MemoryPropertyTest do
       opts = config.alambique_opts
 
       assert opts[:awake][:max_wakes] == (wakes || derived.max_wakes)
-      assert opts[:restore][:fetch_concurrency] == (fetch || derived.fetch_concurrency)
       assert opts[:restore][:max_inflight_bytes] == (inflight || derived.max_inflight_bytes)
     end
   end

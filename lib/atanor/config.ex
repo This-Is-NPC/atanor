@@ -700,7 +700,6 @@ defmodule Atanor.Config do
 
         alambique
         |> put_missing(:awake, :max_wakes, limits.max_wakes)
-        |> put_missing(:restore, :fetch_concurrency, limits.fetch_concurrency)
         |> put_missing(:restore, :max_inflight_bytes, limits.max_inflight_bytes)
     end
   end
