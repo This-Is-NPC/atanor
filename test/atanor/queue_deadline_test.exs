@@ -162,6 +162,63 @@ defmodule Atanor.QueueDeadlineTest do
     end
   end
 
+  describe "the process of a cell call" do
+    # What a transaction callback sees, and whether the caller itself calls Alambique, with the cell
+    # cold and then warm. The callback runs in the cell process; the call is made from the process of the caller.
+    defp callback_view(node, key) do
+      Process.put(:handler_key, :set)
+      parent = self()
+      # A tracer is never traced itself, so another process collects the calls.
+      tracer = spawn_link(fn -> collect([]) end)
+      :erlang.trace_pattern({Alambique.Router, :call, 5}, true, [:local])
+      :erlang.trace(parent, true, [:call, {:tracer, tracer}])
+
+      assert {:ok, view} =
+               Cell.transaction(node.name, {"notes", key}, fn _tx -> {Process.get(:handler_key), self() == parent} end)
+
+      :erlang.trace(parent, false, [:call])
+      :erlang.trace_pattern({Alambique.Router, :call, 5}, false, [:local])
+      send(tracer, {:done, parent})
+      assert_receive {:calls, calls}
+      {view, calls != []}
+    end
+
+    defp collect(acc) do
+      receive do
+        {:trace, _, :call, mfa} -> collect([mfa | acc])
+        {:done, to} -> send(to, {:calls, acc})
+      end
+    end
+
+    test "a cell call runs in the process of the handler with the cell cold and warm" do
+      node = start(http: [queue_wait_ms: 5_000])
+      assert :ok = Admission.enter(node.name)
+      on_exit(fn -> Admission.leave(node.name) end)
+      cold = callback_view(node, "cold")
+      assert {_view, true} = cold
+      assert callback_view(node, "cold") == cold
+    end
+
+    test "a write whose cell wakes past the deadline is a queue_timeout and is never committed" do
+      node = start()
+      unslow = slow(node, "slowwake", 1_500, [:get, :get_range, :head, :list])
+      assert :ok = Admission.enter(node.name)
+      on_exit(fn -> Admission.leave(node.name) end)
+
+      {result, ms} =
+        timed(fn -> Cell.execute(node.name, {"notes", "slowwake"}, "INSERT INTO notes (body) VALUES ('x')") end)
+
+      assert result == {:error, {:unavailable, :overloaded}}
+      assert Cell.overload_cause() == :queue_timeout
+      refute Cell.unknown_outcome?()
+      assert ms < 1_000
+      unslow.()
+      Process.sleep(1_800)
+      Admission.leave(node.name)
+      assert {:ok, %{rows: []}} = Cell.query(node.name, {"notes", "slowwake"}, "SELECT body FROM notes")
+    end
+  end
+
   describe "the setting" do
     test "defaults to 5 s and takes 0 or :infinity as off" do
       assert Config.build(store: {AlambiqueTestkit.MemoryStore, %{}}, data_dir: "/tmp/x").http.queue_wait_ms == 5_000

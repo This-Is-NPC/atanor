@@ -163,6 +163,8 @@ defmodule Atanor.Cell do
   @unknown {__MODULE__, :unknown_outcome}
   @wrote {__MODULE__, :wrote}
   @bounded {__MODULE__, :bounded}
+  # The deadline passed during the wake: the call was not sent.
+  @unsent {__MODULE__, :unsent}
 
   defp call(instance, address, kind, fun) do
     with {:ok, id} <- id(address), :ok <- granted(instance, address) do
@@ -172,6 +174,7 @@ defmodule Atanor.Cell do
            :ok <- if(kind == :admin, do: :ok, else: handler_patience()) do
         if config.hot_cells.enabled and kind != :admin, do: hot_cells(instance, config, id, kind)
         Process.delete(@bounded)
+        Process.delete(@unsent)
         instance |> run(id, fun, config.takeover.attempts, nil) |> timed_out(kind) |> wrote(kind)
       end
     end
@@ -198,11 +201,13 @@ defmodule Atanor.Cell do
   defp committed?, do: Process.get(@wrote) == true or Process.get(@unknown) == true
 
   @doc false
-  # Runs `call.(opts)`, a call to Alambique, within what the deadline of the request leaves. A cell that is
-  # awake here answers within Alambique's `:timeout`. A call that wakes the cell does not: the wake runs
-  # inside it, for as long as the store takes. It runs on a process of its own then, which the request
-  # leaves at the deadline and the wake finishes without it. `{:error, :timeout}` says the call did not
-  # answer in time, which for a write is an unknown outcome.
+  # Runs `call.(opts)`, a call to Alambique, within what the deadline of the request leaves. A call always
+  # runs in the process of the caller, awake cell or not, and answers within Alambique's `:timeout`. A call
+  # that would wake the cell waits for the wake first, on a process of its own (`Alambique.touch/3`) that the
+  # request leaves at the deadline and the wake finishes without it. Nothing was sent then: a read or a write
+  # is refused with `queue_timeout`. If the cell sleeps again between the wake and the call, the call wakes it
+  # once more, bounded by `:timeout`. `{:error, :timeout}` says the call did not answer in time, which for a
+  # write is an unknown outcome.
   @spec within_deadline(atom, String.t(), :read | :write | :touch | :admin, keyword, (keyword -> term)) :: term
   def within_deadline(alambique, id, kind, opts, call) do
     left = if kind == :admin or committed?(), do: :infinity, else: Admission.remaining()
@@ -211,15 +216,33 @@ defmodule Atanor.Cell do
       left == :infinity ->
         call.(opts)
 
-      Alambique.load(alambique, id) == :none ->
+      kind == :touch and Alambique.load(alambique, id) == :none ->
         Process.put(@bounded, true)
         detached(max(left, 0), fn -> call.(opts) end)
 
+      kind != :touch and Alambique.load(alambique, id) == :none ->
+        Process.put(@bounded, true)
+
+        case detached(max(left, 0), fn -> Alambique.touch(alambique, id) end) do
+          {:error, :timeout} ->
+            Process.put(@unsent, true)
+            {:error, :timeout}
+
+          {:ok, _} ->
+            bounded(call, opts, Admission.remaining())
+
+          error ->
+            error
+        end
+
       true ->
         Process.put(@bounded, true)
-        call.(Keyword.put(opts, :timeout, min(max(left, 1), opts[:timeout] || :infinity)))
+        bounded(call, opts, left)
     end
   end
+
+  defp bounded(call, opts, left),
+    do: call.(Keyword.put(opts, :timeout, min(max(left, 1), opts[:timeout] || :infinity)))
 
   defp detached(left, fun) do
     alias = :erlang.alias()
@@ -239,12 +262,20 @@ defmodule Atanor.Cell do
   end
 
   defp timed_out({:error, :timeout} = error, :write) do
-    Process.put(@unknown, true)
-    error
+    if Process.get(@unsent) == true do
+      queue_timeout()
+    else
+      Process.put(@unknown, true)
+      error
+    end
   end
 
   defp timed_out({:error, :timeout} = error, :read),
-    do: if(Process.get(@bounded) == true and Admission.expired?(), do: queue_timeout(), else: error)
+    do:
+      if(Process.get(@unsent) == true or (Process.get(@bounded) == true and Admission.expired?()),
+        do: queue_timeout(),
+        else: error
+      )
 
   defp timed_out(result, _kind), do: result
 
