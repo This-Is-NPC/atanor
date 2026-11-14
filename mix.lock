@@ -1,6 +1,6 @@
 %{
-  "alambique": {:git, "https://github.com/This-Is-NPC/alambique.git", "ed95501c38c2395d4c0a41af979d587f97573ed2", [tag: "v0.8.0"]},
-  "alambique_testkit": {:git, "https://github.com/This-Is-NPC/alambique.git", "ed95501c38c2395d4c0a41af979d587f97573ed2", [tag: "v0.8.0", subdir: "testkit"]},
+  "alambique": {:git, "https://github.com/This-Is-NPC/alambique.git", "8d90f23b4988dce67c0de96a2289acc46109fbba", [tag: "v0.9.0"]},
+  "alambique_testkit": {:git, "https://github.com/This-Is-NPC/alambique.git", "8d90f23b4988dce67c0de96a2289acc46109fbba", [tag: "v0.9.0", subdir: "testkit"]},
   "bandit": {:hex, :bandit, "1.14.1", "5fb450e2360faf03d9b9fb45cfe52e14197f62d376c34781219bec0f9bc7ca06", [:mix], [{:hpax, "~> 1.1", [hex: :hpax, repo: "hexpm", optional: false]}, {:plug, "~> 1.18", [hex: :plug, repo: "hexpm", optional: false]}, {:telemetry, "~> 0.4 or ~> 1.0", [hex: :telemetry, repo: "hexpm", optional: false]}, {:thousand_island, "~> 1.6", [hex: :thousand_island, repo: "hexpm", optional: false]}, {:websock, "~> 0.5", [hex: :websock, repo: "hexpm", optional: false]}], "hexpm", "87c7ee5e08fb5f22d4e072e681e1101266a21432889b08ef8d0cb0c1450f8bba"},
   "cc_precompiler": {:hex, :cc_precompiler, "0.1.11", "8c844d0b9fb98a3edea067f94f616b3f6b29b959b6b3bf25fee94ffe34364768", [:mix], [{:elixir_make, "~> 0.7", [hex: :elixir_make, repo: "hexpm", optional: false]}], "hexpm", "3427232caf0835f94680e5bcf082408a70b48ad68a5f5c0b02a3bea9f3a075b9"},
   "elixir_make": {:hex, :elixir_make, "0.10.1", "f5a44ab6b48421de1c4fd33c147e22cd2f82fd86e8a9a4d24809d466cad63c5e", [:mix], [], "hexpm", "ce1eaa234bc87f0279718e793fd6f8ad35b4e8ee8d412329e3879eee8d40adba"},
