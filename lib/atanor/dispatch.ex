@@ -563,8 +563,9 @@ defmodule Atanor.Dispatch do
   end
 
   # A job's `{:error, reason}` return reaches here as `{:ok, {:error, reason}}`. It is an error of the
-  # infrastructure, whatever the handler returns, when a cell call of the attempt failed for such a reason:
-  # the mark is made where the call fails, not by the term the handler returns (`Atanor.Jobs`, design §15.4).
+  # infrastructure only when `reason` is, term for term, an error that a cell call of the attempt returned
+  # after failing for such a reason (`Cell.recording/1`); any other term is the handler's own
+  # (`Atanor.Jobs`, design §15.4).
   defp classify(result, call) do
     cond do
       not failed?(result, call) ->
@@ -588,7 +589,8 @@ defmodule Atanor.Dispatch do
     end
   end
 
-  defp failed?({:ok, {:error, _}}, {:job, _}), do: true
+  # The error of a handler that returns, unchanged, one that a cell call gave it.
+  defp failed?({:ok, {:error, reason}}, {:job, _}), do: Enum.any?(Cell.returned_errors(), &(&1 === reason))
   defp failed?(result, _call), do: failed?(result)
   defp failed?({:ok, %{status: status}}) when is_integer(status), do: status >= 500
   defp failed?({:error, _}), do: true

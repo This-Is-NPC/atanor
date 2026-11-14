@@ -329,8 +329,40 @@ defmodule Atanor.Cell do
   # as an error of the infrastructure, not of the handler, however the handler reports it.
   def unanswered?, do: Process.get(@unanswered, false)
 
+  @returned {__MODULE__, :returned}
+
+  @doc false
+  # Runs `call`, a cell call made for a handler, and keeps the error it returns when the call itself failed for
+  # an availability reason, an unknown outcome or a timed out read. `returned_errors/0` then holds the terms
+  # that Atanor gave the handler, so `Atanor.Dispatch` can tell a job that passes one on from one that
+  # makes its own. The marks of earlier calls are left as they were.
+  @spec recording((-> result)) :: result when result: term
+  def recording(call) do
+    keys = [@unknown, @unavailable, @unanswered, @cause]
+    saved = for key <- keys, do: {key, Process.get(key)}
+    Enum.each(keys, &Process.delete/1)
+
+    try do
+      result = call.()
+
+      with {:error, reason} <- result,
+           true <- Enum.any?([@unknown, @unavailable, @unanswered], &(Process.get(&1) not in [nil, false])) do
+        Process.put(@returned, [reason | Process.get(@returned, [])])
+      end
+
+      result
+    after
+      for {key, value} <- saved, value != nil and Process.get(key) == nil, do: Process.put(key, value)
+    end
+  end
+
+  @doc false
+  # The error terms of `recording/1` since `clear_unavailable/0`.
+  def returned_errors, do: Process.get(@returned, [])
+
   @doc false
   def clear_unavailable do
+    Process.delete(@returned)
     Process.delete(@unanswered)
     Process.delete(@cause)
     Process.delete(@unavailable)
