@@ -15,6 +15,8 @@ defmodule Atanor.Application do
     ]
 
     with {:ok, pid} <- Supervisor.start_link(children, strategy: :one_for_one) do
+      Atanor.StoreLog.attach()
+
       # One handler for the VM: each instance says through `stop.sigterm` whether it drains.
       case Atanor.Signal.install() do
         :ok -> :ok

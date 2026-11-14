@@ -3208,6 +3208,15 @@ nodes open with it: a balancer that left the nodes out would turn a degraded ser
 and a rolling restart that polled `/health/ready` would stall on an outage that a restart does
 not fix. An operator or an alert reads `store` instead; a half-open breaker is the probe, and a
 closed one with `failures` above zero is a store that has begun to fail.
+`Atanor.StoreLog` leaves the cause in the node log: a warning when a breaker opens (`atanor: store breaker open
+for 5000 ms (:failures): <location>`), an info when it closes, and a warning for each store error of a request
+that reached the store (`atanor: store error: upload of <cell> failed ...: <reason>`: an upload retry, a lease
+acquire or renewal, a replication sync). A request that an open breaker refused is `:store_unavailable` and is
+not logged again. The HTTP client's own failures, which the breaker counts, are logged with their transport
+error (`atanor: HTTP request GET store:8333 failed after 12 ms: socket closed`), and so are requests that
+take over a second. It listens to Alambique's `[:alambique, :store, :breaker, ...]`, `:upload_retry`, `:lease`
+and `:replication` events and to Finch's `[:finch, :request | :queue, ...]` events
+(`test/atanor/store_log_test.exs`).
 
 `Atanor.Admin` is a Bandit listener of its own (option `admin:`), on loopback
 unless `ip:` says otherwise, with no listener when the option is absent. Every
