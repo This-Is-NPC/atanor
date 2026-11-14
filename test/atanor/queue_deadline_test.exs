@@ -170,6 +170,8 @@ defmodule Atanor.QueueDeadlineTest do
       parent = self()
       # A tracer is never traced itself, so another process collects the calls.
       tracer = spawn_link(fn -> collect([]) end)
+      # A trace pattern on a module that is not loaded matches nothing.
+      Code.ensure_loaded!(Alambique.Router)
       :erlang.trace_pattern({Alambique.Router, :call, 5}, true, [:local])
       :erlang.trace(parent, true, [:call, {:tracer, tracer}])
 
