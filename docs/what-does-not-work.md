@@ -85,3 +85,26 @@ wrapper, gate and slot of `36dc2e5` and `max_waiting`; it was not split
 further. To reproduce, build each commit in its own worktree and run the
 command above alternately; the benchmark prints the CPU and switches per
 request.
+
+## The store breaker opened once for 5 seconds at 100 req/s in scenario A
+
+**What happens.** In one official load round (scenario A, node 1 CPU and 512 MB,
+store latency 25 ms), the step at 100 req/s for 180 s failed with p99 5,904.9 ms
+and 50 `503`s with `Retry-After`. The node log has `store_unavailable` in
+compaction, feed publish and the node registry for 5 s (17:54:37 to 17:54:42
+UTC, 74 s into the step): Alambique's store breaker (5 failures in a row, 5 s
+cool-down) was open. The first failure is not in that log, so the trigger is
+unknown. The store counted no 5xx, ran at 0.23 of its 1.5 cores and its tmpfs
+was 5% full, and the VM was quiet.
+
+**Workaround.** Rerun the step; it passed in 14 of 14 steps (90 minutes at 100
+req/s or less) in later runs of the same build. A breaker that opens under
+overload is expected: at 800 req/s the node is out of CPU and the breaker opened 4 times in 60 s
+with a clean store (see Evidence).
+
+**Evidence.** The node now logs the breaker opening and closing and the HTTP
+errors behind it (`Atanor.StoreLog`, design §10.2), and a failed load step keeps
+the store log, the store metrics, `store_breaker_open` and `node_throttled_ms`
+next to the node log (how-to-run-the-load-tests.md). The next occurrence names
+its cause. Until then: stall seen once between 72.3 s and 73.8 s of the step,
+requests in flight 2 to 50, generator lag p99 5,523.9 ms, node 0.31 and store 0.23 cores.
