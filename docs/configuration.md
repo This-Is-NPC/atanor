@@ -342,7 +342,7 @@ The node settings of the WASM engine (threads, calls in flight, queue, CPU limit
 logical processors, at most the CPU quota of the container (cgroup `cpu.max`, rounded up). The pooling allocator reserves address space for
 `max_calls + max_waiting + max_nested_calls` calls (about 2.8 TiB for 12 threads at the defaults).
 `max_waiting` is how many guests that wait (a sleep, a host call, an outbound response, a
-worker they called) stop counting against `max_calls` and `worker_calls`. On a node with a memory limit it
+worker they called) stop counting against `max_calls` and `worker_calls`; `worker_calls` (three quarters of `max_calls`) limits the busy calls of one worker, and a call above it waits in the `queue`, of which one worker may take `worker_queue` places (three quarters of `queue`, so a noisy worker leaves a quarter for the others; design §14.2). On a node with a memory limit it
 and `queue` are derived from it, not from the CPUs: `(limit * (1 - refuse_fraction) * (1 - wake_fraction)) /
 waiting_bytes` (`waiting_bytes` 2 MiB, 1 to 256), which is 19 on a 512 MiB node (scenario A, 1 CPU) and 76 on
 2 GiB (scenario B, 2 CPUs); without a limit 2 per thread (and `queue` 4 per thread). `threads`,

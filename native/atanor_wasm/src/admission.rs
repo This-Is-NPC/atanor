@@ -301,7 +301,7 @@ mod tests {
         #[test]
         fn slots_follow_the_calls_that_wait((limit, waiting, steps) in steps()) {
             let (gate, waits) = (Gate::new(limit), Gate::new(waiting));
-            let pool = Arc::new(Queue::new(limit));
+            let pool = Arc::new(Queue::new(limit, waits.clone()));
             let mut calls: Vec<(Slot, Parker, bool)> = Vec::new();
             for step in steps {
                 let parked = |calls: &[(Slot, Parker, bool)]| calls.iter().filter(|c| c.2).count();

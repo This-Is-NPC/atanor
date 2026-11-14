@@ -1275,9 +1275,9 @@ a cell with no process on the node, which would wake it, is a 503 `overloaded`
 refused: `memory`, `disk` or `in_flight` (the ingress gates), `wake_gate` (the wake
 refused above), `awake_limit` (Alambique's `awake` limits, `{:error, :overloaded}`),
 `busy` (a cell's `max_pending` or the node's statement slots, `{:error, :busy}`),
-`disk_full` (the write found no room), `worker_queue` (a WASM worker's full `queue`
-or `worker_calls`, refused as the call came, §14.2) and `queue_timeout` (the request
-waited past `http.queue_wait_ms`, below); `overloaded` alone is a worker that
+`disk_full` (the write found no room), `worker_queue` (the WASM `queue` was full, refused as the
+call came, §14.2), `nested_calls` (a call between workers found `max_nested_calls` in flight, §14.2) and
+`queue_timeout` (the request waited past `http.queue_wait_ms`, below); `overloaded` alone is a worker that
 answered 503 itself. A refusal after the ingress emits `[:atanor, :http, :reject]`
 with the same `reason`. The default of 1,024 is generous on
 purpose: the memory gate is the guard, this one bounds handlers on a node whose
@@ -1315,7 +1315,7 @@ refuse with 503 `overloaded`, `reason` `queue_timeout`, `Retry-After` and the ev
 * a WASM call in the pool queue: `Atanor.Wasm` waits `min(wasm.queue_wait_ms, what the
   deadline leaves)` and then takes the call back (`Native.withdraw/1`) if no thread
   started it. A thread and the caller contest one atomic ticket, so a call either runs
-  or never does; a call refused at once (full queue, `worker_calls`) stays
+  or never does; a call refused at once (full queue) stays
   `worker_queue`.
 
 The time the client takes to send the body does not run the clock
@@ -4120,10 +4120,14 @@ Three bounds, all in Rust (`admission.rs`); Elixir does not count requests.
   call that waited more than `queue_wait_ms` is taken back by its caller
   (`Native.withdraw/1`) and never runs; one that a thread took first runs. At most `max_calls` calls are busy at once (default 4 per thread):
   a pool thread takes a queued call only below that number. One worker's
-  prepared component has at most `worker_calls` busy calls, queued included
-  (default three quarters of `max_calls`); one more is refused at once. So a
-  busy worker cannot take every thread, and another worker is served. Both are
-  `{:error, :overloaded}`, 503.
+  prepared component has at most `worker_calls` busy calls (default three quarters of `max_calls`):
+  a pool thread skips the queued calls of a worker at its limit and takes the next one, which may be
+  another worker's. So a busy worker cannot take every thread, and another worker is served. The limit
+  counts the calls that a thread started and whose guest does not wait; a call that is queued or waits
+  holds none (round 018, below). The refusals are `{:error, :overloaded}`, 503, and the `reason` says which
+  gate refused: `worker_queue` (the queue is full) or `nested_calls` (below). The native side answers
+  `{:error, :queue_full}` or `{:error, :nested_calls}`; each refusal is counted in
+  `Atanor.Admission.stats/1` as `refused.worker_queue` and `refused.nested_calls`.
 * **Waiting.** A call whose guest waits is not busy: it gives its call slot
   back, and the pool thread it holds stops counting against `max_calls`, so
   guests that wait do not cause `:overloaded` for new calls. At most
@@ -4139,8 +4143,30 @@ Three bounds, all in Rust (`admission.rs`); Elixir does not count requests.
   the queue and the per-worker bound: its caller is waiting for it, so it
   could wait behind its caller forever. It gets a thread of its own, up to
   `max_nested_calls` in flight (default 1 per thread); one more is refused
-  with `:overloaded`. A pool full of waiting callers cannot starve their
+  with `:overloaded`, `reason` `nested_calls`. A pool full of waiting callers cannot starve their
   callees, and a callee waits only for the right to run, like any call.
+
+*Why 12 writers were refused (round 018).* Scenario A (1 CPU, 512 MiB, 25 ms per store trip) with a
+closed loop of 12 clients writing to 12 rooms of the `scoreboard` worker refused about 12% of the
+requests (764 to 914 of about 7,000 per run) with `worker_queue`, in the first milliseconds of a burst
+and spread over the run. The gate was `worker_calls` (3 at 1 CPU), not the queue (19): the slot of a call was
+taken when it was queued and returned only when its guest first waited, so the calls that arrived
+together held slots while they waited for the one thread, and the fourth was refused although every one
+of them would soon wait for the store. Waiting guests were already excepted; calls that had not started
+were not. The slot is now taken when a pool thread starts the call, and a queued call of a worker at its
+limit waits in the queue (up to `queue_wait_ms`) while another worker's call passes it. Test: 12 writers
+that wait 25 ms, 10 calls each and started together, on `threads: 1` and 512 MiB
+(`test/cluster/wasm_waiting_test.exs`): 50 of 120 refused with `worker_queue` before, none after.
+
+*One worker cannot fill the queue.* A call of a worker at `worker_calls` stays in the queue while
+`Queue::pop` skips it, so a noisy worker could take every place and make the others refuse. Each worker
+may therefore have at most `worker_queue` calls queued, by default three quarters of `queue` (`queue - queue / 4`,
+at least 1): the quarter left over is the reserve that the others always find, and a worker beyond
+its share is refused with `worker_queue` at once. Three quarters leaves room for several quiet workers
+while a worker that bursts to the size of a busy pool (`max_calls`) still queues; a `queue` of 1 has no reserve.
+An explicit `worker_queue` wins. Test: the property `a_noisy_worker_leaves_room_for_the_others`
+(`native/atanor_wasm/src/engine.rs`) makes one worker push and pop at random and checks that a worker
+under the reserve is never refused; without the share (`share = queue`) it fails.
 
 *Waiting and queue from the memory.* A guest that waits for the store holds no CPU, so the CPU
 quota must not decide how many may wait: a node of 1 CPU that served a write in
@@ -4194,10 +4220,11 @@ wakes one idle thread per job (12% before, 5% after). Pools of 24 threads
 the pooling allocator's 60 instance slots against 12 (§14.9).
 
 The refusal moved. Master queued up to 60 calls of one worker (12 running and
-48 waiting); one worker is now refused with 503 `overloaded` above
+48 waiting); the admission measured here refused one worker with 503 `overloaded` above
 `worker_calls` (36 at the defaults), so a burst of 64 clients against one
 worker got about 0.1% 503s per 5 s run (87 to 117 of about 120,000) against
-about 0.01% on master (4 to 13). The p99 of the accepted requests was the
+about 0.01% on master (4 to 13). Since round 018 `worker_calls` limits the busy calls
+and the rest queue, so the burst is refused only above the queue (these numbers are from before). The p99 of the accepted requests was the
 same, 4.1 to 4.7 ms. This is backpressure on purpose, not loss: the response
 carries `Retry-After` and a worker whose guests wait cannot take every thread.
 A node that serves bursts of one worker raises `worker_calls` and `max_calls`

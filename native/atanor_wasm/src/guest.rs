@@ -260,7 +260,7 @@ pub struct Job {
     pub tag: u64,
     pub queued_at: Instant,
     pub ticket: ResourceArc<Ticket>,
-    /// Held until the call is over; the call counts against its worker's `worker_calls`.
+    /// Taken when a pool thread starts the call, held until it is over; counts against its worker's `worker_calls` while the guest does not wait.
     pub slot: Option<Slot>,
 }
 

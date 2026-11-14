@@ -56,6 +56,7 @@ defmodule Atanor.Wasm.Cache do
       :max_waiting,
       :worker_calls,
       :queue,
+      :worker_queue,
       :tick_ms,
       :cpu,
       :pooling,

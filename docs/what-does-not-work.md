@@ -11,13 +11,13 @@ are choices of the design are in the "Limits" paragraphs of
 **What happens.** The hello guest over HTTP serves about 5% fewer requests/s
 than 0.2.0 with 32 clients on 12 threads, because each request costs about 9%
 more CPU (about 405 us against 372 us, VM and clients together) and about 0.5
-more voluntary context switches (4.1 against 3.6). One worker is also refused
-with 503 `overloaded` above `worker_calls` where 0.2.0 queued, about 0.1% of
-the requests of a 64-client burst (design §14.2).
+more voluntary context switches (4.1 against 3.6). One worker's calls above
+`worker_calls` busy now wait in the queue (since round 018; they were refused before), which
+adds a little queueing under a burst (design §14.2).
 
 **Workaround.** None is needed for correctness. For the most throughput keep
 `threads` at the core count and raise `worker_calls` and `max_calls` for
-bursts of one worker; a smaller `max_calls` refuses more and was not faster.
+bursts of one worker; a smaller `max_calls` was not faster.
 
 **Evidence.** Fuel mode, 32 clients, 8 s, ABBA order, `mise run bench:wasm --
 8` with `ATANOR_BENCH_CPU=fuel`, 1-minute load 2.4 to 3.0 at the start of each

@@ -311,10 +311,10 @@ does not instantiate in either mode.
   before repeating a write that is not idempotent.
 - **The client gets 500 `internal_error` and the log shows `wasm trap`.** The
   guest panicked or trapped; its stderr, up to `stderr_bytes` (4 KiB by default), is logged just before.
-- **503 `overloaded`.** The queue was full or the worker already had `worker_calls` busy calls in flight (`worker_queue`), or the call waited for a thread past `queue_wait_ms` or the request's `http.queue_wait_ms` and was taken back (`queue_timeout`, it never ran) (a guest that
+- **503 `overloaded`.** The queue was full (`worker_queue`), a call between workers found `max_nested_calls` in flight (`nested_calls`), or the call waited for a thread past `queue_wait_ms` or the request's `http.queue_wait_ms` and was taken back (`queue_timeout`, it never ran) (a guest that
   waits counts against neither `threads` nor `worker_calls`, up to `max_waiting` waiting guests on the node, 19 on 512 MiB and 76 on 2 GiB). The body is `{"error":"overloaded","reason":"worker_queue"}` (`reason` names the gate that refused; for the others see [design §7.1](design.md))
   and the response carries `Retry-After` (`http.retry_after_s`, 1 s by default).
-  A burst of one worker above `worker_calls` (36 with 12 threads) busy calls is refused on purpose; retry after `Retry-After`, or raise `worker_calls` and `max_calls`. If the guests mostly wait, raise `max_waiting` and `queue` (or the node's memory: they follow it).
+  A worker has at most `worker_calls` busy calls (36 with 12 threads); the others wait in the queue, up to `queue_wait_ms`, and a burst beyond the queue is refused on purpose. Retry after `Retry-After`, or raise `queue`, `worker_calls` and `max_calls`. If the guests mostly wait, raise `max_waiting` and `queue` (or the node's memory: they follow it).
   See the node settings in `Atanor.Wasm`.
 
 ## Next steps
