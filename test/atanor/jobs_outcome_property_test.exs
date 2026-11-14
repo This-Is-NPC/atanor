@@ -11,13 +11,15 @@ defmodule Atanor.JobsOutcomeTest do
 
   @infra [
     :unknown_outcome,
+    :timeout,
+    :partitioned,
     :overloaded,
     {:unavailable, :no_quorum},
     {:unavailable, :store_unavailable},
     {:store, :closed},
     {:lost, :n1, :noconnection}
   ]
-  @handler [:boom, :timeout, :crashed, {:exit, :killed}, {:bad_return, 1}, "text"]
+  @handler [:boom, :handler_timeout, :crashed, {:exit, :killed}, {:bad_return, 1}, "text"]
 
   # What `finished/7` does to the row: a claim adds an attempt, the outcome may give it back.
   defp apply_outcome(row, result, now) do
@@ -74,6 +76,30 @@ defmodule Atanor.JobsOutcomeTest do
 
     assert %{state: "dead", cause: :infrastructure, attempts: 1} =
              apply_outcome(first, {:error, :overloaded}, 1_000_000 + @timeout_ms)
+  end
+
+  test "the delay of successive infrastructure errors grows to max_backoff_ms and never shrinks" do
+    # An error every time the job is due again, so each waits for the delay the one before it set.
+    {delays, _} =
+      Enum.map_reduce(1..10, {0, nil}, fn _, {now, since} ->
+        job = %Job{
+          id: "j",
+          cell: {"jobs", "a"},
+          worker: "jobs",
+          kind: "t",
+          payload: "",
+          attempt: 1,
+          max_attempts: @max,
+          infrastructure_since_ms: since
+        }
+
+        {"pending", _, due, since, 1, nil} = Jobs.outcome({:error, :overloaded}, job, now, @config)
+        {due - now, {due, since}}
+      end)
+
+    assert delays == Enum.sort(delays)
+    assert hd(delays) == 1_000
+    assert List.last(delays) == 8_000
   end
 
   test "a handler failure ends the wait on the infrastructure" do

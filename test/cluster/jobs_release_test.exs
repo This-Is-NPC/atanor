@@ -276,7 +276,10 @@ defmodule Atanor.Cluster.JobsReleaseTest do
 
   # A cell call that fails for lack of a quorum or a store ends the handler with these errors; the handler
   # `unhealed:<dir>` returns one until `<dir>/healed` exists, which is the file the test writes, so that the
-  # outage lasts exactly as long as the test wants whichever node claims the job.
+  # outage lasts exactly as long as the test wants whichever node claims the job. A real cut was tried and
+  # is not deterministic: with `partition_nodes` the node that claims the job after the cut varies (the owner
+  # often claims and runs it itself, and nothing is observed), and with `partition_store` on the owner nothing
+  # claims the job until the heal. Neither shows the attempts, so neither proves anything.
   test "an outage far longer than max_attempts times the backoff does not use up the attempts of a job" do
     {cluster, dir} = start(jobs: [max_attempts: 3])
     {key, owner} = job_cell(cluster, dir)

@@ -239,7 +239,7 @@ drives the operation, and an undo report, apply and rewind by the node that made
 
 `duration` is in native time units like every other event. A job attempt that
 waits for a slot has no `:started` event until it is claimed; an attempt that
-times out emits `:finished` with `reason: :timeout`. `:released` is emitted
+times out (`jobs.timeout_ms`) emits `:finished` with `reason: :handler_timeout`. `:released` is emitted
 when a takeover frees the claims of a node confirmed down (design §15.11); the
 jobs then start with `:started` like any other attempt. An attempt that is
 stopped because its node lost the cell emits no `:finished`. `:unconfirmed` is emitted
