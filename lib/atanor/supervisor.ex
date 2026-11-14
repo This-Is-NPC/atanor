@@ -32,6 +32,7 @@ defmodule Atanor.Supervisor do
   @impl true
   def init(config) do
     log_awake_budget(config)
+    Atanor.WakeLog.attach(config.name)
 
     children =
       [
