@@ -146,6 +146,51 @@ defmodule Atanor.WasmHandlersTest do
       assert until(fn -> job_fires(node, "a") == ["hello"] end)
     end
 
+    defp job_row(node, key) do
+      {:ok, %{rows: rows}} = Cell.query(node.name, {"jobs", key}, "SELECT state, attempts FROM _atanor_jobs")
+      rows
+    end
+
+    # A cell call of the attempt that failed for an availability reason: the call the guest made marks the
+    # process that runs it, which the telemetry handler does when the guest's call ends.
+    defp mark_unavailable_after_guest do
+      id = "mark-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        id,
+        [:atanor, :wasm, :invoke],
+        &__MODULE__.mark/4,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(id) end)
+    end
+
+    @doc false
+    def mark(_event, _measurements, %{worker: "wjob", call: :job}, _config), do: Cell.mark_unavailable(:no_quorum)
+    def mark(_event, _measurements, _metadata, _config), do: :ok
+
+    defp start_one_attempt_jobs do
+      world = ManualClock.new(@start)
+      alarms = [clock: {ManualClock, ManualClock.config(world, 0)}, tick_ms: 20]
+      fires = [[1, "CREATE TABLE fires (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)"]]
+      node = start([{"wjob", "job", jobs: true, cells: %{"jobs" => fires}}], alarms: alarms, jobs: [max_attempts: 1])
+      {node, world}
+    end
+
+    test "a guest error consumes an attempt" do
+      {node, _world} = start_one_attempt_jobs()
+      assert %{status: 200} = job_op(node, "enqueue", "a", payload: "fail")
+      assert until(fn -> job_row(node, "a") == [["dead", 1]] end)
+    end
+
+    test "a guest error consumes an attempt after a cell call failed for an availability reason" do
+      {node, _world} = start_one_attempt_jobs()
+      mark_unavailable_after_guest()
+      assert %{status: 200} = job_op(node, "enqueue", "a", payload: "fail")
+      assert until(fn -> job_row(node, "a") == [["dead", 1]] end)
+    end
+
     test "enqueue-batch commits the statements and the job together" do
       {node, _world} = start_jobs()
       assert %{status: 200} = job_op(node, "batch", "a", payload: "batch")
