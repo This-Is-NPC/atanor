@@ -1310,7 +1310,10 @@ refuse with 503 `overloaded`, `reason` `queue_timeout`, `Retry-After` and the ev
   then the call itself runs in the process of the handler with Alambique's `:timeout`
   set to what the deadline leaves, as for an awake cell, so a call behaves the same
   whether the cell was cold or warm. If the deadline passes during the wake, nothing
-  was sent and a read or a write is a `queue_timeout`. If the cell sleeps again
+  was sent and a read or a write is a `queue_timeout`. A cell has its process before
+  its wake ends, and a write queued behind the wake commits after it, so a write to a
+  cell that has a process touches it first, in the caller, bounded the same way; a read
+  is sent at once, since a read that times out is refused anyway. If the cell sleeps again
   between the wake and the call, the call wakes it once more, bounded by `:timeout`;
 * a WASM call in the pool queue: `Atanor.Wasm` waits `min(wasm.queue_wait_ms, what the
   deadline leaves)` and then takes the call back (`Native.withdraw/1`) if no thread

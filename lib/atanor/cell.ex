@@ -206,7 +206,8 @@ defmodule Atanor.Cell do
   # that would wake the cell waits for the wake first, on a process of its own (`Alambique.touch/3`) that the
   # request leaves at the deadline and the wake finishes without it. Nothing was sent then: a read or a write
   # is refused with `queue_timeout`. If the cell sleeps again between the wake and the call, the call wakes it
-  # once more, bounded by `:timeout`. `{:error, :timeout}` says the call did not answer in time, which for a
+  # once more, bounded by `:timeout`. A write to a cell that has a process waits the same way, because the
+  # process may still be waking and a write queued behind the wake commits after it. `{:error, :timeout}` says the call did not answer in time, which for a
   # write is an unknown outcome.
   @spec within_deadline(atom, String.t(), :read | :write | :touch | :admin, keyword, (keyword -> term)) :: term
   def within_deadline(alambique, id, kind, opts, call) do
@@ -222,24 +223,28 @@ defmodule Atanor.Cell do
 
       kind != :touch and Alambique.load(alambique, id) == :none ->
         Process.put(@bounded, true)
+        woken(detached(max(left, 0), fn -> Alambique.touch(alambique, id) end), call, opts)
 
-        case detached(max(left, 0), fn -> Alambique.touch(alambique, id) end) do
-          {:error, :timeout} ->
-            Process.put(@unsent, true)
-            {:error, :timeout}
-
-          {:ok, _} ->
-            bounded(call, opts, Admission.remaining())
-
-          error ->
-            error
-        end
+      # A cell that has a process may still be waking, and a write sent to it commits after the wake. The touch
+      # queues behind the wake, so a write that waits for it past the deadline was not sent.
+      kind == :write ->
+        Process.put(@bounded, true)
+        woken(Alambique.touch(alambique, id, timeout: max(left, 1)), call, opts)
 
       true ->
         Process.put(@bounded, true)
         bounded(call, opts, left)
     end
   end
+
+  defp woken({:ok, _}, call, opts), do: bounded(call, opts, Admission.remaining())
+
+  defp woken({:error, :timeout}, _call, _opts) do
+    Process.put(@unsent, true)
+    {:error, :timeout}
+  end
+
+  defp woken(error, _call, _opts), do: error
 
   defp bounded(call, opts, left),
     do: call.(Keyword.put(opts, :timeout, min(max(left, 1), opts[:timeout] || :infinity)))
