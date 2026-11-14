@@ -199,6 +199,33 @@ defmodule Atanor.QueueDeadlineTest do
       assert callback_view(node, "cold") == cold
     end
 
+    test "a write that finds the cell still waking is not sent: queue_timeout, never committed" do
+      node = start()
+      unslow = slow(node, "twice", 1_500)
+      alambique = Atanor.Registry.config(node.name).alambique
+      insert = fn -> Cell.execute(node.name, {"notes", "twice"}, "INSERT INTO notes (body) VALUES ('x')") end
+
+      call = fn ->
+        assert :ok = Admission.enter(node.name)
+        result = {insert.(), Cell.unknown_outcome?(), Cell.overload_cause()}
+        Admission.leave(node.name)
+        result
+      end
+
+      # The first request leaves the wake behind its deadline; the cell keeps waking.
+      assert {{:error, {:unavailable, :overloaded}}, false, :queue_timeout} = Task.await(Task.async(call))
+      # The cell gets its process before the wake ends: a call finds it and may queue behind the wake.
+      Await.until(fn -> match?({:ok, _}, Alambique.load(alambique, "notes.twice")) end)
+
+      {result, ms} = timed(fn -> Task.await(Task.async(call)) end)
+      assert {{:error, {:unavailable, :overloaded}}, false, :queue_timeout} = result
+      assert ms < 1_000
+
+      unslow.()
+      Process.sleep(1_800)
+      assert {:ok, %{rows: []}} = Cell.query(node.name, {"notes", "twice"}, "SELECT body FROM notes")
+    end
+
     test "a write whose cell wakes past the deadline is a queue_timeout and is never committed" do
       node = start()
       unslow = slow(node, "slowwake", 1_500, [:get, :get_range, :head, :list])
