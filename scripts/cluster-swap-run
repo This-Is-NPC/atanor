@@ -201,7 +201,7 @@ def main():
     events = {}
     say(f"starting {b_service} in another discovery group")
     events["b_start_at"] = time.time()
-    env = {**os.environ, "ATANOR_CLUSTER_GROUP": "b"}
+    env = {**os.environ, "ATANOR_CLUSTER_GROUP": "b", "ATANOR_CLUSTER_STOP_GRACE": f"{grace}s"}
     run(*COMPOSE, "up", "-d", "--no-deps", b_service, env=env)
     b = run("docker", "ps", "-aq", "--filter", LABEL, "--filter", f"name=^/?atanor-cluster-{b_service}$").split()[0]
     if "ATANOR_GROUP=b" not in inspect(b, "{{range .Config.Env}}{{println .}}{{end}}").splitlines():

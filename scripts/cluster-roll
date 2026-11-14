@@ -36,7 +36,7 @@ case ${1:-} in
       docker stop --timeout "$(stop_grace)" "$id" >/dev/null
       [[ -z ${CLUSTER_ROLL_LOGS:-} ]] || docker logs "$id" >"$CLUSTER_ROLL_LOGS/$name-old.log" 2>&1 || true
       stamp "stopped $name, recreating it from the new image"
-      compose up -d --no-deps "node-$number" >/dev/null 2>&1
+      ATANOR_CLUSTER_STOP_GRACE=$(stop_grace)s compose up -d --no-deps "node-$number" >/dev/null 2>&1
       new=$(cluster_container "node-$number")
       stamp "started $name ($new), waiting until it is ready"
       ready "$count" "$new"

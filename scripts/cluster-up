@@ -19,7 +19,9 @@ export ATANOR_CLUSTER_RELEASE=${ATANOR_CLUSTER_RELEASE:-$(cluster_release_id)}
 
 services=(store lb)
 for n in $(seq 1 "$nodes"); do services+=("node-$n"); done
-stop_grace >/dev/null   # refuse a grace period below the drain before starting
+# Compose reads the grace from here: always the derived, validated value.
+ATANOR_CLUSTER_STOP_GRACE=$(stop_grace)s || exit 1
+export ATANOR_CLUSTER_STOP_GRACE
 compose up -d --remove-orphans "${services[@]}"
 # Nodes above the wanted number from an earlier run go away.
 for id in $(cluster_ids node); do
