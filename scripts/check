@@ -4,8 +4,16 @@
 # passes. Safe to rerun.
 #   ATANOR_CHECK_CLUSTER=1   also run the cluster tests (mise run test:cluster)
 #   ATANOR_CHECK_COVERAGE=1  also run the coverage gate (mise run test:coverage, about 30 minutes)
+#
+# The full output of every stage is kept in _build/check/ (last.log is the
+# newest); a red run ends by naming the failing tests, the seed and the log.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# Re-run under scripts/check-log, which owns the log and the failure summary.
+if [[ -z ${ATANOR_CHECK_LOGGING:-} ]]; then
+  ATANOR_CHECK_LOGGING=1 exec scripts/check-log "$0" "$@"
+fi
 
 step() { printf '\n== %s\n' "$*"; }
 
