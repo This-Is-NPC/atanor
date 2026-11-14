@@ -54,7 +54,7 @@ The [Dockerfile](../Dockerfile) at the root builds it from public sources only
    `docker inspect`. `<...>` marks a value you choose:
 
    ```sh
-   docker run -d --name atanor-1 \
+   docker run -d --name atanor-1 --stop-timeout 90 \
      -v <secrets dir>:/run/secrets:ro \
      -e ATANOR_STORE=s3://<bucket>/<prefix> \
      -e ATANOR_S3_ENDPOINT=<S3 endpoint URL> \

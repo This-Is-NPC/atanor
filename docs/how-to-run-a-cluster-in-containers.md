@@ -65,7 +65,7 @@ Set these in the environment of `mise run`; the defaults are in `compose.yml`.
 | `ATANOR_CLUSTER_LEASE_TTL_MS`, `_NET_TICKTIME` | 30000, 60 | Cell lease and Erlang net tick time (seconds). |
 | `ATANOR_CLUSTER_GROUP` | none | The discovery group of the nodes started ([`ATANOR_GROUP`](configuration.md#discovery)). `cluster:swap-run` starts the replacement in group `b`, so it does not join the others ([how-to-replace-a-node.md](how-to-replace-a-node.md)). |
 | `ATANOR_CLUSTER_REGISTRY_TTL_MS`, `_REGISTRY_RENEW_MS` | 15000, 3000 | How long a node's entry in the store lives, and how often it is renewed (`ATANOR_REGISTRY_*`). A new node is found within the renewal; a node that was killed is forgotten after the TTL plus 2 s. |
-| `ATANOR_CLUSTER_STOP_GRACE` | 90s | Time `docker stop` waits for a node to drain; keep it above the drain (`stop.shutdown_ms`, 75 s). |
+| `ATANOR_CLUSTER_STOP_GRACE` | 90s | Time `docker stop` waits for a node to drain; derived from `ATANOR_CLUSTER_SHUTDOWN_MS` (else `ATANOR_SHUTDOWN_MS`, 75 s) plus 15 s. A value at or below the drain, or one that is not seconds, `90s` or `2m`, is refused by the scripts ([rule](configuration.md#the-stop-grace-period)). |
 | `ATANOR_CLUSTER_SHUTDOWN_MS`, `_DRAIN_TIMEOUT_MS`, `_DRAIN_CONCURRENCY` | node defaults (75000, 15000, 64) | The node's `stop.shutdown_ms`, `drain_timeout_ms` and `drain_concurrency`. |
 | `ATANOR_CLUSTER_BUILD_JOBS` | 6 | Cargo jobs while building. |
 | `ATANOR_CLUSTER_RELEASE` | commit, plus `-dirty` | The release id nodes report (`GET /deployments`). |
@@ -256,7 +256,7 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
    | Action | Effect |
    | --- | --- |
    | `kill` | SIGKILL; the container stays down. |
-   | `stop`, `restart` | Graceful stop (30 s grace), and start again for `restart`. |
+   | `stop`, `restart` | Graceful stop (grace derived from `stop.shutdown_ms`, 90 s by default), and start again for `restart`. |
    | `start` | Start a killed or stopped container. |
    | `pause`, `unpause` | Freeze with the cgroup freezer, and thaw. |
    | `partition` | A node: drops traffic with the other nodes inside its own network namespace (`partition node-3 node-1` cuts one pair). The store: disconnects it from the network. |

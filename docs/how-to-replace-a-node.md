@@ -45,13 +45,15 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
   ([how-to-run-a-cluster.md](how-to-run-a-cluster.md)). B keeps its group after A
   is gone: a node you add later joins B's group, or B restarts without it.
 - **A grace period longer than the drain.** The drain is bounded by
-  `stop.shutdown_ms` (75 000 ms by default). `docker stop` (10 s by default),
-  Kubernetes (30 s) and systemd (90 s) would otherwise send SIGKILL to a node
+  `stop.shutdown_ms` (75 000 ms by default). `docker stop` (10 s by default)
+  and Kubernetes (30 s) would otherwise send SIGKILL to a node
   that is still handing cells back; its leases then expire as after a crash
   and B waits up to the TTL plus the skew (32 s). In Compose,
   `stop_grace_period` is 90 s in [cluster/compose.yml](../cluster/compose.yml)
-  (`ATANOR_CLUSTER_STOP_GRACE`). Or lower `shutdown_ms` (and
-  `ATANOR_CLUSTER_SHUTDOWN_MS`) and keep the grace above it.
+  (`ATANOR_CLUSTER_STOP_GRACE`), and the cluster scripts stop nodes with the same
+  derived grace (`shutdown_ms` plus 15 s). Or lower `shutdown_ms` (and
+  `ATANOR_CLUSTER_SHUTDOWN_MS`) and keep the grace above it
+  ([the rule](configuration.md#the-stop-grace-period)).
 - For the walk-through below: Docker, and the setup of the container cluster
   guide (`mise install`, `jq`, `curl`, `python3`).
 
