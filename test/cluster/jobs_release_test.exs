@@ -274,6 +274,28 @@ defmodule Atanor.Cluster.JobsReleaseTest do
     assert [_, _] = starts(dir, id)
   end
 
+  # A cell call that fails for lack of a quorum or a store ends the handler with these errors; the handler
+  # `unhealed:<dir>` returns one until `<dir>/healed` exists, which is the file the test writes, so that the
+  # outage lasts exactly as long as the test wants whichever node claims the job.
+  test "an outage far longer than max_attempts times the backoff does not use up the attempts of a job" do
+    {cluster, dir} = start(jobs: [max_attempts: 3])
+    {key, owner} = job_cell(cluster, dir)
+
+    spec = %{kind: "test", payload: "unhealed:#{dir}"}
+    args = [Cluster.instance(cluster), "jobs", {"jobs", key}, spec]
+    {:ok, {:ok, id}} = Cluster.call(cluster, owner, Jobs, :enqueue_direct, args)
+
+    # A dozen errors at a backoff of 100 ms: four times the attempts of the job.
+    errors = fn -> events(cluster, [:atanor, :job, :finished], &(&1.id == id and &1.result == :error)) end
+    Await.until(fn -> length(errors.()) >= 12 end, 60_000)
+    assert state(cluster, owner, key, id) in ["pending", "running"]
+    assert events(cluster, [:atanor, :job, :dead], &(&1.id == id)) == []
+
+    File.write!(Path.join(dir, "healed"), "")
+    Await.until(fn -> state(cluster, owner, key, id) == "done" end, 60_000)
+    assert events(cluster, [:atanor, :job, :dead], &(&1.id == id)) == []
+  end
+
   # A short lease, so the deadline of the fence comes soon after the node is cut off.
   @fence_ttl_ms 4_000
   @fence_margin_ms 400

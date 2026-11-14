@@ -237,6 +237,10 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/jobs/mail/alice/JOB/discard
    ```
 
+   A dead job's `last_error` starts with `infrastructure: ` when errors of the
+   store or the cell outlasted `jobs.infrastructure_timeout_ms`; otherwise it is
+   the last error of the handler after `max_attempts`.
+
    `GET /jobs/:namespace/:key/:id` returns one job. A retry of a job that is
    not dead is 409 `not_dead`.
 

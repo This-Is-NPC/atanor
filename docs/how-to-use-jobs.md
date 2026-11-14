@@ -37,7 +37,11 @@ in step 6.
    ```
 
    A return of `{:error, reason}` (or a raise) is retried with exponential
-   backoff; after `jobs.max_attempts` the job is dead.
+   backoff; after `jobs.max_attempts` the job is dead. Only these failures count
+   as attempts. An error of the store or the cell (a partition, `store_unavailable`,
+   a cell that is overloaded or has no owner) does not: the job waits and runs
+   again with the same backoff, up to `jobs.infrastructure_timeout_ms` (one hour
+   by default), and then it is dead too.
 
 2. Enqueue in the same transaction as the data. Use
    `Atanor.Jobs.enqueue/4` with the `Alambique.Tx` from `Env.transaction/4`:
@@ -135,7 +139,11 @@ in step 6.
   after the transaction commits, on the cell owner.
 - A sleeping cell is woken at the earliest due job time, not on every tick.
 - A handler error retries with backoff; a permanently failing job becomes dead
-  and remains visible until retried or discarded.
+  and remains visible until retried or discarded. An error of the store or the
+  cell does not use up attempts; a job that waits longer than
+  `jobs.infrastructure_timeout_ms` is dead with a `last_error` that starts with
+  `infrastructure: ` (the `dead` telemetry event has `cause: :infrastructure`;
+  `:max_attempts` for a failing handler).
 - A retried or takeover-repeated job has the same id and idempotency key.
 
 ## Troubleshooting

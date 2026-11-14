@@ -174,6 +174,77 @@ defmodule Atanor.JobsTest do
     assert until(fn -> length(runs(node, "a")) >= 3 end)
   end
 
+  defp heal_table, do: :ets.new(:"heal_#{System.unique_integer([:positive])}", [:public, :set, :named_table])
+
+  def relay(_event, _measurements, meta, test), do: send(test, {:dead, meta})
+
+  defp job_row(node, key),
+    do: Cell.query(node.name, {"jobs", key}, "SELECT state, attempts, last_error FROM _atanor_jobs")
+
+  describe "infrastructure errors" do
+    test "never consume an attempt, however long they last" do
+      {node, world} = start(jobs: [backoff_ms: 1_000, max_backoff_ms: 1_000, max_attempts: 2])
+      table = heal_table()
+      assert %{status: 200} = enqueue(node, "a", payload: "heal:#{table}", max: 2)
+
+      # Five times max_attempts: on a handler failure the job would be dead after the second.
+      for n <- 1..5 do
+        assert until(fn -> length(runs(node, "a")) == n end)
+        assert until(fn -> match?({:ok, %{rows: [["pending", 0, _]]}}, job_row(node, "a")) end)
+        ManualClock.advance(world, 1_000)
+      end
+
+      :ets.insert(table, {:healed, true})
+      assert until(fn -> match?({:ok, %{rows: [["done", 1, nil]]}}, job_row(node, "a")) end)
+    end
+
+    test "a handler that fails goes dead with cause max_attempts" do
+      {node, world} = start(jobs: [backoff_ms: 1_000, max_backoff_ms: 1_000, max_attempts: 2])
+      handler = "dead-#{System.unique_integer([:positive])}"
+      test = self()
+      :telemetry.attach(handler, [:atanor, :job, :dead], &__MODULE__.relay/4, test)
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      assert %{status: 200} = enqueue(node, "a", payload: "fail", max: 2)
+      assert until(fn -> runs(node, "a") == [1] end)
+      assert until(fn -> match?({:ok, %{rows: [["pending", 1, _]]}}, job_row(node, "a")) end)
+      ManualClock.advance(world, 1_000)
+
+      assert until(fn -> match?({:ok, %{rows: [["dead", 2, ":boom"]]}}, job_row(node, "a")) end)
+
+      assert_receive {:dead, %{cause: :max_attempts}}
+    end
+
+    test "past infrastructure_timeout_ms the job is dead with cause infrastructure" do
+      {node, world} =
+        start(jobs: [backoff_ms: 1_000, max_backoff_ms: 1_000, max_attempts: 2, infrastructure_timeout_ms: 3_500])
+
+      handler = "dead-#{System.unique_integer([:positive])}"
+      test = self()
+      :telemetry.attach(handler, [:atanor, :job, :dead], &__MODULE__.relay/4, test)
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      table = heal_table()
+      assert %{status: 200} = enqueue(node, "a", payload: "heal:#{table}", max: 2)
+
+      for n <- 1..4 do
+        assert until(fn -> length(runs(node, "a")) == n end)
+
+        assert until(fn ->
+                 match?({:ok, %{rows: [[state, 0, _]]}} when state in ["pending", "dead"], job_row(node, "a"))
+               end)
+
+        ManualClock.advance(world, 1_000)
+      end
+
+      assert until(fn ->
+               match?({:ok, %{rows: [["dead", 0, "infrastructure: " <> _]]}}, job_row(node, "a"))
+             end)
+
+      assert_receive {:dead, %{cause: :infrastructure, reason: "infrastructure: " <> _}}
+    end
+  end
+
   test "unique keys conflict until done and then allow a new job" do
     {node, world} = start()
     assert %{body: first} = enqueue(node, "a", payload: "one", unique: "u")

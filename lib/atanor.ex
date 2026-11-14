@@ -179,7 +179,9 @@ defmodule Atanor do
       then stops the VM; `:stop`: SIGTERM stops the VM at once).
     * `:jobs` - the per-cell job runner (design §15): `:max_attempts` (20),
       `:timeout_ms` (30 000), `:claim_ms` (60 000), `:backoff_ms` (1 000),
-      `:max_backoff_ms` (300 000), `:concurrency` (64 per node),
+      `:max_backoff_ms` (300 000), `:infrastructure_timeout_ms` (3 600 000, how long
+      a job waits out errors of the store or the cell before it is dead, design §15.4),
+      `:concurrency` (64 per node),
       `:worker_concurrency` (8), `:cell_concurrency` (1),
       `:claim_on_finish` (true, claim a cell's next due jobs when one finishes),
       `:release_claims` (true, release the claims of a node whose cell was taken
