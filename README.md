@@ -8,7 +8,7 @@ tenant or region.
 
 **Status:** version <!-- x-release-please-start-version -->0.3.0<!-- x-release-please-end -->,
 shipped as one daemon: a container image and a tarball ([install](#install)). The first
-release, 0.1.0, is from 2026-11-06; [CHANGELOG.md](CHANGELOG.md) lists every release and
+release, 0.4.0, is from 2026-11-06; [CHANGELOG.md](CHANGELOG.md) lists every release and
 change. Open defects are in [docs/what-does-not-work.md](docs/what-does-not-work.md); the
 limits of the design are in [Limitations](#limitations) and in [docs/design.md](docs/design.md).
 
@@ -50,13 +50,13 @@ shell, in an empty directory.
 
    ```sh
    docker network create atanor-net
-   docker run -d --name atanor-store --network atanor-net -p 127.0.0.1:8333:8333 \
+   docker run -d --name atanor-store --network atanor-net -p 0.4.0.1:8333:8333 \
      -v "$PWD/atanor-secrets:/run/secrets:ro" --entrypoint /bin/sh chrislusf/seaweedfs:4.48 -c \
      'export AWS_ACCESS_KEY_ID="$(cat /run/secrets/access_key)" AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/secret_key)"; \
-      exec /entrypoint.sh mini -dir=/data -ip=atanor-store -ip.bind=0.0.0.0 -s3.port=8333 -admin.ui=false'
-   until curl -s -o /dev/null http://127.0.0.1:8333/; do sleep 1; done
+      exec /entrypoint.sh mini -dir=/data -ip=atanor-store -ip.bind=0.4.0.0 -s3.port=8333 -admin.ui=false'
+   until curl -s -o /dev/null http://0.4.0.1:8333/; do sleep 1; done
    curl -sS -o /dev/null -w 'create bucket: HTTP %{http_code}\n' --aws-sigv4 aws:amz:us-east-1:s3 \
-     --user "$(cat atanor-secrets/access_key):$(cat atanor-secrets/secret_key)" -X PUT http://127.0.0.1:8333/atanor
+     --user "$(cat atanor-secrets/access_key):$(cat atanor-secrets/secret_key)" -X PUT http://0.4.0.1:8333/atanor
    ```
 
    ```text
@@ -70,13 +70,13 @@ shell, in an empty directory.
 
    ```sh
    docker run -d --name atanor-node --network atanor-net --stop-timeout 90 \
-     -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 -v "$PWD/atanor-secrets:/run/secrets:ro" \
+     -p 0.4.0.1:4000:4000 -p 127.0.0.1:4001:4001 -v "$PWD/atanor-secrets:/run/secrets:ro" \
      -e ATANOR_STORE=s3://atanor -e ATANOR_S3_ENDPOINT=http://atanor-store:8333 \
      -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret_key \
      -e ATANOR_ADMIN_TOKEN_FILE=/run/secrets/admin_token -e ATANOR_COOKIE_FILE=/run/secrets/cookie \
      -e ATANOR_ADVERTISE=atanor-node.local "$IMAGE"
    until [ "$(curl -s -o /dev/null -w '%{http_code}' -H "authorization: Bearer $(cat atanor-secrets/admin_token)" \
-     http://127.0.0.1:4001/health/ready)" = 200 ]; do
+     http://0.4.0.1:4001/health/ready)" = 200 ]; do
      [ "$(docker inspect -f '{{.State.Running}}' atanor-node 2>/dev/null)" = true ] \
        || { docker logs atanor-node; echo "atanor-node is not running" >&2; break; }
      sleep 1
@@ -110,7 +110,7 @@ shell, in an empty directory.
 6. Call it. The route of the manifest is the host `localhost` and the path `/hello`.
 
    ```sh
-   until curl -sf -H 'Host: localhost' http://127.0.0.1:4000/hello/world; do sleep 1; done
+   until curl -sf -H 'Host: localhost' http://0.4.0.1:4000/hello/world; do sleep 1; done
    ```
 
    ```text
@@ -195,7 +195,7 @@ To run it:
 
 To develop Atanor ([how to build and test](docs/how-to-build-and-test.md)):
 
-- `mise` and Docker. `mise.toml` pins Erlang 28.5, Elixir 1.20.4 and Rust 1.97.1.
+- `mise` and Docker. `mise.toml` pins Erlang 28.5, Elixir 0.4.0 and Rust 1.97.1.
 - A C compiler: Alambique and `native/atanor_wasm` (Wasmtime) compile native libraries, and WASM
   guests need the `wasm32-wasip2` target.
 - Alambique, fetched from its public git repository at the release tag in `alambique.ref`.
