@@ -6,31 +6,6 @@ are choices of the design are in the "Limits" paragraphs of
 [design.md](design.md) and in the README's
 [Limitations](../README.md#limitations).
 
-## A cell can still wake slowly at a new node under a 25 ms store
-
-**What happens.** After a swap under write load near saturation (25 ms store, a
-node with one CPU), a cell can need 2.7 to 5.7 s to wake at the new node. A request
-that waits longer than `http: [queue_wait_ms:]` (5 s) gets 503 `queue_timeout` with
-`Retry-After`. No write was lost or duplicated.
-
-**Cause.** Under a saturated writer, Alambique's compactor (defaults `interval_ms`
-5000, `concurrency` 2) falls behind, so the level-0 tail grows. The successor
-restored 500 to 760 level-0 segments per cell, about 500 files/s on one CPU at
-25 ms, which gives the 2.7 to 5.7 s. Alambique's own `bench:swap` on the same laptop
-had a maximum wake of 0.39 to 0.47 s with 4 to 22 level-0 GETs. The fix is tracked
-as Alambique order 030 (tail cap under saturation, compaction at drain and at
-graceful release).
-
-**Workaround.** The client retries after `Retry-After`; a write that got a 503 was
-not stored. Raising `ATANOR_HTTP_QUEUE_WAIT_MS` trades the 503 for a longer wait. A
-store close to the nodes, or fewer busy cells per node, keeps the wakes short.
-
-**Evidence.** `mise run load:swap -- --rate 750`, scenario A, on Alambique 0.8.0,
-3 swaps: the wakes of B in `docker-b.log` (`slow wake of ...`) were 3.7 s (run 1,
-541 segments), 2.7, 3.2 and 5.7 s (run 2, 2 `queue_timeout`), none (run 3); 0 no
-answer, 0 unknown outcome, 0 lost, 0 duplicated in all three. See
-[how-to-replace-a-node.md](how-to-replace-a-node.md#a-swap-with-a-slow-store-and-many-busy-cells).
-
 ## WASM throughput is about 5% below 0.2.0 after the admission change
 
 **What happens.** The hello guest over HTTP serves about 5% fewer requests/s

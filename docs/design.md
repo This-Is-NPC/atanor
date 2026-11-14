@@ -2553,6 +2553,20 @@ The sequence of `Atanor.drain/2`:
    waiting for the lease to expire. One cell is bounded by `stop.drain_timeout_ms` (default 15 000), up to
    `stop.drain_concurrency` (default 64) at a time; the whole drain by `stop.shutdown_ms` (default 75 000,
    at least the first). Past it the drain gives up and reports `{:drain, :deadline}`.
+
+   **Release compaction.** Since Alambique 0.9.0 a cell whose level-0 tail has `compaction: [release_min_tail:]`
+   files (32) or more compacts it before it releases the lease, so the node that takes the cell restores a short
+   chain, not hundreds of segments (a swap under a saturated writer woke cells in 2.7 to 5.7 s on 0.8.0). The
+   compaction stops after `release_deadline_ms` (3 000; 0 turns it off) and `release_reserve_ms` (2 000) before
+   the end of the call, and does not start with less left; then the release goes on with what was merged. Each
+   release pays one listing of the cell's files. The times nest: the compaction gets
+   `min(release_deadline_ms, drain_timeout_ms - release_reserve_ms)`, so the default 15 000 gives it the full
+   3 000 ms. Alambique also limits the drain as a whole to 60 000 ms (`drain: [deadline_ms:]`, Atanor does not
+   change it), and a cell that starts late gets what is left, so the compaction shrinks, or does not run, for
+   the cells at the end of a drain of many cells (64 at a time). `shutdown_ms` (75 000) and the container's
+   grace period (90 s) leave 15 s over those 60 s. Lower `drain_timeout_ms` below
+   `release_deadline_ms + release_reserve_ms` (5 000) and the compaction is cut; lower `shutdown_ms` or the
+   grace period below 60 s and a node that is still handing cells back is killed.
 4. **The node stops** (`stop.exit`, default `true`): `System.stop/1` with status 0, or 1 when a cell stayed
    with its lease. The drain started by the API or the command answers before that, with
    `%{state, hibernated, errors, duration_ms}`; `exit: false` or a function (`Atanor.drain(name, exit: fun)`)

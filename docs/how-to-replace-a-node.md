@@ -258,26 +258,31 @@ at 25 ms a request, Alambique's measurement). Atanor no longer lowers
 `restore: [fetch_concurrency:]` on a small node; the bytes in flight
 (`max_inflight_bytes`) are the limit.
 
-The same swap on Alambique 0.8.0, with the 5 s wait deadline (scenario A, fresh
+Alambique 0.9.0 also compacts the level-0 tail of a cell when A hands it off
+(`compaction: [release_min_tail:]`, 32 files; at most `release_deadline_ms`, 3 s
+per cell; [design §8.11](design.md#811-draining-and-stopping-gracefully)), so B
+restores a short chain.
+
+The same swap on Alambique 0.9.0, with the 5 s wait deadline (scenario A, fresh
 stack for each run, `mise run load:up`, then `ATANOR_LOAD_SCENARIO=A
 ATANOR_LOAD_STORE_TMPFS_SIZE=2g mise run load:swap -- --rate 750`). No request
 went unanswered and none had an unknown outcome, in any run:
 
-| Run | No answer | Unknown outcome | Lost | Duplicated | 503 `held_elsewhere` | 503 `queue_timeout` | p99 | p99 of the swap phase | Slow wakes of B |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 0 | 0 | 0 | 0 | 727 | 0 | 167 ms | 1,967 ms | 3.7 s |
-| 2 | 0 | 0 | 0 | 0 | 760 | 2 | 169 ms | 2,821 ms | 2.7, 3.2, 5.7 s |
-| 3 | 0 | 0 | 0 | 0 | 781 | 0 | 165 ms | 470 ms | none |
+| Run | No answer | Unknown outcome | Lost | Duplicated | 503 `held_elsewhere` | 503 `queue_timeout` | p99 | p99 of the swap phase | Slow wakes of B | Drain of A |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0 | 0 | 0 | 0 | 744 | 0 | 166 ms | 445 ms | none | 12 cells in 2,812 ms |
+| 2 | 0 | 0 | 0 | 0 | 764 | 0 | 161 ms | 320 ms | none | 12 cells in 2,357 ms |
+| 3 | 0 | 0 | 0 | 0 | 729 | 0 | 247 ms | 411 ms | none | 12 cells in 2,339 ms |
 
-No request got 503 `worker_queue`. The swap took 6.8 s in run 1 (the old node
-leaves 6.8 s after SIGTERM).
+No request got 503 `worker_queue`. The old node left 3.6 to 4.2 s after SIGTERM
+(6.8 s and a wake of 3.7 to 5.7 s on 0.8.0). The drain of A takes 2.3 to 2.8 s
+for 12 cells, compaction included, well inside `stop.shutdown_ms` and the grace
+period.
 
-What still happens: B wakes the cells that were busy on A, and on one CPU with a
-store 25 ms away a wake can still take 3 to 6 s (a chain of about 540 segments in
-run 1). A request that reaches the 5 s deadline gets 503 `queue_timeout` with
-`Retry-After` (2 requests in run 2); its write was not sent, so the client
-retries it. The log of B names each wake of one second or more
-(`slow wake of ...`, with the requests it made by kind).
+A wake of one second or more is still logged by B (`slow wake of ...`, with the
+requests it made by kind and the time they took in the store). A request that
+reaches the 5 s deadline gets 503 `queue_timeout` with `Retry-After`; its write
+was not sent, so the client retries it.
 
 `cluster:swap-run` writes the balancer's request log (`docker-lb.log`) and adds
 `no_answer_by_server` and `no_answer_requests` (id, room, node, balancer state)
