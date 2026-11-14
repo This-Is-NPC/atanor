@@ -226,6 +226,28 @@ defmodule Atanor.QueueDeadlineTest do
       assert {:ok, %{rows: []}} = Cell.query(node.name, {"notes", "twice"}, "SELECT body FROM notes")
     end
 
+    test "a write to an awake cell goes straight to the bounded call, without a touch" do
+      node = start(http: [queue_wait_ms: 5_000])
+      alambique = Atanor.Registry.config(node.name).alambique
+      # A write marks its process as committed, which lifts the deadline: warm the cell in another process.
+      warm = fn -> Cell.execute(node.name, {"notes", "warm"}, "INSERT INTO notes (body) VALUES ('a')") end
+      assert {:ok, _} = Task.await(Task.async(warm))
+      assert {:ok, %{waking: false}} = Alambique.load(alambique, "notes.warm")
+      assert :ok = Admission.enter(node.name)
+      on_exit(fn -> Admission.leave(node.name) end)
+
+      # A tracer is never traced itself, so another process collects the calls.
+      parent = self()
+      tracer = spawn_link(fn -> collect([]) end)
+      :erlang.trace_pattern({Alambique, :touch, 3}, true, [:local])
+      :erlang.trace(parent, true, [:call, {:tracer, tracer}])
+      assert {:ok, _} = Cell.execute(node.name, {"notes", "warm"}, "INSERT INTO notes (body) VALUES ('b')")
+      :erlang.trace(parent, false, [:call])
+      :erlang.trace_pattern({Alambique, :touch, 3}, false, [:local])
+      send(tracer, {:done, parent})
+      assert_receive {:calls, []}
+    end
+
     test "a write whose cell wakes past the deadline is a queue_timeout and is never committed" do
       node = start()
       unslow = slow(node, "slowwake", 1_500, [:get, :get_range, :head, :list])

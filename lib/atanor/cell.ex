@@ -206,28 +206,30 @@ defmodule Atanor.Cell do
   # that would wake the cell waits for the wake first, on a process of its own (`Alambique.touch/3`) that the
   # request leaves at the deadline and the wake finishes without it. Nothing was sent then: a read or a write
   # is refused with `queue_timeout`. If the cell sleeps again between the wake and the call, the call wakes it
-  # once more, bounded by `:timeout`. A write to a cell that has a process waits the same way, because the
-  # process may still be waking and a write queued behind the wake commits after it. `{:error, :timeout}` says the call did not answer in time, which for a
+  # once more, bounded by `:timeout`. A write to a cell that has a process waits the same way only while
+  # `Alambique.load/2` reports it waking, because a write queued behind the wake commits after it. `{:error, :timeout}` says the call did not answer in time, which for a
   # write is an unknown outcome.
   @spec within_deadline(atom, String.t(), :read | :write | :touch | :admin, keyword, (keyword -> term)) :: term
   def within_deadline(alambique, id, kind, opts, call) do
     left = if kind == :admin or committed?(), do: :infinity, else: Admission.remaining()
 
+    load = if left == :infinity, do: nil, else: Alambique.load(alambique, id)
+
     cond do
       left == :infinity ->
         call.(opts)
 
-      kind == :touch and Alambique.load(alambique, id) == :none ->
+      kind == :touch and load == :none ->
         Process.put(@bounded, true)
         detached(max(left, 0), fn -> call.(opts) end)
 
-      kind != :touch and Alambique.load(alambique, id) == :none ->
+      kind != :touch and load == :none ->
         Process.put(@bounded, true)
         woken(detached(max(left, 0), fn -> Alambique.touch(alambique, id) end), call, opts)
 
-      # A cell that has a process may still be waking, and a write sent to it commits after the wake. The touch
-      # queues behind the wake, so a write that waits for it past the deadline was not sent.
-      kind == :write ->
+      # A write sent to a cell that is still waking commits after the wake. The touch queues behind the wake,
+      # so a write that waits for it past the deadline was not sent. An awake cell needs no touch.
+      kind == :write and match?({:ok, %{waking: true}}, load) ->
         Process.put(@bounded, true)
         woken(Alambique.touch(alambique, id, timeout: max(left, 1)), call, opts)
 
