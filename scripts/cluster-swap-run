@@ -183,7 +183,10 @@ def main():
     if "ATANOR_GROUP=" not in inspect(a, "{{range .Config.Env}}{{println .}}{{end}}").splitlines():
         raise SystemExit(f"{a_name} is in a discovery group: start the cluster without ATANOR_CLUSTER_GROUP")
     b_service = args.b or next(f"node-{n}" for n in range(1, 11) if f"atanor-cluster-node-{n}" != a_name)
-    grace = int(float(inspect(a, "{{.Config.StopTimeout}}") or 10))
+    # The container's grace period; without one (`<nil>`), the one the cluster scripts use.
+    stop_timeout = inspect(a, "{{.Config.StopTimeout}}")
+    grace = int(stop_timeout) if stop_timeout.isdigit() else int(
+        run("bash", "-c", f'source "{HERE}/cluster-common" && stop_grace').strip())
 
     url = "http://scoreboard.localhost:" + published(4000).split(":")[1]
     rooms = [f"s{int(started) % 100000}-{i}" for i in range(args.rooms)]

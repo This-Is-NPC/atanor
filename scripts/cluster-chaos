@@ -58,9 +58,9 @@ net=${CLUSTER}_default
 
 case $action in
   kill) docker kill --signal KILL "$id" >/dev/null ;;
-  stop) docker stop --timeout 30 "$id" >/dev/null ;;
+  stop) docker stop --timeout "$(stop_grace)" "$id" >/dev/null ;;
   start) docker start "$id" >/dev/null ;;
-  restart) docker restart --timeout 30 "$id" >/dev/null ;;
+  restart) docker restart --timeout "$(stop_grace)" "$id" >/dev/null ;;
   pause) docker pause "$id" >/dev/null ;;
   unpause) docker unpause "$id" >/dev/null ;;
   partition)

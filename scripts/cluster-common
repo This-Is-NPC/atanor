@@ -75,3 +75,22 @@ cluster_release_id() {
   [[ -z $(git -C "$repo" status --porcelain -- lib native mix.exs mix.lock daemon Dockerfile cluster) ]] || id+=-dirty
   echo "$id"
 }
+
+# stop_grace: seconds `docker stop` waits for a node, printed. A node drains for up to stop.shutdown_ms
+# (ATANOR_CLUSTER_SHUTDOWN_MS, else ATANOR_SHUTDOWN_MS, else 75000), so the default is that plus 15 s.
+# ATANOR_CLUSTER_STOP_GRACE (compose syntax: 90s, 2m) overrides it; one at or below the drain is refused,
+# because SIGKILL would cut the drain.
+stop_grace() {
+  local drain=$(( ${ATANOR_CLUSTER_SHUTDOWN_MS:-${ATANOR_SHUTDOWN_MS:-75000}} / 1000 )) grace=${ATANOR_CLUSTER_STOP_GRACE:-}
+  if [[ -n $grace ]]; then
+    case $grace in
+      *m) grace=$(( ${grace%m} * 60 )) ;;
+      *s) grace=${grace%s} ;;
+    esac
+    [[ $grace =~ ^[0-9]+$ ]] || { echo "ATANOR_CLUSTER_STOP_GRACE must be seconds, like 90s or 2m" >&2; return 1; }
+    (( grace > drain )) || { echo "ATANOR_CLUSTER_STOP_GRACE (${grace}s) must exceed stop.shutdown_ms (${drain}s)" >&2; return 1; }
+    echo "$grace"
+  else
+    echo $(( drain + 15 ))
+  fi
+}

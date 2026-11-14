@@ -33,7 +33,7 @@ case ${1:-} in
       id=$(cluster_container "node-$number")
       name=$(container_name "$id")
       stamp "stop $name"
-      docker stop --timeout 30 "$id" >/dev/null
+      docker stop --timeout "$(stop_grace)" "$id" >/dev/null
       [[ -z ${CLUSTER_ROLL_LOGS:-} ]] || docker logs "$id" >"$CLUSTER_ROLL_LOGS/$name-old.log" 2>&1 || true
       stamp "stopped $name, recreating it from the new image"
       compose up -d --no-deps "node-$number" >/dev/null 2>&1
