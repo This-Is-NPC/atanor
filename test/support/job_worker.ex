@@ -3,7 +3,7 @@ defmodule Atanor.Test.JobWorker do
   Test worker for jobs. Requests: `/enqueue?key&kind&payload&at&max&unique`,
   `/tx?key` (a write and a job in one transaction), `/cron?key&expr`, and
   `/jobs?key`, `/runs?key`, `/effects?key`. Job payloads `noop` (writes nothing), `fail`, `flaky` and
-  `slow` exercise retries and timeouts; `heal:<table>` fails with `store_unavailable` until the test puts
+  `slow`, `own_timeout` and `own_no_quorum` (errors the handler makes up: they count as attempts) exercise retries and timeouts; `heal:<table>` fails with `store_unavailable` until the test puts
   `:healed` in the ETS set `<table>` (public, owned by the test), `unhealed:<dir>` until the file `<dir>/healed` exists; every execution is recorded and effects
   are deduplicated by job id. `track:<ms>:<table>` holds a slot for `<ms>` and
   records how many jobs ran at once and in what order in the ETS table `<table>`
@@ -112,7 +112,9 @@ defmodule Atanor.Test.JobWorker do
       "fail" -> {:error, :boom}
       "flaky" when job.attempt < 2 -> {:error, :flaky}
       "slow" -> Process.sleep(:infinity)
-      "cell_timeout" -> {:error, :timeout}
+      "own_timeout" -> {:error, :timeout}
+      "own_no_quorum" -> {:error, :no_quorum}
+      "cell_timeout" -> cell_timeout()
       "heal:" <> table -> heal(table)
       "unhealed:" <> dir -> unhealed(dir)
       "track:" <> rest -> track(job, rest)
@@ -126,14 +128,25 @@ defmodule Atanor.Test.JobWorker do
 
   # An infrastructure error until the test inserts `:healed` into its public ETS set `<table>`.
   defp heal(table) do
-    if :ets.lookup(String.to_existing_atom(table), :healed) == [],
-      do: {:error, {:unavailable, :store_unavailable}},
-      else: :ok
+    if :ets.lookup(String.to_existing_atom(table), :healed) == [], do: cell_failed(:store_unavailable), else: :ok
   end
 
   # The same, until the file `<dir>/healed` exists: for tests whose handler runs on another node.
   defp unhealed(dir) do
-    if File.exists?(Path.join(dir, "healed")), do: :ok, else: {:error, {:unavailable, :no_quorum}}
+    if File.exists?(Path.join(dir, "healed")), do: :ok, else: cell_failed(:no_quorum)
+  end
+
+  # A cell call of this handler failed as one does when the cell cannot be reached: Atanor marks the process
+  # (`Atanor.Cell.mark_unavailable/1`), and the handler passes the failure on as a term of its own.
+  defp cell_failed(reason) do
+    Atanor.Cell.mark_unavailable(reason)
+    {:error, :cell_unreachable}
+  end
+
+  # A cell read that timed out, passed on as the bare `:timeout` the call returned.
+  defp cell_timeout do
+    Process.put({Atanor.Cell, :unanswered}, true)
+    {:error, :timeout}
   end
 
   defp track(job, rest) do

@@ -520,9 +520,12 @@ defmodule Atanor.Jobs do
 
     case Task.yield(task, config.jobs.timeout_ms) || Task.shutdown(task, :brutal_kill) do
       {:ok, {:ok, :ok}} -> :ok
+      # The handler's own return: its error is a handler failure, whatever the term.
       {:ok, {:ok, {:error, reason}}} -> {:error, reason}
       {:ok, {:error, :handler_fenced}} -> :fenced
-      {:ok, {:error, reason}} -> {:error, reason}
+      # An error of Atanor or Alambique (`Atanor.Dispatch` marks it where the cell call failed, also when the
+      # handler passed it through): the cell, the store or the owner could not be reached.
+      {:ok, {:error, reason}} -> if infrastructure?(reason), do: {:infrastructure, reason}, else: {:error, reason}
       {:ok, other} -> {:error, {:bad_return, other}}
       {:exit, reason} -> {:error, {:exit, reason}}
       nil -> {:error, :handler_timeout}
@@ -536,8 +539,8 @@ defmodule Atanor.Jobs do
   # only a handler failure consumes one of `max_attempts`.
   def outcome(:ok, _job, now, _config), do: {"done", nil, nil, now, 0, nil}
 
-  def outcome({:error, reason}, job, now, config) do
-    if infrastructure?(reason) do
+  def outcome({kind, reason}, job, now, config) when kind in [:error, :infrastructure] do
+    if kind == :infrastructure do
       since = job.infrastructure_since_ms || now
 
       # The delay doubles with every error (it is the time waited so far), so a long outage is not retried
@@ -1081,13 +1084,13 @@ defmodule Atanor.Jobs do
   defp backoff(attempt, config),
     do: min(config.jobs.backoff_ms * Integer.pow(2, attempt - 1), config.jobs.max_backoff_ms)
 
-  # An error of the store, the cell or the route, not of the handler: the attempt did not fail, the cell could not
-  # be reached (`Atanor.Unavailable`), or the attempt's effects are unknown. A handler's own `:handler_timeout`,
-  # raise or error return is not one.
-  # `:timeout` is a cell call that did not answer; the handler's own run timeout is `:handler_timeout`.
-  # `:partitioned` is the error of a store that cannot be reached.
-  defp infrastructure?(reason),
-    do: reason in [:unknown_outcome, :timeout, :partitioned] or Atanor.Unavailable.reason(reason) != nil
+  # The errors `Atanor.Dispatch` makes of a failed attempt that reach a job: it did not fail, the cell or the
+  # owner could not be reached (`Atanor.Unavailable`), or its effects are unknown. Only the result of
+  # Dispatch is looked at, never the term a handler returns.
+  defp infrastructure?(:unknown_outcome), do: true
+  defp infrastructure?(:overloaded), do: true
+  defp infrastructure?({:unavailable, _}), do: true
+  defp infrastructure?(_), do: false
 
   defp error_text(nil), do: nil
   defp error_text(reason) when is_binary(reason), do: String.slice(reason, 0, 1000)

@@ -165,6 +165,7 @@ defmodule Atanor.Cell do
   @bounded {__MODULE__, :bounded}
   # The deadline passed during the wake: the call was not sent.
   @unsent {__MODULE__, :unsent}
+  @unanswered {__MODULE__, :unanswered}
 
   defp call(instance, address, kind, fun) do
     with {:ok, id} <- id(address), :ok <- granted(instance, address) do
@@ -277,12 +278,14 @@ defmodule Atanor.Cell do
     end
   end
 
-  defp timed_out({:error, :timeout} = error, :read),
-    do:
-      if(Process.get(@unsent) == true or (Process.get(@bounded) == true and Admission.expired?()),
-        do: queue_timeout(),
-        else: error
-      )
+  defp timed_out({:error, :timeout} = error, :read) do
+    if Process.get(@unsent) == true or (Process.get(@bounded) == true and Admission.expired?()) do
+      queue_timeout()
+    else
+      Process.put(@unanswered, true)
+      error
+    end
+  end
 
   defp timed_out(result, _kind), do: result
 
@@ -322,7 +325,13 @@ defmodule Atanor.Cell do
   def unavailable_reason, do: Process.get(@unavailable)
 
   @doc false
+  # Whether a cell read of the calling process timed out since `clear_unavailable/0`. `Atanor.Jobs` counts it
+  # as an error of the infrastructure, not of the handler, however the handler reports it.
+  def unanswered?, do: Process.get(@unanswered, false)
+
+  @doc false
   def clear_unavailable do
+    Process.delete(@unanswered)
     Process.delete(@cause)
     Process.delete(@unavailable)
   end

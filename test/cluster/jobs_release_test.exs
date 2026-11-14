@@ -274,8 +274,8 @@ defmodule Atanor.Cluster.JobsReleaseTest do
     assert [_, _] = starts(dir, id)
   end
 
-  # A cell call that fails for lack of a quorum or a store ends the handler with these errors; the handler
-  # `unhealed:<dir>` returns one until `<dir>/healed` exists, which is the file the test writes, so that the
+  # The handler `unhealed:<dir>` fails as when a cell call finds no quorum (it marks the attempt as Atanor does
+  # and returns an error of its own) until `<dir>/healed` exists, which is the file the test writes, so that the
   # outage lasts exactly as long as the test wants whichever node claims the job. A real cut was tried and
   # is not deterministic: with `partition_nodes` the node that claims the job after the cut varies (the owner
   # often claims and runs it itself, and nothing is observed), and with `partition_store` on the owner nothing

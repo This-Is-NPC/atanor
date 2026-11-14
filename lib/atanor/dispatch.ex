@@ -559,12 +559,15 @@ defmodule Atanor.Dispatch do
         Cell.end_handler(handler)
       end
 
-    classify(result)
+    classify(result, call)
   end
 
-  defp classify(result) do
+  # A job's `{:error, reason}` return reaches here as `{:ok, {:error, reason}}`. It is an error of the
+  # infrastructure, whatever the handler returns, when a cell call of the attempt failed for such a reason:
+  # the mark is made where the call fails, not by the term the handler returns (`Atanor.Jobs`, design §15.4).
+  defp classify(result, call) do
     cond do
-      not failed?(result) ->
+      not failed?(result, call) ->
         result
 
       Cell.unknown_outcome?() ->
@@ -577,11 +580,16 @@ defmodule Atanor.Dispatch do
           _ -> {:error, {:unavailable, reason}}
         end
 
+      Cell.unanswered?() and match?({:job, _}, call) ->
+        {:error, {:unavailable, :owner_unreachable}}
+
       true ->
         result
     end
   end
 
+  defp failed?({:ok, {:error, _}}, {:job, _}), do: true
+  defp failed?(result, _call), do: failed?(result)
   defp failed?({:ok, %{status: status}}) when is_integer(status), do: status >= 500
   defp failed?({:error, _}), do: true
   defp failed?(_), do: false

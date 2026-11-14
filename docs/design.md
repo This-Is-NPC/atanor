@@ -4599,15 +4599,22 @@ Success sets `done`; a failure records `last_error` and retries at
 after `max_attempts`. Only a failure of the handler counts as an attempt (a raise, an error
 return, its own `timeout_ms`). An error of the store or the cell (an availability reason of
 `Atanor.Unavailable`: `no_quorum`, `owner_unreachable`, `owner_down`, `draining`, `held_elsewhere`,
-`fenced`, `overloaded`, `deployment_unavailable`, `store_unavailable`, `unknown_outcome`, and a cell call that returned `:timeout`)
+`fenced`, `overloaded`, `deployment_unavailable`, `store_unavailable`, `unknown_outcome`, or a cell read that timed out)
 gives the attempt back: the job goes to `pending` and `attempts` is unchanged. Its delay starts at the backoff of the attempt and grows with the time waited (the retry after a wait of `w` ms is `w` ms later), up to `max_backoff_ms`, so a long outage is retried less and less often. The run timeout of the job itself (`jobs.timeout_ms`, reason `:handler_timeout`) is a handler failure.
 `jobs.infrastructure_timeout_ms` (3 600 000, one hour) bounds that wait, counted from the first such
 error since the last handler failure (kept in `completed_at_ms` of the pending row, which
 no query reads before the job ends). Past it the job is `dead` with `last_error` starting
 `infrastructure: `, and the `dead` event and the dead-letter index carry `cause: :infrastructure`
 (`:max_attempts` for a job whose handler failed). One hour is about the time the defaults give a
-failing handler to use its 20 attempts (1 s doubling to 300 s). The error is told apart by its
-shape, so a handler that returns one of those reasons itself is treated the same. Not covered:
+failing handler to use its 20 attempts (1 s doubling to 300 s). The error is told apart by where it was made, not by the term the handler returns.
+The handler's `{:error, reason}` reaches the runner as the handler's own result; an error that
+`Atanor.Dispatch` makes of the attempt (a routing failure, or a crash or return after a cell call
+failed) reaches it as an error of Atanor. `Atanor.Cell` marks the handler's process when a cell call
+fails for an availability reason, an unknown outcome or a read that timed out, and `Dispatch` turns
+the result of a job that ends in an error after such a mark into the matching availability error, whatever
+the handler returned. So a handler that passes the `{:error, _}` of `Env.query/execute/transaction` on
+is an infrastructure error, and one that makes up `:timeout`, `:no_quorum` or `{:unavailable, _}` is not:
+it counts as an attempt. Not covered:
 if the write that ends the attempt is itself lost, the claim expires and the run that follows
 counts as an attempt, as after the death of a node. A claim that is still live when its node dies expires at
 `claim_ms`, or earlier when the takeover releases it (§15.11). `jobs.timeout_ms` bounds one attempt with a watchdog
