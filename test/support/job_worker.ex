@@ -115,6 +115,7 @@ defmodule Atanor.Test.JobWorker do
       "own_timeout" -> {:error, :timeout}
       "own_no_quorum" -> {:error, :no_quorum}
       "cell_timeout" -> cell_timeout()
+      "recovered_then_own" -> recovered_then_own()
       "heal:" <> table -> heal(table)
       "unhealed:" <> dir -> unhealed(dir)
       "track:" <> rest -> track(job, rest)
@@ -136,16 +137,32 @@ defmodule Atanor.Test.JobWorker do
     if File.exists?(Path.join(dir, "healed")), do: :ok, else: cell_failed(:no_quorum)
   end
 
-  # A cell call of this handler failed as one does when the cell cannot be reached: Atanor marks the process
-  # (`Atanor.Cell.mark_unavailable/1`), and the handler passes the failure on as a term of its own.
-  defp cell_failed(reason) do
-    Atanor.Cell.mark_unavailable(reason)
-    {:error, :cell_unreachable}
+  # A cell call of this handler fails as one does when the cell cannot be reached: Atanor marks the process
+  # (`Atanor.Cell.mark_unavailable/1`) and gives the handler an error, which `fail_call/1` returns as the
+  # `{:error, term}` the handler received.
+  defp fail_call(reason) do
+    {:error, _} = error = Atanor.Cell.recording(fn -> mark(reason) end)
+    error
   end
 
-  # A cell read that timed out, passed on as the bare `:timeout` the call returned.
+  defp mark(reason) do
+    Atanor.Cell.mark_unavailable(reason)
+    {:error, {:unavailable, reason}}
+  end
+
+  defp cell_failed(reason), do: fail_call(reason)
+
+  # A cell read that timed out: the bare `:timeout` the call returned.
   defp cell_timeout do
-    Process.put({Atanor.Cell, :unanswered}, true)
+    Atanor.Cell.recording(fn ->
+      Process.put({Atanor.Cell, :unanswered}, true)
+      {:error, :timeout}
+    end)
+  end
+
+  # A cell call that failed, recovered by the handler, which then fails for a reason of its own.
+  defp recovered_then_own do
+    fail_call(:no_quorum)
     {:error, :timeout}
   end
 

@@ -138,7 +138,7 @@ defmodule Atanor.Env do
   def query(env, {ns, _} = address, sql, params \\ [], opts \\ []) do
     with :ok <- cell_granted(env, ns),
          {:ok, opts} <- read_options(env, opts),
-         do: Cell.query(env.instance, address, sql, params, opts)
+         do: Cell.recording(fn -> Cell.query(env.instance, address, sql, params, opts) end)
   end
 
   @read_options [:verify_lease, :consistency, :timeout]
@@ -512,7 +512,7 @@ defmodule Atanor.Env do
   end
 
   defp with_writable_cell(env, ns, fun) do
-    with :ok <- cell_granted(env, ns), :ok <- writable(env), do: fun.(env.instance)
+    with :ok <- cell_granted(env, ns), :ok <- writable(env), do: Cell.recording(fn -> fun.(env.instance) end)
   end
 
   # A bounded request runs on the ingress node and may only read (design §19.3).

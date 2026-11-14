@@ -4608,13 +4608,14 @@ no query reads before the job ends). Past it the job is `dead` with `last_error`
 (`:max_attempts` for a job whose handler failed). One hour is about the time the defaults give a
 failing handler to use its 20 attempts (1 s doubling to 300 s). The error is told apart by where it was made, not by the term the handler returns.
 The handler's `{:error, reason}` reaches the runner as the handler's own result; an error that
-`Atanor.Dispatch` makes of the attempt (a routing failure, or a crash or return after a cell call
-failed) reaches it as an error of Atanor. `Atanor.Cell` marks the handler's process when a cell call
-fails for an availability reason, an unknown outcome or a read that timed out, and `Dispatch` turns
-the result of a job that ends in an error after such a mark into the matching availability error, whatever
-the handler returned. So a handler that passes the `{:error, _}` of `Env.query/execute/transaction` on
-is an infrastructure error, and one that makes up `:timeout`, `:no_quorum` or `{:unavailable, _}` is not:
-it counts as an attempt. Not covered:
+`Atanor.Dispatch` makes of the attempt (a routing failure, or a crash after a cell call failed) reaches
+it as an error of Atanor. `Env.query/execute/transaction` (`Atanor.Cell.recording/1`) keep, for the
+attempt, the error terms they returned after a call that failed for an availability reason, an unknown
+outcome or a read that timed out. A handler's `{:error, reason}` is an infrastructure error only when
+`reason` is, term for term (`===`), one of them; `Dispatch` then turns it into the matching availability
+error. A handler has to return the error it got from the Atanor call unchanged: wrapping or replacing
+it, or making up `:timeout`, `:no_quorum` or `{:unavailable, _}`, makes it a handler failure, even when a
+cell call failed earlier in the same attempt. it counts as an attempt. Not covered:
 if the write that ends the attempt is itself lost, the claim expires and the run that follows
 counts as an attempt, as after the death of a node. A claim that is still live when its node dies expires at
 `claim_ms`, or earlier when the takeover releases it (§15.11). `jobs.timeout_ms` bounds one attempt with a watchdog
