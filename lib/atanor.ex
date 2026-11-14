@@ -367,10 +367,13 @@ defmodule Atanor do
       number of parameters is `{:error, {:bad_params, message}}`. Design §4.3.
       Two more groups are checked and passed through: `compaction: [hold_bytes:
       33_554_432, hold_object_bytes: 1_048_576, moved_scan_ms: 60_000,
-      moved_scan_page: 100]` (memory per instance for the
+      moved_scan_page: 100, release_min_tail: 32, release_deadline_ms: 3_000,
+      release_reserve_ms: 2_000]` (memory per instance for the
       files a cell just replicated, so a compaction of an awake cell does not read
       them back, 0 turns it off; the time between scans of the store for the cleanups
-      of moved cells, and the markers listed per request) and `feed: [object_batches: 16, linger_ms: 250,
+      of moved cells, the markers listed per request, and the compaction of the
+      level-0 tail at a graceful release: from how many files, for how long at most,
+      and the time kept for the hand-over) and `feed: [object_batches: 16, linger_ms: 250,
       stop_publish_ms: 5_000]` (Atanor sets the first two unless you do: one
       feed object carries up to 16 batches and a lone batch waits up to 250 ms
       for company; a cell that stops publishes what it holds, for up to

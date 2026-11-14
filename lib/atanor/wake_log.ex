@@ -1,6 +1,6 @@
 defmodule Atanor.WakeLog do
   @moduledoc """
-  Logs a wake that took `@slow_ms` or more (design §4.3): the cell, the store requests it made and its
+  Logs a wake that took `@slow_ms` or more (design §4.3): the cell, the store requests it made, the time they took and its
   duration, so a cell that stays out of service after a takeover can be told from one that never woke.
   The time spent waiting for a wake slot is not in it.
   """
@@ -16,12 +16,13 @@ defmodule Atanor.WakeLog do
   end
 
   @doc false
-  def handle(_event, %{duration: duration}, %{cell: cell} = meta, _config) do
+  def handle(_event, %{duration: duration} = measurements, %{cell: cell} = meta, _config) do
     ms = System.convert_time_unit(duration, :native, :millisecond)
+    store_ms = System.convert_time_unit(Map.get(measurements, :store_time, 0), :native, :millisecond)
 
     if ms >= @slow_ms do
       Logger.info(
-        "atanor: slow wake of #{inspect(cell)}: #{ms} ms, #{inspect(meta[:requests])} store requests, " <>
+        "atanor: slow wake of #{inspect(cell)}: #{ms} ms, #{inspect(meta[:requests])} store requests in #{store_ms} ms, " <>
           "result #{meta[:result]}"
       )
     end

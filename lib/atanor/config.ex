@@ -444,7 +444,10 @@ defmodule Atanor.Config do
       delete_superseded: :boolean,
       max_level: :positive,
       moved_scan_ms: :positive,
-      moved_scan_page: :positive
+      moved_scan_page: :positive,
+      release_min_tail: :positive,
+      release_deadline_ms: :non_negative,
+      release_reserve_ms: :non_negative
     ]
   ]
 
