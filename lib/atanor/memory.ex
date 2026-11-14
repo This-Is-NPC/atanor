@@ -52,28 +52,27 @@ defmodule Atanor.Memory do
   @spec waiting_limit(non_neg_integer, pos_integer) :: pos_integer
   def waiting_limit(budget, guest_bytes), do: budget |> div(guest_bytes) |> clamp(1, 256)
 
-  # Alambique's `restore: [edge_bytes:]` default.
+  # Alambique's `restore: [edge_bytes:]` and `[fetch_concurrency:]` defaults.
   @edge_bytes 65_536
+  @fetch_concurrency 16
 
   @doc """
   The wake limits for a budget (design §4.3). One wake holds at most `max_inflight_bytes` of what it reads
   plus `(fetch_concurrency + 2) * edge_bytes` (Alambique design §6.3), so: `max_inflight_bytes` is a sixteenth
-  of the budget (1 to 64 MiB), `fetch_concurrency` one request per 2 MiB of it (1 to 16), and `max_wakes` as
-  many wakes of that cost as fit (1 to 256). The worst case, `max_wakes` times the cost, is within the budget
+  of the budget (1 to 64 MiB), and `max_wakes` as many wakes of that cost as fit (1 to 256), with Alambique's
+  default of 16 requests at once. The worst case, `max_wakes` times the cost, is within the budget
   once one wake's cost is. A file larger than `max_inflight_bytes` is read alone and costs its own size; the
   limits cannot know it. Wakes above `max_wakes` wait in Alambique's queue and hold nothing; a wake that fails
   on the store backs off before it starts again, so neither adds to the wakes in flight.
   """
   @spec wake_limits(non_neg_integer, pos_integer) :: %{
           max_wakes: pos_integer,
-          fetch_concurrency: pos_integer,
           max_inflight_bytes: pos_integer
         }
   def wake_limits(budget, edge_bytes \\ @edge_bytes) do
     inflight = budget |> div(16) |> clamp(@mib, 64 * @mib)
-    fetch = inflight |> div(2 * @mib) |> clamp(1, 16)
-    wakes = budget |> div(inflight + (fetch + 2) * edge_bytes) |> clamp(1, 256)
-    %{max_wakes: wakes, fetch_concurrency: fetch, max_inflight_bytes: inflight}
+    wakes = budget |> div(inflight + (@fetch_concurrency + 2) * edge_bytes) |> clamp(1, 256)
+    %{max_wakes: wakes, max_inflight_bytes: inflight}
   end
 
   defp clamp(value, low, high), do: value |> max(low) |> min(high)

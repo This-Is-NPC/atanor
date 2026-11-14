@@ -310,12 +310,12 @@ defmodule Atanor do
       the node logs it and its source at start. `wake_fraction` (0.5, above 0 and at most 1)
       is the share of the headroom between the refuse mark and the limit that the wakes in
       flight may fill; unless you give them, it derives `alambique: [awake: [max_wakes:],
-      restore: [fetch_concurrency:, max_inflight_bytes:]]` so that `max_wakes` wakes of
+      restore: [max_inflight_bytes:]]` so that `max_wakes` wakes of
       `max_inflight_bytes + (fetch_concurrency + 2) * edge_bytes` each fit that share: the budget is
       `limit * (1 - refuse_fraction) * wake_fraction`, `max_inflight_bytes` a sixteenth of it (1 to
-      64 MiB), `fetch_concurrency` one per 2 MiB of it (1 to 16) and `max_wakes` what fits
-      (1 to 256). A 512 MiB node gets 14 wakes, 1 request and 2.4 MiB in flight; a 2 GiB node 15
-      wakes, 4 requests and 9.6 MiB (design §4.3). The rest of the headroom, `1 - wake_fraction`, bounds the
+      64 MiB) and `max_wakes` what fits (1 to 256) with Alambique's `fetch_concurrency` of 16, which is
+      not derived. A 512 MiB node gets 10 wakes and 2.4 MiB in flight; a 2 GiB node 14
+      wakes and 9.6 MiB (design §4.3). The rest of the headroom, `1 - wake_fraction`, bounds the
       WASM guests that wait and the calls that queue (`Atanor.Wasm` `:max_waiting`, `:queue`; design §14.2). Wakes above `max_wakes` wait in Alambique's queue. Without a limit Alambique's defaults stay. The ingress
       also refuses
       requests with 503 `overloaded` while the working set of the cgroup is at

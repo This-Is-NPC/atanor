@@ -791,7 +791,7 @@ the node, so a container with a limit needs no option:
 | `memory: [limit_bytes:]` | `nil` | the memory limit of the node, when it is not the cgroup's. Overrides the detection |
 | `memory: [awake_fraction:]` | 0.5 | share of that limit given to `awake: [max_bytes:]`, a number above 0 and at most 1. The rest is for the BEAM, the 150 KiB per cell that `max_bytes` does not count, the stores and the file cache |
 | `memory: [cgroup_path:]` | `/sys/fs/cgroup/memory.max` | the cgroup v2 file read when `limit_bytes` is `nil`: a byte count, or `max` for no limit |
-| `memory: [wake_fraction:]` | 0.5 | share of the headroom between the refuse mark and the limit that the wakes in flight may fill, a number above 0 and at most 1; derives `awake: [max_wakes:]`, `restore: [fetch_concurrency:]` and `[prefetch_bytes:]` unless given (below) |
+| `memory: [wake_fraction:]` | 0.5 | share of the headroom between the refuse mark and the limit that the wakes in flight may fill, a number above 0 and at most 1; derives `awake: [max_wakes:]` and `restore: [max_inflight_bytes:]` unless given (below) |
 | `memory: [refuse_fraction:]` | 0.85 | the ingress refuses with 503 while the working set is at least this share of the limit (§7.1, Admission); `nil` turns it off |
 | `memory: [sample_ms:]` | 100 | how often the working set is sampled |
 | `memory: [current_path:]`, `[stat_path:]` | `/sys/fs/cgroup/memory.current`, `memory.stat` | the cgroup v2 files of the working set |
@@ -815,18 +815,21 @@ began to answer 500, the BEAM memory grew by 215 MiB in 3 seconds and the
 container was killed before the gate at 85% turned on. Alambique's defaults
 (`awake: [max_wakes: 256]`, `restore: [fetch_concurrency: 16, max_inflight_bytes:
 67_108_864]`) allow 256 wakes of up to 64 MiB each. So Atanor
-derives the three from the node's memory unless the operator gives them, one by
+derives `max_wakes` and `max_inflight_bytes` from the node's memory unless the operator gives them, one by
 one. Alambique 0.5 bounds what one wake holds, `max(max_inflight_bytes, largest file) + (fetch_concurrency + 2) × edge_bytes` (its design §6.3), so the
 worst case of the wakes in flight is that times `max_wakes`:
 
 ```
 budget         = limit * (1 - refuse_fraction) * wake_fraction     (nil when the node has no limit)
 max_inflight_bytes = clamp(budget / 16, 1 MiB, 64 MiB)
-fetch_concurrency  = clamp(max_inflight_bytes / 2 MiB, 1, 16)
-max_wakes          = clamp(budget / (max_inflight_bytes + (fetch_concurrency + 2) * edge_bytes), 1, 256)
+max_wakes          = clamp(budget / (max_inflight_bytes + (16 + 2) * edge_bytes), 1, 256)
 ```
 
-`edge_bytes` is the operator's `restore: [edge_bytes:]` or 65 536. From a budget
+`edge_bytes` is the operator's `restore: [edge_bytes:]` or 65 536. `fetch_concurrency`
+is not derived: it stays Alambique's 16 (or the operator's value), because since
+Alambique 0.7 the read-ahead refills as budget frees and `max_inflight_bytes` is
+what bounds the memory of a restore, so a small node reads a long chain at the
+same speed. `max_wakes` counts the 16 in the formula. From a budget
 of one wake's cost (about 1.2 MiB) the worst case, `max_wakes` times that cost,
 is at most the budget; below it the minimum of one wake stays over it. One file
 larger than `max_inflight_bytes` is read alone and costs its own size, which no
@@ -843,11 +846,11 @@ requests of a store that is down: with it open, calls and wakes get
 `{:error, :store_unavailable}` at once, which `Atanor.Unavailable` reports as a 503
 `store_unavailable` (§8.4), and a cell that failed on the store stays in backoff.
 
-| Node | Budget | `max_wakes` | `fetch_concurrency` | `max_inflight_bytes` |
-| --- | --- | --- | --- | --- |
-| 512 MiB | 38.4 MiB | 14 | 1 | 2 516 582 (2.4 MiB) |
-| 768 MiB | 57.6 MiB | 15 | 1 | 3 774 873 (3.6 MiB) |
-| 2 GiB | 153.6 MiB | 15 | 4 | 10 066 329 (9.6 MiB) |
+| Node | Budget | `max_wakes` | `max_inflight_bytes` |
+| --- | --- | --- | --- |
+| 512 MiB | 38.4 MiB | 10 | 2 516 582 (2.4 MiB) |
+| 768 MiB | 57.6 MiB | 12 | 3 774 873 (3.6 MiB) |
+| 2 GiB | 153.6 MiB | 14 | 10 066 329 (9.6 MiB) |
 
 Cost, measured on Alambique 0.3.1 (before the wake queue, and with the derivation
 of Atanor 0.3: 11 wakes), with the memory store and 25 ms added to every read (64 cells of
@@ -864,7 +867,7 @@ queue before it is refused:
 
 With 150 commits a cell: 118 ms, 117 ms and 116 ms for one wake. The restore of
 a cell takes about three round trips in sequence whatever `fetch_concurrency`
-is, so one wake is not slower. The price is the number of wakes at once: a
+is (measured with the derivation of that time), so one wake is not slower. The price is the number of wakes at once: a
 burst of cold cells above `max_wakes` gets 503 `overloaded` with `Retry-After`
 and the client retries, which is what bounds the memory. A node that wakes many
 cells at once and has the room raises `awake: [max_wakes:]` or `memory:

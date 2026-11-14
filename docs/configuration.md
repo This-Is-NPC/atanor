@@ -218,9 +218,10 @@ it (`memory: [awake_fraction: 0.5]`), and the least used cells hibernate past
 that.
 The wakes in flight have a share too, and the guests of WASM workers that wait take the rest (`1 - wake_fraction`, below): `memory: [wake_fraction: 0.5]` of the headroom
 between the refuse mark and the limit derives `awake: [max_wakes:]` and
-`restore: [fetch_concurrency:, max_inflight_bytes:]` unless you give them (a 512 MiB
-node gets 14 wakes, 1 request and 2.4 MiB in flight; a 2 GiB node 15, 4 and
-9.6 MiB; formula in [design §4.3](design.md)), so a store that fails cannot make
+`restore: [max_inflight_bytes:]` unless you give them (a 512 MiB
+node gets 10 wakes and 2.4 MiB in flight; a 2 GiB node 14 and 9.6 MiB;
+`restore: [fetch_concurrency:]` keeps Alambique's 16 and the bytes budget is the
+limit; formula in [design §4.3](design.md)), so a store that fails cannot make
 every queued request restore a cell at once.
 
 **Refusing requests before the node dies.** The ingress refuses with 503
