@@ -54,6 +54,8 @@ spec.loader.exec_module(m)
 m.HERE = fake  # load-env is the failing stub
 m.ROOT = work  # no admin token to read: cells_awake is unknown
 m.cgroup_dir = lambda pid: work + "/no-cgroup"  # the samples of the cgroups are empty, as for a gone node
+real_quiet_sample = m.quiet_sample
+m.quiet_sample = lambda dirs: real_quiet_sample(dirs) | {n: {"cpu_s": 0.0} for n in ("node", "store", "lb")}  # the wait reads no cgroup here
 
 DOCUMENT = {"statuses": {"message answered": 10}, "hist": {"5": 10}, "max_ms": 1.0, "planned": 10, "sent": 10, "completed": 10,
             "cpu_s": 0.1, "lag_ms": {"p99": 1}, "opened": 10}
@@ -218,7 +220,7 @@ results["dead_at_start"] = ramp_scenario("dead_at_start", dies_at=0, before={"ru
 def memory_sample(t, current_mb, shmem_mb, inactive_mb=50):
     host = {"cpu_total": 100 * (t + 1), "cpu_idle": 100 * (t + 1), "loadavg1": 0.0, "available_gb": 8.0, "swap_used_mb": 0}
     node = {"memory_current": current_mb * MB, "shmem": shmem_mb * MB, "inactive_file": inactive_mb * MB, "peak": current_mb * MB, "limit": (512 + 768) * MB, "cpu_s": float(t), "cpu_limit": 1.0}
-    return {"t": float(t), "node": node, "store": {}, "lb": {}, "gen_cpu_s": 0.0, "gen_swap_mb": 0, "fds": None, "host": host}
+    return {"t": float(t), "node": node, "store": dict(node, cpu_s=0.0), "lb": {"cpu_s": 0.0}, "gen_cpu_s": 0.0, "self_cpu_s": 0.0, "gen_swap_mb": 0, "fds": None, "host": host}
 
 
 # 700 MB current, 50 of it inactive file cache: the working set is 650 MB of the 512 MB scenario, as the node's gate sees it; the tmpfs (300) counts.
@@ -261,14 +263,33 @@ results["judge_host"] = {"over": m.judge_host(1.6, 1.0), "at": m.judge_host(1.0,
 
 
 def load_sample(t, busy_cores, self_cpu_s=0.0, node_cpu_s=0.0):
+    """node_cpu_s None: the node's cgroup could not be read, as cgroup_sample reports it ({})."""
     idle = 100 * m.CORES * t - busy_cores * 100 * t  # 100 ticks per core and second
     host = {"cpu_total": 100 * m.CORES * t, "cpu_idle": idle, "loadavg1": 0.0, "available_gb": 8.0, "swap_used_mb": 0}
-    return {"t": float(t), "host": host, "node": {"cpu_s": node_cpu_s}, "store": {}, "lb": {}, "gen_cpu_s": 0.0, "self_cpu_s": self_cpu_s}
+    node = {} if node_cpu_s is None else {"cpu_s": node_cpu_s}
+    return {"t": float(t), "host": host, "node": node, "store": {"cpu_s": 0.0}, "lb": {"cpu_s": 0.0}, "gen_cpu_s": 0.0, "self_cpu_s": self_cpu_s}
 
 
 # 3 cores busy: 1 is the harness, 1 the node, 1 is foreign.
 busy, foreign = m.net_load(load_sample(0, 0), load_sample(10, 3, self_cpu_s=10.0, node_cpu_s=10.0))
 results["net_load"] = {"busy": round(busy, 2), "foreign": round(foreign, 2)}
+
+
+# Observed shape: the node had ~300 CPU seconds and one read of its cgroup failed. Neither the interval into the gap nor the one out of it,
+# nor one with an unreadable generator, may become tens of foreign cores; the step mean skips them and says how many.
+steady = [load_sample(3 * i, 1, node_cpu_s=300.0 + 3.0 * i) for i in range(4)]
+steady[2] = load_sample(6, 1, node_cpu_s=None)
+steady_back = dict(steady[3], host=dict(steady[3]["host"], cpu_total=steady[3]["host"]["cpu_total"] + 100, cpu_idle=0))  # idle counter went back
+gap = {"into": m.net_load(steady[1], steady[2]), "out_of": m.net_load(steady[2], steady[3]), "generator": m.net_load(dict(steady[0], gen_cpu_s=None), steady[1]),
+       "idle_back": m.net_load(steady[3], steady_back)}
+samples = [memory_sample(3 * i, 650, 256) for i in range(4)]
+for sample in samples:
+    sample["node"]["cpu_s"] = 300.0 + sample["t"]
+samples[2]["node"] = {}
+usage = m.summarize(samples, 0, 512 * MB)["host"]
+results["net_load_gap"] = gap | {"skipped": usage["net_load_skipped"], "mean": usage["net_load_mean"], "max": usage["net_load_max"],
+                                 "verdict": m.judge_host(usage["net_load_mean"], 1.0)}
+results["is_quiet_gap"] = m.is_quiet([(0, 30, 0.2), (40, 80, 0.2)], 1, 60)
 
 
 def wait_scenario(busy_cores):
@@ -306,12 +327,13 @@ def host_scenario(name, busy_cores):
         ticks["idle"] += round(100 * (m.CORES - busy_cores(len(runs))))
         return {"cpu_total": ticks["total"], "cpu_idle": ticks["idle"], "loadavg1": 0.0, "available_gb": 8.0, "swap_used_mb": 0}
 
-    real_cpu = m.process_cpu
+    real_cpu, real_cgroup = m.process_cpu, m.cgroup_sample
     m.host_sample, m.Sampler.take, m.process_cpu = fake_host, real_take, lambda pid: 0.0  # the harness's own CPU is not under test here
+    m.cgroup_sample = lambda directory: memory_sample(0, 650, 256)["node"]  # every cgroup readable, with no CPU of its own
     try:
         record = round_.step(10, "ramp")
     finally:
-        m.host_sample, m.process_cpu = real[0], real_cpu
+        m.host_sample, m.process_cpu, m.cgroup_sample = real[0], real_cpu, real_cgroup
         m.Sampler.take = lambda self: memory_sample(time.time(), 650, 256)
     return {"status": record["status"], "valid": record["valid"], "stop_reason": record["stop_reason"], "generator_runs": len(runs)}
 

@@ -132,6 +132,20 @@ defmodule Atanor.LoadRunTest do
 
     assert r["judge_host"] == %{"over" => "host contaminated: net load 1.6 > 1", "at" => :null, "unknown" => :null}
     assert r["net_load"] == %{"busy" => 3.0, "foreign" => 1.0}
+
+    # a lab reading missing in one sample (one failed cgroup read after ~300 CPU s) is skipped, never ~100 foreign cores
+    assert r["net_load_gap"] == %{
+             "into" => :null,
+             "out_of" => :null,
+             "generator" => :null,
+             "idle_back" => :null,
+             "skipped" => 2,
+             "mean" => 0.0,
+             "max" => 0,
+             "verdict" => :null
+           }
+
+    assert r["is_quiet_gap"] == false
     assert %{"quiet" => true} = r["wait_quiet"]["idle"]
     assert %{"quiet" => false} = r["wait_quiet"]["busy"]
     assert r["host_busy"]["status"] == "invalid"
