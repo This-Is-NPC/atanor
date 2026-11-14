@@ -215,7 +215,18 @@ defmodule Atanor.JobsTest do
       assert_receive {:dead, %{cause: :max_attempts}}
     end
 
-    test "a cell call that timed out does not consume an attempt" do
+    test "errors the handler makes up count as attempts, whatever the term" do
+      for {payload, error} <- [{"own_timeout", ":timeout"}, {"own_no_quorum", ":no_quorum"}] do
+        {node, world} = start(jobs: [backoff_ms: 1_000, max_backoff_ms: 1_000, max_attempts: 2])
+        assert %{status: 200} = enqueue(node, "a", payload: payload, max: 2)
+        assert until(fn -> runs(node, "a") == [1] end)
+        assert until(fn -> match?({:ok, %{rows: [["pending", 1, _]]}}, job_row(node, "a")) end)
+        ManualClock.advance(world, 1_000)
+        assert until(fn -> match?({:ok, %{rows: [["dead", 2, ^error]]}}, job_row(node, "a")) end)
+      end
+    end
+
+    test "a cell read that timed out and was passed on does not consume an attempt" do
       {node, world} = start(jobs: [backoff_ms: 1_000, max_backoff_ms: 1_000, max_attempts: 1])
       assert %{status: 200} = enqueue(node, "a", payload: "cell_timeout", max: 1)
 

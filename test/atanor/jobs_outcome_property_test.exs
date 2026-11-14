@@ -9,17 +9,22 @@ defmodule Atanor.JobsOutcomeTest do
   @timeout_ms 60_000
   @config %{jobs: %{backoff_ms: 1_000, max_backoff_ms: 8_000, infrastructure_timeout_ms: @timeout_ms}}
 
-  @infra [
-    :unknown_outcome,
+  # What a failed attempt reports as `{:infrastructure, reason}`, and what a handler can return as
+  # `{:error, reason}`: the same terms can be in both, only the tag tells them apart.
+  @infra [:unknown_outcome, :overloaded, {:unavailable, :no_quorum}, {:unavailable, :store_unavailable}]
+  @handler [
+    :boom,
+    :handler_timeout,
     :timeout,
+    :no_quorum,
     :partitioned,
-    :overloaded,
+    :unknown_outcome,
     {:unavailable, :no_quorum},
-    {:unavailable, :store_unavailable},
-    {:store, :closed},
-    {:lost, :n1, :noconnection}
+    :crashed,
+    {:exit, :killed},
+    {:bad_return, 1},
+    "text"
   ]
-  @handler [:boom, :handler_timeout, :crashed, {:exit, :killed}, {:bad_return, 1}, "text"]
 
   # What `finished/7` does to the row: a claim adds an attempt, the outcome may give it back.
   defp apply_outcome(row, result, now) do
@@ -55,7 +60,7 @@ defmodule Atanor.JobsOutcomeTest do
                                                                                           {row, n, now} ->
           # One second apart: the whole run stays inside the infrastructure deadline.
           now = now + 1_000
-          next = apply_outcome(row, {:error, reason}, now)
+          next = apply_outcome(row, {if(kind == :infra, do: :infrastructure, else: :error), reason}, now)
           n = if kind == :handler, do: n + 1, else: n
           assert next.attempts == n
           assert next.state == "dead" == n >= @max
@@ -69,13 +74,13 @@ defmodule Atanor.JobsOutcomeTest do
 
   test "an infrastructure error past the deadline is dead with cause infrastructure, attempts untouched" do
     row = %{attempts: 1, since: nil}
-    first = apply_outcome(row, {:error, {:unavailable, :no_quorum}}, 1_000_000)
+    first = apply_outcome(row, {:infrastructure, {:unavailable, :no_quorum}}, 1_000_000)
     assert %{state: "pending", attempts: 1, since: 1_000_000} = first
 
-    assert %{state: "pending"} = apply_outcome(first, {:error, :overloaded}, 1_000_000 + @timeout_ms - 1)
+    assert %{state: "pending"} = apply_outcome(first, {:infrastructure, :overloaded}, 1_000_000 + @timeout_ms - 1)
 
     assert %{state: "dead", cause: :infrastructure, attempts: 1} =
-             apply_outcome(first, {:error, :overloaded}, 1_000_000 + @timeout_ms)
+             apply_outcome(first, {:infrastructure, :overloaded}, 1_000_000 + @timeout_ms)
   end
 
   test "the delay of successive infrastructure errors grows to max_backoff_ms and never shrinks" do
@@ -93,7 +98,7 @@ defmodule Atanor.JobsOutcomeTest do
           infrastructure_since_ms: since
         }
 
-        {"pending", _, due, since, 1, nil} = Jobs.outcome({:error, :overloaded}, job, now, @config)
+        {"pending", _, due, since, 1, nil} = Jobs.outcome({:infrastructure, :overloaded}, job, now, @config)
         {due - now, {due, since}}
       end)
 

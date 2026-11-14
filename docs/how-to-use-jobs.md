@@ -41,7 +41,10 @@ in step 6.
    as attempts. An error of the store or the cell (a partition, `store_unavailable`,
    a cell that is overloaded or has no owner) does not: the job waits and runs
    again with a delay that grows up to `jobs.max_backoff_ms`, up to `jobs.infrastructure_timeout_ms` (one hour
-   by default), and then it is dead too.
+   by default), and then it is dead too. To let an infrastructure error through, return the
+   `{:error, reason}` of `Env.query/5`, `Env.execute/5` or `Env.transaction/4` as it is (or let the match
+   fail): Atanor knows that the call failed, whatever the handler returns. An error the handler
+   makes up, such as `{:error, :timeout}` for a slow web service, is the handler's and counts as an attempt.
 
 2. Enqueue in the same transaction as the data. Use
    `Atanor.Jobs.enqueue/4` with the `Alambique.Tx` from `Env.transaction/4`:
