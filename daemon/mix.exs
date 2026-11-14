@@ -5,7 +5,7 @@ defmodule AtanorDaemon.MixProject do
     [
       app: :atanor_daemon,
       # x-release-please-start-version
-      version: "0.3.0",
+      version: "0.4.0",
       # x-release-please-end
       elixir: "~> 1.17",
       start_permanent: true,
