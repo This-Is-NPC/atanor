@@ -236,27 +236,46 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
 
 The four runs above had no unknown outcome because the store answered in under a
 millisecond. With the store 25 ms away (load scenario A, one CPU and 512 MB per
-node, 12 rooms, 750 requests per second), 4 of 4 swaps in `mise run load:swap`
-(`scripts/cluster-swap-run`) left 22 to 36 requests with no answer, always from
-the same 4 of the 12 rooms, each hanging again every 10 to 11 s until B had
-woken them, 25 to 32 s after the drain. They are client timeouts at 10 s, not
-resets, and no acknowledged write was lost or duplicated.
+node, 12 rooms, 750 requests per second), `mise run load:swap`
+(`scripts/cluster-swap-run`) on Alambique 0.6.1 left 22 to 36 requests with no
+answer in 4 of 4 swaps, always from the same 4 of the 12 rooms. They were client
+timeouts at 10 s, not resets, and no acknowledged write was lost or duplicated.
 
-The leases were not the cause. A released all 12 of them in 0.1 s (12 releases
-in the node's telemetry, `errors: 0`), and B acquired each one at once. B then
-spent 25 to 32 s restoring those 4 cells: 449 to 822 segments each, one object
-per commit, read one at a time (`restore: [fetch_concurrency: 1]` on a 512 MB
-node) at 25 ms. The other 8 cells restored from 13 to 73 segments in 1 to 4 s,
-because Alambique's compactor had merged them while A served. The compactor
-takes the first 8 ready cells of its table at each tick, in table order, and
-12 busy cells are all ready again at the next one, so the same 4 cells are never
-compacted (open defect in Alambique 0.6.1, see
-[what-does-not-work.md](what-does-not-work.md)). A request for such a cell waits
-for its wake and has no deadline, so its client gives up first.
+The leases were not the cause: A released all 12 of them in 0.1 s. B then spent
+25 to 32 s restoring those 4 cells, 449 to 822 segments each, one object per
+commit. Alambique's compactor took the first 8 ready cells of its table at each
+tick, and 12 busy cells are all ready again at the next one, so the same 4 cells
+were never compacted. A request for such a cell waits for its wake and has no
+deadline, so its client gave up first.
 
-`cluster:swap-run` now writes the balancer's request log (`docker-lb.log`) and
-adds `no_answer_by_server` and `no_answer_requests` (id, room, node, balancer
-state) to `result.json`, so a timeout is tied to the node that held it.
+Alambique 0.7.0 fixes both parts. The compactor takes the cells that waited
+longest first and forces a pass on a cell whose chain passed
+`compaction: [max_chain_segments:]` (256), so no busy cell keeps a long chain.
+A restore also reads ahead as budget frees, 16 requests at once, so a chain that
+is long anyway is read in a fraction of the time (800 segments on 512 MB: 1.4 s
+instead of 11.9 s at 25 ms a request, Alambique's measurement). Atanor no
+longer lowers `restore: [fetch_concurrency:]` on a small node; the bytes in
+flight (`max_inflight_bytes`) are the limit.
+
+The same swap, three runs on 0.7.0 with the 5 s queue deadline (scenario A, fresh
+stack for each run, `ATANOR_LOAD_SCENARIO=A ATANOR_LOAD_STORE_TMPFS_SIZE=2g mise
+run load:swap -- --rate 750`):
+
+| Run | No answer | Lost | Duplicated | 503 `worker_queue` | 503 `held_elsewhere` | 503 `unknown_outcome` | p99 | p99 peak |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0 | 0 | 0 | 780 | 779 | 8 (3 stored) | 221 ms | 2,476 ms |
+| 2 | 0 | 0 | 0 | 893 | 832 | 0 | 168 ms | 2,729 ms |
+| 3 | 0 | 0 | 0 | 764 | 779 | 2 | 166 ms | 2,114 ms |
+
+No request went unanswered, no `queue_timeout` appeared, and the drain handed
+off 12 of 12 cells. In runs 1 and 3, 10 requests for rooms 5 to 7 waited the 5 s
+deadline on B and got 503 `unknown_outcome` with `Retry-After`: a cell that
+B was still waking. The run does not record the restore time of each cell or the
+compaction passes per cell.
+
+`cluster:swap-run` writes the balancer's request log (`docker-lb.log`) and adds
+`no_answer_by_server` and `no_answer_requests` (id, room, node, balancer state)
+to `result.json`, so a timeout is tied to the node that held it.
 
 ## Job claims and alarms during the swap
 
