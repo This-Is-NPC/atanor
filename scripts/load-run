@@ -46,6 +46,7 @@ CLK = os.sysconf("SC_CLK_TCK")
 CORES = os.cpu_count()
 OK_STATUSES = {"200", "201", "message answered", "503 retry-after", "reconnected"}
 LOG_CAP_BYTES = 5 * 1048576
+TICK_S, STALL_S = 0.1, 1.0  # the stall ticker: its period and the overshoot that is recorded
 UNITS = {"http-native": "req/s", "http-wasm": "req/s", "ws": "connections", "cells": "cells", "swap": "req/s"}
 
 
@@ -90,7 +91,7 @@ def cgroup_sample(directory):
         quota = read(f"{directory}/cpu.max").split()[0]
         return {"memory_current": int(read(f"{directory}/memory.current")), "shmem": stat.get("shmem", 0), "inactive_file": stat.get("inactive_file", 0),
                 "peak": int(read(f"{directory}/memory.peak")), "limit": None if limit == "max" else int(limit),
-                "cpu_s": keyed(read(f"{directory}/cpu.stat"))["usage_usec"] / 1e6,
+                "cpu_s": keyed(read(f"{directory}/cpu.stat"))["usage_usec"] / 1e6, "throttled_s": keyed(read(f"{directory}/cpu.stat")).get("throttled_usec", 0) / 1e6,
                 "cpu_limit": None if quota == "max" else int(quota) / int(read(f"{directory}/cpu.max").split()[1]),
                 "swap_current": swap_current(directory)}
     except (OSError, KeyError, ValueError):
@@ -229,9 +230,24 @@ def node_death(before, after):
     return None
 
 
-def save_node_diagnostics(base, node, state):
+SECRET_WORDS = ("token", "key", "secret", "credential")
+
+
+def without_secrets(text):
+    """`text` without the lines that name a token, key, secret or credential (any case)."""
+    return "".join(line for line in text.splitlines(keepends=True) if not any(word in line.lower() for word in SECRET_WORDS))
+
+
+def capped(data):
+    """`data` (bytes) with at most the last LOG_CAP_BYTES of it, led by a note when it was cut."""
+    note = f"[truncated: the last {LOG_CAP_BYTES} of {len(data)} bytes]\n".encode() if len(data) > LOG_CAP_BYTES else b""
+    return note + data[-LOG_CAP_BYTES:]
+
+
+def save_node_diagnostics(base, node, state, store=None):
     """The node's inspect state and its log from the container start (the last LOG_CAP_BYTES of it), next to the step file;
-    the logs are gone after load:down."""
+    with `store` (its container id and ip) also the store's log and its Prometheus metrics, without the lines that name a secret.
+    The logs are gone after load:down and the store is replaced before the next step."""
     files = []
     try:
         state = state or {}
@@ -240,13 +256,30 @@ def save_node_diagnostics(base, node, state):
             json.dump({"state": shown, "restart_count": state.get("restarts")}, file, indent=1)
         files.append(os.path.basename(f"{base}.node-state.txt"))
         out = subprocess.run(["docker", "logs", node], capture_output=True, timeout=120)
-        log = out.stdout + out.stderr
         with open(f"{base}.node.log", "wb") as file:
-            if len(log) > LOG_CAP_BYTES:
-                file.write(f"[truncated: the last {LOG_CAP_BYTES} of {len(log)} bytes]\n".encode())
-            file.write(log[-LOG_CAP_BYTES:])
+            file.write(capped(out.stdout + out.stderr))
         files.append(os.path.basename(f"{base}.node.log"))
     except (OSError, subprocess.SubprocessError):
+        pass
+    return files + (save_store_diagnostics(base, store) if store else [])
+
+
+def save_store_diagnostics(base, store):
+    """The store's log (`NAME.store.log`, timestamped) and metrics (`NAME.store-metrics.txt`); each is skipped when it cannot be read."""
+    files = []
+    try:
+        out = subprocess.run(["docker", "logs", "--timestamps", store["id"]], capture_output=True, timeout=120)
+        with open(f"{base}.store.log", "wb") as file:
+            file.write(capped(without_secrets((out.stdout + out.stderr).decode(errors="replace")).encode()))
+        files.append(os.path.basename(f"{base}.store.log"))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        text = urllib.request.urlopen(f"http://{store['ip']}:9327/metrics", timeout=5).read().decode(errors="replace")
+        with open(f"{base}.store-metrics.txt", "w") as file:
+            file.write(without_secrets(text))
+        files.append(os.path.basename(f"{base}.store-metrics.txt"))
+    except (OSError, http.client.HTTPException):
         pass
     return files
 
@@ -266,7 +299,17 @@ class Sampler(threading.Thread):
         super().__init__(daemon=True)
         self.info, self.period, self.pids, self.stop_flag = info, period, [], threading.Event()
         self.dirs = {name: cgroup_dir(info[name]["pid"]) for name in ("node", "store", "lb")}
-        self.samples = []
+        self.samples, self.stalls = [], []
+
+    def watch(self):
+        """A ticker in the harness's own process: a sleep of TICK_S that overshoots by STALL_S or more means the whole VM (or the
+        harness) stopped; it is recorded as (wall time, overshoot s). A node or store fault does not stop this thread."""
+        while not self.stop_flag.is_set():
+            began = time.monotonic()
+            time.sleep(TICK_S)
+            over = time.monotonic() - began - TICK_S
+            if over >= STALL_S:
+                self.stalls.append((time.time(), round(over, 2)))
 
     def take(self):
         sample = {"t": time.time(), "host": host_sample(), "gen_cpu_s": generators_cpu(self.pids), "self_cpu_s": process_cpu(os.getpid()),
@@ -287,6 +330,10 @@ class Sampler(threading.Thread):
             except Exception as error:  # a sample is lost, not the step
                 say(f"sample failed: {error}")
             self.stop_flag.wait(self.period)
+
+    def start(self):
+        super().start()
+        threading.Thread(target=self.watch, daemon=True).start()
 
     def finish(self):
         self.stop_flag.set()
@@ -347,6 +394,25 @@ def runtime_summary(samples):
             "at_peak": {k: peak.get(k) for k in ("top_memory", "top_message_queue", "ets", "wasm")}}
 
 
+def breaker_open(runtime):
+    """1 when a store breaker of the node was open or half-open in this /runtime sample, 0 when all were closed, None when unknown."""
+    locations = runtime.get("store")
+    return int(any(b.get("state") != "closed" for b in locations.values())) if isinstance(locations, dict) and locations else None
+
+
+def stall_summary(samples, stalls):
+    """Tells a stop of the whole VM from a node or store fault: the stalls of the harness's own ticker and the breaker-open samples,
+    in seconds from the first sample (the `t` of `series`). `vm_pause_suspected`: a stall of the ticker came at most 10 s before the
+    first breaker-open sample (or after it): the harness stopped too, so everything did. None without samples."""
+    if not samples:
+        return None
+    start = samples[0]["t"]
+    opened = [round(s["t"] - start, 1) for s in samples if breaker_open(s.get("runtime") or {}) == 1]
+    found = [{"t": round(at - start, 1), "overshoot_s": over} for at, over in stalls]
+    suspected = bool(opened) and any(opened[0] - 10 <= f["t"] <= opened[0] + 1 for f in found)
+    return {"ticker_stalls": found, "breaker_open_at_s": opened, "vm_pause_suspected": suspected}
+
+
 def series(samples):
     """One compact entry of integers per sample: what the node, its admission and the store held at that moment (None: unknown)."""
     def entry(s):
@@ -362,7 +428,8 @@ def series(samples):
                 "beam_binary": memory.get("binary"), "process_count": runtime.get("process_count"),
                 "oom_kill": (cgroup.get("events") or {}).get("oom_kill"),
                 "store_memory_current": store.get("memory_current"), "store_shmem": store.get("shmem"), "store_limit": store.get("limit"),
-                "store_s3_errors": s.get("s3_errors")}
+                "store_s3_errors": s.get("s3_errors"), "store_breaker_open": breaker_open(runtime),
+                "node_throttled_ms": None if node.get("throttled_s") is None else round(node["throttled_s"] * 1000)}
     return [entry(s) for s in samples]
 
 
@@ -632,7 +699,7 @@ class Round:
         """(reason, diagnostics files) when the node died, restarted or was OOM-killed since `before`; else (None, [])."""
         node, after = self.info["node"]["id"], node_state(self.info["node"]["id"])
         reason = node_death(before, after)
-        return (reason, save_node_diagnostics(self.base(value, phase), node, after)) if reason else (None, [])
+        return (reason, save_node_diagnostics(self.base(value, phase), node, after, self.info["store"])) if reason else (None, [])
 
     def attempt(self, value, phase):
         a, info = self.args, self.info
@@ -662,7 +729,7 @@ class Round:
         result = self.record(value, phase, merge(documents), samples, (s3_before, s3_after), None, None, began=began, gens=documents, sampler=sampler,
                            dead=dead, diagnostics=files)
         if result["status"] == "fail" and not files:  # a failed step keeps the node's whole log too
-            result["diagnostics"] = save_node_diagnostics(self.base(value, phase), info["node"]["id"], node_state(info["node"]["id"]))
+            result["diagnostics"] = save_node_diagnostics(self.base(value, phase), info["node"]["id"], node_state(info["node"]["id"]), info["store"])
         return result
 
     def record(self, value, phase, merged, samples, s3, status, reason, valid=True, host_override=None, began=None, gens=None, sampler=None,
@@ -672,14 +739,14 @@ class Round:
                   "value": value, "duration_s": a.step_s, "store_latency_ms": info["store_latency_ms"], "command": a.command,
                   "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
-                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "admission": None, "store": None, "cells_awake": None, "store_rtt_ms": None,
+                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "store": None, "cells_awake": None, "store_rtt_ms": None,
                   "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "node_stopped": bool(dead), "notes": [], "diagnostics": list(diagnostics)}
         if merged is None:
             return record
         usage = summarize(samples, sampler_cpu(gens), self.info["memory_limit_bytes"])
         errors = {k: n for k, n in merged["statuses"].items() if k not in OK_STATUSES}
         record.update(statuses=merged["statuses"], cpu=usage["cpu"], memory=usage["memory"], fds=usage["fds"], host=usage["host"], swap_usage=usage["swap_usage"],
-                      runtime=runtime_summary(samples), series=series(samples), admission=admission_summary(samples),
+                      runtime=runtime_summary(samples), series=series(samples), stalls=stall_summary(samples, sampler.stalls if sampler else []), admission=admission_summary(samples),
                       store=store_summary(samples, info.get("store_tmpfs_bytes")),
                       latency_ms={"p50": percentile(merged["hist"], 50, merged["max_ms"]), "p95": percentile(merged["hist"], 95, merged["max_ms"]),
                                   "p99": percentile(merged["hist"], 99, merged["max_ms"]), "max": percentile(merged["hist"], 100, merged["max_ms"])},
