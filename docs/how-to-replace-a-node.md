@@ -257,21 +257,24 @@ instead of 11.9 s at 25 ms a request, Alambique's measurement). Atanor no
 longer lowers `restore: [fetch_concurrency:]` on a small node; the bytes in
 flight (`max_inflight_bytes`) are the limit.
 
-The same swap, three runs on 0.7.0 with the 5 s queue deadline (scenario A, fresh
-stack for each run, `ATANOR_LOAD_SCENARIO=A ATANOR_LOAD_STORE_TMPFS_SIZE=2g mise
-run load:swap -- --rate 750`):
+The same swap on 0.7.0, with the 5 s wait deadline (scenario A, fresh stack for
+each run, `ATANOR_LOAD_SCENARIO=A ATANOR_LOAD_STORE_TMPFS_SIZE=2g mise run
+load:swap -- --rate 750`). No request went unanswered, in any run:
 
-| Run | No answer | Lost | Duplicated | 503 `worker_queue` | 503 `held_elsewhere` | 503 `unknown_outcome` | p99 | p99 peak |
+| Run | No answer | Lost | Duplicated | 503 `worker_queue` | 503 `held_elsewhere` | `queue_timeout`, `unknown_outcome` | p99 | p99 peak |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 0 | 0 | 0 | 780 | 779 | 8 (3 stored) | 221 ms | 2,476 ms |
-| 2 | 0 | 0 | 0 | 893 | 832 | 0 | 168 ms | 2,729 ms |
-| 3 | 0 | 0 | 0 | 764 | 779 | 2 | 166 ms | 2,114 ms |
+| 1 | 0 | 0 | 0 | 822 | 538 | 0, 0 | 232 ms | 1,503 ms |
+| 2 | 0 | 0 | 0 | 747 | 782 | 0, 0 | 243 ms | 1,454 ms |
+| 3 | 0 | 0 | 0 | 715 | 565 | 0, 0 | 270 ms | 2,805 ms |
 
-No request went unanswered, no `queue_timeout` appeared, and the drain handed
-off 12 of 12 cells. In runs 1 and 3, 10 requests for rooms 5 to 7 waited the 5 s
-deadline on B and got 503 `unknown_outcome` with `Retry-After`: a cell that
-B was still waking. The run does not record the restore time of each cell or the
-compaction passes per cell.
+What still happens: B wakes the 12 cells at once, and on one CPU with a store 25 ms
+away some of them need 5 to 11 s (chains of 500 to 830 segments, above
+`max_chain_segments`; in earlier runs on the same build, before a cold wake was
+kept apart from its call, 2 to 10 requests per run for those cells waited the 5 s
+deadline). A request that reaches the deadline gets 503 `queue_timeout` with
+`Retry-After`; its write was not sent, so the client retries it. The cause is
+tracked in [what-does-not-work.md](what-does-not-work.md). The log of B names
+each wake of one second or more (`slow wake of ...`).
 
 `cluster:swap-run` writes the balancer's request log (`docker-lb.log`) and adds
 `no_answer_by_server` and `no_answer_requests` (id, room, node, balancer state)
