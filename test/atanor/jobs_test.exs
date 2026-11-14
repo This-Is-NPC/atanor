@@ -23,13 +23,26 @@ defmodule Atanor.JobsTest do
     Req.post!("#{node.url}/enqueue?#{query}", retry: false)
   end
 
+  # A read the node refuses with `{:error, :busy}` (a gate that other cells and tests share) is asked again.
+  defp query(node, key, sql) do
+    until(
+      fn ->
+        case Cell.query(node.name, {"jobs", key}, sql) do
+          {:error, :busy} -> nil
+          other -> other
+        end
+      end,
+      30_000
+    )
+  end
+
   defp effects(node, key) do
-    {:ok, %{rows: rows}} = Cell.query(node.name, {"jobs", key}, "SELECT payload FROM effects ORDER BY job_id")
+    {:ok, %{rows: rows}} = query(node, key, "SELECT payload FROM effects ORDER BY job_id")
     rows |> List.flatten() |> Enum.sort()
   end
 
   defp runs(node, key) do
-    {:ok, %{rows: rows}} = Cell.query(node.name, {"jobs", key}, "SELECT attempt FROM runs ORDER BY id")
+    {:ok, %{rows: rows}} = query(node, key, "SELECT attempt FROM runs ORDER BY id")
     List.flatten(rows)
   end
 
@@ -52,7 +65,8 @@ defmodule Atanor.JobsTest do
     ManualClock.advance(world, 31_000)
     _ = Atanor.Alarms.run(node.name, fn _ -> true end)
 
-    assert {:ok, %{alarms: []}} = Atanor.Alarms.pending(node.name, nil, 10)
+    # The store may answer `{:error, :busy}` while the node is loaded: ask again.
+    assert until(fn -> match?({:ok, %{alarms: []}}, Atanor.Alarms.pending(node.name, nil, 10)) end, 30_000)
   end
 
   test "finished jobs leave no @jobs entries in the alarm index" do
@@ -139,7 +153,7 @@ defmodule Atanor.JobsTest do
     assert %{status: 200, body: body} = Req.post!("#{node.url}/tx?key=a", retry: false)
     assert body =~ "{:ok, {:ok,"
     assert until(fn -> effects(node, "a") == ["tx"] end)
-    {:ok, %{rows: [["committed"]]}} = Cell.query(node.name, {"jobs", "a"}, "SELECT body FROM notes")
+    assert {:ok, %{rows: [["committed"]]}} = query(node, "a", "SELECT body FROM notes")
   end
 
   test "a job over max attempts becomes dead and can be retried" do
@@ -168,7 +182,7 @@ defmodule Atanor.JobsTest do
              )
            end)
 
-    {:ok, %{rows: [[id]]}} = Cell.query(node.name, {"jobs", "a"}, "SELECT id FROM _atanor_jobs")
+    {:ok, %{rows: [[id]]}} = query(node, "a", "SELECT id FROM _atanor_jobs")
     assert :ok = Atanor.Jobs.retry(node.name, {"jobs", "a"}, id)
     ManualClock.advance(world, 2_000)
     assert until(fn -> length(runs(node, "a")) >= 3 end)
@@ -178,8 +192,7 @@ defmodule Atanor.JobsTest do
 
   def relay(_event, _measurements, meta, test), do: send(test, {:dead, meta})
 
-  defp job_row(node, key),
-    do: Cell.query(node.name, {"jobs", key}, "SELECT state, attempts, last_error FROM _atanor_jobs")
+  defp job_row(node, key), do: query(node, key, "SELECT state, attempts, last_error FROM _atanor_jobs")
 
   describe "infrastructure errors" do
     test "never consume an attempt, however long they last" do
@@ -212,7 +225,7 @@ defmodule Atanor.JobsTest do
 
       assert until(fn -> match?({:ok, %{rows: [["dead", 2, ":boom"]]}}, job_row(node, "a")) end)
 
-      assert_receive {:dead, %{cause: :max_attempts}}
+      assert_receive {:dead, %{cause: :max_attempts}}, 30_000
     end
 
     test "errors the handler makes up count as attempts, whatever the term" do
@@ -278,7 +291,7 @@ defmodule Atanor.JobsTest do
                match?({:ok, %{rows: [["dead", 0, "infrastructure: " <> _]]}}, job_row(node, "a"))
              end)
 
-      assert_receive {:dead, %{cause: :infrastructure, reason: "infrastructure: " <> _}}
+      assert_receive {:dead, %{cause: :infrastructure, reason: "infrastructure: " <> _}}, 30_000
     end
   end
 
@@ -318,7 +331,7 @@ defmodule Atanor.JobsTest do
 
   describe "storage bounds" do
     defp count(node, key, sql) do
-      {:ok, %{rows: [[n]]}} = Cell.query(node.name, {"jobs", key}, sql)
+      {:ok, %{rows: [[n]]}} = query(node, key, sql)
       n
     end
 
@@ -402,18 +415,19 @@ defmodule Atanor.JobsTest do
 
     indexes = fn ->
       {:ok, %{rows: rows}} =
-        Cell.query(
-          node.name,
-          {"jobs", "a"},
-          "SELECT name FROM sqlite_master WHERE name LIKE '_atanor_jobs_%' ORDER BY name"
-        )
+        query(node, "a", "SELECT name FROM sqlite_master WHERE name LIKE '_atanor_jobs_%' ORDER BY name")
 
       List.flatten(rows)
     end
 
     # The purge relies on the done index to skip the finished jobs.
     assert indexes.() == ["_atanor_jobs_done", "_atanor_jobs_due"]
-    assert {:ok, _} = Cell.execute(node.name, {"jobs", "a"}, "DROP INDEX _atanor_jobs_done")
+
+    assert until(
+             fn -> match?({:ok, _}, Cell.execute(node.name, {"jobs", "a"}, "DROP INDEX _atanor_jobs_done")) end,
+             30_000
+           )
+
     assert indexes.() == ["_atanor_jobs_due"]
 
     assert %{status: 200} = enqueue(node, "a", payload: "y")
@@ -435,7 +449,7 @@ defmodule Atanor.JobsTest do
 
     ManualClock.advance(world, 2_000)
     assert %{status: 200} = enqueue(node, "a", payload: "second")
-    assert until(fn -> IO.inspect(effects(node, "a")) == ["first", "second"] end)
+    assert until(fn -> effects(node, "a") == ["first", "second"] end)
 
     assert until(fn ->
              match?({:ok, %{rows: [[1]]}}, Cell.query(node.name, {"jobs", "a"}, "SELECT count(*) FROM _atanor_jobs"))
@@ -445,11 +459,7 @@ defmodule Atanor.JobsTest do
     refute String.starts_with?(second, "$")
 
     assert {:ok, %{rows: [["_atanor_jobs"]]}} =
-             Cell.query(
-               node.name,
-               {"jobs", "a"},
-               "SELECT name FROM sqlite_master WHERE type='table' AND name='_atanor_jobs'"
-             )
+             query(node, "a", "SELECT name FROM sqlite_master WHERE type='table' AND name='_atanor_jobs'")
 
     assert %{status: 200} = enqueue(node, "a", payload: "third")
     assert until(fn -> effects(node, "a") == ["first", "second", "third"] |> Enum.sort() end)
