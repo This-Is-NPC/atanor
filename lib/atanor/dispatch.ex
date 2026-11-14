@@ -559,16 +559,16 @@ defmodule Atanor.Dispatch do
         Cell.end_handler(handler)
       end
 
-    classify(result, call)
+    classify(result, call, env)
   end
 
   # A job's `{:error, reason}` return reaches here as `{:ok, {:error, reason}}`. It is an error of the
   # infrastructure only when `reason` is, term for term, an error that a cell call of the attempt returned
   # after failing for such a reason (`Cell.recording/1`); any other term is the handler's own
-  # (`Atanor.Jobs`, design §15.4).
-  defp classify(result, call) do
+  # (`Atanor.Jobs`, design §15.4). A WASM job has no such match: see `failed?/3`.
+  defp classify(result, call, env) do
     cond do
-      not failed?(result, call) ->
+      not failed?(result, call, env) ->
         result
 
       Cell.unknown_outcome?() ->
@@ -590,8 +590,14 @@ defmodule Atanor.Dispatch do
   end
 
   # The error of a handler that returns, unchanged, one that a cell call gave it.
-  defp failed?({:ok, {:error, reason}}, {:job, _}), do: Enum.any?(Cell.returned_errors(), &(&1 === reason))
-  defp failed?(result, _call), do: failed?(result)
+  defp failed?({:ok, {:error, reason}}, {:job, _}, _env), do: Enum.any?(Cell.returned_errors(), &(&1 === reason))
+
+  # A guest's error cannot be matched with the errors of its cell calls: it counts as the handler's own.
+  # Only what Atanor made of the attempt (a full queue, a crash) can be an infrastructure error.
+  defp failed?(result, {:job, _}, %Env{deployment: %{manifest: %{kind: kind}}}) when kind != :native,
+    do: result in [{:error, :overloaded}, {:error, :crashed}]
+
+  defp failed?(result, _call, _env), do: failed?(result)
   defp failed?({:ok, %{status: status}}) when is_integer(status), do: status >= 500
   defp failed?({:error, _}), do: true
   defp failed?(_), do: false
