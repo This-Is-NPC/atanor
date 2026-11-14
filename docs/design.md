@@ -2598,8 +2598,9 @@ parallel, then calls `System.stop/1` with status 1 if any drain left a cell or f
 instance, or with `stop: [sigterm: :stop]`, the VM stops at once as OTP does, and the stop runs the drain
 after the listeners close (the order below). The stop that follows finds the drain done and does not repeat
 it. A second SIGTERM during the drain joins it and forces nothing: the grace period of the container or the
-unit (`docker stop --time`, `TimeoutStopSec`, `terminationGracePeriodSeconds`) must exceed
-`stop.shutdown_ms` (75 s by default), and SIGKILL is the way to force a stop; the leases then expire as
+unit (`docker stop --timeout`, `TimeoutStopSec`, `terminationGracePeriodSeconds`) must exceed
+`stop.shutdown_ms` (75 s by default; the shipped scripts and examples use 90 s, the drain plus 15 s, [the rule
+and its settings](configuration.md#the-stop-grace-period)), and SIGKILL is the way to force a stop; the leases then expire as
 after a crash.
 
 The VM stops as soon as the drain ends, and the listeners, the admin API among them, close with it, so a poll of

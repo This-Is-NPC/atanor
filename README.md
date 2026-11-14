@@ -64,10 +64,12 @@ shell, in an empty directory.
    ```
 
 4. Start one node and wait until it is ready. Port 4000 serves your workers; port 4001 is the
-   admin API, which `/health/ready` answers with the admin token.
+   admin API, which `/health/ready` answers with the admin token. `--stop-timeout 90` lets `docker stop`
+   wait for the node to hand its cells back; it must exceed `stop.shutdown_ms` (75 s), and Docker's default is 10 s
+   ([why](docs/configuration.md#the-stop-grace-period)).
 
    ```sh
-   docker run -d --name atanor-node --network atanor-net \
+   docker run -d --name atanor-node --network atanor-net --stop-timeout 90 \
      -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 -v "$PWD/atanor-secrets:/run/secrets:ro" \
      -e ATANOR_STORE=s3://atanor -e ATANOR_S3_ENDPOINT=http://atanor-store:8333 \
      -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret_key \

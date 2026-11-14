@@ -88,7 +88,8 @@ HAProxy, which the [container cluster](how-to-run-a-cluster-in-containers.md) al
    connection limit on the balancer ([design §7.1, Limits](design.md#71-http)).
 
 8. **Let a node leave gracefully.** On `SIGTERM` a node drains its cells and stops. `docker stop` must wait longer
-   than `ATANOR_SHUTDOWN_MS` (75 s by default): use `--stop-timeout 90` or the grace period of your orchestrator.
+   than `ATANOR_SHUTDOWN_MS` (75 s by default): use `--stop-timeout 90`, systemd `TimeoutStopSec=90` or Kubernetes `terminationGracePeriodSeconds: 90`
+   ([the rule](configuration.md#the-stop-grace-period)).
    To replace nodes one by one, see [how-to-replace-a-node.md](how-to-replace-a-node.md).
 
 9. **Size the nodes.** The memory of a node grows with its awake cells, and the node limits itself to the cgroup

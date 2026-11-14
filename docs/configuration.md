@@ -110,12 +110,30 @@ Rules:
 | `ATANOR_WAL_LIMIT` | `wal_limit` | derived from the disk budget | The write-ahead log a node may hold (`alambique: [wal: [max_bytes:]]`). Same units. |
 | `ATANOR_RELEASE` | `release` | `atanor-<version>` | The release id reported by `GET /deployments`. |
 | `ATANOR_LEASE_TTL_MS` | `lease_ttl_ms` | Alambique's | The cell lease time to live (`alambique: [lease_ttl_ms:]`). |
-| `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY` | `shutdown_ms`, `drain_timeout_ms`, `drain_concurrency` | 75000, 15000, 64 | `stop:` ([above](#the-instance)). The container's grace period must exceed the first. |
+| `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY` | `shutdown_ms`, `drain_timeout_ms`, `drain_concurrency` | 75000, 15000, 64 | `stop:` ([above](#the-instance)). The grace period of a stop must exceed the first ([rule](#the-stop-grace-period)). |
 | `ATANOR_DETECTOR_PAUSE_MS` | `detector_pause_ms` | 2000 | `detector: [acceptable_pause_ms:]`. |
 | `ATANOR_HTTP_QUEUE_WAIT_MS` | `http_queue_wait_ms` | 5000 | `http: [queue_wait_ms:]`: how long an admitted request may wait before the node answers 503 `queue_timeout` ([below](#cells-limits-memory-and-store-requests)). 0 turns it off. |
 | `ATANOR_GROUP` | `group` | none | The discovery group: a node dials only the nodes of its own group (`registry: [meta: %{"group" => ...}]`). A node that replaces another in a swap takes one, so that the two do not form a cluster ([how-to-replace-a-node.md](how-to-replace-a-node.md)). 1 to 64 letters, digits, `.`, `_` or `-`. |
 | `ATANOR_REGISTRY_TTL_MS` | `registry_ttl_ms` | 15000 | How long the node's entry under `<prefix>/nodes/` is live without a renewal (`alambique: [registry: [ttl_ms:]]`). A node that stopped without leaving is forgotten after it plus the skew margin (2 s). It must exceed twice the skew margin and `ATANOR_REGISTRY_RENEW_MS`. |
 | `ATANOR_REGISTRY_RENEW_MS` | `registry_renew_ms` | 3000 | How often the node renews its entry and reads the peers; a new node is found within about this time (`registry: [renew_ms:]`). It costs two small requests per period per node. |
+
+### The stop grace period
+
+A node drains for up to `stop.shutdown_ms` (75 s by default) after SIGTERM. Whatever stops it must wait longer,
+or SIGKILL cuts the drain and the leases expire as after a crash. Docker's default `docker stop` wait is 10 s.
+The rule: grace period above `shutdown_ms`, with a margin (15 s here, so 90 s).
+
+| Where | Setting |
+| --- | --- |
+| `docker run` | `--stop-timeout 90` |
+| Docker Compose | `stop_grace_period: 90s` |
+| systemd | `TimeoutStopSec=90` |
+| Kubernetes | `terminationGracePeriodSeconds: 90` |
+
+If you change `shutdown_ms`, change the grace with it. The cluster scripts derive it: `shutdown_ms` (from
+`ATANOR_CLUSTER_SHUTDOWN_MS`, else `ATANOR_SHUTDOWN_MS`) plus 15 s. `ATANOR_CLUSTER_STOP_GRACE` (`90s`, `2m` or
+seconds) overrides it, and a value at or below the drain is refused
+([how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md)).
 
 ### AWS credentials
 

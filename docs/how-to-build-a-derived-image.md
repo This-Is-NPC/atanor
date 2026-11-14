@@ -132,7 +132,7 @@ is not a supported way to install it.
    and the app its own variables; `<...>` marks a value you choose:
 
    ```sh
-   docker run -d --name live-counter -p 4000:4000 -p 4001:4001 -p 4010:4010 \
+   docker run -d --name live-counter --stop-timeout 90 -p 4000:4000 -p 4001:4001 -p 4010:4010 \
      -v <secrets dir>:/run/secrets:ro \
      -e ATANOR_STORE=s3://<bucket>/<prefix> -e ATANOR_S3_ENDPOINT=<S3 endpoint URL> \
      -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key \
