@@ -67,7 +67,8 @@ write_files:
       ExecStart=/opt/atanor-lab/bin/atanor_lab start
       Restart=on-failure
       RestartSec=2
-      TimeoutStopSec=60
+      # More than stop.shutdown_ms (75 s): SIGKILL must not cut the drain.
+      TimeoutStopSec=90
       LimitNOFILE=65536
       [Install]
       WantedBy=multi-user.target
