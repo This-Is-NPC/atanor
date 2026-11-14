@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Run a command, stream its output and keep all of it in a log, so a failing
+# test's name survives a terminal that keeps only the tail. On failure the last
+# lines name the failing tests, the seed and the log. The exit code is the
+# command's. Safe to rerun.
+#   scripts/check-log <command> [args...]
+# Env:
+#   ATANOR_CHECK_LOG_DIR   log directory (default _build/check)
+#   ATANOR_CHECK_LOG_KEEP  timestamped logs to keep (default 10)
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+dir="${ATANOR_CHECK_LOG_DIR:-_build/check}"
+keep="${ATANOR_CHECK_LOG_KEEP:-10}"
+[[ $keep =~ ^[0-9]+$ ]] || keep=10
+mkdir -p "$dir"
+log="$dir/check-$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
+
+"$@" 2>&1 | tee "$log"
+status=${PIPESTATUS[0]}
+
+# last.log always points at the newest run; older ones are pruned by name (oldest first).
+ln -sf "$(basename "$log")" "$dir/last.log"
+old=("$dir"/check-*.log)
+drop=$((${#old[@]} - 10#$keep))
+((drop > 0)) && rm -f -- "${old[@]:0:drop}"
+
+if ((status != 0)); then
+  # ExUnit prints "  1) test name (Module)" and the file:line under it; the seed is printed when the run starts.
+  mapfile -t failed < <(grep -A1 -E '^ +[0-9]+\) (test|property|doctest) ' "$log" | grep -v '^--$')
+  {
+    printf '\n== check failed (exit %s)\n' "$status"
+    if ((${#failed[@]} > 0)); then
+      printf '%s\n' "${failed[@]:0:10}"
+      ((${#failed[@]} > 10)) && printf '  ... and %s more lines in the log\n' "$((${#failed[@]} - 10))"
+    fi
+    grep -E '^(Result|Failed): ' "$log" | tail -n 2
+    grep -E '^Running ExUnit with seed: [0-9]+' "$log" | tail -n 1
+    printf 'full output: %s\n' "$log"
+  } >&2
+fi
+exit "$status"

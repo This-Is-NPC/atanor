@@ -109,6 +109,14 @@ stops at the first failure. Two optional stages are off by default:
 - `ATANOR_CHECK_CLUSTER=1` adds `mise run test:cluster`.
 - `ATANOR_CHECK_COVERAGE=1` adds `mise run test:coverage` (about 30 minutes).
 
+`mise run check` keeps the full output of every stage, including the `mix
+test` failures and the ExUnit seed, in `_build/check/check-<UTC stamp>-<pid>.log`
+(git ignores `_build`). `_build/check/last.log` links to the newest. A red run
+ends by printing the failing tests, the test counts, the seed and the log path,
+so the last 15 lines are enough to name the failure. Only the newest 10 logs
+stay; set `ATANOR_CHECK_LOG_KEEP=<n>` to change that. `scripts/check-log
+<command>` does the same for any command.
+
 The hooks:
 
 - `pre-commit` runs only `mise run check:format`.
