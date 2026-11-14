@@ -6,25 +6,24 @@ are choices of the design are in the "Limits" paragraphs of
 [design.md](design.md) and in the README's
 [Limitations](../README.md#limitations).
 
-## Busy cells arrive at a new node with long chains and wake slowly
+## A cell can still wake slowly at a new node under a 25 ms store
 
 **What happens.** With a store far from the nodes (25 ms) and 12 or more cells
-committing continuously on a node with one CPU, the chains of some cells grow to
-500 to 830 segments, above Alambique's `compaction: [max_chain_segments:]` (256),
-before the cells move. When the node that takes them (a swap, a drain) wakes all of
-them at once, those cells need 5 to 11 s each, against about 1.4 s for 800
-segments restored alone. A request for a cell that is still waking at the 5 s
-deadline (`http: [queue_wait_ms:]`) gets 503 `queue_timeout` with `Retry-After`.
+committing continuously on a node with one CPU, the node that takes the cells (a
+swap, a drain) can need 3 to 6 s to wake one of them. A request for a cell that is
+still waking at the 5 s deadline (`http: [queue_wait_ms:]`) gets 503
+`queue_timeout` with `Retry-After`; in 1 of 3 swaps on Alambique 0.8.0 that was 2
+requests.
 
 **Workaround.** The client retries after `Retry-After`; no write that got a 503 was
 stored, and none was lost or duplicated. A store close to the nodes, or fewer busy
-cells per node, keeps the chains short.
+cells per node, keeps the wakes short.
 
-**Evidence.** `mise run load:swap -- --rate 750`, scenario A, on Alambique 0.7.0:
-the wakes of B in `docker-b.log` (`slow wake of ...`), 10 wakes at once: 1.0 to
-1.4 s for cells of 52 to 274 segments, 3.8 to 7.5 s for 569 to 731 segments;
-with `max_wakes` forced to 14 the wakes took 1.6 to 10.9 s, so the limit is not
-the cause. Alambique has the report (order 028). Open until its fix.
+**Evidence.** `mise run load:swap -- --rate 750`, scenario A, on Alambique 0.8.0,
+3 swaps: the wakes of B in `docker-b.log` (`slow wake of ...`) were 3.7 s (run 1),
+2.7, 3.2 and 5.7 s (run 2), none (run 3); 0 no answer, 0 unknown outcome, 0 lost,
+0 duplicated in all three. See
+[how-to-replace-a-node.md](how-to-replace-a-node.md#a-swap-with-a-slow-store-and-many-busy-cells).
 
 ## WASM throughput is about 5% below 0.2.0 after the admission change
 
