@@ -208,6 +208,17 @@ Atanor passes through.
 - `compaction: [moved_scan_ms:, moved_scan_page:]` (60,000 and 100) set how
   often the store is scanned for the cleanups of moved cells, and the page of
   that scan.
+- `compaction: [release_min_tail:, release_deadline_ms:, release_reserve_ms:]`
+  (32, 3,000 and 2,000) set the compaction at a graceful release: a cell that
+  is handed off (a drain, a stop, `hibernate`) with at least `release_min_tail`
+  level-0 files compacts them first, so the node that takes the cell reads a
+  short chain. It stops after `release_deadline_ms` (0 turns it off) and
+  `release_reserve_ms` before the end of the drain's per-cell time
+  (`stop: [drain_timeout_ms:]`); with less time left it does not compact. Keep
+  `drain_timeout_ms` at `release_deadline_ms + release_reserve_ms` or more
+  (the default 15,000 leaves 10,000 over). The container's grace period and
+  `stop: [shutdown_ms:]` stay as they are
+  ([design §8.11](design.md#811-draining-and-stopping-gracefully)).
 - `replicas: [poll_max_ms:]` (5,000) and `query: [reflink:]` (`true`) pass
   through to Alambique unchecked.
 
