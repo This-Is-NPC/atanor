@@ -253,6 +253,12 @@ def save_node_diagnostics(base, node, state):
 
 # ---- sampling during a step ----------------------------------------------------------------------------
 
+def generators_cpu(pids):
+    """CPU seconds of the generator processes; None when one cannot be read."""
+    readings = [process_cpu(p) for p in pids]
+    return None if None in readings else sum(readings)
+
+
 class Sampler(threading.Thread):
     """Reads the node, the store, the host and the generators every `period` seconds until stopped."""
 
@@ -263,7 +269,7 @@ class Sampler(threading.Thread):
         self.samples = []
 
     def take(self):
-        sample = {"t": time.time(), "host": host_sample(), "gen_cpu_s": sum(process_cpu(p) or 0 for p in self.pids), "self_cpu_s": process_cpu(os.getpid()) or 0,
+        sample = {"t": time.time(), "host": host_sample(), "gen_cpu_s": generators_cpu(self.pids), "self_cpu_s": process_cpu(os.getpid()),
                   "gen_swap_mb": sum(vm_swap_mb(p) for p in self.pids)}
         for name, directory in self.dirs.items():
             sample[name] = cgroup_sample(directory)
@@ -392,25 +398,31 @@ def store_summary(samples, tmpfs_bytes):
             "s3_errors": errors[-1] - errors[0] if errors else None}
 
 
+def own_cpu_s(sample):
+    """CPU seconds the lab used so far: node, store, balancer, generators and this harness; None when any reading is missing."""
+    parts = [sample[n].get("cpu_s") for n in ("node", "store", "lb")] + [sample.get("gen_cpu_s"), sample.get("self_cpu_s")]
+    return None if any(p is None for p in parts) else sum(parts)
+
+
 def net_load(a, b):
-    """(busy cores, foreign cores) between two samples; None when no time or no CPU passed. Foreign is the busy cores minus the lab's
-    own: the node, store and balancer cgroups, the generators and this harness (its sampling and its docker calls)."""
-    dt, total = b["t"] - a["t"], b["host"]["cpu_total"] - a["host"]["cpu_total"]
-    if dt <= 0 or total <= 0:
+    """(busy cores, foreign cores) between two samples. Foreign is the busy cores minus the lab's own: the node, store and balancer
+    cgroups, the generators and this harness. None when no time or CPU passed, when the host idle counter went back, or when a lab
+    reading is missing in either sample: a missing total would subtract all the CPU accumulated so far."""
+    dt, total, idle = b["t"] - a["t"], b["host"]["cpu_total"] - a["host"]["cpu_total"], b["host"]["cpu_idle"] - a["host"]["cpu_idle"]
+    first, last = own_cpu_s(a), own_cpu_s(b)
+    if dt <= 0 or total <= 0 or idle < 0 or first is None or last is None:
         return None
-    busy = CORES * (1 - (b["host"]["cpu_idle"] - a["host"]["cpu_idle"]) / total)
-    own = sum(((b[n].get("cpu_s") or 0) - (a[n].get("cpu_s") or 0)) / dt for n in ("node", "store", "lb"))
-    own += (b["gen_cpu_s"] - a["gen_cpu_s"]) / dt + (b.get("self_cpu_s", 0) - a.get("self_cpu_s", 0)) / dt
-    return busy, max(busy - own, 0)
+    busy = CORES * (1 - idle / total)
+    return busy, max(busy - (last - first) / dt, 0)
 
 
 def is_quiet(intervals, limit, window):
-    """True when the newest run of (start, end, foreign load) intervals below `limit` spans at least `window` seconds."""
+    """True when the newest contiguous run of (start, end, foreign load) intervals below `limit` spans at least `window` seconds."""
     if not intervals or intervals[-1][2] >= limit:
         return False
     start = intervals[-1][0]
-    for began, _, load in reversed(intervals):
-        if load >= limit:
+    for began, ended, load in reversed(intervals):
+        if load >= limit or ended < start:  # a gap (an interval without a reading) ends the run
             break
         start = began
     return intervals[-1][1] - start >= window
@@ -421,11 +433,17 @@ def judge_host(mean, limit):
     return f"host contaminated: net load {mean:g} > {limit:g}" if mean is not None and mean > limit else None
 
 
+def busy_reason(load, args):
+    """Why the wait for a quiet host gave up; load is None when no interval had every reading."""
+    shown = "unknown" if load is None else f"{load:g}"
+    return f"host busy: net load {shown} >= {args.host_load_max:g} for {args.quiet_max_wait:g} s, no quiet window of {args.quiet_window:g} s"
+
+
 def quiet_sample(dirs):
     """The part of a sample that net_load reads, for the wait before a step."""
-    sample = {"t": time.time(), "host": host_sample(), "gen_cpu_s": 0.0, "self_cpu_s": process_cpu(os.getpid()) or 0}
+    sample = {"t": time.time(), "host": host_sample(), "gen_cpu_s": 0.0, "self_cpu_s": process_cpu(os.getpid())}
     for name in ("node", "store", "lb"):  # no lab running: nothing of it to count out
-        sample[name] = cgroup_sample(dirs[name]) if name in dirs else {}
+        sample[name] = cgroup_sample(dirs[name]) if name in dirs else {"cpu_s": 0.0}
     return sample
 
 
@@ -485,7 +503,7 @@ def summarize(samples, gen_cpu_total, limit):
         "fds": {"count": fd[-1][0] if fd else None, "max": max((f[0] for f in fd), default=None), "limit": fd[-1][1] if fd else None},
         "host": {"busy_cores_mean": round(sum(b for b, _ in nets) / len(nets), 2) if nets else None,
                  "net_load_mean": round(sum(n for _, n in nets) / len(nets), 2) if nets else None,
-                 "net_load_max": round(max((n for _, n in nets), default=0), 2),
+                 "net_load_max": round(max((n for _, n in nets), default=0), 2), "net_load_skipped": len(samples) - 1 - len(nets),
                  "loadavg1": last["host"]["loadavg1"], "available_gb_min": round(min(s["host"]["available_gb"] for s in samples), 1),
                  **dict(zip(("swap_start_mb", "swap_max_mb", "swap_growth_mb"), swap_growth_mb([s["host"]["swap_used_mb"] for s in samples])))},
         "swap_usage": {**dict(zip(("generator_start_mb", "generator_max_mb", "generator_growth_mb"), swap_growth_mb([s["gen_swap_mb"] for s in samples]))),
@@ -598,7 +616,7 @@ class Round:
         if quiet:
             record = self.attempt(value, phase)
         else:
-            record = self.record(value, phase, None, None, None, "invalid", f"host busy: net load {load:g} >= {a.host_load_max:g} for {a.quiet_max_wait:g} s, no quiet window of {a.quiet_window:g} s",
+            record = self.record(value, phase, None, None, None, "invalid", busy_reason(load, a),
                                  valid=False, host_override={"net_load_last": load})
         record["fresh_node"], record["reset_s"] = fresh, reset_s
         path = self.base(value, phase) + ".json"
@@ -804,7 +822,7 @@ def swap(round_, args, info):
     round_.index += 1
     quiet, load = wait_quiet(args, info)
     if not quiet:  # the swap is judged on its own checks, but it does not start on a busy host
-        reason = f"host busy: net load {load:g} >= {args.host_load_max:g} for {args.quiet_max_wait:g} s, no quiet window of {args.quiet_window:g} s"
+        reason = busy_reason(load, args)
         say(reason)
         return {"approved": None, "confirmed": None, "stopped_by": reason, "invalid": reason, "status": "invalid"}
     sampler = Sampler(info, args.sample_s)

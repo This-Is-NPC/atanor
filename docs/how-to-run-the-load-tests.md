@@ -58,6 +58,12 @@ and `/proc/meminfo`. Per step, in this order:
 2. **Host load.** Net host load is the cores busy on the host minus the cores the test itself used (node,
    store, balancer, generator and the harness), averaged over the step. Above 1 core, the step is invalid
    (`host contaminated: net load 1.6 > 1`), the round stops and `load-run` exits 1. Nothing repeats silently.
+   An interval between two samples counts only when every CPU reading of the lab (node, store and balancer
+   cgroups, generators, harness) exists in both samples and the host idle counter did not go back; a failed
+   cgroup read would otherwise subtract all the CPU the container had accumulated and show tens of foreign
+   cores. The mean covers the counted intervals; `host.net_load_skipped` in the step JSON is how many were
+   left out. The quiet wait leaves them out too, and a skipped interval ends the quiet run, so a failed read
+   restarts the 60 s window. When every interval of a step is skipped the step is not judged by this rule.
 3. **Swap.** The step is INVALID (not a failure of the node; the round stops) when any of these holds:
    - a measured container (node, store or balancer) swapped: its cgroup `memory.swap.current` was above 0 at any sample. It is read from the host through the cgroup of the container's init PID, with the other cgroup reads. When it is unreadable it is recorded as null and not judged;
    - the `VmSwap` of the load generators (`/proc/PID/status`, summed over the processes `load-run` started and their children) grew by more than 16 MB (`ATANOR_LOAD_MAX_GENERATOR_SWAP_MB`);
