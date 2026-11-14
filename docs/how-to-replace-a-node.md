@@ -248,33 +248,36 @@ tick, and 12 busy cells are all ready again at the next one, so the same 4 cells
 were never compacted. A request for such a cell waits for its wake and has no
 deadline, so its client gave up first.
 
-Alambique 0.7.0 fixes both parts. The compactor takes the cells that waited
-longest first and forces a pass on a cell whose chain passed
-`compaction: [max_chain_segments:]` (256), so no busy cell keeps a long chain.
-A restore also reads ahead as budget frees, 16 requests at once, so a chain that
-is long anyway is read in a fraction of the time (800 segments on 512 MB: 1.4 s
-instead of 11.9 s at 25 ms a request, Alambique's measurement). Atanor no
-longer lowers `restore: [fetch_concurrency:]` on a small node; the bytes in
-flight (`max_inflight_bytes`) are the limit.
+Alambique 0.7.0 and later fix both parts. The compactor takes the cells that
+waited longest first and forces a pass on a cell whose chain passed
+`compaction: [max_chain_segments:]` (256), so no busy cell keeps a long chain;
+0.8.0 also skips the blocks that a higher level already holds. A restore reads
+ahead as budget frees, 16 requests at once, so a chain that is long anyway is
+read in a fraction of the time (800 segments on 512 MB: 1.4 s instead of 11.9 s
+at 25 ms a request, Alambique's measurement). Atanor no longer lowers
+`restore: [fetch_concurrency:]` on a small node; the bytes in flight
+(`max_inflight_bytes`) are the limit.
 
-The same swap on 0.7.0, with the 5 s wait deadline (scenario A, fresh stack for
-each run, `ATANOR_LOAD_SCENARIO=A ATANOR_LOAD_STORE_TMPFS_SIZE=2g mise run
-load:swap -- --rate 750`). No request went unanswered, in any run:
+The same swap on Alambique 0.8.0, with the 5 s wait deadline (scenario A, fresh
+stack for each run, `mise run load:up`, then `ATANOR_LOAD_SCENARIO=A
+ATANOR_LOAD_STORE_TMPFS_SIZE=2g mise run load:swap -- --rate 750`). No request
+went unanswered and none had an unknown outcome, in any run:
 
-| Run | No answer | Lost | Duplicated | 503 `worker_queue` | 503 `held_elsewhere` | `queue_timeout`, `unknown_outcome` | p99 | p99 peak |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 0 | 0 | 0 | 822 | 538 | 0, 0 | 232 ms | 1,503 ms |
-| 2 | 0 | 0 | 0 | 747 | 782 | 0, 0 | 243 ms | 1,454 ms |
-| 3 | 0 | 0 | 0 | 715 | 565 | 0, 0 | 270 ms | 2,805 ms |
+| Run | No answer | Unknown outcome | Lost | Duplicated | 503 `held_elsewhere` | 503 `queue_timeout` | p99 | p99 of the swap phase | Slow wakes of B |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0 | 0 | 0 | 0 | 727 | 0 | 167 ms | 1,967 ms | 3.7 s |
+| 2 | 0 | 0 | 0 | 0 | 760 | 2 | 169 ms | 2,821 ms | 2.7, 3.2, 5.7 s |
+| 3 | 0 | 0 | 0 | 0 | 781 | 0 | 165 ms | 470 ms | none |
 
-What still happens: B wakes the 12 cells at once, and on one CPU with a store 25 ms
-away some of them need 5 to 11 s (chains of 500 to 830 segments, above
-`max_chain_segments`; in earlier runs on the same build, before a cold wake was
-kept apart from its call, 2 to 10 requests per run for those cells waited the 5 s
-deadline). A request that reaches the deadline gets 503 `queue_timeout` with
-`Retry-After`; its write was not sent, so the client retries it. The cause is
-tracked in [what-does-not-work.md](what-does-not-work.md). The log of B names
-each wake of one second or more (`slow wake of ...`).
+No request got 503 `worker_queue`. The swap took 6.8 s in run 1 (the old node
+leaves 6.8 s after SIGTERM).
+
+What still happens: B wakes the cells that were busy on A, and on one CPU with a
+store 25 ms away a wake can still take 3 to 6 s (a chain of about 540 segments in
+run 1). A request that reaches the 5 s deadline gets 503 `queue_timeout` with
+`Retry-After` (2 requests in run 2); its write was not sent, so the client
+retries it. The log of B names each wake of one second or more
+(`slow wake of ...`, with the requests it made by kind).
 
 `cluster:swap-run` writes the balancer's request log (`docker-lb.log`) and adds
 `no_answer_by_server` and `no_answer_requests` (id, room, node, balancer state)
