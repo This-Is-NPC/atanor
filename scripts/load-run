@@ -13,7 +13,8 @@ MEASURE is one of
 
 A step runs the generator (scripts/load-gen, one process per ~600 req/s) for --step-s seconds, samples the
 node's cgroup, the host and the store every --sample-s seconds, and writes one JSON file, atomically.
-Order of the verdicts of a step: host load too high (repeat, then stop), a criterion broken (the step
+Before every step the harness waits for a quiet host (net load below --host-load-max for --quiet-window; after
+--quiet-max-wait the measure stops "host busy"). Order of the verdicts of a step: host load too high (INVALID, the round stops), a criterion broken (the step
 fails), swap in a measured container or generator swap growing over --max-generator-swap-mb, or host swap growing over
 --max-host-swap-growth-mb (INVALID), the store's tmpfs over --max-store-tmpfs-pct (default 90%) of its size at any sample (INVALID: a full
 store answers S3 500s, which measure the lab; it wins over a criterion, so a p99 or 5xx failure on a full store is not
@@ -262,7 +263,7 @@ class Sampler(threading.Thread):
         self.samples = []
 
     def take(self):
-        sample = {"t": time.time(), "host": host_sample(), "gen_cpu_s": sum(process_cpu(p) or 0 for p in self.pids),
+        sample = {"t": time.time(), "host": host_sample(), "gen_cpu_s": sum(process_cpu(p) or 0 for p in self.pids), "self_cpu_s": process_cpu(os.getpid()) or 0,
                   "gen_swap_mb": sum(vm_swap_mb(p) for p in self.pids)}
         for name, directory in self.dirs.items():
             sample[name] = cgroup_sample(directory)
@@ -391,6 +392,68 @@ def store_summary(samples, tmpfs_bytes):
             "s3_errors": errors[-1] - errors[0] if errors else None}
 
 
+def net_load(a, b):
+    """(busy cores, foreign cores) between two samples; None when no time or no CPU passed. Foreign is the busy cores minus the lab's
+    own: the node, store and balancer cgroups, the generators and this harness (its sampling and its docker calls)."""
+    dt, total = b["t"] - a["t"], b["host"]["cpu_total"] - a["host"]["cpu_total"]
+    if dt <= 0 or total <= 0:
+        return None
+    busy = CORES * (1 - (b["host"]["cpu_idle"] - a["host"]["cpu_idle"]) / total)
+    own = sum(((b[n].get("cpu_s") or 0) - (a[n].get("cpu_s") or 0)) / dt for n in ("node", "store", "lb"))
+    own += (b["gen_cpu_s"] - a["gen_cpu_s"]) / dt + (b.get("self_cpu_s", 0) - a.get("self_cpu_s", 0)) / dt
+    return busy, max(busy - own, 0)
+
+
+def is_quiet(intervals, limit, window):
+    """True when the newest run of (start, end, foreign load) intervals below `limit` spans at least `window` seconds."""
+    if not intervals or intervals[-1][2] >= limit:
+        return False
+    start = intervals[-1][0]
+    for began, _, load in reversed(intervals):
+        if load >= limit:
+            break
+        start = began
+    return intervals[-1][1] - start >= window
+
+
+def judge_host(mean, limit):
+    """Why a step is INVALID by the foreign host load, or None."""
+    return f"host contaminated: net load {mean:g} > {limit:g}" if mean is not None and mean > limit else None
+
+
+def quiet_sample(dirs):
+    """The part of a sample that net_load reads, for the wait before a step."""
+    sample = {"t": time.time(), "host": host_sample(), "gen_cpu_s": 0.0, "self_cpu_s": process_cpu(os.getpid()) or 0}
+    for name in ("node", "store", "lb"):  # no lab running: nothing of it to count out
+        sample[name] = cgroup_sample(dirs[name]) if name in dirs else {}
+    return sample
+
+
+def wait_quiet(args, info):
+    """Waits until the foreign host load stays below --host-load-max for --quiet-window seconds. (True, load) when it did;
+    (False, last load) after --quiet-max-wait seconds of not."""
+    try:
+        dirs = {name: cgroup_dir(info[name]["pid"]) for name in ("node", "store", "lb")}
+    except (OSError, RuntimeError, KeyError):
+        dirs = {}
+    intervals, previous, deadline, load, announced = [], quiet_sample(dirs), time.time() + args.quiet_max_wait, None, False
+    while True:
+        time.sleep(args.sample_s)
+        current = quiet_sample(dirs)
+        loads = net_load(previous, current)
+        if loads:
+            load = round(loads[1], 2)
+            intervals.append((previous["t"], current["t"], load))
+        previous = current
+        if is_quiet(intervals, args.host_load_max, args.quiet_window):
+            return True, load
+        if time.time() >= deadline:
+            return False, load
+        if load is not None and load >= args.host_load_max and not announced:
+            say(f"waiting for a quiet host: net load {load:g} >= {args.host_load_max:g} (up to {args.quiet_max_wait:g} s)")
+            announced = True
+
+
 def summarize(samples, gen_cpu_total, limit):
     """CPU, memory, fds and host load over the samples of one step. limit: the scenario's memory in bytes (the container's
     cgroup limit is that plus the tmpfs); the working set of the node's own gate (memory.current - inactive_file, tmpfs
@@ -403,15 +466,7 @@ def summarize(samples, gen_cpu_total, limit):
         return None if a is None or b is None else (b - a) / span
 
     node, store, lb = cores("node"), cores("store"), cores("lb")
-    nets = []
-    for a, b in zip(samples, samples[1:]):
-        dt, total = b["t"] - a["t"], b["host"]["cpu_total"] - a["host"]["cpu_total"]
-        if dt <= 0 or total <= 0:
-            continue
-        busy = CORES * (1 - (b["host"]["cpu_idle"] - a["host"]["cpu_idle"]) / total)
-        own = sum(((b[n].get("cpu_s") or 0) - (a[n].get("cpu_s") or 0)) / dt for n in ("node", "store", "lb"))
-        own += (b["gen_cpu_s"] - a["gen_cpu_s"]) / dt
-        nets.append((busy, max(busy - own, 0)))
+    nets = [n for n in (net_load(a, b) for a, b in zip(samples, samples[1:])) if n]
     mem = [s["node"] for s in samples if s["node"]]
     current = [m["memory_current"] for m in mem]
     service = [m["memory_current"] - m.get("inactive_file", 0) for m in mem]
@@ -539,13 +594,12 @@ class Round:
         a = self.args
         self.index += 1
         reset_s = self.reset() if fresh else None
-        for attempt in range(a.repeat_invalid + 1):
+        quiet, load = wait_quiet(a, self.info)
+        if quiet:
             record = self.attempt(value, phase)
-            if record["stop_reason"] != "host load" or attempt == a.repeat_invalid:
-                break
-            say(f"host busy (net load {record['host']['net_load_mean']} > {a.host_load_max}): repeating the step in {a.host_wait:.0f} s")
-            time.sleep(a.host_wait)
-        record["attempts"] = attempt + 1
+        else:
+            record = self.record(value, phase, None, None, None, "invalid", f"host busy: net load {load:g} >= {a.host_load_max:g} for {a.quiet_max_wait:g} s, no quiet window of {a.quiet_window:g} s",
+                                 valid=False, host_override={"net_load_last": load})
         record["fresh_node"], record["reset_s"] = fresh, reset_s
         path = self.base(value, phase) + ".json"
         write_json(path, record)
@@ -649,8 +703,9 @@ class Round:
             if full:
                 record["notes"].append(full)
             return {**record, "status": "fail", "stop_reason": "; ".join(criteria)}
-        if usage["host"]["net_load_mean"] is not None and usage["host"]["net_load_mean"] > a.host_load_max:
-            return {**record, "valid": False, "status": "invalid", "stop_reason": "host load"}
+        contaminated = judge_host(usage["host"]["net_load_mean"], a.host_load_max)
+        if contaminated:
+            return {**record, "valid": False, "status": "invalid", "stop_reason": contaminated}
         swapped = judge_swap(usage, a.max_generator_swap_mb, a.max_host_swap_growth_mb)
         if swapped:
             return {**record, "valid": False, "status": "invalid", "stop_reason": swapped}
@@ -747,6 +802,11 @@ def swap(round_, args, info):
     if not rate:
         sys.exit("swap needs --rate: no approved http-wasm step in " + args.out)
     round_.index += 1
+    quiet, load = wait_quiet(args, info)
+    if not quiet:  # the swap is judged on its own checks, but it does not start on a busy host
+        reason = f"host busy: net load {load:g} >= {args.host_load_max:g} for {args.quiet_max_wait:g} s, no quiet window of {args.quiet_window:g} s"
+        say(reason)
+        return {"approved": None, "confirmed": None, "stopped_by": reason, "invalid": reason, "status": "invalid"}
     sampler = Sampler(info, args.sample_s)
     sampler.start()
     began = time.time()
@@ -820,12 +880,12 @@ def main():
     add("--memory-pct", type=float, default=env("MEMORY_PCT", 90), help="working set (memory.current - inactive_file, as the node measures it) at this share of the scenario memory fails ws and cells steps (ATANOR_LOAD_MEMORY_PCT, 90)")
     add("--fd-pct", type=float, default=env("FD_PCT", 90), help="open descriptors at this share of the limit fail a ws step (ATANOR_LOAD_FD_PCT, 90)")
     add("--delivery", type=float, default=env("DELIVERY", 0.95), help="achieved/planned below this makes a step INVALID (ATANOR_LOAD_DELIVERY, 0.95)")
-    add("--host-load-max", type=float, default=env("HOST_LOAD_MAX", 6), help="net host load (busy cores minus the test's own) above this repeats the step (ATANOR_LOAD_HOST_LOAD_MAX, 6)")
+    add("--host-load-max", type=float, default=env("HOST_LOAD_MAX", 1), help="net host load (busy cores minus the test's own): a step waits until it stays below this for --quiet-window, and a step whose mean exceeds it is INVALID and stops the round (ATANOR_LOAD_HOST_LOAD_MAX, 1)")
+    add("--quiet-window", type=float, default=env("QUIET_WINDOW", 60), help="seconds the net host load must stay below --host-load-max before each step (ATANOR_LOAD_QUIET_WINDOW, 60)")
+    add("--quiet-max-wait", type=float, default=env("QUIET_MAX_WAIT", 1800), help="seconds to wait for that quiet window; then the measure stops with 'host busy' (ATANOR_LOAD_QUIET_MAX_WAIT, 1800)")
     add("--max-generator-swap-mb", type=float, default=env("MAX_GENERATOR_SWAP_MB", 16), help="VmSwap of the load generators growing by more than this in a step makes it INVALID (ATANOR_LOAD_MAX_GENERATOR_SWAP_MB, 16)")
     add("--max-host-swap-growth-mb", type=float, default=env("MAX_HOST_SWAP_GROWTH_MB", 256), help="host swap used growing by more than this during a step (largest sample minus the start) makes it INVALID; the level is only recorded (ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB, 256)")
     add("--max-store-tmpfs-pct", type=float, default=env("MAX_STORE_TMPFS_PCT", 90), help="the store's tmpfs above this share of its size at any sample makes a step INVALID, before the criteria (ATANOR_LOAD_MAX_STORE_TMPFS_PCT, 90)")
-    add("--repeat-invalid", type=int, default=env("REPEAT_INVALID", 2, int), help="repeats of a step invalidated by host load (ATANOR_LOAD_REPEAT_INVALID, 2)")
-    add("--host-wait", type=float, default=env("HOST_WAIT", 30), help="seconds before such a repeat")
     add("--min-available-gb", type=float, default=env("MIN_AVAILABLE_GB", 6), help="host MemAvailable below this stops the round (ATANOR_LOAD_MIN_AVAILABLE_GB, 6)")
     add("--sample-s", type=float, default=env("SAMPLE_S", 5), help="seconds between samples (ATANOR_LOAD_SAMPLE_S, 5)")
     add("--timeout", type=float, default=env("TIMEOUT", 10), help="seconds before a request counts as unanswered")
