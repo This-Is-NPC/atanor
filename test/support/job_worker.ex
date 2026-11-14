@@ -112,6 +112,7 @@ defmodule Atanor.Test.JobWorker do
       "fail" -> {:error, :boom}
       "flaky" when job.attempt < 2 -> {:error, :flaky}
       "slow" -> Process.sleep(:infinity)
+      "cell_timeout" -> {:error, :timeout}
       "heal:" <> table -> heal(table)
       "unhealed:" <> dir -> unhealed(dir)
       "track:" <> rest -> track(job, rest)

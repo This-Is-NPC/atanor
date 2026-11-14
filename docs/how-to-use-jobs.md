@@ -40,7 +40,7 @@ in step 6.
    backoff; after `jobs.max_attempts` the job is dead. Only these failures count
    as attempts. An error of the store or the cell (a partition, `store_unavailable`,
    a cell that is overloaded or has no owner) does not: the job waits and runs
-   again with the same backoff, up to `jobs.infrastructure_timeout_ms` (one hour
+   again with a delay that grows up to `jobs.max_backoff_ms`, up to `jobs.infrastructure_timeout_ms` (one hour
    by default), and then it is dead too.
 
 2. Enqueue in the same transaction as the data. Use

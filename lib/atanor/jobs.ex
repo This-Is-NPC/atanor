@@ -525,7 +525,7 @@ defmodule Atanor.Jobs do
       {:ok, {:error, reason}} -> {:error, reason}
       {:ok, other} -> {:error, {:bad_return, other}}
       {:exit, reason} -> {:error, {:exit, reason}}
-      nil -> {:error, :timeout}
+      nil -> {:error, :handler_timeout}
     end
   end
 
@@ -540,9 +540,13 @@ defmodule Atanor.Jobs do
     if infrastructure?(reason) do
       since = job.infrastructure_since_ms || now
 
+      # The delay doubles with every error (it is the time waited so far), so a long outage is not retried
+      # every `backoff_ms` by every job.
+      delay = min(max(backoff(job.attempt, config), now - since), config.jobs.max_backoff_ms)
+
       if now - since >= config.jobs.infrastructure_timeout_ms,
         do: {"dead", "infrastructure: " <> error_text(reason), nil, now, 1, :infrastructure},
-        else: {"pending", error_text(reason), now + backoff(job.attempt, config), since, 1, nil}
+        else: {"pending", error_text(reason), now + delay, since, 1, nil}
     else
       if job.attempt >= job.max_attempts,
         do: {"dead", error_text(reason), nil, now, 0, :max_attempts},
@@ -1078,9 +1082,12 @@ defmodule Atanor.Jobs do
     do: min(config.jobs.backoff_ms * Integer.pow(2, attempt - 1), config.jobs.max_backoff_ms)
 
   # An error of the store, the cell or the route, not of the handler: the attempt did not fail, the cell could not
-  # be reached (`Atanor.Unavailable`), or the attempt's effects are unknown. A handler's own `:timeout`,
+  # be reached (`Atanor.Unavailable`), or the attempt's effects are unknown. A handler's own `:handler_timeout`,
   # raise or error return is not one.
-  defp infrastructure?(reason), do: reason == :unknown_outcome or Atanor.Unavailable.reason(reason) != nil
+  # `:timeout` is a cell call that did not answer; the handler's own run timeout is `:handler_timeout`.
+  # `:partitioned` is the error of a store that cannot be reached.
+  defp infrastructure?(reason),
+    do: reason in [:unknown_outcome, :timeout, :partitioned] or Atanor.Unavailable.reason(reason) != nil
 
   defp error_text(nil), do: nil
   defp error_text(reason) when is_binary(reason), do: String.slice(reason, 0, 1000)

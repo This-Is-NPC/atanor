@@ -4599,8 +4599,8 @@ Success sets `done`; a failure records `last_error` and retries at
 after `max_attempts`. Only a failure of the handler counts as an attempt (a raise, an error
 return, its own `timeout_ms`). An error of the store or the cell (an availability reason of
 `Atanor.Unavailable`: `no_quorum`, `owner_unreachable`, `owner_down`, `draining`, `held_elsewhere`,
-`fenced`, `overloaded`, `deployment_unavailable`, `store_unavailable`, and `unknown_outcome`)
-gives the attempt back: the job goes to `pending` with the same backoff and `attempts` unchanged.
+`fenced`, `overloaded`, `deployment_unavailable`, `store_unavailable`, `unknown_outcome`, and a cell call that returned `:timeout`)
+gives the attempt back: the job goes to `pending` and `attempts` is unchanged. Its delay starts at the backoff of the attempt and grows with the time waited (the retry after a wait of `w` ms is `w` ms later), up to `max_backoff_ms`, so a long outage is retried less and less often. The run timeout of the job itself (`jobs.timeout_ms`, reason `:handler_timeout`) is a handler failure.
 `jobs.infrastructure_timeout_ms` (3 600 000, one hour) bounds that wait, counted from the first such
 error since the last handler failure (kept in `completed_at_ms` of the pending row, which
 no query reads before the job ends). Past it the job is `dead` with `last_error` starting

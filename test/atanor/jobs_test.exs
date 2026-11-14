@@ -215,6 +215,23 @@ defmodule Atanor.JobsTest do
       assert_receive {:dead, %{cause: :max_attempts}}
     end
 
+    test "a cell call that timed out does not consume an attempt" do
+      {node, world} = start(jobs: [backoff_ms: 1_000, max_backoff_ms: 1_000, max_attempts: 1])
+      assert %{status: 200} = enqueue(node, "a", payload: "cell_timeout", max: 1)
+
+      for n <- 1..3 do
+        assert until(fn -> length(runs(node, "a")) == n end)
+        assert until(fn -> match?({:ok, %{rows: [["pending", 0, _]]}}, job_row(node, "a")) end)
+        ManualClock.advance(world, 1_000)
+      end
+    end
+
+    test "a handler that outlasts jobs.timeout_ms consumes an attempt" do
+      {node, _world} = start(jobs: [timeout_ms: 200, claim_ms: 1_000, max_attempts: 1])
+      assert %{status: 200} = enqueue(node, "a", payload: "slow", max: 1)
+      assert until(fn -> match?({:ok, %{rows: [["dead", 1, ":handler_timeout"]]}}, job_row(node, "a")) end)
+    end
+
     test "past infrastructure_timeout_ms the job is dead with cause infrastructure" do
       {node, world} =
         start(jobs: [backoff_ms: 1_000, max_backoff_ms: 1_000, max_attempts: 2, infrastructure_timeout_ms: 3_500])
