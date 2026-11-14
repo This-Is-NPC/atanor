@@ -23,7 +23,12 @@ case "$1" in
   inspect)
     if [ -e "$FAKE_DIR/gone" ]; then echo "Error: No such object: $2" >&2; echo "[]"; exit 1; fi
     cat "$FAKE_DIR/inspect.json" ;;
-  logs) echo "beam: eheap_alloc: cannot allocate memory" ;;
+  logs)
+    if [ "$2" = "--timestamps" ]; then
+      echo "2026-01-01T00:00:01Z volume growth: no free volume"
+      echo "2026-01-01T00:00:02Z s3 auth with secret_access_key=abc123"
+      echo "2026-01-01T00:00:03Z request Authorization TOKEN seen"
+    else echo "beam: eheap_alloc: cannot allocate memory"; fi ;;
   *) exit 1 ;;
 esac
 """
@@ -81,7 +86,7 @@ def new_round(name):
                               sample_s=0.05, quiet_window=0.0, quiet_max_wait=5.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
                               max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, max_store_tmpfs_pct=90.0)
     pid = os.getpid()
-    info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"ip": "127.0.0.1", "pid": pid},
+    info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"id": "store-id", "ip": "127.0.0.1", "pid": pid},
             "lb": {"pid": pid}, "admin": "http://127.0.0.1:1"}
     return m.Round(args, info), args
 
@@ -122,13 +127,14 @@ def fake_runtime(info, path, timeout):
             "top_memory": top, "top_message_queue": top, "wasm": None,
             "cgroup": {"memory_current": 1, "memory_max": 2, "stat": {"anon": 7 * n, "shmem": 1, "file": None, "sock": 2 * n, "inactive_file": 3 * n}, "events": {"oom": 0, "oom_kill": n}},
             "admission": {"in_flight": n, "max_in_flight": 64, "refused": {"memory": 10 * n, "in_flight": n, "disk": 0}, "working_set_bytes": 1000 * n, "limit_bytes": 512 * MB,
-                          "refuse_at_bytes": 400 * MB, "refusing": n > 1, "disk_used_bytes": None, "disk_budget_bytes": None, "disk_refusing": False}}
+                          "refuse_at_bytes": 400 * MB, "refusing": n > 1, "disk_used_bytes": None, "disk_budget_bytes": None, "disk_refusing": False},
+            "store": {"s3://bucket": {"state": "open" if n > 1 else "closed", "since_ms": 1, "failures": 5}}}
 
 
 real_admin_json = m.admin_json
 m.admin_json = fake_runtime
 real_cgroup_sample, real_s3 = m.cgroup_sample, m.s3_counters
-m.cgroup_sample = lambda d: {"memory_current": 300 * MB, "shmem": 256 * MB if "store" in d else 1, "peak": 300 * MB, "limit": 1280 * MB, "cpu_s": time.time(), "cpu_limit": 1.0}
+m.cgroup_sample = lambda d: {"memory_current": 300 * MB, "shmem": 256 * MB if "store" in d else 1, "peak": 300 * MB, "limit": 1280 * MB, "cpu_s": time.time(), "cpu_limit": 1.0, "throttled_s": 1.5}
 m.cgroup_dir = lambda pid: work + ("/store" if pid == "store" else "/no-cgroup")
 m.s3_counters = lambda ip: (1.0, 1.0, float(len(calls)))
 results["runtime_ok"] = scenario("runtime_ok", info={"store_tmpfs_bytes": 512 * MB, "store": {"ip": "127.0.0.1", "pid": "store"}})
@@ -153,7 +159,7 @@ def store_scenario(name, tmpfs_mb, die=False):
     measure[0] = "http-native"
     try:
         result = scenario(name, during=(lambda: container(running=False, oom=True, exit_code=137)) if die else (lambda: None),
-                          info={"store_tmpfs_bytes": tmpfs_mb * MB, "store": {"ip": "127.0.0.1", "pid": "store"}})
+                          info={"store_tmpfs_bytes": tmpfs_mb * MB, "store": {"id": "store-id", "ip": "127.0.0.1", "pid": "store"}})
     finally:
         measure[0] = "ws"
         m.cgroup_sample, m.cgroup_dir, m.Round.run_generators = real
@@ -340,4 +346,33 @@ def host_scenario(name, busy_cores):
 
 results["host_busy"] = host_scenario("host_busy", lambda ran: 2.5)
 results["host_contaminated"] = host_scenario("host_contaminated", lambda ran: 2.5 if ran else 0.2)
+# A stall of the harness's own ticker next to the first breaker-open sample is a stop of the whole VM; one far from it, or no open breaker, is not.
+def stall_sample(t, state):
+    return {"t": t, "runtime": {"store": {"s3://b": {"state": state}}}}
+
+
+samples = [stall_sample(100.0, "closed"), stall_sample(105.0, "closed"), stall_sample(110.0, "open")]
+results["stalls_together"] = m.stall_summary(samples, [(107.0, 5.5)])
+results["stalls_apart"] = m.stall_summary(samples, [(40.0, 5.5)])
+results["stalls_no_breaker"] = m.stall_summary(samples[:2], [(103.0, 5.5)])
+results["stalls_none"] = m.stall_summary([], [])
+# The ticker records the overshoot of its sleep: a sleep that takes 1.6 s instead of 0.1 s is a stall of 1.5 s, one of 0.1 s is not.
+ticker = m.Sampler.__new__(m.Sampler)
+ticker.stop_flag, ticker.stalls = m.threading.Event(), []
+clock, sleeps = [0.0], [0.1, 1.6]
+
+
+def fake_sleep(seconds):
+    clock[0] += sleeps.pop(0)
+    if not sleeps:
+        ticker.stop_flag.set()
+
+
+real_sleep, real_monotonic = m.time.sleep, m.time.monotonic
+m.time.sleep, m.time.monotonic = fake_sleep, lambda: clock[0]
+try:
+    ticker.watch()
+finally:
+    m.time.sleep, m.time.monotonic = real_sleep, real_monotonic
+results["ticker"] = [over for _, over in ticker.stalls]
 print(json.dumps(results))

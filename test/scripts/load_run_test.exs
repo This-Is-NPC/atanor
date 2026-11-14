@@ -70,6 +70,13 @@ defmodule Atanor.LoadRunTest do
     assert last["store_shmem"] == 256 * 1_048_576 and last["store_limit"] == 1280 * 1_048_576 and
              is_integer(last["store_s3_errors"])
 
+    # the store breaker (open in the last /runtime sample, closed in the first) and the node's CPU throttling, to place a stall
+    assert last["store_breaker_open"] == 1 and hd(series)["store_breaker_open"] == 0
+    assert last["node_throttled_ms"] == 1500
+
+    assert r["rtt_fails"]["record"]["series"]
+           |> Enum.all?(&(&1["store_breaker_open"] == :null and &1["node_throttled_ms"] == :null))
+
     assert record["admission"]["refuse_at_bytes"] == 400 * 1_048_576
     assert record["admission"]["refusing_seen"] == true
 
@@ -190,13 +197,19 @@ defmodule Atanor.LoadRunTest do
       assert record["status"] == "fail", name
       assert record["valid"], name
       assert record["stop_reason"] =~ reason, name
-      # inspect state and log tail are kept next to the step file
-      assert length(record["diagnostics"]) == 2, name
+
+      # inspect state, the node log and the store log are kept next to the step file (the store's metrics do not answer in the test)
+      assert length(record["diagnostics"]) == 3, name
       assert Enum.all?(record["diagnostics"], &(&1 in r[name]["files"])), name
     end
 
     assert File.read!(Path.join([dir, "oom", "A_ws_01-ramp-10.node.log"])) =~ "cannot allocate memory"
     assert File.read!(Path.join([dir, "oom", "A_ws_01-ramp-10.node-state.txt"])) =~ "\"OOMKilled\": true"
+
+    # the store log is timestamped and loses the lines that name a secret
+    store_log = File.read!(Path.join([dir, "oom", "A_ws_01-ramp-10.store.log"]))
+    assert store_log =~ "2026-01-01T00:00:01Z volume growth"
+    refute store_log =~ ~r/secret|token|abc123/i
 
     # a generator failure with a healthy node stays invalid
     assert r["generator_only"]["record"]["status"] == "invalid"
@@ -218,6 +231,30 @@ defmodule Atanor.LoadRunTest do
     assert start["summary"]["node_stopped"]
     assert start["summary"]["approved"] == nil or start["summary"]["approved"] == :null
     assert length(start["files"]) == 1
+  end
+
+  test "a stall of the harness's own ticker next to an open breaker marks a stop of the whole VM", %{dir: dir} do
+    {out, 0} = System.cmd("python3", ["-I", "test/scripts/load_run_check.py", dir], stderr_to_stdout: true)
+    r = out |> String.split("\n", trim: true) |> List.last() |> :json.decode()
+
+    together = r["stalls_together"]
+    assert together["vm_pause_suspected"] == true
+    assert together["breaker_open_at_s"] == [10.0]
+    assert together["ticker_stalls"] == [%{"t" => 7.0, "overshoot_s" => 5.5}]
+
+    # a stall long before the breaker opened, or an open breaker with no stall, is a fault of the node or the store
+    assert r["stalls_apart"]["vm_pause_suspected"] == false
+
+    assert r["stalls_no_breaker"] == %{
+             "ticker_stalls" => [%{"t" => 3.0, "overshoot_s" => 5.5}],
+             "breaker_open_at_s" => [],
+             "vm_pause_suspected" => false
+           }
+
+    assert r["stalls_none"] == :null
+
+    # the ticker records the sleep that overshot, not the one that did not
+    assert r["ticker"] == [1.5]
   end
 
   describe "load-env rtt" do
