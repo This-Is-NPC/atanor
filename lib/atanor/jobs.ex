@@ -454,7 +454,7 @@ defmodule Atanor.Jobs do
                         tx,
                         "UPDATE #{@table} SET state = 'running', claimed_until_ms = ?, claimed_by = ?, attempts = attempts + 1 " <>
                           "WHERE id = ? AND ((state = 'pending' AND due_at_ms <= ?) OR (state = 'running' AND claimed_until_ms <= ?)) " <>
-                          "RETURNING id, worker, kind, payload, due_at_ms, inserted_at_ms, attempts, max_attempts, idempotency_key, operation_id",
+                          "RETURNING id, worker, kind, payload, due_at_ms, inserted_at_ms, attempts, max_attempts, idempotency_key, operation_id, completed_at_ms",
                         [lease, by, id, now, now]
                       ) do
                    {:ok, %{rows: [job]}} -> {:cont, {[{job, lease} | claimed], room - 1}}
@@ -529,29 +529,43 @@ defmodule Atanor.Jobs do
     end
   end
 
+  @doc false
+  # What the end of an attempt does to the job: `{state, last_error, due_at_ms, completed_at_ms, refund, cause}`.
+  # `completed_at_ms` of a pending job is the start of its wait on the infrastructure (nil after a handler
+  # failure). An infrastructure error gives the attempt back (`refund` 1) and waits `infrastructure_timeout_ms`;
+  # only a handler failure consumes one of `max_attempts`.
+  def outcome(:ok, _job, now, _config), do: {"done", nil, nil, now, 0, nil}
+
+  def outcome({:error, reason}, job, now, config) do
+    if infrastructure?(reason) do
+      since = job.infrastructure_since_ms || now
+
+      if now - since >= config.jobs.infrastructure_timeout_ms,
+        do: {"dead", "infrastructure: " <> error_text(reason), nil, now, 1, :infrastructure},
+        else: {"pending", error_text(reason), now + backoff(job.attempt, config), since, 1, nil}
+    else
+      if job.attempt >= job.max_attempts,
+        do: {"dead", error_text(reason), nil, now, 0, :max_attempts},
+        else: {"pending", error_text(reason), now + backoff(job.attempt, config), nil, 0, nil}
+    end
+  end
+
   defp finished(instance, cell, job, lease, result, started, chain?) do
     config = Registry.config(instance)
     now = Alarms.now(config)
 
-    outcome =
-      case result do
-        :ok -> {"done", nil, nil, now}
-        {:error, reason} when job.attempt >= job.max_attempts -> {"dead", error_text(reason), nil, now}
-        {:error, reason} -> {"pending", error_text(reason), now + backoff(job.attempt, config), nil}
-      end
-
-    {state, error, due, completed} = outcome
+    {state, error, due, completed, refund, cause} = outcome(result, job, now, config)
     by = Atom.to_string(node())
 
     case Cell.transaction(instance, cell, fn tx ->
            sql =
              case state do
                "pending" ->
-                 "UPDATE #{@table} SET state = 'pending', claimed_until_ms = NULL, claimed_by = NULL, due_at_ms = ?, last_error = ? " <>
-                   "WHERE id = ? AND state = 'running' AND claimed_until_ms = ? RETURNING id"
+                 "UPDATE #{@table} SET state = 'pending', claimed_until_ms = NULL, claimed_by = NULL, due_at_ms = ?, last_error = ?, " <>
+                   "completed_at_ms = ?, attempts = attempts - ? WHERE id = ? AND state = 'running' AND claimed_until_ms = ? RETURNING id"
 
                _ ->
-                 "UPDATE #{@table} SET state = ?, claimed_until_ms = NULL, claimed_by = NULL, last_error = ?, completed_at_ms = ?, " <>
+                 "UPDATE #{@table} SET state = ?, claimed_until_ms = NULL, claimed_by = NULL, last_error = ?, completed_at_ms = ?, attempts = attempts - ?, " <>
                    if(state == "done", do: "payload = x'', ", else: "") <>
                    "unique_key = CASE WHEN unique_period = 'until_done' THEN NULL ELSE unique_key END " <>
                    "WHERE id = ? AND state = 'running' AND claimed_until_ms = ? RETURNING id"
@@ -559,8 +573,8 @@ defmodule Atanor.Jobs do
 
            params =
              case state do
-               "pending" -> [due, error, job.id, lease]
-               _ -> [state, error, completed, job.id, lease]
+               "pending" -> [due, error, completed, refund, job.id, lease]
+               _ -> [state, error, completed, refund, job.id, lease]
              end
 
            {:ok, result} = Tx.execute(tx, sql, params)
@@ -573,7 +587,7 @@ defmodule Atanor.Jobs do
         apply_rearm(instance, cell, rearm_result)
 
         if state == "dead" do
-          write_dead_index(instance, cell, job, error, now)
+          write_dead_index(instance, cell, job, error, cause, now)
 
           :telemetry.execute([:atanor, :job, :dead], %{count: 1}, %{
             instance: instance,
@@ -582,6 +596,7 @@ defmodule Atanor.Jobs do
             id: job.id,
             kind: job.kind,
             reason: error,
+            cause: cause,
             node: node()
           })
         end
@@ -595,6 +610,7 @@ defmodule Atanor.Jobs do
           attempt: job.attempt,
           result: if(state == "done", do: :ok, else: :error),
           reason: error,
+          infrastructure: refund == 1,
           final: state == "dead",
           node: node()
         })
@@ -640,7 +656,7 @@ defmodule Atanor.Jobs do
         Tx.execute(
           tx,
           "UPDATE #{@table} SET state = 'running', claimed_until_ms = ?, claimed_by = ?, attempts = attempts + 1 WHERE id = ? " <>
-            "RETURNING id, worker, kind, payload, due_at_ms, inserted_at_ms, attempts, max_attempts, idempotency_key, operation_id",
+            "RETURNING id, worker, kind, payload, due_at_ms, inserted_at_ms, attempts, max_attempts, idempotency_key, operation_id, completed_at_ms",
           [lease, by, id]
         )
 
@@ -1061,6 +1077,11 @@ defmodule Atanor.Jobs do
   defp backoff(attempt, config),
     do: min(config.jobs.backoff_ms * Integer.pow(2, attempt - 1), config.jobs.max_backoff_ms)
 
+  # An error of the store, the cell or the route, not of the handler: the attempt did not fail, the cell could not
+  # be reached (`Atanor.Unavailable`), or the attempt's effects are unknown. A handler's own `:timeout`,
+  # raise or error return is not one.
+  defp infrastructure?(reason), do: reason == :unknown_outcome or Atanor.Unavailable.reason(reason) != nil
+
   defp error_text(nil), do: nil
   defp error_text(reason) when is_binary(reason), do: String.slice(reason, 0, 1000)
   defp error_text(reason), do: String.slice(inspect(reason), 0, 1000)
@@ -1071,7 +1092,7 @@ defmodule Atanor.Jobs do
     |> Kernel.<>(Base.encode16(:crypto.strong_rand_bytes(8), case: :lower))
   end
 
-  defp job_from_row([id, worker, kind, payload, due, inserted, attempts, max, key, operation], cell) do
+  defp job_from_row([id, worker, kind, payload, due, inserted, attempts, max, key, operation, infra_since], cell) do
     %Job{
       id: id,
       cell: cell,
@@ -1083,7 +1104,8 @@ defmodule Atanor.Jobs do
       idempotency_key: key || id,
       operation_id: operation,
       due_at_ms: due,
-      inserted_at_ms: inserted
+      inserted_at_ms: inserted,
+      infrastructure_since_ms: infra_since
     }
   end
 
@@ -1108,7 +1130,7 @@ defmodule Atanor.Jobs do
     }
   end
 
-  defp write_dead_index(instance, cell, job, error, now) do
+  defp write_dead_index(instance, cell, job, error, cause, now) do
     body =
       Jason.encode!(%{
         id: job.id,
@@ -1116,6 +1138,7 @@ defmodule Atanor.Jobs do
         worker: job.worker,
         kind: job.kind,
         reason: error,
+        cause: cause,
         at_ms: now
       })
 

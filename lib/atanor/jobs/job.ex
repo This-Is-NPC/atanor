@@ -16,6 +16,7 @@ defmodule Atanor.Jobs.Job do
     :operation_id,
     :inserted_at_ms,
     :due_at_ms,
+    :infrastructure_since_ms,
     attempt: 1,
     max_attempts: 1
   ]
@@ -30,6 +31,7 @@ defmodule Atanor.Jobs.Job do
           operation_id: String.t() | nil,
           inserted_at_ms: integer | nil,
           due_at_ms: integer | nil,
+          infrastructure_since_ms: integer | nil,
           attempt: pos_integer,
           max_attempts: pos_integer
         }

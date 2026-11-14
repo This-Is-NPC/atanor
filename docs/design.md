@@ -4596,7 +4596,20 @@ reports when it expires (`claimed_until_ms`). Delivery is at
 least once: a node that dies after side effects leaves the claim to expire.
 Success sets `done`; a failure records `last_error` and retries at
 `now + min(backoff_ms * 2^(attempts-1), max_backoff_ms)`, or marks `dead`
-after `max_attempts`. A claim that is still live when its node dies expires at
+after `max_attempts`. Only a failure of the handler counts as an attempt (a raise, an error
+return, its own `timeout_ms`). An error of the store or the cell (an availability reason of
+`Atanor.Unavailable`: `no_quorum`, `owner_unreachable`, `owner_down`, `draining`, `held_elsewhere`,
+`fenced`, `overloaded`, `deployment_unavailable`, `store_unavailable`, and `unknown_outcome`)
+gives the attempt back: the job goes to `pending` with the same backoff and `attempts` unchanged.
+`jobs.infrastructure_timeout_ms` (3 600 000, one hour) bounds that wait, counted from the first such
+error since the last handler failure (kept in `completed_at_ms` of the pending row, which
+no query reads before the job ends). Past it the job is `dead` with `last_error` starting
+`infrastructure: `, and the `dead` event and the dead-letter index carry `cause: :infrastructure`
+(`:max_attempts` for a job whose handler failed). One hour is about the time the defaults give a
+failing handler to use its 20 attempts (1 s doubling to 300 s). The error is told apart by its
+shape, so a handler that returns one of those reasons itself is treated the same. Not covered:
+if the write that ends the attempt is itself lost, the claim expires and the run that follows
+counts as an attempt, as after the death of a node. A claim that is still live when its node dies expires at
 `claim_ms`, or earlier when the takeover releases it (§15.11). `jobs.timeout_ms` bounds one attempt with a watchdog
 task. Dead jobs can be retried or discarded from the admin API.
 
@@ -4722,7 +4735,7 @@ operations, and asks for or reads an operation's undo report and applies it (§1
 the store.
 
 `jobs`: `max_attempts` 20, `timeout_ms` 30 000, `claim_ms` 60 000,
-`backoff_ms` 1 000, `max_backoff_ms` 300 000, `concurrency` 64,
+`backoff_ms` 1 000, `max_backoff_ms` 300 000, `infrastructure_timeout_ms` 3 600 000, `concurrency` 64,
 `worker_concurrency` 8, `cell_concurrency` 1, `claim_on_finish` true (§15.5),
 `release_claims` true (§15.11), `batch_size` 20, `wait_ms`
 1 000, `max_payload_bytes` 1 000 000, `max_pending` 10 000,

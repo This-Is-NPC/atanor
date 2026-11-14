@@ -3,7 +3,8 @@ defmodule Atanor.Test.JobWorker do
   Test worker for jobs. Requests: `/enqueue?key&kind&payload&at&max&unique`,
   `/tx?key` (a write and a job in one transaction), `/cron?key&expr`, and
   `/jobs?key`, `/runs?key`, `/effects?key`. Job payloads `noop` (writes nothing), `fail`, `flaky` and
-  `slow` exercise retries and timeouts; every execution is recorded and effects
+  `slow` exercise retries and timeouts; `heal:<table>` fails with `store_unavailable` until the test puts
+  `:healed` in the ETS set `<table>` (public, owned by the test), `unhealed:<dir>` until the file `<dir>/healed` exists; every execution is recorded and effects
   are deduplicated by job id. `track:<ms>:<table>` holds a slot for `<ms>` and
   records how many jobs ran at once and in what order in the ETS table `<table>`
   (a public named set the test owns). `file:<ms>:<dir>` appends `start`, `beat`
@@ -111,6 +112,8 @@ defmodule Atanor.Test.JobWorker do
       "fail" -> {:error, :boom}
       "flaky" when job.attempt < 2 -> {:error, :flaky}
       "slow" -> Process.sleep(:infinity)
+      "heal:" <> table -> heal(table)
+      "unhealed:" <> dir -> unhealed(dir)
       "track:" <> rest -> track(job, rest)
       "file:" <> rest -> file(job, rest)
       "pulse:" <> rest -> pulse(rest)
@@ -118,6 +121,18 @@ defmodule Atanor.Test.JobWorker do
       "raise" -> raise "job failure"
       _ -> :ok
     end
+  end
+
+  # An infrastructure error until the test inserts `:healed` into its public ETS set `<table>`.
+  defp heal(table) do
+    if :ets.lookup(String.to_existing_atom(table), :healed) == [],
+      do: {:error, {:unavailable, :store_unavailable}},
+      else: :ok
+  end
+
+  # The same, until the file `<dir>/healed` exists: for tests whose handler runs on another node.
+  defp unhealed(dir) do
+    if File.exists?(Path.join(dir, "healed")), do: :ok, else: {:error, {:unavailable, :no_quorum}}
   end
 
   defp track(job, rest) do

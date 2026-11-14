@@ -19,6 +19,7 @@ defmodule Atanor.Config do
     claim_ms: 60_000,
     backoff_ms: 1_000,
     max_backoff_ms: 300_000,
+    infrastructure_timeout_ms: 3_600_000,
     concurrency: 64,
     worker_concurrency: 8,
     cell_concurrency: 1,
