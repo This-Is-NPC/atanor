@@ -30,7 +30,13 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
   test "the statement slots, the script deadline and the moved-cell scan are passed through" do
     alambique = [
       sql: [script_timeout_ms: 5_000, max_concurrent_statements: 3],
-      compaction: [moved_scan_ms: 1_000, moved_scan_page: 10],
+      compaction: [
+        moved_scan_ms: 1_000,
+        moved_scan_page: 10,
+        release_min_tail: 8,
+        release_deadline_ms: 0,
+        release_reserve_ms: 0
+      ],
       replicas: [poll_max_ms: 2_000],
       query: [reflink: false]
     ]
@@ -41,6 +47,9 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
     for bad <- [
           [sql: [max_concurrent_statements: 0]],
           [compaction: [moved_scan_page: 1.5]],
+          [compaction: [release_min_tail: 0]],
+          [compaction: [release_deadline_ms: -1]],
+          [compaction: [release_reserve_ms: 1.5]],
           [sql: [script_timeout_ms: -1]]
         ] do
       assert_raise ArgumentError, fn -> build(bad) end
