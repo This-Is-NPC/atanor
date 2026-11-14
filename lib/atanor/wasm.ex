@@ -33,15 +33,19 @@ defmodule Atanor.Wasm do
     * `:max_nested_calls` - calls that guests make to other workers, in flight
       at once. They run on threads of their own, so they never wait for a pool
       thread behind their callers (default: 1 per thread).
-    * `:worker_calls` - calls of one deployment in flight at once, queued
-      included, waiting guests excepted; one more is refused with
-      `{:error, :overloaded}`, so a busy worker cannot take every thread (default: three quarters of
-      `:max_calls`, at least 1).
+    * `:worker_calls` - busy calls of one deployment at once, waiting guests excepted. A call
+      of a deployment at its limit stays queued and a call of another deployment may pass it, so a busy
+      worker cannot take every thread (default: three quarters of `:max_calls`, at least 1).
     * `:waiting_bytes` - what one waiting guest or queued call is counted to hold when
       `:max_waiting` and `:queue` are derived from the memory (default 2 MiB).
     * `:queue` - calls that may wait for a pool thread (default: the same number as
       `:max_waiting` with a memory limit, else 4 per thread).
-      A full queue refuses the call with `{:error, :overloaded}`.
+      A full queue refuses the call with `{:error, :overloaded}`, 503 `worker_queue`; so does a call
+      between workers above `:max_nested_calls`, 503 `nested_calls`.
+    * `:worker_queue` - calls of one deployment that may wait in `:queue`, so a flooded worker cannot
+      fill it: the rest stays for the others, which are refused with 503 `worker_queue` only
+      when the queue is full (default: three quarters of `:queue`, at least 1; with a `:queue` of 1
+      one worker can take it).
     * `:queue_wait_ms` - longest wait in the queue and for the right to run
       (default 1000; less when the request's `http: [queue_wait_ms:]` leaves less). The caller takes the call
       back at that time unless a thread started it, and answers 503 `queue_timeout`.
@@ -214,6 +218,7 @@ defmodule Atanor.Wasm do
       |> Keyword.put_new(:max_nested_calls, threads)
       |> Keyword.put_new(:max_waiting, waiting)
       |> Keyword.put_new(:worker_calls, max(max_calls - div(max_calls, 4), 1))
+      |> Keyword.put_new(:worker_queue, max(config[:queue] - div(config[:queue], 4), 1))
 
     settings = Map.new(Keyword.merge(@defaults, config))
     validate!(settings)
@@ -241,6 +246,7 @@ defmodule Atanor.Wasm do
           :waiting_bytes,
           :worker_calls,
           :queue,
+          :worker_queue,
           :queue_wait_ms,
           :tick_ms,
           :cpu_ms,
@@ -431,9 +437,9 @@ defmodule Atanor.Wasm do
           wait_ms = limits.timeout_ms + limits.queue_wait_ms + settings.grace_ms
           {await(tag, env, wait_ms, started, {ticket, limits.queue_wait_ms}), :queue_timeout}
 
-        # The queue is full or the worker has `worker_calls` calls.
-        :overloaded ->
-          {{{:error, :overloaded}, "", nil}, :worker_queue}
+        # The gate that refused: the queue is full, or a call between workers found `max_nested_calls`.
+        {:error, gate} when gate in [:queue_full, :nested_calls] ->
+          {{{:error, :overloaded}, "", nil}, if(gate == :queue_full, do: :worker_queue, else: gate)}
       end
 
     # No cell is behind a refusal; `cause` says whether the call was refused as it came or after it waited

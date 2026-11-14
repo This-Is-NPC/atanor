@@ -40,6 +40,8 @@ pub struct Settings {
     /// Calls of one worker in flight at once, queued included.
     pub worker_calls: usize,
     pub queue: usize,
+    /// Calls of one worker that may wait in `queue`; the rest of the queue is for the others.
+    pub worker_queue: usize,
     pub tick_ms: u64,
     pub cpu: String,
     /// Reuse pre-mapped slots for instances instead of mapping memory for every call.
@@ -61,7 +63,6 @@ pub struct Runtime {
     queue: Arc<Queue>,
     permits: Arc<Semaphore>,
     nested: Arc<Gate>,
-    waiting: Arc<Gate>,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -130,12 +131,13 @@ pub fn configure(settings: Settings) -> Result<(), String> {
         || settings.max_waiting == 0
         || settings.worker_calls == 0
         || settings.queue == 0
+        || settings.worker_queue == 0
         || settings.tick_ms == 0
         || settings.max_memory_bytes == 0
         || settings.table_elements == 0
     {
         return Err(
-            "threads, max_nested_calls, max_waiting, worker_calls, queue, tick_ms, max_memory_bytes and table_elements must be positive, and max_calls at least threads".into(),
+            "threads, max_nested_calls, max_waiting, worker_calls, queue, worker_queue, tick_ms, max_memory_bytes and table_elements must be positive, and max_calls at least threads".into(),
         );
     }
     if let Some(running) = RUNTIME.get() {
@@ -146,6 +148,7 @@ pub fn configure(settings: Settings) -> Result<(), String> {
             && s.max_waiting == settings.max_waiting
             && s.worker_calls == settings.worker_calls
             && s.queue == settings.queue
+            && s.worker_queue == settings.worker_queue
             && s.tick_ms == settings.tick_ms
             && s.cpu == settings.cpu
             && s.pooling == settings.pooling
@@ -159,7 +162,8 @@ pub fn configure(settings: Settings) -> Result<(), String> {
     }
 
     let engine = engine(cpu, &settings)?;
-    let queue = Arc::new(Queue::new(settings.max_calls));
+    let waiting = Gate::new(settings.max_waiting);
+    let queue = Arc::new(Queue::new(settings.max_calls, waiting.clone()));
     let tick = Duration::from_millis(settings.tick_ms);
 
     let runtime = Runtime {
@@ -169,7 +173,6 @@ pub fn configure(settings: Settings) -> Result<(), String> {
         queue: queue.clone(),
         permits: Arc::new(Semaphore::new(settings.threads)),
         nested: Gate::new(settings.max_nested_calls),
-        waiting: Gate::new(settings.max_waiting),
     };
     if RUNTIME.set(runtime).is_err() {
         return Ok(());
@@ -194,12 +197,20 @@ pub fn configure(settings: Settings) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a call may queue: the queue has room and its worker has not used its share. The share
+/// is below the queue, so a worker that floods the queue leaves `queue - share` places for the others.
+pub fn admits(queued: usize, queue: usize, worker_queued: usize, share: usize) -> bool {
+    queued < queue && worker_queued < share
+}
+
 /// Jobs waiting for a pool thread. An idle thread sleeps on the condition and a new job wakes
 /// exactly one, so a pool far larger than its load costs no wake-up chain per job.
 ///
 /// The pool has `max_waiting` threads more than `max_calls`: a job is taken only while fewer than
 /// `max_calls` calls are busy, and a call that waits is not busy, so its thread is not
-/// counted and another call may use the pool in the meantime.
+/// counted and another call may use the pool in the meantime. A job is also taken only while its
+/// worker has fewer than `worker_calls` busy calls; a job of a worker at its limit stays queued
+/// and the next one may pass it.
 pub struct Queue {
     jobs: Mutex<VecDeque<Job>>,
     ready: Condvar,
@@ -208,25 +219,29 @@ pub struct Queue {
     /// Jobs in `jobs`, readable without the lock.
     queued: AtomicUsize,
     capacity: usize,
+    /// Where a busy call may wait without its slot (`Parker`).
+    waiting: Arc<Gate>,
 }
 
 impl Queue {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize, waiting: Arc<Gate>) -> Self {
         Queue {
             jobs: Mutex::default(),
             ready: Condvar::new(),
             busy: AtomicUsize::new(0),
             queued: AtomicUsize::new(0),
             capacity,
+            waiting,
         }
     }
 
-    /// Adds a job unless `limit` are already waiting.
-    fn push(&self, job: Job, limit: usize) -> bool {
+    /// Adds a job unless `limit` are already waiting or its worker has `share` queued.
+    fn push(&self, job: Job, limit: usize, share: usize) -> bool {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
-        if jobs.len() >= limit {
+        if !admits(jobs.len(), limit, job.pre.queued.load(SeqCst), share) {
             return false;
         }
+        job.pre.queued.fetch_add(1, SeqCst);
         jobs.push_back(job);
         self.queued.fetch_add(1, SeqCst);
         drop(jobs);
@@ -234,15 +249,25 @@ impl Queue {
         true
     }
 
-    /// The next job, once fewer than `capacity` calls are busy. The call is busy from here.
-    fn pop(&self) -> Job {
+    /// The next job whose worker has a call to spare, once fewer than `capacity` calls are busy.
+    /// The call is busy from here and holds a slot of its worker until it ends.
+    fn pop(self: &Arc<Self>) -> Job {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if self.busy.load(SeqCst) < self.capacity {
-                if let Some(job) = jobs.pop_front() {
-                    self.queued.fetch_sub(1, SeqCst);
-                    self.busy.fetch_add(1, SeqCst);
-                    return job;
+                for at in 0..jobs.len() {
+                    let parking = Parking {
+                        waiting: self.waiting.clone(),
+                        pool: self.clone(),
+                    };
+                    if let Some(slot) = jobs[at].pre.calls.enter_parkable(parking) {
+                        let mut job = jobs.remove(at).expect("in range");
+                        job.pre.queued.fetch_sub(1, SeqCst);
+                        job.slot = Some(slot);
+                        self.queued.fetch_sub(1, SeqCst);
+                        self.busy.fetch_add(1, SeqCst);
+                        return job;
+                    }
                 }
             }
             jobs = self.ready.wait(jobs).unwrap_or_else(|e| e.into_inner());
@@ -302,44 +327,49 @@ fn survives(f: impl FnOnce()) -> bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_ok()
 }
 
-/// Admits a call and queues it, or refuses it so overload is visible to callers. A call that
+/// Why a call was refused.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Refusal {
+    /// The queue for the pool threads is full (`queue`).
+    QueueFull,
+    /// A call a guest made to another worker found `max_nested_calls` in flight.
+    NestedCalls,
+}
+
+/// Admits a call and queues it, or refuses it so overload is visible to callers. A queued call waits
+/// for a pool thread and for its worker to have a call to spare (`worker_calls`; see `Queue`). A call that
 /// a guest made to another worker gets a thread of its own, up to `max_nested_calls`: its caller
 /// is waiting for it, so it cannot wait for a pool thread behind its caller.
-pub fn submit(mut job: Job) -> Result<(), ()> {
-    let runtime = runtime().ok_or(())?;
-    let nested = job.limits.nested;
-    let slot = if nested {
-        runtime.nested.enter()
-    } else {
-        job.pre.calls.enter_parkable(Parking {
-            waiting: runtime.waiting.clone(),
-            pool: runtime.queue.clone(),
-        })
-    };
-    let Some(slot) = slot else {
-        stats::bump(&stats::REJECTED);
-        return Err(());
-    };
-    job.slot = Some(slot);
-    if nested {
+pub fn submit(mut job: Job) -> Result<(), Refusal> {
+    let runtime = runtime().ok_or(Refusal::QueueFull)?;
+    if job.limits.nested {
+        let Some(slot) = runtime.nested.enter() else {
+            stats::bump(&stats::REJECTED);
+            return Err(Refusal::NestedCalls);
+        };
+        job.slot = Some(slot);
         let spawned = std::thread::Builder::new()
             .name("atanor-wasm-nested".into())
             .spawn(move || serve(&current_thread(), job));
-        return spawned
-            .map(|_| ())
-            .map_err(|_| stats::bump(&stats::REJECTED));
+        return spawned.map(|_| ()).map_err(|_| {
+            stats::bump(&stats::REJECTED);
+            Refusal::NestedCalls
+        });
     }
     stats::QUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if runtime.queue.push(job, runtime.settings.queue) {
+    if runtime
+        .queue
+        .push(job, runtime.settings.queue, runtime.settings.worker_queue)
+    {
         Ok(())
     } else {
         stats::QUEUED.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         stats::bump(&stats::REJECTED);
-        Err(())
+        Err(Refusal::QueueFull)
     }
 }
 
-/// The calls of one worker's prepared component, in flight at once.
+/// The busy calls of one worker's prepared component.
 pub fn worker_gate() -> Arc<Gate> {
     Gate::new(runtime().expect("configured").settings.worker_calls)
 }
@@ -354,6 +384,7 @@ pub fn test_settings() -> Settings {
         max_waiting: 1,
         worker_calls: 1,
         queue: 1,
+        worker_queue: 1,
         tick_ms: 10,
         cpu: "epoch".into(),
         pooling: true,
@@ -376,6 +407,46 @@ mod tests {
             ..settings
         })
         .is_err());
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// A worker that floods the queue never makes another worker, which has queued less than the
+        /// part of the queue reserved from the flood, get refused.
+        #[test]
+        fn a_noisy_worker_leaves_room_for_the_others(
+            queue in 2usize..40,
+            steps in proptest::collection::vec((any::<bool>(), any::<bool>()), 0..200),
+        ) {
+            let share = queue - queue / 4;
+            let reserve = queue - share;
+            let (mut noisy, mut quiet) = (0usize, 0usize);
+            for (push, by_noisy) in steps {
+                if !push {
+                    if by_noisy { noisy = noisy.saturating_sub(1) } else { quiet = quiet.saturating_sub(1) }
+                    continue;
+                }
+                if by_noisy {
+                    if admits(noisy + quiet, queue, noisy, share) { noisy += 1 }
+                } else {
+                    let admitted = admits(noisy + quiet, queue, quiet, queue);
+                    prop_assert!(quiet >= reserve || admitted, "refused at {quiet} of {reserve} reserved");
+                    if admitted { quiet += 1 }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_share_of_the_whole_queue_lets_one_worker_fill_it() {
+        // The mutation the property catches: no share, so the flood takes every place.
+        let queue = 8;
+        let noisy = (0..queue).filter(|&n| admits(n, queue, n, queue)).count();
+        assert_eq!(noisy, queue);
+        assert!(!admits(noisy, queue, 0, queue));
+        // With a share of three quarters, six are taken and two places stay for the others.
+        assert!(!admits(6, queue, 6, queue - queue / 4) && admits(6, queue, 0, queue));
     }
 
     #[test]

@@ -39,14 +39,15 @@ defmodule Atanor.Wasm.Native do
   def prepare(_compiled, _grants), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Queues a call and returns `{:ok, ticket}`, or `:overloaded` when it is refused (the queue is full, or the
-  worker has `:worker_calls` calls). The call is
+  Queues a call and returns `{:ok, ticket}`, or `{:error, gate}` when it is refused: `:queue_full` (the queue
+  holds `:queue` calls) or `:nested_calls` (a call between workers found `:max_nested_calls` in flight). A queued
+  call waits for a thread and for its worker to have fewer than `:worker_calls` busy calls. The call is
   `{:http, method, scheme, authority, path_query, headers, body}`,
   `{:alarm, namespace, key, payload}`, `{:ws_open, socket, method, path, query,
   headers}`, `{:ws_message, socket, :text | :binary | :cell, data}`,
   `{:ws_local, socket, :text | :binary, data}` or `{:ws_close, socket}`.
   """
-  @spec invoke(reference, tuple, map, pid, non_neg_integer) :: {:ok, reference} | :overloaded
+  @spec invoke(reference, tuple, map, pid, non_neg_integer) :: {:ok, reference} | {:error, :queue_full | :nested_calls}
   def invoke(_prepared, _request, _limits, _pid, _tag), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """

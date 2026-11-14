@@ -16,6 +16,7 @@ use std::time::Instant;
 use rustler::{Atom, Binary, Encoder, Env, LocalPid, NifResult, ResourceArc, Term};
 
 use component::{Compiled, Grants, PrepareError, Prepared};
+use engine::Refusal;
 use guest::{Call, Job, Limits, Ticket};
 use wire::Wire;
 
@@ -24,7 +25,7 @@ static ALLOC: stats::Counted = stats::Counted;
 
 mod atoms {
     rustler::atoms! {
-        ok, error, overloaded, not_configured, compiled, disk, recompiled,
+        ok, error, overloaded, queue_full, nested_calls, not_configured, compiled, disk, recompiled,
         atanor_compile, not_granted, unsupported_import, missing_export, prepare_failed,
     }
 }
@@ -90,7 +91,7 @@ fn prepare(
 }
 
 /// Queues a call (see `guest::Call::parse` for its shape) and returns
-/// `{:ok, ticket}`, or `:overloaded` when it is refused. The result arrives
+/// `{:ok, ticket}`, or `{:error, :queue_full | :nested_calls}` when it is refused. The result arrives
 /// at `pid` as `{:atanor_wasm, tag, :done, result, stderr, timing}`; host
 /// calls as `{:atanor_wasm, tag, :host, id, op, args}`. `withdraw/1` takes the
 /// call back while it is queued.
@@ -115,10 +116,10 @@ fn invoke<'a>(
         ticket: ticket.clone(),
         slot: None,
     };
-    Ok(if engine::submit(job).is_ok() {
-        (atoms::ok(), ticket).encode(env)
-    } else {
-        atoms::overloaded().encode(env)
+    Ok(match engine::submit(job) {
+        Ok(()) => (atoms::ok(), ticket).encode(env),
+        Err(Refusal::QueueFull) => (atoms::error(), atoms::queue_full()).encode(env),
+        Err(Refusal::NestedCalls) => (atoms::error(), atoms::nested_calls()).encode(env),
     })
 }
 

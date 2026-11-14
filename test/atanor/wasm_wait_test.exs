@@ -61,4 +61,28 @@ defmodule Atanor.WasmWaitTest do
 
     for response <- Task.await_many(callers, 30_000), do: assert(%{status: 200, body: "200 slept 500"} = response)
   end
+
+  test "a call between workers above max_nested_calls is refused and counted as nested_calls" do
+    node =
+      start([
+        {"callee", "sleep", callable_by: ["caller"]},
+        {"caller", "caller", workers: ["callee"]}
+      ])
+
+    count = Atanor.Wasm.settings().max_nested_calls + 4
+
+    callers =
+      for _ <- 1..count do
+        Task.async(fn ->
+          request(node, "caller", "", method: :post, body: "x", headers: [{"x-worker", "callee"}, {"x-path", "/800"}])
+        end)
+      end
+
+    bodies = callers |> Task.await_many(30_000) |> Enum.map(& &1.body)
+    refused = Enum.filter(bodies, &(&1 == %{"error" => "overloaded", "reason" => "nested_calls"}))
+
+    assert length(refused) == 4
+    assert Enum.count(bodies, &(&1 == "200 slept 800")) == count - 4
+    assert Atanor.Admission.stats(node.name).refused.nested_calls == 4
+  end
 end

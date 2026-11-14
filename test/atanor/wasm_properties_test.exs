@@ -151,6 +151,7 @@ defmodule Atanor.WasmPropertiesTest do
 
       # The refusal names the pool, not the memory, the disk or a cell.
       assert %{status: 503, body: %{"error" => "overloaded", "reason" => "worker_queue"}} = refused_spin(node)
+      assert Atanor.Admission.stats(node.name).refused.worker_queue > 0
     end
   end
 
