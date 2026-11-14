@@ -1304,10 +1304,14 @@ refuse with 503 `overloaded`, `reason` `queue_timeout`, `Retry-After` and the ev
 * the owner lookup of a cell: `Cell.owner/2` (the wake) and the lease read that
   checks that this node still owns the cell. A cell that is not awake here wakes
   inside Alambique's call, for as long as the store takes, and `:timeout` does not
-  bound that, so `Cell.within_deadline/5` runs such a call on a process of its own
-  that the request leaves at the deadline; the wake finishes there;
-* the cell calls of a handler (`Cell.call/4`), with the same helper for a cold cell
-  and Alambique's `:timeout` for an awake one;
+  bound that, so `Cell.within_deadline/5` wakes it first (`Alambique.touch/3`) on a
+  process of its own that the request leaves at the deadline; the wake finishes there;
+* the cell calls of a handler (`Cell.call/4`): a cold cell is woken as above, and
+  then the call itself runs in the process of the handler with Alambique's `:timeout`
+  set to what the deadline leaves, as for an awake cell, so a call behaves the same
+  whether the cell was cold or warm. If the deadline passes during the wake, nothing
+  was sent and a read or a write is a `queue_timeout`. If the cell sleeps again
+  between the wake and the call, the call wakes it once more, bounded by `:timeout`;
 * a WASM call in the pool queue: `Atanor.Wasm` waits `min(wasm.queue_wait_ms, what the
   deadline leaves)` and then takes the call back (`Native.withdraw/1`) if no thread
   started it. A thread and the caller contest one atomic ticket, so a call either runs
@@ -1318,8 +1322,8 @@ The time the client takes to send the body does not run the clock
 (`Admission.excluding/1`). A handler that is running is not stopped.
 
 *What a `queue_timeout` promises.* The call did not run. That holds because the
-deadline refuses only before a call is sent, or while a read waits (nothing to undo),
-or while a WASM call is taken back from the queue. A cell write that is already sent and
+deadline refuses only before a call is sent (a wake that is still running is such a
+time, for a read or a write), or while a read waits (nothing to undo), or while a WASM call is taken back from the queue. A cell write that is already sent and
 still waiting at the deadline is not refused: it may be applied, so the answer is 503
 `unknown_outcome` (the same as any write that times out) and the client reads before it
 repeats. A handler that has had a write acknowledged, or one that answered
@@ -1327,7 +1331,7 @@ repeats. A handler that has had a write acknowledged, or one that answered
 the deadline. Not covered: a handler's other effects (an outbound HTTP request), and a
 call forwarded to the owner on another node, which the ingress node bounds only by
 `routing.remote_timeout_ms` once it has started. The tests are
-`test/atanor/queue_deadline_test.exs` (a slow wake, a slow read, a slow write, the
+`test/atanor/queue_deadline_test.exs` (a slow wake, a slow wake of a write, the process of a cold call, a slow read, a slow write, the
 property that no `queue_timeout` matches a committed write) and
 `test/atanor/queue_deadline_wasm_test.exs` (calls queued behind spinning guests).
 

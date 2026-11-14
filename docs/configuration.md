@@ -259,7 +259,8 @@ What counts as waiting:
 - before the handler starts: a request that reaches it after the deadline is
   refused. The time the client takes to send the body is not counted;
 - for the cell owner: finding it, waking the cell (the store is read), and the
-  wait for a node that leaves;
+  wait for a node that leaves. A read or a write whose cell is still waking at
+  the deadline is a `queue_timeout`: nothing was sent, and the wake goes on;
 - for a WASM worker: the wait in the queue for a thread. The call is taken back
   while it is queued, so it never runs after the 503;
 - for a cell call of the handler, until the handler has had a write
@@ -267,7 +268,7 @@ What counts as waiting:
 
 What does not count: a handler that runs (it is not stopped), the calls of a
 handler after its first acknowledged write, and the calls that another node runs
-for a request that was forwarded to it. A cell write that is still waiting at the
+for a request that was forwarded to it. A cell write that was sent and is still waiting at the
 deadline answers 503 `unknown_outcome`, not `queue_timeout`: it may be applied
 later (see [design §7.1](design.md#71-http)). Counted in
 `Atanor.Admission.stats/1` as `refused.queue_timeout`.
