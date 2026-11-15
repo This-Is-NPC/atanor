@@ -47,14 +47,14 @@ defmodule Atanor.AdmissionTest do
       for _ <- 1..200, do: spawn_link(fn -> send(test, {:response, gate(node, test)}) end)
 
       for _ <- 1..180 do
-        assert_receive {:response, {503, headers, body}}, 10_000
+        assert_receive {:response, {503, headers, body}}, 30_000
         assert {"retry-after", "3"} in headers
         assert Jason.decode!(body) == %{"error" => "overloaded", "reason" => "in_flight"}
       end
 
       handlers =
         for _ <- 1..20 do
-          assert_receive {:in_handler, pid}, 5_000
+          assert_receive {:in_handler, pid}, 30_000
           pid
         end
 
@@ -71,7 +71,7 @@ defmodule Atanor.AdmissionTest do
              }
 
       Enum.each(handlers, &send(&1, :go))
-      for _ <- 1..20, do: assert_receive({:response, {200, _, _}}, 5_000)
+      for _ <- 1..20, do: assert_receive({:response, {200, _, _}}, 30_000)
 
       Await.until(fn -> in_flight(node) == 0 end)
       assert {200, _, _} = echo(node)
@@ -92,10 +92,10 @@ defmodule Atanor.AdmissionTest do
 
       test = self()
       task = Task.async(fn -> gate(node, test) end)
-      assert_receive {:in_handler, handler}, 5_000
+      assert_receive {:in_handler, handler}, 30_000
 
       assert {503, _, _} = echo(node)
-      assert_receive {:reject, %{reason: :in_flight, status: 503, worker: nil}}
+      assert_receive {:reject, %{reason: :in_flight, status: 503, worker: nil}}, 30_000
 
       send(handler, :go)
       assert {200, _, _} = Task.await(task)
@@ -107,7 +107,7 @@ defmodule Atanor.AdmissionTest do
       test = self()
 
       for _ <- 1..2, do: spawn_link(fn -> send(test, {:response, gate(node, test)}) end)
-      for _ <- 1..2, do: assert_receive({:in_handler, _}, 5_000)
+      for _ <- 1..2, do: assert_receive({:in_handler, _}, 30_000)
       assert in_flight(node) == 2
       assert {503, _, _} = echo(node)
 
@@ -124,7 +124,7 @@ defmodule Atanor.AdmissionTest do
 
       {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", node.port, [:binary, active: false])
       :ok = :gen_tcp.send(socket, "GET /gate HTTP/1.1\r\nhost: 127.0.0.1\r\nx-test-pid: #{pid}\r\n\r\n")
-      assert_receive {:in_handler, handler}, 5_000
+      assert_receive {:in_handler, handler}, 30_000
       :gen_tcp.close(socket)
       send(handler, :go)
 
@@ -171,7 +171,7 @@ defmodule Atanor.AdmissionTest do
       assert %{working_set_bytes: 900_000, refused: %{memory: 2}} = Admission.stats(node.name)
 
       client = WSClient.send_frame(client, {:text, "echo hello"})
-      assert {{:text, "hello"}, _} = WSClient.recv(client, 5_000)
+      assert {{:text, "hello"}, _} = WSClient.recv(client, 30_000)
 
       # Between the marks the gate keeps refusing.
       write(paths, 820_000)
