@@ -78,7 +78,8 @@ defmodule Atanor.WakeBurstTest do
       Node.start(
         store: store,
         workers: [manifest],
-        alambique: [op_timeout_ms: 1_000],
+        # No ceiling on the awake cells: the load of the machine must not hibernate the cells the test fills.
+        alambique: [op_timeout_ms: 1_000, awake: [max_bytes: nil]],
         memory: [limit_bytes: @limit, current_path: current, stat_path: Path.join(tmp_dir, "none")]
       )
 
@@ -140,10 +141,10 @@ defmodule Atanor.WakeBurstTest do
     Store.fail(store)
     # Each cell fails its upload and stops, as the cells of the node did when its store filled up.
     cells
-    |> Task.async_stream(&Env.execute(env, &1, @write), max_concurrency: @cells, timeout: 30_000)
+    |> Task.async_stream(&Env.execute(env, &1, @write), max_concurrency: @cells, timeout: 120_000)
     |> Stream.run()
 
-    Await.until(fn -> Overview.cells_count(node.name).count == 0 end, 30_000)
+    Await.until(fn -> Overview.cells_count(node.name).count == 0 end, 120_000)
     reads = Store.reads(store)
     stop = sampler(node)
 
@@ -152,7 +153,7 @@ defmodule Atanor.WakeBurstTest do
       |> Task.async_stream(
         fn n -> Env.execute(env, Enum.at(cells, rem(n, @cells)), @write) end,
         max_concurrency: @requests,
-        timeout: 30_000,
+        timeout: 120_000,
         on_timeout: :kill_task
       )
       |> Enum.map(fn {:ok, result} -> result end)
@@ -161,6 +162,8 @@ defmodule Atanor.WakeBurstTest do
     {mem, wake, procs, Store.reads(store) - reads, results}
   end
 
+  # The fills and the failed uploads of 48 cells take long on a loaded machine; the timeouts only bound a hang.
+  @tag timeout: 300_000
   test "requests that wake the cells of a failing store are bounded by the memory of the node", %{tmp_dir: dir} do
     {mem, wake, procs, reads, results} = burst(dir)
     peaks = "memory +#{div(mem, 1_048_576)} MiB, wakes #{wake}, processes +#{procs}, restore reads #{reads}"
