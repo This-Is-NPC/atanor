@@ -435,13 +435,25 @@ defmodule Atanor.AlarmsTest do
 
       for key <- keys, do: set(node, key, @start + 1_000, "once")
       ManualClock.advance(world, 61_000)
-      assert until(fn -> Enum.all?(mine, &(fires(node, &1) == ["once"])) end)
+
+      # A handler that fails on a loaded node is retried at a later time of the manual clock, so the clock
+      # moves while the test waits.
+      assert until(fn ->
+               ManualClock.advance(world, 60_000)
+               Enum.all?(mine, &(fires(node, &1) == ["once"]))
+             end)
+
       for key <- theirs, do: refute_receive({:alarm, ^key, _, _}, 50)
       assert length(index(node)) == length(theirs)
 
       # The other member leaves: its shards pass to this scheduler.
       Process.exit(other, :kill)
-      assert until(fn -> index_empty?(node) end)
+
+      assert until(fn ->
+               ManualClock.advance(world, 60_000)
+               index_empty?(node)
+             end)
+
       for key <- keys, do: assert(fires(node, key) == ["once"])
     end
   end
