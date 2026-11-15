@@ -1464,12 +1464,15 @@ the size, mtime and SHA-256 of the source files every `:reload_ms`; when they
 change it validates the new pair and, if it loads, swaps the cache entries and
 emits `[:atanor, :tls, :reload]`. A pair that does not load keeps the old
 material, logs a warning and is reported with `result: {:error, reason}`; the
-new signature is remembered, so a broken file is retried when it changes again
-or when an operator asks. `POST /listeners/:name/reload-tls` on the admin API
-forces one listener (§10.2). Connections that already handshook keep their
-session; only new handshakes read the new material. This replaces the usual
-`sni_fun` route: `sni_fun` is only called when the client sends SNI, and SMTP
-clients often do not, so the per-handshake options cover every client.
+signature of the files, taken before they are read, is remembered, so a broken
+file is retried when it changes again or when an operator asks. A pair that is
+replaced in two writes (certificate, then key) and polled in between fails once
+and loads at the next poll, because the second write changes the signature.
+`POST /listeners/:name/reload-tls` on the admin API forces one listener
+(§10.2). Connections that already handshook keep their session; only new
+handshakes read the new material. This replaces the usual `sni_fun` route:
+`sni_fun` is only called when the client sends SNI, and SMTP clients often do
+not, so the per-handshake options cover every client.
 
 **Ranch protocols.** A `"protocol": "ranch"` route needs a worker that exports
 `ranch_protocol(env) :: {module, opts}`; without it the activation is refused
