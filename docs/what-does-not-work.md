@@ -105,6 +105,10 @@ with a clean store (see Evidence).
 **Evidence.** The node now logs the breaker opening and closing and the HTTP
 errors behind it (`Atanor.StoreLog`, design §10.2), and a failed load step keeps
 the store log, the store metrics, `store_breaker_open` and `node_throttled_ms`
-next to the node log (how-to-run-the-load-tests.md). The next occurrence names
-its cause. Until then: stall seen once between 72.3 s and 73.8 s of the step,
+next to the node log (how-to-run-the-load-tests.md). Since Alambique v0.10.0 the
+log also has one line per store failure with its reason and whether the breaker
+counted it. v0.10.0 fixed one candidate cause: the HEAD check of the frozen marker
+had a 50 ms timeout that counted as a store failure; it now has 1 s
+(`check_timeout_ms`). The next load round will confirm whether that was the trigger;
+this entry stays open until then. The next occurrence names its cause. Until then: stall seen once between 72.3 s and 73.8 s of the step,
 requests in flight 2 to 50, generator lag p99 5,523.9 ms, node 0.31 and store 0.23 cores.

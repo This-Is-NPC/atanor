@@ -2,7 +2,8 @@ defmodule Atanor.StoreLog do
   @moduledoc false
   # Logs what Alambique's and Finch's telemetry say about the store, so an open breaker leaves its cause in the node log:
   # the breaker opening and closing, the store errors of the requests that reached it (a request refused by an open
-  # breaker is `:store_unavailable` and is not logged again), the HTTP requests that failed (the transport error the
+  # breaker is `:store_unavailable` and is not logged again), each store failure with its reason and whether the breaker
+  # counted it, the HTTP requests that failed (the transport error the
   # breaker counts) and those that took over `@slow_ms`.
 
   require Logger
@@ -12,6 +13,7 @@ defmodule Atanor.StoreLog do
   @events [
     [:alambique, :store, :breaker, :open],
     [:alambique, :store, :breaker, :close],
+    [:alambique, :store, :failure],
     [:alambique, :cell, :upload_retry],
     [:alambique, :lease, :renew],
     [:alambique, :lease, :acquire],
@@ -42,6 +44,12 @@ defmodule Atanor.StoreLog do
 
   def handle([:alambique, :store, :breaker, :close], _, meta, _),
     do: Logger.info("atanor: store breaker closed: #{meta.location}")
+
+  def handle([:alambique, :store, :failure], _, %{operation: operation, reason: reason, counted: counted} = meta, _) do
+    Logger.warning(
+      "atanor: store failure: #{inspect(operation)} on #{meta.location}: reason=#{inspect(reason, limit: 8)} counted=#{counted}"
+    )
+  end
 
   def handle([:alambique, :cell, :upload_retry], %{delay_ms: delay}, %{reason: reason} = meta, _) do
     store_error("upload of #{meta.cell} failed (retry in #{delay} ms)", reason)

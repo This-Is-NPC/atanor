@@ -3214,10 +3214,14 @@ closed one with `failures` above zero is a store that has begun to fail.
 `Atanor.StoreLog` leaves the cause in the node log: a warning when a breaker opens (`atanor: store breaker open
 for 5000 ms (:failures): <location>`), an info when it closes, and a warning for each store error of a request
 that reached the store (`atanor: store error: upload of <cell> failed ...: <reason>`: an upload retry, a lease
-acquire or renewal, a replication sync). A request that an open breaker refused is `:store_unavailable` and is
+acquire or renewal, a replication sync). Each store failure that Alambique reports in
+`[:alambique, :store, :failure]` is one warning with its operation, its reason (`{:http, status}`,
+`:timeout_recv`, `:timeout_connect`, `:transport`, `:crashed` or `:local`) and whether it counted toward the
+breaker (`atanor: store failure: :head on <location>: reason=:timeout_recv counted=true`); a `:local` failure,
+a request that never left the node, is logged with `counted=false`. A request that an open breaker refused is `:store_unavailable` and is
 not logged again. The HTTP client's own failures, which the breaker counts, are logged with their transport
 error (`atanor: HTTP request GET store:8333 failed after 12 ms: socket closed`), and so are requests that
-take over a second. It listens to Alambique's `[:alambique, :store, :breaker, ...]`, `:upload_retry`, `:lease`
+take over a second. It listens to Alambique's `[:alambique, :store, :breaker, ...]`, `[:alambique, :store, :failure]`, `:upload_retry`, `:lease`
 and `:replication` events and to Finch's `[:finch, :request | :queue, ...]` events
 (`test/atanor/store_log_test.exs`).
 
