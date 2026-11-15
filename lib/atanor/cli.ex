@@ -218,18 +218,42 @@ defmodule Atanor.CLI do
     if :prim_tty.isatty(:stdin) == true, do: read_hidden(prompt), else: IO.gets("")
   end
 
-  # The raw mode of the terminal is what lets the driver, not the line discipline, own the echo.
   defp read_hidden(prompt) do
     IO.write(:stderr, prompt)
-    :shell.start_interactive({:noshell, :raw})
-    :io.setopts(:standard_io, echo: false)
+    restore = hide_echo()
 
     try do
       IO.gets("")
     after
-      :io.setopts(:standard_io, echo: true)
-      :shell.start_interactive({:noshell, :cooked})
+      restore.()
       IO.write(:stderr, "\n")
+    end
+  end
+
+  # The raw mode of the terminal is what lets the driver, not the line discipline, own the echo.
+  # Terminals without cursor control (TERM=dumb or unset) refuse it; stty turns the echo off there.
+  defp hide_echo do
+    case :shell.start_interactive({:noshell, :raw}) do
+      :ok ->
+        :io.setopts(:standard_io, echo: false)
+
+        fn ->
+          :io.setopts(:standard_io, echo: true)
+          :shell.start_interactive({:noshell, :cooked})
+        end
+
+      {:error, _} ->
+        stty("-echo")
+        fn -> stty("echo") end
+    end
+  end
+
+  # Without stdio the child keeps the terminal of the VM as its standard input.
+  defp stty(flag) do
+    port = Port.open({:spawn_executable, System.find_executable("stty")}, [:nouse_stdio, :exit_status, args: [flag]])
+
+    receive do
+      {^port, {:exit_status, _}} -> :ok
     end
   end
 
