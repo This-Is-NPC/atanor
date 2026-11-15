@@ -3,12 +3,13 @@ defmodule Atanor.LoadPlainTwinTest do
 
   # The plain WASM worker of the load tests (examples/load-plain) must do the same work in the store as the
   # native worker (cluster/load): one INSERT or one count per request. Segment uploads (`.ltx` puts) are counted: the feed and lease writes depend on timing. The scoreboard does not (a job per write),
-  # which is why the load tests keep it as http-wasm-jobs. Needs `mise run build:load-plain`.
+  # which is why the load tests keep it as http-wasm-jobs. Deploys the committed test/fixtures/wasm/load-plain.wasm (`mise run build:load-plain` rebuilds it).
 
   alias Atanor.Test.{CountingStore, Manifests}
   alias AtanorTestkit.Node
 
-  @wasm Path.expand("examples/load-plain")
+  @manifest Path.expand("examples/load-plain/atanor.json")
+  @wasm Path.expand("test/fixtures/wasm")
   @migrations [[1, "CREATE TABLE log (n INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT NOT NULL)"]]
   @requests 240
   @cells 6
@@ -47,7 +48,7 @@ defmodule Atanor.LoadPlainTwinTest do
     end)
 
     manifest =
-      Map.put(@wasm |> Path.join("atanor.json") |> File.read!() |> Jason.decode!(), "routes", [
+      Map.put(@manifest |> File.read!() |> Jason.decode!(), "routes", [
         %{"http" => %{"host" => "127.0.0.1", "path" => "/plain"}}
       ])
 
