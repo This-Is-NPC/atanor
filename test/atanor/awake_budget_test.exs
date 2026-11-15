@@ -49,6 +49,8 @@ defmodule Atanor.AwakeBudgetTest do
     {grown - base, Overview.cells_count(node.name).count}
   end
 
+  # 24,000 inserts: the work, not a wait, grows with the load of the machine.
+  @tag timeout: 600_000
   test "with max_bytes the memory stops growing with the cells that wake; without it, it grows" do
     {unbounded, awake} = growth([])
     assert awake == 4 * @first
