@@ -141,8 +141,11 @@ defmodule Atanor.DetectorTest do
     refute Detector.blocked?(name, @peer)
     # A majority again, but a rejoining node waits for it to settle before it acts.
     refute Detector.quorum?(name)
-    beat(server, @peer, 20)
-    assert Detector.quorum?(name)
+
+    until(fn ->
+      beat(server, @peer, 1)
+      Detector.quorum?(name)
+    end)
   end
 
   test "a peer that announces it leaves is down at once and is not disconnected", %{name: name, server: server} do
