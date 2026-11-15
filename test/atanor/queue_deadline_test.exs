@@ -44,6 +44,10 @@ defmodule Atanor.QueueDeadlineTest do
     {response, div(us, 1000)}
   end
 
+  # The cell is not waking. A cell that never got a process (a refusal came before the wake started) is
+  # settled too: a read of it queues behind whatever starts later.
+  defp settled?(alambique, key), do: not match?({:ok, %{waking: true}}, Alambique.load(alambique, "notes.#{key}"))
+
   describe "the wake of a cell" do
     test "a request whose cell wakes slowly is a 503 queue_timeout at the deadline, not a late 200" do
       node = start()
@@ -138,7 +142,7 @@ defmodule Atanor.QueueDeadlineTest do
         {response, _ms} = post(node, "/write?key=#{key}", "v")
         unslow.()
         # A read of the cell queues behind a wake or a commit still in flight.
-        Await.until(fn -> match?({:ok, %{waking: false}}, Alambique.load(alambique, "notes.#{key}")) end, 60_000)
+        Await.until(fn -> settled?(alambique, key) end, 60_000)
 
         {:ok, %{rows: rows}} = Cell.query(node.name, {"notes", key}, "SELECT body FROM notes")
 
@@ -234,7 +238,7 @@ defmodule Atanor.QueueDeadlineTest do
       assert ms < @bound_ms
 
       unslow.()
-      Await.until(fn -> match?({:ok, %{waking: false}}, Alambique.load(alambique, "notes.twice")) end, 90_000)
+      Await.until(fn -> settled?(alambique, "twice") end, 90_000)
       assert {:ok, %{rows: []}} = Cell.query(node.name, {"notes", "twice"}, "SELECT body FROM notes")
     end
 
@@ -276,7 +280,7 @@ defmodule Atanor.QueueDeadlineTest do
       refute Cell.unknown_outcome?()
       assert ms < @bound_ms
       unslow.()
-      Await.until(fn -> match?({:ok, %{waking: false}}, Alambique.load(alambique, "notes.slowwake")) end, 60_000)
+      Await.until(fn -> settled?(alambique, "slowwake") end, 60_000)
       Admission.leave(node.name)
       assert {:ok, %{rows: []}} = Cell.query(node.name, {"notes", "slowwake"}, "SELECT body FROM notes")
     end
