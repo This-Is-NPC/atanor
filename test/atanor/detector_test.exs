@@ -156,8 +156,13 @@ defmodule Atanor.DetectorTest do
   end
 
   test "the platform hint and confirmed_down act without phi", %{name: name, server: server} do
-    beat(server, @peer, 3)
-    assert Detector.quorum?(name)
+    # A loaded machine delays the beats until phi suspects the peer, which has no quorum then: keep beating.
+    until(fn ->
+      beat(server, @peer, 1)
+      Detector.quorum?(name)
+    end)
+
+    flush_events()
     assert {:error, :unknown_node} = Detector.gone(name, :"other@127.0.0.1")
     assert :ok = Detector.gone(name, @peer)
     assert_receive {:event, :down, %{reason: :platform_hint}}
