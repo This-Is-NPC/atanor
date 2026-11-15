@@ -139,7 +139,7 @@ and then:
    from the two digests.
 3. `attach-tarballs` attaches the tarballs to the GitHub Release.
 
-The workflow has no test job: the gate is local (`mise run check`). Every action is
+The workflow has no test job: the gate is CI on the pull request (`.github/workflows/ci.yml`). Every action is
 pinned by commit SHA, the default token is read-only, and `packages: write` and
 `contents: write` are given only to the jobs that push images and attach files. The
 build cache is the GitHub Actions cache (`type=gha`), one scope per architecture.

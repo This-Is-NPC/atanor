@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# The fast checks of the pre-push hook: warnings as errors and formatting. The
+# rest of the gate (docs links, tests, coverage) runs in CI on the pull request.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+scripts/check-compile
+echo "== formatting"
+scripts/format-check

@@ -1,0 +1,145 @@
+name: CI
+
+# The merge gate. It runs what `mise run check` runs, plus the cluster, SeaweedFS and coverage runs
+# (docs/how-to-build-and-test.md). Every step calls a mise task, so a run on a laptop and a run here
+# are the same code. Branch protection needs one check, `ci`, which waits for the other jobs.
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the older run; runs on master are never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Test modules run at once (ExUnit max_cases). Repository variable ATANOR_TEST_MAX_CASES;
+  # empty means ExUnit's default, twice the cores of the runner.
+  ATANOR_TEST_MAX_CASES: ${{ vars.ATANOR_TEST_MAX_CASES }}
+  # Minimum line coverage per language, in percent. Repository variable ATANOR_COVERAGE_THRESHOLD; default 90.
+  ATANOR_COVERAGE_THRESHOLD: ${{ vars.ATANOR_COVERAGE_THRESHOLD || '90' }}
+
+# Each job timeout (minutes) is a repository variable named in its comment, with the default after ||.
+jobs:
+  static:
+    name: static
+    runs-on: ubuntu-latest
+    # Variable ATANOR_CI_TIMEOUT_STATIC, default 20.
+    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_STATIC || '20') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-name: static
+      - name: Compile with warnings as errors (test and dev)
+        run: mise run check:compile
+      - name: Formatting
+        run: mise run check:format
+      - name: Docs links
+        run: mise run check:links
+      - name: Workflows
+        run: mise run check:workflows
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    # Variable ATANOR_CI_TIMEOUT_TEST, default 30.
+    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_TEST || '30') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-name: test
+      - name: Quick suite
+        run: mise run test
+
+  native:
+    name: native
+    runs-on: ubuntu-latest
+    # Variable ATANOR_CI_TIMEOUT_NATIVE, default 30.
+    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_NATIVE || '30') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-name: native
+      - name: Rust unit tests
+        run: mise run test:native
+
+  cluster:
+    name: cluster
+    runs-on: ubuntu-latest
+    # Variable ATANOR_CI_TIMEOUT_CLUSTER, default 40.
+    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_CLUSTER || '40') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-name: cluster
+      - name: Cluster suite
+        run: mise run test:cluster
+
+  seaweedfs:
+    name: seaweedfs
+    runs-on: ubuntu-latest
+    # Variable ATANOR_CI_TIMEOUT_SEAWEEDFS, default 30.
+    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_SEAWEEDFS || '30') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-name: seaweedfs
+      # The runner has Docker; the task starts the disposable container.
+      - name: Tests against SeaweedFS
+        run: mise run test:seaweedfs
+      - name: Remove the SeaweedFS container
+        if: always()
+        run: mise run seaweedfs:down
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    # Variable ATANOR_CI_TIMEOUT_COVERAGE, default 90 (about 30 minutes on a quiet laptop).
+    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_COVERAGE || '90') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-name: coverage
+      - name: Line coverage of lib/ and the Rust crate
+        run: mise run test:coverage
+
+  # The required check: it fails unless every job above passed (a skipped or cancelled one fails it).
+  ci:
+    name: ci
+    needs: [static, test, native, cluster, seaweedfs, coverage]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to pass
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            [ "$r" = success ] || { echo "a job did not succeed" >&2; exit 1; }
+          done

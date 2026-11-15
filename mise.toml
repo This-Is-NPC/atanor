@@ -1,7 +1,7 @@
 [tools]
 erlang = "28.5.0.7"
 elixir = "1.20.4-otp-28"
-rust = { version = "1.97.1", targets = "wasm32-wasip2" }
+rust = { version = "1.97.1", targets = "wasm32-wasip2", components = "rustfmt,llvm-tools" }
 "aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
 "aqua:rhysd/actionlint" = "1.7.12"
 shellcheck = "0.11.0"
@@ -105,8 +105,16 @@ description = "Compare requests forwarded to the owner of a cell with local ones
 run = "scripts/bench-cluster"
 
 [tasks.check]
-description = "Run the local gate: warnings as errors, formatting, docs links and the quick suite (env: ATANOR_CHECK_CLUSTER=1, ATANOR_CHECK_COVERAGE=1 add the cluster and coverage runs)"
+description = "Run the gate of CI on this machine: warnings as errors, formatting, docs links and the quick suite (env: ATANOR_CHECK_CLUSTER=1, ATANOR_CHECK_COVERAGE=1 add the cluster and coverage runs)"
 run = "scripts/check"
+
+[tasks."check:compile"]
+description = "Compile the test and dev builds with warnings as errors"
+run = "scripts/check-compile"
+
+[tasks."check:fast"]
+description = "Run the fast checks of the pre-push hook: warnings as errors and formatting"
+run = "scripts/check-fast"
 
 [tasks."check:format"]
 description = "Check the formatting of the Elixir sources and of each Rust crate without changing files"
@@ -117,11 +125,11 @@ description = "Check the relative links and anchors of the tracked Markdown file
 run = "scripts/link-check"
 
 [tasks."local-check"]
-description = "Run the gate on HEAD and post the local-check status master requires (options: --post-only --state=success --sha=SHA, --dry-run)"
+description = "Run the gate on HEAD and post a local-check status, for manual use: CI is the merge gate (options: --post-only --state=success --sha=SHA, --dry-run)"
 run = "scripts/local-check"
 
 [tasks."hooks:install"]
-description = "Install the git hooks of .githooks: pre-commit checks formatting, pre-push runs local-check"
+description = "Install the git hooks of .githooks: pre-commit checks formatting, pre-push runs the fast checks (check:fast)"
 run = "scripts/install-hooks"
 
 [tasks."check:no-phoenix"]

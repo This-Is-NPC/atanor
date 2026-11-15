@@ -3,7 +3,7 @@ name: Release
 # release-please opens the release PR and, when the owner merges it, creates the tag and the GitHub
 # Release. Then this workflow builds the daemon (docs/how-to-build-the-release.md) on a native runner
 # per architecture: the image goes to GHCR by digest, a manifest list tags it, and the release
-# directory is attached to the GitHub Release as a tarball. There is no test job: the gate is local.
+# directory is attached to the GitHub Release as a tarball. There is no test job: the gate is ci.yml on the pull request.
 
 on:
   push:

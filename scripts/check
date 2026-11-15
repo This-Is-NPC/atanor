@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The local gate: what a change must pass before it is pushed. Warnings are
+# The gate CI runs on a pull request, for a run on this machine: warnings are
 # errors, the formatting is clean, the docs links resolve and the quick suite
 # passes. Safe to rerun.
 #   ATANOR_CHECK_CLUSTER=1   also run the cluster tests (mise run test:cluster)
@@ -17,11 +17,7 @@ fi
 
 step() { printf '\n== %s\n' "$*"; }
 
-# --force: an up-to-date build prints no warnings, so it would always pass.
-step "compile (test) with warnings as errors"
-MIX_ENV=test mise exec -- mix compile --force --warnings-as-errors
-step "compile (dev) with warnings as errors"
-MIX_ENV=dev mise exec -- mix compile --force --warnings-as-errors
+scripts/check-compile
 step "formatting"
 scripts/format-check
 step "docs links"
