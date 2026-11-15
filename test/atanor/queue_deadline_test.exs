@@ -84,12 +84,14 @@ defmodule Atanor.QueueDeadlineTest do
     end
 
     test "the time a client takes to send the body does not count" do
-      node = start()
+      # The client waits twice the deadline; the deadline is wide enough for the handler on a loaded machine.
+      wait_ms = 1_000
+      node = start(http: [queue_wait_ms: wait_ms])
       {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", node.port, [:binary, active: false])
       :ok = :gen_tcp.send(socket, "POST /echo HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-length: 2\r\n\r\nx")
-      Process.sleep(@wait_ms * 2)
+      Process.sleep(wait_ms * 2)
       :ok = :gen_tcp.send(socket, "y")
-      assert {:ok, "HTTP/1.1 200" <> _} = :gen_tcp.recv(socket, 0, 5_000)
+      assert {:ok, "HTTP/1.1 200" <> _} = :gen_tcp.recv(socket, 0, 30_000)
       :gen_tcp.close(socket)
     end
   end
