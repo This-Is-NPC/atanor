@@ -5,8 +5,8 @@ defmodule Atanor.WakeLogTest do
 
   alias Atanor.WakeLog
 
-  defp wake(ms),
-    do: WakeLog.handle([:alambique, :cell, :wake], %{duration: ms * 1_000_000}, %{cell: "rooms.a", result: :ok}, nil)
+  defp wake(ms, cell \\ "rooms.a"),
+    do: WakeLog.handle([:alambique, :cell, :wake], %{duration: ms * 1_000_000}, %{cell: cell, result: :ok}, nil)
 
   test "a wake of one second or more is logged with its cell and duration" do
     log = capture_log(fn -> wake(1_500) end)
@@ -20,7 +20,9 @@ defmodule Atanor.WakeLogTest do
   end
 
   test "a faster wake is not logged" do
-    assert capture_log(fn -> wake(999) end) == ""
+    # capture_log sees the log of every test running beside this one, so the cell is this test's own.
+    log = capture_log(fn -> wake(999, "rooms.faster") end)
+    refute log =~ "rooms.faster"
   end
 
   test "attaching twice keeps one handler" do
