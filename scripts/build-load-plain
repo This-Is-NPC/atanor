@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build the plain WASM worker of the load tests (examples/load-plain) into examples/load-plain/load-plain.wasm.
+# Build the plain WASM worker of the load tests (examples/load-plain) into examples/load-plain/load-plain.wasm
+# and test/fixtures/wasm/load-plain.wasm (committed: the twin test deploys it).
 # Safe to rerun.
 set -euo pipefail
 
@@ -10,4 +11,5 @@ app="$root/examples/load-plain"
 cd "$app/guest"
 cargo build --release --quiet --target wasm32-wasip2
 cp target/wasm32-wasip2/release/load_plain_guest.wasm "$app/load-plain.wasm"
+cp "$app/load-plain.wasm" "$root/test/fixtures/wasm/load-plain.wasm"
 echo "built examples/load-plain/load-plain.wasm ($(wc -c <"$app/load-plain.wasm") bytes)"

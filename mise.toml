@@ -197,7 +197,7 @@ outputs = ["examples/scoreboard/scoreboard.wasm"]
 description = "Build the plain WASM worker of the load tests (examples/load-plain) into examples/load-plain/load-plain.wasm"
 run = "scripts/build-load-plain"
 sources = ["examples/load-plain/guest/src/**", "examples/load-plain/guest/Cargo.toml", "examples/load-plain/guest/wit/world.wit", "wit/**/*.wit"]
-outputs = ["examples/load-plain/load-plain.wasm"]
+outputs = ["examples/load-plain/load-plain.wasm", "test/fixtures/wasm/load-plain.wasm"]
 
 [tasks."check:workflows"]
 description = "Lint the GitHub Actions workflows with actionlint"
