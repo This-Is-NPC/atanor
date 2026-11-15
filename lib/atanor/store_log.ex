@@ -47,7 +47,8 @@ defmodule Atanor.StoreLog do
 
   def handle([:alambique, :store, :failure], _, %{operation: operation, reason: reason, counted: counted} = meta, _) do
     Logger.warning(
-      "atanor: store failure: #{inspect(operation)} on #{meta.location}: reason=#{inspect(reason, limit: 8)} counted=#{counted}"
+      "atanor: store failure: #{inspect(operation)} on #{meta.location}: reason=#{inspect(reason, limit: 8)}" <>
+        crash(meta) <> " counted=#{counted}"
     )
   end
 
@@ -87,6 +88,13 @@ defmodule Atanor.StoreLog do
   end
 
   def handle(_event, _measurements, _meta, _config), do: :ok
+
+  # `kind` and `detail` are nil unless the store crashed.
+  defp crash(%{kind: kind, detail: detail}) when kind != nil, do: " kind=#{inspect(kind)} detail=#{detail_text(detail)}"
+  defp crash(_meta), do: ""
+
+  defp detail_text(detail) when is_binary(detail), do: detail
+  defp detail_text(detail), do: inspect(detail)
 
   defp target(request), do: "#{request.method} #{request.host}:#{request.port}"
 

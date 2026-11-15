@@ -31,6 +31,20 @@ defmodule Atanor.StoreLogTest do
     assert log =~ "store failure: :put on s3://bucket: reason=:local counted=false"
   end
 
+  test "a crashed store failure is logged with its kind and detail" do
+    meta = %{instance: :x, location: "s3://bucket", operation: :list, reason: :crashed, counted: true}
+
+    log = emit([:store, :failure], %{}, Map.merge(meta, %{kind: :exit, detail: :pool_checkout_timeout}))
+    assert log =~ "reason=:crashed kind=:exit detail=:pool_checkout_timeout counted=true"
+
+    log = emit([:store, :failure], %{}, Map.merge(meta, %{kind: :error, detail: "%RuntimeError{message: \"boom\"}"}))
+    assert log =~ "kind=:error detail=%RuntimeError{message: \"boom\"} counted=true"
+
+    log = emit([:store, :failure], %{}, Map.merge(meta, %{kind: nil, detail: nil, reason: :transport}))
+    assert log =~ "reason=:transport counted=true"
+    refute log =~ "kind="
+  end
+
   test "a store error of a request that reached the store is logged with its reason" do
     reason = {:request_crashed, :exit, :timeout}
 

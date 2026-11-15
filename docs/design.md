@@ -3218,7 +3218,9 @@ acquire or renewal, a replication sync). Each store failure that Alambique repor
 `[:alambique, :store, :failure]` is one warning with its operation, its reason (`{:http, status}`,
 `:timeout_recv`, `:timeout_connect`, `:transport`, `:crashed` or `:local`) and whether it counted toward the
 breaker (`atanor: store failure: :head on <location>: reason=:timeout_recv counted=true`); a `:local` failure,
-a request that never left the node, is logged with `counted=false`. A request that an open breaker refused is `:store_unavailable` and is
+a request that never left the node, is logged with `counted=false`. A crash of the store module adds its `kind`
+(`:error`, `:throw` or `:exit`) and a bounded `detail` (`:pool_checkout_timeout`, `:pool_checkout_noproc` or the
+inspected reason). A request that an open breaker refused is `:store_unavailable` and is
 not logged again. The HTTP client's own failures, which the breaker counts, are logged with their transport
 error (`atanor: HTTP request GET store:8333 failed after 12 ms: socket closed`), and so are requests that
 take over a second. It listens to Alambique's `[:alambique, :store, :breaker, ...]`, `[:alambique, :store, :failure]`, `:upload_retry`, `:lease`
