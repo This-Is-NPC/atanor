@@ -30,10 +30,12 @@ defmodule Atanor.DeploymentsPropertyTest do
         Req.get!(node.url <> "/span", headers: [{"host", "span.test"}, {"x-test-pid", pid}], retry: false)
       end)
 
-    assert_receive {:in_handler, handler}, 5_000
+    assert_receive {:in_handler, handler}, 30_000
     {task, handler}
   end
 
+  # 40 nodes start and stop in one run: 5 s unloaded, 35 s on one core shared with 12 busy loops.
+  @tag timeout: 300_000
   property "every request reports one deployment at its start and end, and it was active during the request" do
     check all(ops <- list_of(operation(), max_length: 25), max_runs: 40) do
       node = Node.start()
@@ -77,7 +79,7 @@ defmodule Atanor.DeploymentsPropertyTest do
 
   defp run(:release, %{open: [request | rest]} = state, _node, _ids) do
     send(request.handler, :go)
-    body = Task.await(request.task, 5_000).body
+    body = Task.await(request.task, 30_000).body
 
     # Active at some moment of the request: the timeline since it started.
     during = Enum.take(state.timeline, length(state.timeline) - request.since + 1)
