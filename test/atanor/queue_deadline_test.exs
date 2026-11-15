@@ -210,7 +210,8 @@ defmodule Atanor.QueueDeadlineTest do
 
     test "a write that finds the cell still waking is not sent: queue_timeout, never committed" do
       node = start()
-      unslow = slow(node, "twice", @late_ms)
+      # A wake that outlasts the polling below, however slow the machine: the second call must find it running.
+      unslow = slow(node, "twice", 20_000)
       alambique = Atanor.Registry.config(node.name).alambique
       insert = fn -> Cell.execute(node.name, {"notes", "twice"}, "INSERT INTO notes (body) VALUES ('x')") end
 
@@ -222,16 +223,16 @@ defmodule Atanor.QueueDeadlineTest do
       end
 
       # The first request leaves the wake behind its deadline; the cell keeps waking.
-      assert {{:error, {:unavailable, :overloaded}}, false, :queue_timeout} = Task.await(Task.async(call))
+      assert {{:error, {:unavailable, :overloaded}}, false, :queue_timeout} = Task.await(Task.async(call), 60_000)
       # The cell gets its process before the wake ends: a call finds it and may queue behind the wake.
-      Await.until(fn -> match?({:ok, _}, Alambique.load(alambique, "notes.twice")) end)
+      Await.until(fn -> match?({:ok, _}, Alambique.load(alambique, "notes.twice")) end, 60_000)
 
-      {result, ms} = timed(fn -> Task.await(Task.async(call)) end)
+      {result, ms} = timed(fn -> Task.await(Task.async(call), 60_000) end)
       assert {{:error, {:unavailable, :overloaded}}, false, :queue_timeout} = result
       assert ms < @bound_ms
 
       unslow.()
-      Await.until(fn -> match?({:ok, %{waking: false}}, Alambique.load(alambique, "notes.twice")) end, 60_000)
+      Await.until(fn -> match?({:ok, %{waking: false}}, Alambique.load(alambique, "notes.twice")) end, 90_000)
       assert {:ok, %{rows: []}} = Cell.query(node.name, {"notes", "twice"}, "SELECT body FROM notes")
     end
 
