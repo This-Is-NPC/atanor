@@ -15,6 +15,20 @@ defmodule Atanor.WasmHandlersTest do
   @start 1_000_000_000_000
   @rooms [[1, "CREATE TABLE log (id INTEGER PRIMARY KEY, socket TEXT NOT NULL)"]]
 
+  # A read the node refuses with `{:error, :busy}` (the statement gate is shared by the whole VM) is asked
+  # again; any other result is returned.
+  defp query(node, cell, sql) do
+    until(
+      fn ->
+        case Cell.query(node.name, cell, sql) do
+          {:error, :busy} -> nil
+          other -> other
+        end
+      end,
+      30_000
+    )
+  end
+
   describe "alarms" do
     defp start_alarms(opts \\ []) do
       world = ManualClock.new(@start)
@@ -36,14 +50,13 @@ defmodule Atanor.WasmHandlersTest do
     end
 
     defp rows(node, key) do
-      {:ok, %{rows: rows}} =
-        Cell.query(node.name, {"clock", key}, "SELECT at_ms, payload, attempts FROM _atanor_alarms")
+      {:ok, %{rows: rows}} = query(node, {"clock", key}, "SELECT at_ms, payload, attempts FROM _atanor_alarms")
 
       rows
     end
 
     defp fires(node, key) do
-      {:ok, %{rows: rows}} = Cell.query(node.name, {"clock", key}, "SELECT payload FROM fires ORDER BY id")
+      {:ok, %{rows: rows}} = query(node, {"clock", key}, "SELECT payload FROM fires ORDER BY id")
       List.flatten(rows)
     end
 
@@ -134,7 +147,7 @@ defmodule Atanor.WasmHandlersTest do
     end
 
     defp job_fires(node, key) do
-      {:ok, %{rows: rows}} = Cell.query(node.name, {"jobs", key}, "SELECT payload FROM fires ORDER BY id")
+      {:ok, %{rows: rows}} = query(node, {"jobs", key}, "SELECT payload FROM fires ORDER BY id")
       List.flatten(rows)
     end
 
@@ -147,7 +160,7 @@ defmodule Atanor.WasmHandlersTest do
     end
 
     defp job_row(node, key) do
-      {:ok, %{rows: rows}} = Cell.query(node.name, {"jobs", key}, "SELECT state, attempts FROM _atanor_jobs")
+      {:ok, %{rows: rows}} = query(node, {"jobs", key}, "SELECT state, attempts FROM _atanor_jobs")
       rows
     end
 
@@ -297,7 +310,7 @@ defmodule Atanor.WasmHandlersTest do
       WSClient.send_frame(client, {:close, 1000, ""})
 
       assert until(fn ->
-               {:ok, %{rows: rows}} = Cell.query(node.name, {"rooms", "log"}, "SELECT socket FROM log")
+               {:ok, %{rows: rows}} = query(node, {"rooms", "log"}, "SELECT socket FROM log")
                rows == [[id]]
              end)
     end
