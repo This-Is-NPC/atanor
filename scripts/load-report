@@ -124,7 +124,7 @@ def report(directory):
         latency = next(s["store_latency_ms"] for s in steps if s["scenario"] == scenario)
         backing = next(s.get("store_backing", "tmpfs") for s in steps if s["scenario"] == scenario)
         out += [f"## Scenario {scenario}", "", f"Node limits: {num(limits.get('cpus'), 1)} CPU and {num(limits.get('memory_mb'), 0)} MB (scenario memory; the cgroup limit adds the tmpfs); store {'on disk' if backing == 'disk' else 'in tmpfs'} with {latency} ms added per trip.", ""]
-        for measure in ("http-native", "http-wasm", "ws", "cells", "swap"):
+        for measure in ("http-native", "http-wasm", "http-wasm-jobs", "ws", "cells", "swap"):
             mine = [s for s in steps if s["scenario"] == scenario and s["measure"] == measure]
             if not mine:
                 continue

@@ -4,9 +4,9 @@
 # and the container atanor-load-tc, by id or exact name.
 #
 #   up       scenario A or B: build, start one node (cgroup limits, data in tmpfs) with the store
-#            (tmpfs, or the host's disk with ATANOR_LOAD_STORE_DISK=1; 25 ms added per trip), deploy the native and the WASM worker
+#            (tmpfs, or the host's disk with ATANOR_LOAD_STORE_DISK=1; 25 ms added per trip), deploy the native, the plain WASM and the scoreboard worker
 #   latency  (re)apply the added store latency, and print the round trip from the node to the store
-#   deploy   deploy the native worker (cluster/load) and the scoreboard (WASM) to the node
+#   deploy   deploy the native worker (cluster/load), the plain WASM worker (examples/load-plain) and the scoreboard (WASM) to the node
 #   rtt      print the round trip from the node to the store in ms (median of three); empty when unknown
 #   check-swap [ID...]  refuse (exit 1) a container that may swap; default: the running nodes, store and lb
 #   info     print the containers, addresses and cgroup directories as JSON
@@ -86,6 +86,7 @@ check_swap() {
 deploy() {
   # The image holds the command and the compiled module (the package holds its MD5), so only the manifest is mounted.
   atanor_cli "$(admin_token)" "$repo/cluster/load" deploy /w --ebin /opt/atanor/lib/atanor_load-0.1.0/ebin --activate
+  atanor_cli "$(admin_token)" "$repo/examples/load-plain" deploy /w --activate
   "$repo/scripts/cluster-deploy-example"
 }
 

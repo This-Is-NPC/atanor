@@ -1,14 +1,23 @@
 defmodule Atanor.Test.CountingStore do
-  @moduledoc "A store that counts the reads of the keys that contain a fragment, and passes every call to another store."
+  @moduledoc "A store that counts the reads, the writes and the bytes written of the keys that contain a fragment, and passes every call to another store."
   @behaviour Alambique.Store
 
   @doc "Wraps `{module, config}`; `reads/1` counts the `get` calls of keys with `fragment`."
-  def wrap({module, config}, fragment), do: {__MODULE__, {module, config, fragment, :counters.new(1, [])}}
+  def wrap({module, config}, fragment), do: {__MODULE__, {module, config, fragment, :counters.new(3, [])}}
 
   def reads({__MODULE__, {_, _, _, counter}}), do: :counters.get(counter, 1)
+  def puts({__MODULE__, {_, _, _, counter}}), do: :counters.get(counter, 2)
+  def put_bytes({__MODULE__, {_, _, _, counter}}), do: :counters.get(counter, 3)
 
   @impl true
-  def put({m, c, _, _}, key, body, condition, meta), do: m.put(c, key, body, condition, meta)
+  def put({m, c, fragment, counter}, key, body, condition, meta) do
+    if String.contains?(key, fragment) do
+      :counters.add(counter, 2, 1)
+      :counters.add(counter, 3, IO.iodata_length(body))
+    end
+
+    m.put(c, key, body, condition, meta)
+  end
 
   @impl true
   def get({m, c, fragment, counter}, key) do

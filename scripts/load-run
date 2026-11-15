@@ -6,10 +6,11 @@
 
 MEASURE is one of
   http-native  requests per second to the native worker, reads and writes in cells      (stop: p99, 5xx, errors)
-  http-wasm    the same to the WASM worker (the scoreboard)                              (stop: p99, 5xx, errors)
+  http-wasm    the same to the plain WASM worker, the twin of the native one (examples/load-plain)  (stop: p99, 5xx, errors)
+  http-wasm-jobs  the same to the scoreboard, a WASM app that runs a ranking job per write   (stop: p99, 5xx, errors)
   ws           open idle WebSocket connections with sparse messages                      (stop: memory, fds)
   cells        cells kept hot at the same time                                           (stop: memory, p99)
-  swap         replace the node by another under load at the last approved http-wasm rate (stop: loss, duplication, errors)
+  swap         replace the node by another under load at the last approved http-wasm-jobs rate (stop: loss, duplication, errors)
 
 A step runs the generator (scripts/load-gen, one process per ~600 req/s) for --step-s seconds, samples the
 node's cgroup, the host and the store every --sample-s seconds, and writes one JSON file, atomically.
@@ -47,7 +48,7 @@ CORES = os.cpu_count()
 OK_STATUSES = {"200", "201", "message answered", "503 retry-after", "reconnected"}
 LOG_CAP_BYTES = 5 * 1048576
 TICK_S, STALL_S = 0.1, 1.0  # the stall ticker: its period and the overshoot that is recorded
-UNITS = {"http-native": "req/s", "http-wasm": "req/s", "ws": "connections", "cells": "cells", "swap": "req/s"}
+UNITS = {"http-native": "req/s", "http-wasm": "req/s", "http-wasm-jobs": "req/s", "ws": "connections", "cells": "cells", "swap": "req/s"}
 
 
 def env(name, default, cast=float):
@@ -640,7 +641,7 @@ class Round:
     def gen_commands(self, value):
         a, node = self.args, self.info["node"]["ip"]
         common = ["--host", node, "--port", "4000", "--timeout", str(a.timeout), "--tag", self.tag]
-        kind = {"http-native": "native", "http-wasm": "wasm"}.get(a.measure, a.worker)
+        kind = {"http-native": "native", "http-wasm": "plain", "http-wasm-jobs": "wasm"}.get(a.measure, a.worker)
         if a.measure.startswith("http"):
             procs = max(1, math.ceil(value / a.rate_per_proc))
             conns = max(16, min(1024, math.ceil(value * a.conns_per_rate / procs)))
@@ -899,11 +900,11 @@ def swap(round_, args, info):
     rate = args.rate
     if not rate:
         for name in sorted(os.listdir(args.out), reverse=True):
-            if name.endswith(".summary.json") and "_http-wasm" in name:
+            if name.endswith("_http-wasm-jobs.summary.json"):
                 rate = json.load(open(os.path.join(args.out, name))).get("approved")
                 break
     if not rate:
-        sys.exit("swap needs --rate: no approved http-wasm step in " + args.out)
+        sys.exit("swap needs --rate: no approved http-wasm-jobs step in " + args.out)
     round_.index += 1
     quiet, load = wait_quiet(args, info)
     if not quiet:  # the swap is judged on its own checks, but it does not start on a busy host
@@ -1003,7 +1004,7 @@ def main():
     add("--cells-conns", type=int, default=env("CELLS_CONNS", 64, int), help="cells: keep-alive connections")
     add("--open-rate", type=float, default=env("OPEN_RATE", 100), help="ws, cells: sockets opened or cells touched per second (ATANOR_LOAD_OPEN_RATE, 100)")
     add("--ws-interval", type=float, default=env("WS_INTERVAL", 30), help="ws: seconds between the messages of a socket (ATANOR_LOAD_WS_INTERVAL, 30)")
-    add("--rate", type=float, help="swap: requests per second (default: the approved http-wasm rate in --out)")
+    add("--rate", type=float, help="swap: requests per second (default: the approved http-wasm-jobs rate in --out)")
     add("--trigger", choices=["sigterm", "api"], default="sigterm")
     add("--swap-workers", type=int, default=12)
     add("--swap-warmup", type=float, default=env("SWAP_WARMUP", 25))
@@ -1011,7 +1012,7 @@ def main():
     add("--swap-settle", type=float, default=env("SWAP_SETTLE", 30))
     add("--swap-timeout", type=float, default=900)
     args = parser.parse_args()
-    defaults = {"http-native": (25, 20000), "http-wasm": (25, 20000), "ws": (100, 60000), "cells": (100, 100000), "swap": (0, 0)}[args.measure]
+    defaults = {"http-native": (25, 20000), "http-wasm": (25, 20000), "http-wasm-jobs": (25, 20000), "ws": (100, 60000), "cells": (100, 100000), "swap": (0, 0)}[args.measure]
     args.start = args.start or defaults[0]
     args.max = args.max or defaults[1]
     args.command = "mise run load:" + args.measure + " -- " + " ".join(sys.argv[2:])

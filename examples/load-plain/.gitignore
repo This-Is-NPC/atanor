@@ -1,0 +1,3 @@
+load-plain.wasm
+guest/target
+guest/wit/deps
