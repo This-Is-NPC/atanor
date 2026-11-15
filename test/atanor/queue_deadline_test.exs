@@ -14,6 +14,10 @@ defmodule Atanor.QueueDeadlineTest do
 
   @cells %{"notes" => Manifests.notes_migrations()}
   @wait_ms 200
+  # A delayed store answers this late; a refusal at the deadline is far sooner. The bound sits between them,
+  # so a loaded machine can add seconds to the refusal and still not look like a late answer.
+  @late_ms 5_000
+  @bound_ms 2_500
 
   defp start(opts \\ []) do
     workers = [Manifests.probe("w", cells: @cells, routes: [{"127.0.0.1", "/"}])]
@@ -43,7 +47,7 @@ defmodule Atanor.QueueDeadlineTest do
   describe "the wake of a cell" do
     test "a request whose cell wakes slowly is a 503 queue_timeout at the deadline, not a late 200" do
       node = start()
-      unslow = slow(node, "wake", 1_500)
+      unslow = slow(node, "wake", @late_ms)
       test = self()
 
       :telemetry.attach(
@@ -60,12 +64,12 @@ defmodule Atanor.QueueDeadlineTest do
       assert response.status == 503
       assert %{"error" => "overloaded", "reason" => "queue_timeout"} = response.body
       assert response.headers["retry-after"] == ["1"]
-      assert ms < 1_000, "answered after #{ms} ms"
+      assert ms < @bound_ms, "answered after #{ms} ms"
       assert_receive {:reject, %{reason: :queue_timeout, status: 503}}
       assert %{refused: %{queue_timeout: 1}} = Admission.stats(node.name)
 
       unslow.()
-      Await.until(fn -> Req.get!(node.url <> "/keyed/wake", retry: false).status == 200 end)
+      Await.until(fn -> Req.get!(node.url <> "/keyed/wake", retry: false).status == 200 end, 60_000)
     end
 
     test "queue_wait_ms 0 or :infinity turns the deadline off" do
@@ -93,24 +97,24 @@ defmodule Atanor.QueueDeadlineTest do
   describe "the cell calls of a handler" do
     test "a read that waits past the deadline is a 503 queue_timeout" do
       node = start()
-      slow(node, "r1", 1_500)
+      slow(node, "r1", @late_ms)
       {response, ms} = get(node, "/read?key=r1")
 
       assert response.status == 503
       assert %{"error" => "overloaded", "reason" => "queue_timeout"} = response.body
-      assert ms < 1_000
+      assert ms < @bound_ms
     end
 
     test "a write that waits past the deadline is an unknown outcome, never a queue_timeout, and it may commit" do
       node = start(http: [queue_wait_ms: 1_000])
       # An awake cell, so that only the commit waits.
       assert {:ok, _} = Cell.query(node.name, {"notes", "w1"}, "SELECT 1")
-      unslow = slow(node, "w1", 2_500, [:put])
+      unslow = slow(node, "w1", @late_ms, [:put])
       {response, ms} = post(node, "/write?key=w1", "late")
 
       assert response.status == 503
       assert %{"error" => "unknown_outcome"} = response.body
-      assert ms < 2_000
+      assert ms < @bound_ms
 
       unslow.()
 
@@ -123,6 +127,7 @@ defmodule Atanor.QueueDeadlineTest do
     # left nothing in the cell, and one answered 200 left its row.
     property "a queue_timeout never matches a committed write" do
       node = start()
+      alambique = Atanor.Registry.config(node.name).alambique
       ops = [[:get, :get_range, :head, :list], [:put], [:get, :get_range, :head, :list, :put]]
 
       check all(latency <- member_of([0, 120, 400, 700]), ops <- member_of(ops), max_runs: 12) do
@@ -130,7 +135,8 @@ defmodule Atanor.QueueDeadlineTest do
         unslow = slow(node, key, latency, ops)
         {response, _ms} = post(node, "/write?key=#{key}", "v")
         unslow.()
-        Process.sleep(latency + 700)
+        # A read of the cell queues behind a wake or a commit still in flight.
+        Await.until(fn -> match?({:ok, %{waking: false}}, Alambique.load(alambique, "notes.#{key}")) end, 60_000)
 
         {:ok, %{rows: rows}} = Cell.query(node.name, {"notes", key}, "SELECT body FROM notes")
 
@@ -204,7 +210,7 @@ defmodule Atanor.QueueDeadlineTest do
 
     test "a write that finds the cell still waking is not sent: queue_timeout, never committed" do
       node = start()
-      unslow = slow(node, "twice", 1_500)
+      unslow = slow(node, "twice", @late_ms)
       alambique = Atanor.Registry.config(node.name).alambique
       insert = fn -> Cell.execute(node.name, {"notes", "twice"}, "INSERT INTO notes (body) VALUES ('x')") end
 
@@ -222,7 +228,7 @@ defmodule Atanor.QueueDeadlineTest do
 
       {result, ms} = timed(fn -> Task.await(Task.async(call)) end)
       assert {{:error, {:unavailable, :overloaded}}, false, :queue_timeout} = result
-      assert ms < 1_000
+      assert ms < @bound_ms
 
       unslow.()
       Await.until(fn -> match?({:ok, %{waking: false}}, Alambique.load(alambique, "notes.twice")) end, 60_000)
@@ -255,7 +261,7 @@ defmodule Atanor.QueueDeadlineTest do
     test "a write whose cell wakes past the deadline is a queue_timeout and is never committed" do
       node = start()
       alambique = Atanor.Registry.config(node.name).alambique
-      unslow = slow(node, "slowwake", 1_500, [:get, :get_range, :head, :list])
+      unslow = slow(node, "slowwake", @late_ms, [:get, :get_range, :head, :list])
       assert :ok = Admission.enter(node.name)
       on_exit(fn -> Admission.leave(node.name) end)
 
@@ -265,7 +271,7 @@ defmodule Atanor.QueueDeadlineTest do
       assert result == {:error, {:unavailable, :overloaded}}
       assert Cell.overload_cause() == :queue_timeout
       refute Cell.unknown_outcome?()
-      assert ms < 1_000
+      assert ms < @bound_ms
       unslow.()
       Await.until(fn -> match?({:ok, %{waking: false}}, Alambique.load(alambique, "notes.slowwake")) end, 60_000)
       Admission.leave(node.name)
