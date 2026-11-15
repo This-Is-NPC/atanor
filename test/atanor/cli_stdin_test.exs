@@ -51,11 +51,19 @@ defmodule Atanor.CLIStdinTest do
     end
   end
 
-  @tag skip:
-         not (is_binary(System.find_executable("script")) and File.dir?("/proc/self")) && "needs script(1) and /proc"
-  test "at a terminal the token is read with the echo off" do
+  # A dumb terminal (CI, an editor shell) cannot be put in raw mode; the echo must still go off.
+  for term <- ["xterm", "dumb"] do
+    @tag skip:
+           not (is_binary(System.find_executable("script")) and File.dir?("/proc/self")) &&
+             "needs script(1) and /proc"
+    test "at a #{term} terminal the token is read with the echo off" do
+      assert_hidden(unquote(term))
+    end
+  end
+
+  defp assert_hidden(term) do
     # script(1) may start the terminal with the echo off; make it on, as a login shell has it.
-    args = ["-qefc", "stty echo && " <> command(@program), "-E", "never", "/dev/null"]
+    args = ["-qefc", "stty echo && TERM=#{term} " <> command(@program), "-E", "never", "/dev/null"]
     port = Port.open({:spawn_executable, System.find_executable("script")}, [:binary, :exit_status, args: args])
 
     before_input = await_output(port, "READY")
