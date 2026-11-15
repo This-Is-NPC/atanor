@@ -136,7 +136,11 @@ defmodule Atanor.CellTest do
       ref = :erlang.trace_delivered(self())
       assert_receive {:trace_delivered, _, ^ref}
       send(tracer, :done)
-      assert_receive {:calls, [{:trace, _, :call, {Alambique, :query, _}}]}
+      # A trace pattern is global: a test beside this one that traces Alambique.Router adds its calls here.
+      assert_receive {:calls, calls}
+
+      assert [{:trace, _, :call, {Alambique, :query, _}}] =
+               Enum.filter(calls, &match?({:trace, _, :call, {Alambique, :query, _}}, &1))
     end
 
     defp collect(test, calls) do
