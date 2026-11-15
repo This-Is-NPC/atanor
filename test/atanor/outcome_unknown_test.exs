@@ -5,6 +5,8 @@ defmodule Atanor.OutcomeUnknownTest do
   """
   use ExUnit.Case, async: false
 
+  import Atanor.Test.Await
+
   alias Atanor.Cell
   alias Atanor.Test.Manifests
   alias AlambiqueTestkit.{GatedStore, ManualClock, MemoryStore}
@@ -12,14 +14,6 @@ defmodule Atanor.OutcomeUnknownTest do
 
   @moduletag capture_log: true
   @insert "INSERT INTO t (n) VALUES (?)"
-
-  defp until(fun, left \\ 200) do
-    cond do
-      fun.() -> true
-      left == 0 -> false
-      true -> Process.sleep(25) && until(fun, left - 1)
-    end
-  end
 
   test "a write held in the upload when the lease expires is unknown, not fenced" do
     name = Module.concat(__MODULE__, "Store#{System.unique_integer([:positive])}")
