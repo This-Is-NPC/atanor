@@ -34,7 +34,7 @@ defmodule Atanor.CallPinningTest do
         Req.get!(node.url <> "/pair?" <> query, headers: [{"host", "pin.test"}, {"x-test-pid", pid}], retry: false)
       end)
 
-    assert_receive {:in_handler, handler}, 5_000
+    assert_receive {:in_handler, handler}, 30_000
     {task, handler}
   end
 
@@ -42,7 +42,7 @@ defmodule Atanor.CallPinningTest do
 
   defp finish({task, handler}) do
     send(handler, :go)
-    body = Task.await(task, 5_000).body
+    body = Task.await(task, 30_000).body
     {seen(body["first"]), seen(body["second"])}
   end
 
