@@ -126,7 +126,11 @@ defmodule Atanor.JobsTest do
     {node, world} = start(jobs: [max_attempts: 1, dead_retention_ms: 1_000])
     assert %{status: 200} = enqueue(node, "a", payload: "fail", max: 1)
 
+    # A wake-up that fails on a loaded node is retried at a later time of the manual clock, so the clock
+    # moves while the test waits. The job is purged only by a later wake-up, which this test causes itself.
     assert until(fn ->
+             ManualClock.advance(world, 60_000)
+
              match?(
                {:ok, %{rows: [["dead"]]}},
                Cell.query(node.name, {"jobs", "a"}, "SELECT state FROM _atanor_jobs")
