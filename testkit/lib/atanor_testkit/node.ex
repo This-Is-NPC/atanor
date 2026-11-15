@@ -48,8 +48,13 @@ defmodule AtanorTestkit.Node do
     # store (a cluster) may share a prefix.
     prefix = "t#{:erlang.phash2(store)}"
 
+    # A cold wake on a loaded machine takes seconds, so the default queue deadline is far from it; a test of
+    # the deadline sets its own `http: [queue_wait_ms:]`.
+    http = Keyword.merge([queue_wait_ms: 60_000], Keyword.get(opts, :http, []))
+
     atanor_opts =
-      Keyword.merge([port: 0, prefix: prefix], Keyword.drop(opts, [:store, :workers, :data_dir, :name])) ++
+      Keyword.merge([port: 0, prefix: prefix], Keyword.drop(opts, [:store, :workers, :data_dir, :name, :http])) ++
+        [http: http] ++
         [name: name, data_dir: data_dir, store: store]
 
     {:ok, pid} = Supervisor.start_link(store_children ++ [{Atanor, atanor_opts}], strategy: :one_for_one)

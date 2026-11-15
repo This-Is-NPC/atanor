@@ -285,6 +285,20 @@ defmodule Atanor.QueueDeadlineTest do
     end
   end
 
+  describe "the test node" do
+    test "its default deadline outlasts a cold wake of 6.5 s" do
+      workers = [Manifests.probe("w", cells: @cells, routes: [{"127.0.0.1", "/"}])]
+      node = Node.start(workers: workers)
+      on_exit(fn -> Node.stop(node) end)
+      slow(node, "cold", 6_500, [:get])
+
+      {response, ms} = get(node, "/keyed/cold")
+
+      assert response.status == 200
+      assert ms >= 6_500
+    end
+  end
+
   describe "the setting" do
     test "defaults to 5 s and takes 0 or :infinity as off" do
       assert Config.build(store: {AlambiqueTestkit.MemoryStore, %{}}, data_dir: "/tmp/x").http.queue_wait_ms == 5_000
