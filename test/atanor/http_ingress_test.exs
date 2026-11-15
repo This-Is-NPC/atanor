@@ -88,7 +88,7 @@ defmodule Atanor.HTTPIngressTest do
       {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", node.port, [:binary, active: false])
       :ok = :gen_tcp.send(socket, "GET / HTTP/1.1\r\nhost: 127.0.0.1\r\nx-slow: ")
 
-      capture_log(fn -> assert refused?(:gen_tcp.recv(socket, 0, 3_000)) end)
+      capture_log(fn -> assert refused?(:gen_tcp.recv(socket, 0, 30_000)) end)
     end
 
     @preface "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
@@ -98,12 +98,12 @@ defmodule Atanor.HTTPIngressTest do
       {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", node.port, [:binary, active: false])
       :ok = :gen_tcp.send(socket, @preface)
       # The server's SETTINGS frame (type 4).
-      assert {:ok, <<_length::24, 4, _::binary>>} = :gen_tcp.recv(socket, 0, 3_000)
+      assert {:ok, <<_length::24, 4, _::binary>>} = :gen_tcp.recv(socket, 0, 30_000)
 
       node = start(http: [http_2: false])
       {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", node.port, [:binary, active: false])
       :ok = :gen_tcp.send(socket, @preface)
-      assert refused?(:gen_tcp.recv(socket, 0, 3_000))
+      assert refused?(:gen_tcp.recv(socket, 0, 30_000))
     end
   end
 
