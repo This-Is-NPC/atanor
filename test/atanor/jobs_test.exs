@@ -152,6 +152,42 @@ defmodule Atanor.JobsTest do
     assert until(fn -> Atanor.Store.list(Atanor.Store.handle(node.name), "jobs/dead/") == {:ok, [], nil} end)
   end
 
+  test "a purge whose index delete is refused keeps the job until the delete succeeds" do
+    name = Module.concat(__MODULE__, "Store#{System.unique_integer([:positive])}")
+    {:ok, pid} = AlambiqueTestkit.MemoryStore.start_link(name: name)
+
+    # on_exit callbacks run last-in first-out: the node stops, drains into the store, and then the store stops.
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+    store =
+      Atanor.Test.FlakyDeleteStore.wrap(
+        {AlambiqueTestkit.MemoryStore, AlambiqueTestkit.MemoryStore.config(name)},
+        "jobs/dead/",
+        1
+      )
+
+    {node, world} = start(store: store, jobs: [max_attempts: 1, dead_retention_ms: 1_000])
+    assert %{status: 200} = enqueue(node, "a", payload: "fail", max: 1)
+
+    assert until(fn ->
+             ManualClock.advance(world, 60_000)
+
+             match?(
+               {:ok, %{rows: [["dead"]]}},
+               Cell.query(node.name, {"jobs", "a"}, "SELECT state FROM _atanor_jobs")
+             )
+           end)
+
+    assert until(fn -> match?({:ok, [_], _}, Atanor.Store.list(Atanor.Store.handle(node.name), "jobs/dead/")) end)
+
+    # Each wake-up purges again; the first delete is refused, a later one succeeds.
+    assert until(fn ->
+             ManualClock.advance(world, 60_000)
+             enqueue(node, "a", payload: "noop")
+             Atanor.Store.list(Atanor.Store.handle(node.name), "jobs/dead/") == {:ok, [], nil}
+           end)
+  end
+
   test "a transaction enqueues a job together with data" do
     {node, _world} = start()
     assert %{status: 200, body: body} = Req.post!("#{node.url}/tx?key=a", retry: false)

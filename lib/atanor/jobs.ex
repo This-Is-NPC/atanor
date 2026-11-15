@@ -734,17 +734,19 @@ defmodule Atanor.Jobs do
       )
 
     if config.jobs.dead_retention_ms != :infinity do
-      {:ok, %{rows: purged}} =
-        Tx.execute(
+      {:ok, %{rows: expired}} =
+        Tx.query(
           tx,
-          "DELETE FROM #{@table} WHERE id IN (SELECT id FROM #{@table} " <>
-            "WHERE state = 'dead' AND completed_at_ms < ? AND (unique_period IS NULL OR unique_period != 'forever') LIMIT ?) " <>
-            "RETURNING id",
+          "SELECT id FROM #{@table} WHERE state = 'dead' AND completed_at_ms < ? " <>
+            "AND (unique_period IS NULL OR unique_period != 'forever') LIMIT ?",
           [now - config.jobs.dead_retention_ms, config.jobs.purge_limit]
         )
 
-      # The index object of a dead job goes with its row; a rolled back purge repeats it, and a delete is idempotent.
-      for [id] <- purged, do: delete_dead_index(instance, cell, id)
+      # A row goes only with its index object. A refused delete keeps the row, and the next purge repeats
+      # it; a delete is idempotent.
+      for [id] <- expired, delete_dead_index(instance, cell, id) == :ok do
+        {:ok, _} = Tx.execute(tx, "DELETE FROM #{@table} WHERE id = ?", [id])
+      end
     end
 
     :ok
