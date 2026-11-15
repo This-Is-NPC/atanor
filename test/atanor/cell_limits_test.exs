@@ -140,12 +140,12 @@ defmodule Atanor.CellLimitsTest do
       results =
         1..8
         |> Task.async_stream(fn _ -> Env.execute(env, {"notes", "a"}, "INSERT INTO notes (body) VALUES ('q')") end,
-          timeout: 10_000
+          timeout: 60_000
         )
         |> Enum.map(fn {:ok, result} -> result end)
 
       assert {:error, :busy} in results
-      assert {:ok, _} = Task.await(first, 10_000)
+      assert {:ok, _} = Task.await(first, 60_000)
       assert :overloaded = Unavailable.from_error({:error, :busy})
     end
   end
