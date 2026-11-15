@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Compile the test and dev builds with warnings as errors. Shared by `mise run
+# check`, the pre-push hook and CI. Safe to rerun.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# --force: an up-to-date build prints no warnings, so it would always pass.
+echo "== compile (test) with warnings as errors"
+MIX_ENV=test mise exec -- mix compile --force --warnings-as-errors
+echo "== compile (dev) with warnings as errors"
+MIX_ENV=dev mise exec -- mix compile --force --warnings-as-errors

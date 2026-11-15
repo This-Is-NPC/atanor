@@ -1,0 +1,34 @@
+name: Set up Atanor
+description: Install the tools of mise.toml, restore the build caches and fetch the Elixir dependencies.
+
+inputs:
+  cache-name:
+    description: Name of the calling job (each job keeps its own _build and cargo target).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install the tools of mise.toml
+      uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+      with:
+        install: true
+        cache: true
+
+    - name: Restore deps, _build and the cargo target
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          deps
+          _build
+          native/atanor_wasm/target
+          ~/.cargo/registry
+          ~/.cargo/git
+        # The tool versions (mise.toml) and the locks decide whether a build is reusable.
+        key: ci-${{ runner.os }}-${{ inputs.cache-name }}-${{ hashFiles('mise.toml', 'mix.lock', 'alambique.ref', 'native/atanor_wasm/Cargo.lock') }}
+        restore-keys: |
+          ci-${{ runner.os }}-${{ inputs.cache-name }}-
+
+    - name: Fetch the Elixir dependencies
+      shell: bash
+      run: mise exec -- sh -c 'mix local.hex --force && mix local.rebar --force && mix deps.get'
