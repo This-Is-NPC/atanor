@@ -33,8 +33,10 @@ defmodule Atanor.TCPTest do
     socket
   end
 
+  # A reply may wait for a cold cell wake, which takes seconds on a loaded machine: the timeout bounds a
+  # hang, the receive returns with the data.
   defp line(socket) do
-    {:ok, line} = :gen_tcp.recv(socket, 0, 5_000)
+    {:ok, line} = :gen_tcp.recv(socket, 0, 60_000)
     String.trim_trailing(line)
   end
 
@@ -48,7 +50,7 @@ defmodule Atanor.TCPTest do
     ip
   end
 
-  defp closed?(socket), do: :gen_tcp.recv(socket, 0, 5_000) == {:error, :closed}
+  defp closed?(socket), do: :gen_tcp.recv(socket, 0, 60_000) == {:error, :closed}
 
   defp stored(node, user) do
     {:ok, %{rows: rows}} = Atanor.Cell.query(node.name, {"mail", user}, "SELECT body FROM mail ORDER BY id")
