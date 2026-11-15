@@ -52,6 +52,9 @@ defmodule Atanor.CellLimitsSharedSlotsTest do
 
   test "a statement of another node in the VM holds the slot of this one" do
     node = wasm()
+    # Wake the cell of the reads first: a cold first read on a loaded machine can outlast the 1.5 s statement of
+    # the holder and find the slot free.
+    assert %{status: 200} = sql(node, "query", "SELECT 1", "b")
     other = Node.start(workers: [Manifests.probe("other", cells: %{"notes" => @notes})], alambique: @one)
     on_exit(fn -> Node.stop(other) end)
     {:ok, deployment} = Atanor.Registry.deployment(other.name, "other")
