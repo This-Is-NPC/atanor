@@ -16,6 +16,10 @@ rustup component (`rustup component add llvm-tools`).
    (lines, uncovered lines, percent), then a `TOTAL` line per language.
 3. The exit status is non-zero when a language is below the threshold.
 
+CI runs the same task in the `coverage` job of every pull request
+([how-to-build-and-test.md](how-to-build-and-test.md#run-the-gate)), so a local run
+is only for finding what lowered the coverage.
+
 To run part of it, name the stages (`native`, `unit`, `cluster`, `seaweedfs`),
 add `--keep` to keep the data of earlier runs, and `--report-only` to print the
 report again:

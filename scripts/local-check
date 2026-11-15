@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Run the gate (`mise run check`) and post the `local-check` commit status that
-# master requires before a pull request can merge. Nothing on GitHub runs the
-# gate: it runs here, with the pinned tools of mise.toml.
+# Run the gate (`mise run check`) on this machine and post a `local-check`
+# commit status. For manual use only: CI on the pull request
+# (.github/workflows/ci.yml) is the merge gate, and master does not require this
+# status. The pre-push hook no longer runs it.
 #
 #   scripts/local-check                    gate HEAD, then post (HEAD must be pushed)
 #   scripts/local-check --pre-push         gate, and post once the push lands
 #   scripts/local-check --post-only --state=success [--sha=<sha>]
 #   scripts/local-check --dry-run [...]    print the API calls instead
 #
-# --post-only is for a commit nobody pushed from here, such as the release pull
-# request release-please opens, after its tree was checked out and gated by hand.
+# --post-only posts a status for a commit nobody pushed from here.
 #
 # The gate output also goes to _build/local-check.log (overwritten each run).
 # A failing run also keeps it as _build/local-check-failed-<UTC stamp>.log; only
@@ -42,7 +42,7 @@ for arg in "$@"; do
     --state=*) STATE="${arg#--state=}" ;;
     --sha=*) SHA="${arg#--sha=}" ;;
     -h | --help)
-      sed -n '2,22p' "$0"
+      sed -n '2,23p' "$0"
       exit 0
       ;;
     *)

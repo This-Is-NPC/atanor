@@ -13,4 +13,4 @@ git config core.hooksPath "$hooks_path"
 
 echo "Hooks installed: core.hooksPath=$hooks_path"
 echo "  pre-commit runs scripts/format-check and refuses an unformatted commit."
-echo "  pre-push runs scripts/local-check: a red gate refuses the push, a green one posts local-check."
+echo "  pre-push runs scripts/check-fast (warnings as errors, formatting); CI runs the full gate."
