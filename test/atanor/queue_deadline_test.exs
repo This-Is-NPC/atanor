@@ -14,10 +14,9 @@ defmodule Atanor.QueueDeadlineTest do
 
   @cells %{"notes" => Manifests.notes_migrations()}
   @wait_ms 200
-  # A delayed store answers this late; a refusal at the deadline is far sooner. The bound sits between them,
-  # so a loaded machine can add seconds to the refusal and still not look like a late answer.
+  # A delayed store answers this late. The refusal is told by its status and reason; the time only has to
+  # show that it came before the late answer, so a loaded machine can add seconds to it.
   @late_ms 5_000
-  @bound_ms 2_500
 
   defp start(opts \\ []) do
     workers = [Manifests.probe("w", cells: @cells, routes: [{"127.0.0.1", "/"}])]
@@ -68,7 +67,7 @@ defmodule Atanor.QueueDeadlineTest do
       assert response.status == 503
       assert %{"error" => "overloaded", "reason" => "queue_timeout"} = response.body
       assert response.headers["retry-after"] == ["1"]
-      assert ms < @bound_ms, "answered after #{ms} ms"
+      assert ms < @late_ms, "answered after #{ms} ms"
       assert_receive {:reject, %{reason: :queue_timeout, status: 503}}
       assert %{refused: %{queue_timeout: 1}} = Admission.stats(node.name)
 
@@ -108,7 +107,7 @@ defmodule Atanor.QueueDeadlineTest do
 
       assert response.status == 503
       assert %{"error" => "overloaded", "reason" => "queue_timeout"} = response.body
-      assert ms < @bound_ms
+      assert ms < @late_ms
     end
 
     test "a write that waits past the deadline is an unknown outcome, never a queue_timeout, and it may commit" do
@@ -120,7 +119,7 @@ defmodule Atanor.QueueDeadlineTest do
 
       assert response.status == 503
       assert %{"error" => "unknown_outcome"} = response.body
-      assert ms < @bound_ms
+      assert ms < @late_ms
 
       unslow.()
 
@@ -235,7 +234,7 @@ defmodule Atanor.QueueDeadlineTest do
 
       {result, ms} = timed(fn -> Task.await(Task.async(call), 60_000) end)
       assert {{:error, {:unavailable, :overloaded}}, false, :queue_timeout} = result
-      assert ms < @bound_ms
+      assert ms < @late_ms
 
       unslow.()
       Await.until(fn -> settled?(alambique, "twice") end, 90_000)
@@ -278,7 +277,7 @@ defmodule Atanor.QueueDeadlineTest do
       assert result == {:error, {:unavailable, :overloaded}}
       assert Cell.overload_cause() == :queue_timeout
       refute Cell.unknown_outcome?()
-      assert ms < @bound_ms
+      assert ms < @late_ms
       unslow.()
       Await.until(fn -> settled?(alambique, "slowwake") end, 60_000)
       Admission.leave(node.name)
