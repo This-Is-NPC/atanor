@@ -22,6 +22,15 @@ defmodule Atanor.StoreLogTest do
     assert log =~ "store breaker closed: s3://bucket"
   end
 
+  test "a store failure is logged with its operation, reason and whether the breaker counted it" do
+    meta = %{instance: :x, location: "s3://bucket", operation: :head, reason: {:http, 503}, counted: true}
+    log = emit([:store, :failure], %{}, meta)
+    assert log =~ "store failure: :head on s3://bucket: reason={:http, 503} counted=true"
+
+    log = emit([:store, :failure], %{}, %{meta | operation: :put, reason: :local, counted: false})
+    assert log =~ "store failure: :put on s3://bucket: reason=:local counted=false"
+  end
+
   test "a store error of a request that reached the store is logged with its reason" do
     reason = {:request_crashed, :exit, :timeout}
 
