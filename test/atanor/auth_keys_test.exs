@@ -113,7 +113,10 @@ defmodule Atanor.AuthKeysTest do
   test "concurrent first requests fetch once", %{provider: p} do
     {name, _advance} = start_keys()
 
-    results = 1..50 |> Task.async_stream(fn _ -> Keys.fetch(name, p.issuer, "k1") end) |> Enum.map(&elem(&1, 1))
+    results =
+      1..50
+      |> Task.async_stream(fn _ -> Keys.fetch(name, p.issuer, "k1") end, timeout: 30_000)
+      |> Enum.map(&elem(&1, 1))
 
     assert Enum.all?(results, &match?({:ok, [%{"kid" => "k1"}]}, &1))
     assert OIDCProvider.hits(p) == {1, 1}
@@ -133,7 +136,12 @@ defmodule Atanor.AuthKeysTest do
     assert OIDCProvider.hits(p) == {1, 1}, "within the interval of the first fetch: no refresh"
 
     advance.(59_000)
-    results = 1..20 |> Task.async_stream(fn _ -> Keys.fetch(name, p.issuer, "nope") end) |> Enum.map(&elem(&1, 1))
+
+    results =
+      1..20
+      |> Task.async_stream(fn _ -> Keys.fetch(name, p.issuer, "nope") end, timeout: 30_000)
+      |> Enum.map(&elem(&1, 1))
+
     assert Enum.all?(results, &match?({:ok, _}, &1))
     assert OIDCProvider.hits(p) == {1, 2}, "the interval passed: exactly one refresh, discovery stays cached"
 

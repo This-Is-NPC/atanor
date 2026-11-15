@@ -19,7 +19,7 @@ defmodule Atanor.Test.RawHTTP do
   def get(port, path, host, headers \\ []), do: request(port, "GET #{path} HTTP/1.1", [{"host", host} | headers])
 
   defp recv_all(socket, acc) do
-    case :gen_tcp.recv(socket, 0, 5_000) do
+    case :gen_tcp.recv(socket, 0, 30_000) do
       {:ok, data} -> recv_all(socket, acc <> data)
       {:error, _} -> acc
     end

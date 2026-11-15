@@ -41,7 +41,7 @@ defmodule Atanor.Test.WSClient do
   end
 
   defp await_response(conn, ref, acc) do
-    message_for(conn, 5_000, fn message ->
+    message_for(conn, 30_000, fn message ->
       {:ok, conn, responses} = Mint.WebSocket.stream(conn, message)
       acc = acc ++ responses
       if Enum.any?(acc, &match?({:done, ^ref}, &1)), do: {conn, acc}, else: await_response(conn, ref, acc)

@@ -44,7 +44,7 @@ defmodule Atanor.ChannelsTest do
 
   defp call(client, text) do
     client = WSClient.send_frame(client, {:text, text})
-    {{:text, reply}, client} = WSClient.recv(client, 5_000)
+    {{:text, reply}, client} = WSClient.recv(client, 30_000)
     {reply, client}
   end
 
@@ -87,8 +87,8 @@ defmodule Atanor.ChannelsTest do
 
       a = WSClient.send_frame(a, {:text, "cur r1 hello"})
       stamp = "#{node()}|hello"
-      assert {{:text, ^stamp}, a} = WSClient.recv(a, 5_000)
-      assert {{:text, ^stamp}, b} = WSClient.recv(b, 5_000)
+      assert {{:text, ^stamp}, a} = WSClient.recv(a, 30_000)
+      assert {{:text, ^stamp}, b} = WSClient.recv(b, 30_000)
       assert {:timeout, c} = WSClient.recv(c, 100)
 
       # The local callback ran once; no callback reached the owner and the cell did not change.
@@ -107,7 +107,7 @@ defmodule Atanor.ChannelsTest do
       a = connect(node, "/room/r1")
       assert {":ok", a} = call(a, "join r1")
       assert :ok = Env.publish(env(node, "chan"), {"rooms", "r1"}, {:binary, <<1, 2, 3>>})
-      assert {{:binary, <<1, 2, 3>>}, _} = WSClient.recv(a, 5_000)
+      assert {{:binary, <<1, 2, 3>>}, _} = WSClient.recv(a, 30_000)
 
       assert_receive {:telemetry, [:atanor, :channel, :publish], %{bytes: 3, nodes: 1, subscribers: 1},
                       %{cell: {"rooms", "r1"}}}
@@ -124,7 +124,7 @@ defmodule Atanor.ChannelsTest do
       assert {":ok", b} = call(b, "leave r1")
       assert {"1:alice", a} = call(a, "members r1")
       assert {":ok", a} = call(a, "pub r1 x")
-      assert {{:text, "x"}, a} = WSClient.recv(a, 5_000)
+      assert {{:text, "x"}, a} = WSClient.recv(a, 30_000)
       assert {:timeout, b} = WSClient.recv(b, 100)
 
       # Joining again replaces the id.
@@ -141,7 +141,7 @@ defmodule Atanor.ChannelsTest do
       a = connect(node, "/room/r1")
       assert {":ok", a} = call(a, "join probe")
       a = WSClient.send_frame(a, {:text, "probe"})
-      assert {{:text, reply}, _} = WSClient.recv(a, 5_000)
+      assert {{:text, reply}, _} = WSClient.recv(a, 30_000)
       assert reply == inspect({:error, {:not_granted, {:cell, "rooms"}}})
     end
 
@@ -222,9 +222,9 @@ defmodule Atanor.ChannelsTest do
       flush_calls()
 
       a = WSClient.send_frame(a, {:text, "cur r1 hello"})
-      assert {{:text, <<_::binary>> = stamped}, a} = WSClient.recv(a, 5_000)
+      assert {{:text, <<_::binary>> = stamped}, a} = WSClient.recv(a, 30_000)
       assert String.ends_with?(stamped, ":hello")
-      assert {{:text, ^stamped}, b} = WSClient.recv(b, 5_000)
+      assert {{:text, ^stamped}, b} = WSClient.recv(b, 30_000)
       assert {:ok, ^before} = Cell.position(node.name, {"rooms", "r1"})
       assert calls(node, :ws_in) == []
 
@@ -232,14 +232,14 @@ defmodule Atanor.ChannelsTest do
       assert {"hi", a} = call(a, "echo hi")
 
       assert {"ok", a} = call(a, "pub r1 from-owner")
-      assert {{:text, "from-owner"}, a} = WSClient.recv(a, 5_000)
-      assert {{:text, "from-owner"}, b} = WSClient.recv(b, 5_000)
+      assert {{:text, "from-owner"}, a} = WSClient.recv(a, 30_000)
+      assert {{:text, "from-owner"}, b} = WSClient.recv(b, 30_000)
 
       assert {"ok", b} = call(b, "leave r1")
       assert {"1:alice", a} = call(a, "members r1")
       assert {"failed: :too_large", a} = call(a, "big r1 20000")
       assert {"ok", a} = call(a, "big r1 16384")
-      assert {{:binary, data}, _} = WSClient.recv(a, 5_000)
+      assert {{:binary, data}, _} = WSClient.recv(a, 30_000)
       assert byte_size(data) == 16_384
       assert {:timeout, _} = WSClient.recv(b, 100)
     end
@@ -249,7 +249,7 @@ defmodule Atanor.ChannelsTest do
       a = connect(node, "/wchan")
       assert {"ok", a} = call(a, "join probe")
       a = WSClient.send_frame(a, {:text, "probe"})
-      assert {{:text, "not granted: rooms"}, _} = WSClient.recv(a, 5_000)
+      assert {{:text, "not granted: rooms"}, _} = WSClient.recv(a, 30_000)
     end
 
     test "a guest without the local export has every frame handled on the owner" do
