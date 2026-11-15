@@ -13,7 +13,7 @@ defmodule Atanor.BoundedReadsTest do
   use ExUnit.Case, async: true
 
   alias Atanor.{Dispatch, Env, Registry, Request}
-  alias Atanor.Test.Manifests
+  alias Atanor.Test.{Await, Manifests}
   alias AtanorTestkit.Node
 
   defp start(opts \\ []) do
@@ -85,7 +85,18 @@ defmodule Atanor.BoundedReadsTest do
   describe "route_key/2 with consistency" do
     test "a bounded request reads, a write in it is refused with 409, a normal request writes" do
       node = start()
-      assert %{status: 200} = Req.post!(node.url <> "/c/a", body: "5", retry: false)
+      # The first write wakes the cell. On a loaded machine that can outlast the queue deadline: the 503
+      # `queue_timeout` says the write did not run, so it is asked again.
+      Await.until(
+        fn ->
+          case Req.post!(node.url <> "/c/a", body: "5", retry: false) do
+            %{status: 200} -> true
+            %{status: 503, body: %{"reason" => "queue_timeout"}} -> false
+          end
+        end,
+        60_000
+      )
+
       assert %{status: 200, body: %{"rows" => [5], "node" => _}} = get(node, "/r/a?ms=500")
 
       assert %{status: 409, body: %{"error" => ":read_only"}} =
