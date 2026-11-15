@@ -56,19 +56,27 @@ defmodule Atanor.FeedTest do
     assert {:ok, _} = Env.execute(env, {"domains", key}, "INSERT INTO domains (address) VALUES (?)", [address])
   end
 
+  # `op_timeout_ms` is 10 ms here, so a loaded machine makes a read time out: that is an unavailable store, and
+  # the read is asked again.
+  defp read(env, namespace, position, limit) do
+    until(fn ->
+      case Env.changes(env, namespace, position, limit) do
+        {:error, {:store, :timeout}} -> nil
+        result -> result
+      end
+    end)
+  end
+
   defp changes(env, namespace, position) do
-    assert {:ok, changes, next} = Env.changes(env, namespace, position, 100)
+    assert {:ok, changes, next} = read(env, namespace, position, 100)
     {changes, next}
   end
 
   defp await_changes(env, namespace, position, count \\ 1) do
-    until(
-      fn ->
-        {changes, next} = changes(env, namespace, position)
-        if length(changes) >= count, do: {changes, next}
-      end,
-      5_000
-    )
+    until(fn ->
+      {changes, next} = changes(env, namespace, position)
+      if length(changes) >= count, do: {changes, next}
+    end)
   end
 
   defp flush(ref) do
@@ -157,7 +165,7 @@ defmodule Atanor.FeedTest do
       {again, _next} = changes(env, "notes", nil)
       assert Enum.any?(again, &(&1.id == id))
 
-      assert {:ok, [], ^next} = Env.changes(env, "notes", next, 100)
+      assert {:ok, [], ^next} = read(env, "notes", next, 100)
 
       execute(env, "notes", "b", "notes", "second")
       {second, _next} = await_changes(env, "notes", next)
@@ -170,7 +178,7 @@ defmodule Atanor.FeedTest do
       {_old, _next} = await_changes(env, "notes", nil)
       position = Env.feed_position(env, :now)
       assert is_binary(position)
-      assert {:ok, [], ^position} = Env.changes(env, "notes", position, 100)
+      assert {:ok, [], ^position} = read(env, "notes", position, 100)
 
       execute(env, "notes", "b", "notes", "new")
       {[change], _next} = await_changes(env, "notes", position)
@@ -197,24 +205,21 @@ defmodule Atanor.FeedTest do
       for i <- 1..16, do: execute(env, "notes", "a", "notes", "b#{i}")
 
       assert {:ok, [_ | _] = page, next} =
-               until(
-                 fn ->
-                   case Env.changes(env, "notes", nil, 1) do
-                     {:ok, [_ | _], _} = found -> found
-                     _ -> nil
-                   end
-                 end,
-                 30_000
-               )
+               until(fn ->
+                 case Env.changes(env, "notes", nil, 1) do
+                   {:ok, [_ | _], _} = found -> found
+                   _ -> nil
+                 end
+               end)
 
       assert identity(page) == identity(plain)
       assert length(Enum.uniq_by(page, & &1.id)) == 16
-      assert {:ok, [], ^next} = Env.changes(env, "notes", next, 1)
+      assert {:ok, [], ^next} = read(env, "notes", next, 1)
 
       # A message position is the cursor of the stream, not of a record: the object key after a catch-up read,
       # or the live position of the tailer. Either one resumes after the group.
       assert_receive {:atanor_changes, ^ref, ^page, position}, 30_000
-      assert {:ok, [], _} = Env.changes(env, "notes", position, 100)
+      assert {:ok, [], _} = read(env, "notes", position, 100)
       refute_receive {:atanor_changes, ^ref, _, _}, 100
     end
   end
