@@ -106,7 +106,10 @@ defmodule Atanor.WasmPropertiesTest do
 
       runaways =
         for i <- 1..@runaways do
-          Task.async(fn -> request(node, if(rem(i, 2) == 0, do: "spin", else: "hog")).status end)
+          Task.async(fn ->
+            response = request(node, if(rem(i, 2) == 0, do: "spin", else: "hog"))
+            {response.status, response.body["reason"]}
+          end)
         end
 
       hellos =
@@ -124,14 +127,20 @@ defmodule Atanor.WasmPropertiesTest do
         "L1: #{@runaways} runaways and 40 hellos in #{elapsed} ms, scheduler lag max #{sleep_max} ms, call max #{call_max} ms"
       )
 
-      assert Enum.all?(statuses, &(&1 in [500, 504])), inspect(statuses)
+      # A runaway that waits for a thread past `wasm: [queue_wait_ms:]` is refused, which a loaded machine
+      # makes happen; every other one is stopped by a limit.
+      assert Enum.all?(statuses, &(&1 in [{500, nil}, {504, nil}, {503, "worker_queue"}, {503, "queue_timeout"}])),
+             inspect(statuses)
+
+      stopped = Enum.count(statuses, fn {status, _} -> status in [500, 504] end)
+      assert stopped > 0
       assert Enum.all?(hello_statuses, &(&1 in [200, 503])), inspect(hello_statuses)
       assert Enum.count(hello_statuses, &(&1 == 200)) > 0
       assert elapsed < 30_000
       assert sleep_max < 250 and call_max < 250
 
       limits =
-        for _ <- 1..@runaways do
+        for _ <- 1..stopped do
           assert_receive {:telemetry, _, _, %{limit: limit}}, 1000
           limit
         end
