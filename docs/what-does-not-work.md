@@ -109,6 +109,8 @@ next to the node log (how-to-run-the-load-tests.md). Since Alambique v0.10.0 the
 log also has one line per store failure with its reason and whether the breaker
 counted it. v0.10.0 fixed one candidate cause: the HEAD check of the frozen marker
 had a 50 ms timeout that counted as a store failure; it now has 1 s
-(`check_timeout_ms`). The next load round will confirm whether that was the trigger;
+(`check_timeout_ms`). In the test suite, the `:crashed` failures seen on a loaded laptop most likely came from the
+testkit MemoryStore's 5 s `GenServer` timeout, which v0.10.1 removed; the failure line now also has the crash `kind`
+and `detail`. The next load round will confirm whether that was the trigger;
 this entry stays open until then. The next occurrence names its cause. Until then: stall seen once between 72.3 s and 73.8 s of the step,
 requests in flight 2 to 50, generator lag p99 5,523.9 ms, node 0.31 and store 0.23 cores.
