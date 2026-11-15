@@ -28,7 +28,7 @@ defmodule AtanorTestkit.Node do
   def start(opts \\ []) do
     id = System.unique_integer([:positive])
     name = Keyword.get(opts, :name, Module.concat(__MODULE__, "N#{id}"))
-    data_dir = Keyword.get(opts, :data_dir, Path.join(System.tmp_dir!(), "atanor-#{id}"))
+    data_dir = Keyword.get(opts, :data_dir, Path.join(System.tmp_dir!(), "atanor-#{System.pid()}-#{id}"))
     File.mkdir_p!(data_dir)
 
     {store_children, store} =
