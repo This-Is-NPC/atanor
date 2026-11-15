@@ -193,7 +193,8 @@ defmodule Atanor.QueueDeadlineTest do
     end
 
     test "a cell call runs in the process of the handler with the cell cold and warm" do
-      node = start(http: [queue_wait_ms: 5_000])
+      # Not a test of the deadline: a cold wake on a loaded machine must not outlast it.
+      node = start(http: [queue_wait_ms: 120_000])
       assert :ok = Admission.enter(node.name)
       on_exit(fn -> Admission.leave(node.name) end)
       cold = callback_view(node, "cold")
@@ -224,16 +225,17 @@ defmodule Atanor.QueueDeadlineTest do
       assert ms < 1_000
 
       unslow.()
-      Process.sleep(1_800)
+      Await.until(fn -> match?({:ok, %{waking: false}}, Alambique.load(alambique, "notes.twice")) end, 60_000)
       assert {:ok, %{rows: []}} = Cell.query(node.name, {"notes", "twice"}, "SELECT body FROM notes")
     end
 
     test "a write to an awake cell goes straight to the bounded call, without a touch" do
-      node = start(http: [queue_wait_ms: 5_000])
+      # Not a test of the deadline: the warm-up wake on a loaded machine must not outlast it.
+      node = start(http: [queue_wait_ms: 120_000])
       alambique = Atanor.Registry.config(node.name).alambique
       # A write marks its process as committed, which lifts the deadline: warm the cell in another process.
       warm = fn -> Cell.execute(node.name, {"notes", "warm"}, "INSERT INTO notes (body) VALUES ('a')") end
-      assert {:ok, _} = Task.await(Task.async(warm))
+      assert {:ok, _} = Task.await(Task.async(warm), 120_000)
       assert {:ok, %{waking: false}} = Alambique.load(alambique, "notes.warm")
       assert :ok = Admission.enter(node.name)
       on_exit(fn -> Admission.leave(node.name) end)
@@ -252,6 +254,7 @@ defmodule Atanor.QueueDeadlineTest do
 
     test "a write whose cell wakes past the deadline is a queue_timeout and is never committed" do
       node = start()
+      alambique = Atanor.Registry.config(node.name).alambique
       unslow = slow(node, "slowwake", 1_500, [:get, :get_range, :head, :list])
       assert :ok = Admission.enter(node.name)
       on_exit(fn -> Admission.leave(node.name) end)
@@ -264,7 +267,7 @@ defmodule Atanor.QueueDeadlineTest do
       refute Cell.unknown_outcome?()
       assert ms < 1_000
       unslow.()
-      Process.sleep(1_800)
+      Await.until(fn -> match?({:ok, %{waking: false}}, Alambique.load(alambique, "notes.slowwake")) end, 60_000)
       Admission.leave(node.name)
       assert {:ok, %{rows: []}} = Cell.query(node.name, {"notes", "slowwake"}, "SELECT body FROM notes")
     end
