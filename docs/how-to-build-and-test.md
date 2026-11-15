@@ -50,6 +50,7 @@ atanor.dev`. [examples/echo-tcp](../examples/echo-tcp) serves a line protocol:
 mise run test            # default suite, no external services
 mise run build:cli         # the atanor command, into _build/cli/atanor (cli.md)
 mise run test:cluster    # properties and tests on peer nodes (about 2 minutes; needs epmd)
+mise run check:fast      # warnings as errors and formatting, what pre-push runs
 mise run check:no-phoenix  # compile and run examples/hello-native, which has no Phoenix
 mise run docs:dashboard-screenshots  # regenerate docs/img (needs Playwright)
 mise run test:native     # Rust unit tests of the WASM library
@@ -89,15 +90,52 @@ temporary data directory and an ephemeral port; `stop/1` removes it.
 (kills, partitions of the store and of the distribution, clock skew); the tests
 that use it are tagged `cluster` and run with `mise run test:cluster`.
 
-## Run the gate before you push
+## Run the gate
 
-`master` requires the commit status `local-check`. Nothing on GitHub runs the
-gate; your machine does, and posts the status.
+CI is the merge gate. `master` requires the check `ci` of the workflow
+`.github/workflows/ci.yml`, which runs on every pull request to `master` and on
+every push to `master`. A new push to a pull request cancels its older run.
+The pre-push hook runs only the fast checks, so a loaded machine does not
+block a push.
 
 ```sh
 mise run hooks:install   # sets core.hooksPath to .githooks (once per clone)
-mise run check           # the gate
+mise run check:fast      # what pre-push runs: warnings as errors and formatting
+mise run check           # the quick gate of CI, on this machine
 ```
+
+The jobs of the workflow, each a mise task:
+
+| Job | Runs |
+| --- | --- |
+| `static` | `check:compile` (test and dev with warnings as errors), `check:format`, `check:links`, `check:workflows` |
+| `test` | `mise run test`, the quick suite |
+| `native` | `mise run test:native`, the Rust unit tests |
+| `cluster` | `mise run test:cluster`, the tests on peer nodes |
+| `seaweedfs` | `mise run test:seaweedfs`, against a disposable SeaweedFS in Docker (the runner has Docker) |
+| `coverage` | `mise run test:coverage`: line coverage of `lib/` and the Rust crate, 90% per language |
+| `ci` | waits for the others and fails unless all passed; the only check branch protection needs |
+
+The tools come from `mise.toml`. The caches of `deps`, `_build`, the cargo
+target and the cargo registry are keyed on `mise.toml`, `mix.lock`,
+`alambique.ref` and `native/atanor_wasm/Cargo.lock`. Every action is pinned by
+commit SHA.
+
+Repository variables (Settings, Secrets and variables, Actions, Variables)
+tune a run; each has a default:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ATANOR_CI_TIMEOUT_STATIC`, `_TEST`, `_NATIVE`, `_CLUSTER`, `_SEAWEEDFS`, `_COVERAGE` | 20, 30, 30, 40, 30, 90 | Timeout of each job, in minutes. |
+| `ATANOR_TEST_MAX_CASES` | empty (ExUnit's default, twice the cores) | Test modules run at once; the same variable works locally. |
+| `ATANOR_COVERAGE_THRESHOLD` | `90` | Minimum line coverage per language, in percent. |
+
+What stays local, and why: the gate on the pull request needs no local run, so
+coverage, the cluster suite and SeaweedFS are run on demand only, for example
+`mise run test:coverage` to find what lowered the coverage. The benchmarks,
+the load tests, the container cluster, the image smoke tests and the lab are
+never in CI: they measure a machine or need KVM, libvirt or privileged
+containers.
 
 `mise run check` runs, in order: `mix compile --warnings-as-errors` in the
 test and dev environments (forced, so old warnings show), `mix format
@@ -120,37 +158,16 @@ stay; set `ATANOR_CHECK_LOG_KEEP=<n>` to change that. `scripts/check-log
 The hooks:
 
 - `pre-commit` runs only `mise run check:format`.
-- `pre-push` runs the gate on each pushed commit. A red gate refuses the
-  push. A green one posts `local-check` as `success` once GitHub has the commit.
-  Tag pushes and deletions pass.
+- `pre-push` runs `mise run check:fast` once per push. A red check refuses the
+  push. Tag pushes and deletions pass. `git commit --no-verify` and `git push
+  --no-verify` skip the hooks.
 
-The hook and `mise run local-check` also save the full gate output to
-`_build/local-check.log`, which git ignores. Each run overwrites it, and a red
-gate prints its path. Read it to find the failing test after the terminal
-output is gone.
-
-A red gate also keeps its output as `_build/local-check-failed-<UTC stamp>.log`,
-so the next run does not overwrite it, and prints that path. Only the newest 10
-such files stay. Set `ATANOR_LOCAL_CHECK_KEEP_FAILED=<n>` to change the count;
-`0` keeps none, and a value that is not a number falls back to 10 with a
-warning.
-
-The status is posted with `gh`, so it needs `gh auth login`. Without it the
-gate still runs and the push goes through, but `master` will refuse the merge.
-The gate vouches only for a clean checkout of the pushed commit.
-
-The pull request that release-please opens is pushed by a bot. Check out its
-branch, run `mise run check`, then post the status for that commit:
-
-```sh
-scripts/local-check --post-only --state=success --sha=<commit of the PR head>
-```
-
-`--dry-run` prints the API calls instead of sending them. To skip on purpose
-set `ATANOR_SKIP_LOCAL_CHECK=1` (for example `ATANOR_SKIP_LOCAL_CHECK=1 git
-push`); no status is posted, so `master` still refuses the merge until an
-administrator bypasses the rule or you post one. `git commit --no-verify` and
-`git push --no-verify` skip the hooks.
+`mise run local-check` is for manual use. It runs `mise run check` on a clean
+HEAD that is already pushed and posts a `local-check` commit status with `gh`.
+`master` no longer requires that status; CI does the gating. `--dry-run` prints
+the API calls. It keeps the gate output in `_build/local-check.log` and, for a
+red gate, in `_build/local-check-failed-<UTC stamp>.log` (newest 10; set
+`ATANOR_LOCAL_CHECK_KEEP_FAILED=<n>` to change it).
 
 ## Releases
 

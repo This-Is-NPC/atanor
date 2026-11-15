@@ -44,12 +44,15 @@ request.
 - Review experiments and design alternatives with the smallest working
   demonstration that makes them assessable. Apply production verification
   when integrating the chosen behavior.
-- `mise run check` is the local gate (warnings as errors, formatting, docs
-  links, quick suite); `master` requires the `local-check` status it posts
-  on push (`docs/how-to-build-and-test.md`).
-- `mise run test:coverage` measures line coverage of `lib/` and the Rust crate
-  and fails below 90% per language; use it when a change adds or removes
-  production code or tests (about 30 minutes; stages in `scripts/test-coverage`).
+- CI on the pull request is the merge gate (`.github/workflows/ci.yml`): the
+  required check is `ci`. `mise run check` runs the same quick gate locally
+  (warnings as errors, formatting, docs links, quick suite). The pre-push hook
+  runs only the fast checks (`mise run check:fast`); see
+  `docs/how-to-build-and-test.md`.
+- Coverage (`mise run test:coverage`, line coverage of `lib/` and the Rust
+  crate, fails below 90% per language) runs in CI. Run it locally only when
+  needed to investigate a drop (about 30 minutes; stages in
+  `scripts/test-coverage`).
 - Batch related edits before running checks. Repeat checks when new changes,
   failures, or unresolved concerns justify another run.
 - Tests wait for observable state, output, or signals. Timeouts bound failure.
