@@ -195,7 +195,14 @@ defmodule Atanor.RanchTest do
     {:ok, port} = :inet.port(taken)
 
     node = start(port: port, protocol: :ranch)
-    assert {:error, {:listener_failed, "smtp", :eaddrinuse}} = Node.deploy(node, manifest())
+
+    # Ranch logs the refused bind as an error; it is the expected one, so it stays out of the suite log.
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, {:listener_failed, "smtp", :eaddrinuse}} = Node.deploy(node, manifest())
+      end)
+
+    assert log =~ "eaddrinuse"
   end
 
   test "reports connects and disconnects per Ranch listener" do
