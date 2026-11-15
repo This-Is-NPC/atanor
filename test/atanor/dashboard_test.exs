@@ -352,7 +352,6 @@ defmodule Atanor.DashboardTest do
     end
 
     test "every native measurement the charts name is polled and emitted" do
-      start()
       native = Enum.filter(Metrics.metrics(), &(&1.reporter_options[:nav] in ["wasm_native", "alambique_native"]))
       assert native != []
       id = {__MODULE__, make_ref()}
@@ -367,9 +366,12 @@ defmodule Atanor.DashboardTest do
 
       on_exit(fn -> :telemetry.detach(id) end)
 
-      # The poller emits both when the dashboard starts.
+      # The poller emits both when the dashboard starts, so the handler is attached before the node starts; a
+      # later poll comes only after `dashboard: [poll_ms:]`.
+      start()
+
       for event <- [[:atanor, :wasm, :native, :stats], [:alambique, :native, :stats]] do
-        assert_receive {:stats, ^event, measurements}, 5_000
+        assert_receive {:stats, ^event, measurements}
 
         for metric <- native, metric.event_name == event do
           assert %{} = TelemetryListener.extract_datapoint_for_metric(metric, measurements, %{}), inspect(metric.name)
