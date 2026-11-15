@@ -36,12 +36,26 @@ defmodule Atanor.AlarmsTest do
     {node, world}
   end
 
-  defp set(node, key, at, payload) do
-    query = URI.encode_query(key: key, at: at, payload: payload)
-    assert Req.get!("#{node.url}/set?#{query}", retry: false).body == ":ok"
+  # A cold cell can outlast the queue deadline on a loaded machine: the worker answers
+  # `{:error, {:unavailable, :overloaded}}`, which means the call did not run, so it is asked again.
+  defp ask(url) do
+    until(
+      fn ->
+        case Req.get!(url, retry: false).body do
+          "{:error, {:unavailable, :overloaded}}" -> nil
+          body -> body
+        end
+      end,
+      60_000
+    )
   end
 
-  defp cancel(node, key), do: assert(Req.get!("#{node.url}/cancel?key=#{key}", retry: false).body == ":ok")
+  defp set(node, key, at, payload) do
+    query = URI.encode_query(key: key, at: at, payload: payload)
+    assert ask("#{node.url}/set?#{query}") == ":ok"
+  end
+
+  defp cancel(node, key), do: assert(ask("#{node.url}/cancel?key=#{key}") == ":ok")
 
   defp rows(node, key) do
     {:ok, %{rows: rows}} =
