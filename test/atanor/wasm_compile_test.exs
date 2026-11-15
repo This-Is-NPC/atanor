@@ -16,17 +16,21 @@ defmodule Atanor.WasmCompileTest do
     %{node: node.name, bytes: File.read!("test/fixtures/wasm/hello.wasm")}
   end
 
-  # Waits until the compile pool has taken every abandoned compile.
-  defp drained(node, bytes, n \\ 0) do
+  # Waits until the compile pool has taken every abandoned compile; the deadline only bounds a hang.
+  defp drained(node, bytes, n \\ 0, deadline \\ System.monotonic_time(:millisecond) + 240_000) do
     case Cache.fetch(node, "drain-#{n}", bytes) do
       {:ok, _} ->
         :ok
 
-      {:error, _} when n < 600 ->
+      {:error, _} ->
+        if System.monotonic_time(:millisecond) > deadline, do: flunk("the compile pool never drained")
         Process.sleep(50)
-        drained(node, bytes, n + 1)
+        drained(node, bytes, n + 1, deadline)
     end
   end
+
+  # 400 and then 100 cold compiles take minutes on a loaded machine; the timeouts only bound a hang.
+  @moduletag timeout: 300_000
 
   test "abandoned compiles leave the dirty schedulers free", %{node: node, bytes: bytes} do
     assert {:ok, compiled} = Cache.fetch(node, "first", bytes)
@@ -47,7 +51,7 @@ defmodule Atanor.WasmCompileTest do
     results =
       1..limit
       |> Enum.map(fn i -> Task.async(fn -> Cache.fetch(node, "burst-#{i}", bytes) end) end)
-      |> Task.await_many()
+      |> Task.await_many(240_000)
 
     assert {:error, "compile queue is full"} in results
     drained(node, bytes)
