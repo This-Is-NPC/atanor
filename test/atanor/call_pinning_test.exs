@@ -61,6 +61,8 @@ defmodule Atanor.CallPinningTest do
     assert finish({task, handler}) == {ids[2], ids[2]}
   end
 
+  # Up to 25 nodes start and stop in one run; it takes longer than the default 60 s on a loaded machine.
+  @tag timeout: 300_000
   property "every call of a request reaches the version that was active when it began" do
     check all(
             ops <-
