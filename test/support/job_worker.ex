@@ -120,6 +120,7 @@ defmodule Atanor.Test.JobWorker do
       "unhealed:" <> dir -> unhealed(dir)
       "track:" <> rest -> track(job, rest)
       "file:" <> rest -> file(job, rest)
+      "hold:" <> dir -> hold(job, dir)
       "pulse:" <> rest -> pulse(rest)
       "gate:" <> table -> gate(env, table)
       "raise" -> raise "job failure"
@@ -224,6 +225,24 @@ defmodule Atanor.Test.JobWorker do
     beats(String.to_integer(ms), line)
     line.("end")
     :ok
+  end
+
+  # Like `file:`, but the job ends when the test creates `<dir>/release`, not after a time.
+  defp hold(job, dir) do
+    path = Path.join(dir, job.id)
+    line = fn what -> File.write!(path, "#{what} #{node()} #{System.os_time(:millisecond)}\n", [:append]) end
+
+    line.("start")
+    await_release(Path.join(dir, "release"))
+    line.("end")
+    :ok
+  end
+
+  defp await_release(release) do
+    unless File.exists?(release) do
+      Process.sleep(10)
+      await_release(release)
+    end
   end
 
   defp beats(ms, line) when ms <= 0, do: line

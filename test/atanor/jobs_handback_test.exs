@@ -115,14 +115,17 @@ defmodule Atanor.JobsHandbackTest do
 
   test "a job A still runs when the drain ends is not released, so it never runs twice", %{tmp_dir: dir} do
     {a, b} = pair()
-    id = enqueue(a, "file:1500:" <> dir)
+    id = enqueue(a, "hold:" <> dir)
     scan(a)
     path = Path.join(dir, id)
-    assert until(fn -> File.exists?(path) end)
+    assert until(fn -> File.exists?(path) end, 30_000)
 
-    # `stop.jobs_ms` (300) ends with the job running: its claim is kept.
+    # `stop.jobs_ms` (300) ends with the job running, whatever the load: the job holds until released.
+    # Its claim is kept.
     assert {:ok, _} = Atanor.drain(a.name, exit: false)
-    assert until(fn -> File.read!(path) =~ "end" end)
+    File.write!(Path.join(dir, "release"), "")
+    assert until(fn -> File.read!(path) =~ "end" end, 30_000)
+    # B scans every 50 ms: a claim that was released would run again within this window.
     Process.sleep(500)
 
     assert [_] = for("start" <> _ = line <- String.split(File.read!(path), "\n", trim: true), do: line)
