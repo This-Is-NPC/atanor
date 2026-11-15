@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The load generator of the load tests: one process, open loop, results as one JSON document.
 
-  load-gen http  --host H --port P --kind native|wasm --rate R --duration S [--cells N] [--write-ratio W] [--conns C]
+  load-gen http  --host H --port P --kind native|plain|wasm --rate R --duration S [--cells N] [--write-ratio W] [--conns C]
   load-gen cells --host H --port P --kind native|wasm --cells N --period S --duration S [--conns C]
   load-gen ws    --host H --port P --kind native|wasm --connections N --duration S [--open-rate R] [--interval S]
 
@@ -12,8 +12,9 @@ document carries `planned`, `sent` and `completed` plus `lag_ms`, how late reque
 schedule, and `cpu_s`, so a generator that is the limit shows itself.
 
   http   requests at R per second for S seconds over N cells (a share W of them writes) on C keep-alive
-         connections. Native: POST|GET /native/CELL on load.localhost. WASM: POST /rooms/ROOM/scores,
-         GET /rooms/ROOM on scoreboard.localhost.
+         connections. Native: POST|GET /native/CELL on load.localhost. Plain WASM (examples/load-plain, the twin
+         of the native worker): POST|GET /plain/CELL on loadwasm.localhost. WASM (the scoreboard):
+         POST /rooms/ROOM/scores, GET /rooms/ROOM on scoreboard.localhost.
   cells  every one of N cells is written once (opening, at --open-rate), then each gets one write
          every --period seconds for --duration seconds: N cells stay hot together.
   ws     N WebSocket connections opened at --open-rate per second, each attached to one of --rooms
@@ -35,15 +36,15 @@ import resource
 import struct
 import time
 
-HOSTS = {"native": "load.localhost", "wasm": "scoreboard.localhost"}
+HOSTS = {"native": "load.localhost", "plain": "loadwasm.localhost", "wasm": "scoreboard.localhost"}
 NOT_COMPLETED = "error: not completed"  # planned, but no answer: late in the queue, in flight at the end, or never sent
 BUCKET = 10  # histogram buckets per millisecond
 
 
 def request_for(kind, tag, cell, write, n):
     """(method, path, host header) of one request."""
-    if kind == "native":
-        return ("POST" if write else "GET"), f"/native/{tag}-{cell}", HOSTS[kind]
+    if kind in ("native", "plain"):
+        return ("POST" if write else "GET"), f"/{kind}/{tag}-{cell}", HOSTS[kind]
     if write:
         return "POST", f"/rooms/{tag}-{cell}/scores?id={tag}-{n}&player=ada&points=1", HOSTS[kind]
     return "GET", f"/rooms/{tag}-{cell}", HOSTS[kind]
@@ -298,7 +299,7 @@ def main():
     parser.add_argument("mode", choices=["http", "cells", "ws"])
     parser.add_argument("--host", required=True)
     parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--kind", choices=["native", "wasm"], required=True)
+    parser.add_argument("--kind", choices=["native", "plain", "wasm"], required=True)
     parser.add_argument("--rate", type=float, default=50, help="http: requests per second")
     parser.add_argument("--duration", type=float, default=180)
     parser.add_argument("--cells", type=int, default=64, help="http: cells the requests spread over; cells: cells kept hot")
@@ -327,4 +328,5 @@ def main():
         print(text)
 
 
-main()
+if __name__ == "__main__":
+    main()

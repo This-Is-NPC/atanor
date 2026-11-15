@@ -26,6 +26,28 @@ defmodule Atanor.LoadGenTest do
     assert statuses["error: not completed"] + document["completed"] == 40
   end
 
+  test "the plain WASM kind sends the native worker's requests to its own host and path" do
+    code = """
+    import importlib.machinery, importlib.util, json, sys
+    sys.dont_write_bytecode = True
+    loader = importlib.machinery.SourceFileLoader("load_gen", sys.argv[1])
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("load_gen", loader))
+    loader.exec_module(module)
+    print(json.dumps([module.request_for(kind, "t", 3, write, 7) for kind in ("native", "plain", "wasm") for write in (True, False)]))
+    """
+
+    {out, 0} = System.cmd("python3", ["-I", "-c", code, Path.expand("scripts/load-gen")])
+
+    assert :json.decode(out) == [
+             ["POST", "/native/t-3", "load.localhost"],
+             ["GET", "/native/t-3", "load.localhost"],
+             ["POST", "/plain/t-3", "loadwasm.localhost"],
+             ["GET", "/plain/t-3", "loadwasm.localhost"],
+             ["POST", "/rooms/t-3/scores?id=t-7&player=ada&points=1", "scoreboard.localhost"],
+             ["GET", "/rooms/t-3", "scoreboard.localhost"]
+           ]
+  end
+
   defp accept_forever(listen) do
     case :gen_tcp.accept(listen) do
       {:ok, _socket} -> accept_forever(listen)

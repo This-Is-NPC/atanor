@@ -13,10 +13,26 @@ machine say how the harness works, not what a release holds: run the real ramps 
 
 | Measure (task) | Ramp | A step fails when | Cost per unit |
 | --- | --- | --- | --- |
-| `load:http-native`, `load:http-wasm`: reads and writes in cells | requests per second | p99 > 250 ms, a 5xx other than 503 with `Retry-After`, or any error | req/s per vCPU, fixed MB, MB per req/s, S3 trips and bytes per request |
+| `load:http-native`, `load:http-wasm`: reads and writes in cells; same work in both (see [the workers](#the-workers-of-the-http-measures)) | requests per second | p99 > 250 ms, a 5xx other than 503 with `Retry-After`, or any error | req/s per vCPU, fixed MB, MB per req/s, S3 trips and bytes per request |
 | `load:ws`: open idle WebSockets, one message per socket every 30 s | connections | working set at 90% of the limit (see [the memory criterion](#the-memory-criterion)), or file descriptors at 90% of the limit (or a socket that cannot connect or is dropped) | MB and descriptors per connection |
+| `load:http-wasm-jobs`: writes and reads of the scoreboard, a job-heavy WASM app (not comparable with native) | requests per second | p99 > 250 ms, a 5xx other than 503 with `Retry-After`, or any error | req/s per vCPU, fixed MB, MB per req/s (its S3 trips and bytes per request are not comparable with native) |
 | `load:cells`: cells written once every 10 s, all awake together | cells | working set at 90% of the limit, or p99 > 250 ms | MB per hot cell |
-| `load:swap`: node A replaced by B under load | none (one run at the last approved `http-wasm` rate) | an acknowledged write lost or duplicated, or an answer other than 503 with `Retry-After` | swap duration and p99 peak |
+| `load:swap`: node A replaced by B under load | none (one run at the last approved `http-wasm-jobs` rate: run that measure first, or pass `--rate`) | an acknowledged write lost or duplicated, or an answer other than 503 with `Retry-After` | swap duration and p99 peak |
+
+### The workers of the http measures
+
+| Measure | Worker | Work per request |
+| --- | --- | --- |
+| `http-native` | `AtanorLoad.Worker` (native) | A write: `INSERT INTO log (v) VALUES (?)`. A read: `SELECT count(*) FROM log`. One cell per key. |
+| `http-wasm` | `load-plain`, [examples/load-plain](../examples/load-plain) (WASM, the twin of the native worker) | The same statements on the same keying, on `/plain/CELL`. |
+| `http-wasm-jobs` | `scoreboard`, [examples/scoreboard](../examples/scoreboard/README.md) (WASM app) | A write records a score and enqueues a ranking job that runs in the same cell; a read counts and ranks. |
+
+`http-wasm` and `http-native` do the same work, so their numbers compare the runtimes. The scoreboard is an app
+workload with a job per write: it makes about 4.7 segment uploads and 14.5 KB per request, against 1.1 uploads and
+436 B for the native worker, so its S3 trips and bytes per request are not comparable with native. A triage found
+a plain WASM guest at 1.16 puts and 410 B per request, so the runtime itself costs no more trips than native.
+[test/atanor/load_plain_twin_test.exs](../test/atanor/load_plain_twin_test.exs) keeps the two within 25% of each other.
+The scoreboard stays the swap's workload and its rate comes from `http-wasm-jobs`.
 
 Every `load:*` task exits with status 1 when a step ended INVALID (the lab, not the node, broke: there is no
 verdict), and `load:swap`, which is a single check and not a ramp, also exits 1 when the swap failed. A failed step
@@ -39,7 +55,7 @@ One container per service, all of the project `atanor-cluster` (`scripts/cluster
 | Store latency | `tc netem delay 25ms` on the store's network interface, so every answer the store sends waits 25 ms: each trip costs 25 ms more. The node image has `tc`; `atanor-load-tc` joins the store's network namespace with `NET_ADMIN`, applies the qdisc and exits. The qdisc needs no root on the host. A request on a warm connection pays the latency once; a `curl` that opens a connection pays it twice, because the handshake answer waits too. `load:up` checks that the round trip from the node to the store grew by at least 80% of the added latency (observed: 1.0 ms to 51.1 ms for a new connection) and every step records it (`store_rtt_ms`). |
 | Balancer | HAProxy (2 CPUs) is in the path only for `load:swap`. The other measures send to the node's address. |
 | Generator | `scripts/load-gen`, outside the node's limit: Python `asyncio`, open loop, keep-alive connections, one process per about 600 req/s. Latency counts from the scheduled time of a request. |
-| Workers | `AtanorLoad.Worker` (native, [cluster/load/lib/atanor_load/worker.ex](../cluster/load/lib/atanor_load/worker.ex); `load:up` builds the image `atanor-cluster-load:local` from [cluster/load/Dockerfile](../cluster/load/Dockerfile), a [derived image](how-to-build-a-derived-image.md) of the release with the tools of the harness target, because a native module must be loaded in the node) and the scoreboard example (WASM). Both are deployed by `load:up`. |
+| Workers | `AtanorLoad.Worker` (native, [cluster/load/lib/atanor_load/worker.ex](../cluster/load/lib/atanor_load/worker.ex); `load:up` builds the image `atanor-cluster-load:local` from [cluster/load/Dockerfile](../cluster/load/Dockerfile), a [derived image](how-to-build-a-derived-image.md) of the release with the tools of the harness target, because a native module must be loaded in the node), the plain WASM worker `load-plain` (`mise run build:load-plain`, [examples/load-plain](../examples/load-plain)) and the scoreboard example (WASM). All three are deployed by `load:up`. |
 
 ## How a step is judged
 
@@ -186,12 +202,12 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
   [README](../README.md#requirements) (`mise install`).
 - About 4 GB of free memory for the containers and the generator, and an idle host: the harness measures
   the host load: it waits for a quiet host before each step and stops when the host does not calm down.
-- The first `load:up` builds the node image (several minutes: two Rust NIFs) and the scoreboard. Both workers are deployed with the `atanor` command of that image, so no host CLI is needed.
+- The first `load:up` builds the node image (several minutes: two Rust NIFs), the plain worker and the scoreboard. The three workers are deployed with the `atanor` command of that image, so no host CLI is needed.
 
 ## Steps
 
 1. Start scenario A (or `ATANOR_LOAD_SCENARIO=B`). It builds, starts the node, the store and the balancer,
-   applies and checks the latency, and deploys both workers.
+   applies and checks the latency, and deploys the three workers.
 
    ```sh
    mise run load:up
@@ -206,13 +222,14 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
    export ATANOR_LOAD_OUT=load/results/$(date +%Y%m%d-%H%M%S)
    mise run load:http-native
    mise run load:http-wasm
+   mise run load:http-wasm-jobs
    mise run load:ws
    mise run load:cells
    ```
 
    Each task prints one line per step and writes the step files and a summary into `ATANOR_LOAD_OUT`.
 
-3. Swap the node at the last approved WASM rate. This removes node A: it is the last run of a session.
+3. Swap the node at the last approved `http-wasm-jobs` rate (the scoreboard's). This removes node A: it is the last run of a session.
 
    ```sh
    mise run load:swap
@@ -239,6 +256,7 @@ mise run load:http-native -- --steps 10,20 --refine 0
 mise run load:ws -- --steps 20,40 --refine 0 --ws-interval 10
 mise run load:cells -- --steps 20,40 --refine 0 --cell-period 5
 mise run load:http-wasm -- --steps 10 --refine 0
+mise run load:http-wasm-jobs -- --steps 10 --refine 0
 mise run load:swap -- --rate 10 --swap-warmup 5 --swap-overlap 3 --swap-settle 8
 mise run load:report -- "$ATANOR_LOAD_OUT"
 mise run load:down

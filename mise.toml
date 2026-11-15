@@ -193,6 +193,12 @@ run = "scripts/build-scoreboard"
 sources = ["examples/scoreboard/guest/src/**", "examples/scoreboard/guest/Cargo.toml", "examples/scoreboard/guest/wit/world.wit", "wit/**/*.wit"]
 outputs = ["examples/scoreboard/scoreboard.wasm"]
 
+[tasks."build:load-plain"]
+description = "Build the plain WASM worker of the load tests (examples/load-plain) into examples/load-plain/load-plain.wasm"
+run = "scripts/build-load-plain"
+sources = ["examples/load-plain/guest/src/**", "examples/load-plain/guest/Cargo.toml", "examples/load-plain/guest/wit/world.wit", "wit/**/*.wit"]
+outputs = ["examples/load-plain/load-plain.wasm"]
+
 [tasks."check:workflows"]
 description = "Lint the GitHub Actions workflows with actionlint"
 run = "actionlint"
@@ -240,8 +246,8 @@ description = "Roll the cluster's nodes onto a rebuilt image one at a time: buil
 run = "scripts/cluster-roll"
 
 [tasks."load:up"]
-description = "Start the load-test scenario: one node with cgroup limits (env: ATANOR_LOAD_SCENARIO=A 1 CPU/512 MB or B 2 CPUs/2 GB), data and store in tmpfs, 25 ms added per store trip, both workers deployed (see docs/how-to-run-the-load-tests.md)"
-depends = ["build:scoreboard"]
+description = "Start the load-test scenario: one node with cgroup limits (env: ATANOR_LOAD_SCENARIO=A 1 CPU/512 MB or B 2 CPUs/2 GB), data and store in tmpfs, 25 ms added per store trip, the native, the plain WASM and the scoreboard workers deployed (see docs/how-to-run-the-load-tests.md)"
+depends = ["build:scoreboard", "build:load-plain"]
 run = "scripts/load-env up"
 
 [tasks."load:down"]
@@ -253,8 +259,12 @@ description = "Ramp requests per second to the native worker until p99 > 250 ms,
 run = "scripts/load-run http-native"
 
 [tasks."load:http-wasm"]
-description = "Ramp requests per second to the WASM worker (scoreboard) until p99 > 250 ms, a 5xx other than 503 with Retry-After, or an error (same arguments as load:http-native)"
+description = "Ramp requests per second to the plain WASM worker (the twin of the native one) until p99 > 250 ms, a 5xx other than 503 with Retry-After, or an error (same arguments as load:http-native)"
 run = "scripts/load-run http-wasm"
+
+[tasks."load:http-wasm-jobs"]
+description = "Ramp requests per second to the scoreboard (WASM app, a ranking job per write) until p99 > 250 ms, a 5xx other than 503 with Retry-After, or an error (same arguments as load:http-native); its approved rate is the swap's"
+run = "scripts/load-run http-wasm-jobs"
 
 [tasks."load:ws"]
 description = "Ramp open idle WebSocket connections with sparse messages until memory reaches 90% or the file descriptors run out (arguments: --worker native|wasm, --ws-interval, ...)"
@@ -265,7 +275,7 @@ description = "Ramp the cells kept hot at the same time until memory reaches 90%
 run = "scripts/load-run cells"
 
 [tasks."load:swap"]
-description = "Replace the node by another under load at the last approved http-wasm rate and report the swap duration and p99 peak (arguments: --rate, --trigger sigterm|api, ...); run it last: the old node is removed"
+description = "Replace the node by another under load at the last approved http-wasm-jobs rate and report the swap duration and p99 peak (arguments: --rate, --trigger sigterm|api, ...); run it last: the old node is removed"
 run = "scripts/load-run swap"
 
 [tasks."load:report"]

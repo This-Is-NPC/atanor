@@ -1,0 +1,6 @@
+package atanor:load-plain;
+
+world load-plain {
+  include wasi:http/proxy@0.2.12;
+  import atanor:cell/sql@0.1.0;
+}

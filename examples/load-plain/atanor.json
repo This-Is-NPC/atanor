@@ -1,0 +1,16 @@
+{
+  "manifest_version": 1,
+  "name": "load-plain",
+  "kind": "wasm",
+  "component": "load-plain.wasm",
+  "bindings": {
+    "cells": {
+      "plain": {
+        "migrations": [
+          [1, "CREATE TABLE log (n INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT NOT NULL)"]
+        ]
+      }
+    }
+  },
+  "routes": [{"http": {"host": "loadwasm.localhost", "path": "/plain"}}]
+}

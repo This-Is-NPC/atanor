@@ -6,6 +6,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 mise exec -- mix format --check-formatted
-for crate in native/atanor_wasm test/fixtures/guests examples/hello-wasm/guest examples/scoreboard/guest; do
+for crate in native/atanor_wasm test/fixtures/guests examples/hello-wasm/guest examples/scoreboard/guest examples/load-plain/guest; do
   (cd "$crate" && mise exec -- cargo fmt --check)
 done
