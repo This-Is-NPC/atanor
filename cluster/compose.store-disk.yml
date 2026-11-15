@@ -1,0 +1,6 @@
+# Added by scripts/cluster-common when ATANOR_CLUSTER_STORE_DISK=1, after compose.tmpfs.yml: the data of
+# the store goes back to its volume on the host's disk, while the nodes keep their tmpfs.
+services:
+  store:
+    tmpfs: !reset []
+    volumes: !override [store-data:/data]

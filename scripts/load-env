@@ -4,7 +4,7 @@
 # and the container atanor-load-tc, by id or exact name.
 #
 #   up       scenario A or B: build, start one node (cgroup limits, data in tmpfs) with the store
-#            (tmpfs, 25 ms added per trip), deploy the native and the WASM worker
+#            (tmpfs, or the host's disk with ATANOR_LOAD_STORE_DISK=1; 25 ms added per trip), deploy the native and the WASM worker
 #   latency  (re)apply the added store latency, and print the round trip from the node to the store
 #   deploy   deploy the native worker (cluster/load) and the scoreboard (WASM) to the node
 #   rtt      print the round trip from the node to the store in ms (median of three); empty when unknown
@@ -92,12 +92,12 @@ deploy() {
 info() {
   local node store lb
   node=$(node_id) store=$(cluster_container store) lb=$(cluster_container lb)
-  jq -n --arg scenario "$LOAD_SCENARIO" --arg latency "$LOAD_STORE_LATENCY_MS" --arg memory "$LOAD_MEMORY_BYTES" --arg storetmpfs "$store_tmpfs_bytes" \
+  jq -n --arg scenario "$LOAD_SCENARIO" --arg latency "$LOAD_STORE_LATENCY_MS" --arg memory "$LOAD_MEMORY_BYTES" --arg storetmpfs "$store_tmpfs_bytes" --arg backing "$([[ $LOAD_STORE_DISK == 1 ]] && echo disk || echo tmpfs)" \
     --arg node "$node" --arg nodeip "$(container_ip "$node")" --arg nodepid "$(docker inspect -f '{{.State.Pid}}' "$node")" \
     --arg store "$store" --arg storeip "$(container_ip "$store")" --arg storepid "$(docker inspect -f '{{.State.Pid}}' "$store")" \
     --arg lb "$lb" --arg lbpid "$(docker inspect -f '{{.State.Pid}}' "$lb")" \
     --arg http "$(published_url 4000)" --arg admin "$(published_url 4001)" \
-    '{scenario: $scenario, memory_limit_bytes: ($memory | tonumber), store_latency_ms: ($latency | tonumber), store_tmpfs_bytes: ($storetmpfs | tonumber),
+    '{scenario: $scenario, memory_limit_bytes: ($memory | tonumber), store_latency_ms: ($latency | tonumber), store_tmpfs_bytes: ($storetmpfs | tonumber), store_backing: $backing,
       node: {id: $node, ip: $nodeip, pid: ($nodepid | tonumber)},
       store: {id: $store, ip: $storeip, pid: ($storepid | tonumber)},
       lb: {id: $lb, pid: ($lbpid | tonumber)}, http: $http, admin: $admin}'

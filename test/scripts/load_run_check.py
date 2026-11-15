@@ -84,7 +84,7 @@ def new_round(name):
     os.makedirs(out)
     args = argparse.Namespace(out=out, measure=measure[0], step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1e9, min_available_gb=0.0,
                               sample_s=0.05, quiet_window=0.0, quiet_max_wait=5.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
-                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, max_store_tmpfs_pct=90.0)
+                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0)
     pid = os.getpid()
     info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"id": "store-id", "ip": "127.0.0.1", "pid": pid},
             "lb": {"pid": pid}, "admin": "http://127.0.0.1:1"}
@@ -151,24 +151,30 @@ low["ets"], high["ets"] = [{"name": "low", "bytes": 1}], [{"name": "high", "byte
 results["peak"] = m.runtime_summary([{"node": {"memory_current": 5}, "runtime": low}, {"node": {"memory_current": 9}, "runtime": high},
                                      {"node": {"memory_current": 7}, "runtime": None}])
 # The store's tmpfs: over 90% of its size the step is INVALID, before a failing p99; under it the step is judged as usual.
-def store_scenario(name, tmpfs_mb, die=False):
-    real = (m.cgroup_sample, m.cgroup_dir, m.Round.run_generators)
+def store_scenario(name, tmpfs_mb, die=False, disk=None):
+    real = (m.cgroup_sample, m.cgroup_dir, m.Round.run_generators, m.store_disk)
+    m.store_disk = lambda store: disk  # (used, available) bytes of the store's disk, when the store is on disk
     m.cgroup_sample = lambda d: {"memory_current": 300 * MB, "shmem": 256 * MB if "store" in d else 1, "peak": 300 * MB, "limit": 1280 * MB, "cpu_s": time.time(), "cpu_limit": 1.0}
     m.cgroup_dir = lambda pid: work + ("/store" if pid == "store" else "/no-cgroup")
     m.Round.run_generators = lambda self, value, sampler: hook["during"]() or [{**DOCUMENT, "statuses": {"200": 10}, "hist": {"9000": 10}}]
     measure[0] = "http-native"
     try:
         result = scenario(name, during=(lambda: container(running=False, oom=True, exit_code=137)) if die else (lambda: None),
-                          info={"store_tmpfs_bytes": tmpfs_mb * MB, "store": {"id": "store-id", "ip": "127.0.0.1", "pid": "store"}})
+                          info={"store_tmpfs_bytes": tmpfs_mb * MB, "store_backing": "disk" if disk else "tmpfs",
+                                "store": {"id": "store-id", "ip": "127.0.0.1", "pid": "store"}})
     finally:
         measure[0] = "ws"
-        m.cgroup_sample, m.cgroup_dir, m.Round.run_generators = real
+        m.cgroup_sample, m.cgroup_dir, m.Round.run_generators, m.store_disk = real
     result["record"].pop("series", None)
     return result["record"]
 
 
 for name, args in (("store_full", (275,)), ("store_half", (512,)), ("store_full_dead", (275, True))):
     results[name] = store_scenario(name, *args)
+
+# The store on disk: no tmpfs to judge (its shmem is not a store file system), the disk use is recorded, and over 90% the step is INVALID.
+results["disk_full"] = store_scenario("disk_full", 0, disk=(950 * MB, 50 * MB))
+results["disk_half"] = store_scenario("disk_half", 0, disk=(500 * MB, 500 * MB))
 
 # A ramp whose second step breaks the node ends there: a summary, no bisection, no confirmation.
 def ramp_scenario(name, dies_at, before=None):

@@ -35,7 +35,7 @@ One container per service, all of the project `atanor-cluster` (`scripts/cluster
 | Node | One container, `cpus` and `mem_limit` from the scenario (A: 1 and 512 MB; B: 2 and 2 GB), no peers. |
 | Service data | The node's data directory is a tmpfs (`ATANOR_LOAD_TMPFS_SIZE`, 256 MB). A tmpfs counts against its container's memory limit, so the container's limit (`mem_limit` and `memswap_limit`) is the scenario memory **plus** the tmpfs size (scenario A: 512 + 256 = 768 MB), so that a full tmpfs cannot get the node OOM-killed. The node itself is given the scenario memory as its limit (`ATANOR_MEMORY_LIMIT`, set from `ATANOR_LOAD_MEMORY`), not the container limit, so its gates and the awake and WASM waiting limits it derives from the limit are those of a 512 MB (A) or 2 GB (B) machine. The tmpfs is a lab stand-in for the disk of a real machine; the node's working set counts it, so a tmpfs that fills takes memory from the 512 MB, which is conservative. `shmem`, the tmpfs, is reported apart. |
 | No swap | Every measured container has `memswap_limit` equal to `mem_limit`, so it cannot swap (zram or disk swap on the host would void the memory numbers). `load-run` checks `docker inspect` (`Memory` set and `MemorySwap` equal to it) and, when readable, the cgroup's `memory.swap.max` (0) before the first step, and refuses to run otherwise (`scripts/load-env check-swap`). Recreate a cluster started before this limit existed with `load:down` and `load:up`. |
-| Store | SeaweedFS in its own container (2 CPUs, 2 GB plus its tmpfs of 1 GB, outside the node's limit), data in tmpfs. |
+| Store | SeaweedFS in its own container (2 CPUs, 2 GB plus its tmpfs of 1 GB, outside the node's limit), data in tmpfs, or on the host's disk with `ATANOR_LOAD_STORE_DISK=1` ([when to use it](#when-the-store-fills-its-tmpfs)). |
 | Store latency | `tc netem delay 25ms` on the store's network interface, so every answer the store sends waits 25 ms: each trip costs 25 ms more. The node image has `tc`; `atanor-load-tc` joins the store's network namespace with `NET_ADMIN`, applies the qdisc and exits. The qdisc needs no root on the host. A request on a warm connection pays the latency once; a `curl` that opens a connection pays it twice, because the handshake answer waits too. `load:up` checks that the round trip from the node to the store grew by at least 80% of the added latency (observed: 1.0 ms to 51.1 ms for a new connection) and every step records it (`store_rtt_ms`). |
 | Balancer | HAProxy (2 CPUs) is in the path only for `load:swap`. The other measures send to the node's address. |
 | Generator | `scripts/load-gen`, outside the node's limit: Python `asyncio`, open loop, keep-alive connections, one process per about 600 req/s. Latency counts from the scheduled time of a request. |
@@ -90,7 +90,9 @@ and `/proc/meminfo`. Per step, in this order:
    failure on a full store is not recorded as a failure of the node. It applies to ramp, refine and confirm steps
    and to `load:swap`. A node that stopped (step 4) is still judged first; the store's share is then added to the
    `notes` of the step. The step file records it as `store.tmpfs_max_pct` of `store.tmpfs_size_mb`. Size the
-   tmpfs with `ATANOR_LOAD_STORE_TMPFS_SIZE`.
+   tmpfs with `ATANOR_LOAD_STORE_TMPFS_SIZE`. With `ATANOR_LOAD_STORE_DISK=1` there is no store tmpfs to judge; the
+   same verdict is made on the share of the store's filesystem used (`ATANOR_LOAD_MAX_STORE_DISK_PCT`, 90), for
+   example `store disk 93% > 90%`.
 6. **Criteria.** The step fails when any criterion of the table above broke.
 7. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
    failure of the node. A saturated node breaks p99 first, so it is a failure, not an invalid step.
@@ -145,7 +147,8 @@ Every step file also keeps the evidence to tell what the admission gate did, one
 - `series`: a list of integer entries, `null` where a source did not answer. `t` is the seconds since the first sample; `memory_current`, `shmem`, `anon` and `inactive_file` come from the node's cgroup; `working_set`, `refusing` (0 or 1), `in_flight`, `refused_memory`, `refused_in_flight` and `refused_disk` from the node's admission (`runtime.admission`, counters since the node started); `beam_total`, `beam_processes`, `beam_binary`, `process_count` and `oom_kill` from the VM and the cgroup events; `store_memory_current`, `store_shmem` (the store's tmpfs use), `store_limit` and `store_s3_errors` (S3 requests the store answered 5xx, from its metrics, since it started) from the store; `store_breaker_open` (1 when a store breaker of the node was open or half-open in that sample, from `runtime.store`) and `node_throttled_ms` (the node cgroup's CPU throttled time since it started, `cpu.stat`) place a stall in the step. `stalls` in the step file tells a stop of the whole VM from a node or store fault: `ticker_stalls` are the times (seconds from the first sample, as `t` of `series`) when a 0.1 s sleep of the harness's own process overshot by a second or more, `breaker_open_at_s` the samples with an open breaker, and `vm_pause_suspected` is true when a stall came within 10 s before the first of them. Together with a high `generator.lag_p99_ms`, it points at the VM and not at the node or the store. The node log has the breaker opening and closing with their times (`atanor: store breaker open ...`) and the store errors behind it.
 - `admission`: the thresholds the node judged against (`limit_bytes`, `refuse_at_bytes`, `max_in_flight`, `disk_budget_bytes`), the refusals counted in the step by reason (`refused`, last sample minus first), `refusing_seen`, and the largest `in_flight` and `working_set_max_bytes`. `null` without `/runtime`.
 - `runtime.cgroup_memory_max_bytes`: `memory.max` as the node sees it.
-- `store`: `memory_max_mb`, `limit_mb`, `tmpfs_max_mb`, `tmpfs_size_mb`, `tmpfs_max_pct` (the store's tmpfs fill, `ATANOR_LOAD_STORE_TMPFS_SIZE`) and `s3_errors` in the step.
+- `store_backing` (`tmpfs` or `disk`, from `load-env info`) and `store.backing`: where the store's data was.
+- `store`: `memory_max_mb`, `limit_mb`, `tmpfs_max_mb`, `tmpfs_size_mb`, `tmpfs_max_pct` (the store's tmpfs fill, `ATANOR_LOAD_STORE_TMPFS_SIZE`) and `s3_errors` in the step; on disk, `tmpfs_max_pct` is null and `disk_used_max_mb`, `disk_free_min_mb` and `disk_max_pct` (from `df /data` in the store container) take its place.
 
 The report adds, per measure, the refusals by reason, whether the gate was refusing, the largest in-flight count, the store tmpfs fill and the store 5xx at the approved step and at the first failing one.
 
@@ -158,6 +161,7 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_SCENARIO` | `A` | `A`: 1 CPU, 512 MB; `B`: 2 CPUs, 2 GB. `ATANOR_LOAD_CPUS`, `ATANOR_LOAD_MEMORY` override the limits. |
 | `ATANOR_LOAD_STORE_LATENCY_MS` | 25 | Latency added per trip to the store; 0 removes it. |
 | `ATANOR_LOAD_TMPFS_SIZE`, `ATANOR_LOAD_STORE_TMPFS_SIZE` | 256m, 1g | Size of the node's and the store's tmpfs. Added to the memory limit of its container: `ATANOR_LOAD_MEMORY` (and `_STORE_MEMORY`) stay the scenario's memory. |
+| `ATANOR_LOAD_STORE_DISK` | 0 | `1` keeps the node's data in tmpfs and gives the store a volume on the host's disk; the added latency stays. Set it the same way for every command of a session. |
 | `ATANOR_LOAD_STORE_CPUS`, `_STORE_MEMORY`, `_LB_CPUS`, `_LB_MEMORY` | 2, 2g, 2, 512m | Limits of the store and the balancer. |
 | `ATANOR_LOAD_OUT` | `load/results/STAMP` | Results directory (git-ignored). |
 | `ATANOR_LOAD_STEP_S` | 180 | Seconds of load per step. |
@@ -171,6 +175,7 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_MAX_GENERATOR_SWAP_MB` | 16 | Growth of the load generators' `VmSwap` during a step above which the step is invalid. |
 | `ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB` | 256 | Growth of the host swap used during a step above which the step is invalid; its level is only recorded. |
 | `ATANOR_LOAD_MAX_STORE_TMPFS_PCT` | 90 | Share of the store's tmpfs size, at any sample, above which the step is invalid (before the criteria). |
+| `ATANOR_LOAD_MAX_STORE_DISK_PCT` | 90 | With `ATANOR_LOAD_STORE_DISK=1`: share of the store's filesystem used, at any sample, above which the step is invalid. |
 | `ATANOR_LOAD_WRITE_RATIO`, `_CELLS` | 0.5, 64 | http: share of writes, cells the requests spread over. |
 | `ATANOR_LOAD_CELL_PERIOD` | 10 | cells: seconds between the writes to one cell. |
 | `ATANOR_LOAD_OPEN_RATE`, `_WS_INTERVAL` | 100, 30 | Sockets opened or cells touched per second; seconds between messages of a socket (the node closes a silent socket after 60 s). |
@@ -247,6 +252,25 @@ ws 40 connections: ok; planned 40, achieved 40, p99 1.3 ms -> A_ws_02-ramp-40.js
 cells 40 cells: ok; planned 160, achieved 160, p99 189.6 ms -> A_cells_02-ramp-40.json
 swap at 10.0 req/s: ok; swap 3.7 s, p99 peak 320 ms
 ```
+
+## When the store fills its tmpfs
+
+**The question:** a step ended INVALID with `store tmpfs 9x% > 90%`: how do I measure on a store that does not fill?
+
+The store's tmpfs is 1 GB (`ATANOR_LOAD_STORE_TMPFS_SIZE`). When a step fills it, run the whole round again, scenarios A and B, with the store on the host's disk. Mixing backings inside one round would make the numbers incomparable.
+
+1. Set the option for every command of the session, including `load:report`, and check that the host has free disk for the store's volume (the store keeps its data in the volume `store-data` of the project until `load:down`).
+
+   ```sh
+   export ATANOR_LOAD_STORE_DISK=1
+   mise run load:down
+   mise run load:up
+   ```
+
+2. Run the measures as usual. The node's data stays in tmpfs, so its memory accounting is unchanged, and the 25 ms added per store trip stays.
+3. Read the backing in `scripts/load-env info` (`store_backing`), in every step file (`store_backing`, `store.backing`) and in the report ("store on disk"). A step is INVALID when the store's filesystem passes 90% used.
+
+A disk-backed store may answer faster or slower than a tmpfs one, so numbers of the two backings are not comparable with each other.
 
 ## Troubleshooting
 

@@ -49,6 +49,20 @@ defmodule Atanor.LoadRunTest do
     assert half["stop_reason"] =~ "p99"
     assert half["store"]["tmpfs_max_pct"] == 50.0
 
+    # the store on disk: its disk use is judged, not a tmpfs, and the backing is in the step file
+    disk_full = r["disk_full"]
+    assert disk_full["status"] == "invalid" and disk_full["valid"] == false
+    assert disk_full["stop_reason"] == "store disk 95% > 90%"
+    assert disk_full["store_backing"] == "disk" and disk_full["store"]["backing"] == "disk"
+    assert disk_full["store"]["tmpfs_max_pct"] == :null
+    assert disk_full["store"]["disk_used_max_mb"] == 950.0 and disk_full["store"]["disk_free_min_mb"] == 50.0
+    disk_half = r["disk_half"]
+    assert disk_half["status"] == "fail" and disk_half["valid"] == true
+    assert disk_half["stop_reason"] =~ "p99"
+    assert disk_half["store"]["disk_max_pct"] == 50.0
+    assert half["store_backing"] == "tmpfs" and half["store"]["backing"] == "tmpfs"
+    assert half["store"]["disk_max_pct"] == nil
+
     # a node that stopped is still the result; the store's share is noted
     dead = r["store_full_dead"]
     assert dead["status"] == "fail" and dead["node_stopped"] == true

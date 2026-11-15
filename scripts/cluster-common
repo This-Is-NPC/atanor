@@ -12,6 +12,8 @@ label="com.docker.compose.project=$CLUSTER"
 # Set it the same way for every command, or `compose up` recreates the containers with the other layout.
 compose_files=(-f "$cluster_dir/compose.yml")
 [[ ${ATANOR_CLUSTER_TMPFS:-0} != 1 ]] || compose_files+=(-f "$cluster_dir/compose.tmpfs.yml")
+# ATANOR_CLUSTER_STORE_DISK=1 (with TMPFS=1) adds compose.store-disk.yml: the store's data is on the host's disk, the nodes' in memory.
+[[ ${ATANOR_CLUSTER_TMPFS:-0} != 1 || ${ATANOR_CLUSTER_STORE_DISK:-0} != 1 ]] || compose_files+=(-f "$cluster_dir/compose.store-disk.yml")
 compose() { docker compose -p "$CLUSTER" "${compose_files[@]}" "$@"; }
 
 # cluster_ids [SERVICE]: ids of the project's containers (all states), optionally of one service.

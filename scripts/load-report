@@ -85,7 +85,7 @@ def cost(measure, steps, baseline, summary):
 
 
 def admission_rows(steps, summary):
-    """Admission refusals by reason and the store tmpfs at the approved step and at the first failing one."""
+    """Admission refusals by reason and the store tmpfs or disk use at the approved step and at the first failing one."""
     approved = summary.get("approved") if summary else None
     chosen = [("approved", next((s for s in reversed(steps) if s["value"] == approved and s["status"] == "ok"), None)),
               ("first failing", next((s for s in steps if s["status"] == "fail"), None))]
@@ -96,11 +96,11 @@ def admission_rows(steps, summary):
         a, store = s.get("admission") or {}, s.get("store") or {}
         refused = a.get("refused") or {}
         rows.append([label, f"{s['value']:g}", f"{num(refused.get('memory'), 0)} / {num(refused.get('in_flight'), 0)} / {num(refused.get('disk'), 0)}",
-                     "yes" if a.get("refusing_seen") else "no", num(a.get("in_flight_max"), 0), num(store.get("tmpfs_max_pct")), num(store.get("s3_errors"), 0)])
+                     "yes" if a.get("refusing_seen") else "no", num(a.get("in_flight_max"), 0), num(store.get("disk_max_pct") if store.get("backing") == "disk" else store.get("tmpfs_max_pct")), num(store.get("s3_errors"), 0)])
     return rows
 
 
-ADMISSION_HEADER = ["step", "value", "refused: memory / in-flight / disk", "refusing seen", "in-flight max", "store tmpfs max %", "store S3 5xx"]
+ADMISSION_HEADER = ["step", "value", "refused: memory / in-flight / disk", "refusing seen", "in-flight max", "store tmpfs / disk max %", "store S3 5xx"]
 
 
 def swap_section(steps):
@@ -122,7 +122,8 @@ def report(directory):
     for scenario in sorted({s["scenario"] for s in steps}):
         limits = next((s["limits"] for s in steps if s["scenario"] == scenario and s["limits"].get("memory_mb")), {})
         latency = next(s["store_latency_ms"] for s in steps if s["scenario"] == scenario)
-        out += [f"## Scenario {scenario}", "", f"Node limits: {num(limits.get('cpus'), 1)} CPU and {num(limits.get('memory_mb'), 0)} MB (scenario memory; the cgroup limit adds the tmpfs); store in tmpfs with {latency} ms added per trip.", ""]
+        backing = next(s.get("store_backing", "tmpfs") for s in steps if s["scenario"] == scenario)
+        out += [f"## Scenario {scenario}", "", f"Node limits: {num(limits.get('cpus'), 1)} CPU and {num(limits.get('memory_mb'), 0)} MB (scenario memory; the cgroup limit adds the tmpfs); store {'on disk' if backing == 'disk' else 'in tmpfs'} with {latency} ms added per trip.", ""]
         for measure in ("http-native", "http-wasm", "ws", "cells", "swap"):
             mine = [s for s in steps if s["scenario"] == scenario and s["measure"] == measure]
             if not mine:
