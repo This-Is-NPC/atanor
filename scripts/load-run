@@ -16,7 +16,7 @@ node's cgroup, the host and the store every --sample-s seconds, and writes one J
 Before every step the harness waits for a quiet host (net load below --host-load-max for --quiet-window; after
 --quiet-max-wait the measure stops "host busy"). Order of the verdicts of a step: host load too high (INVALID, the round stops), a criterion broken (the step
 fails), swap in a measured container or generator swap growing over --max-generator-swap-mb, or host swap growing over
---max-host-swap-growth-mb (INVALID), the store's tmpfs over --max-store-tmpfs-pct (default 90%) of its size at any sample (INVALID: a full
+--max-host-swap-growth-mb (INVALID), the store's tmpfs over --max-store-tmpfs-pct (default 90%) of its size at any sample (with ATANOR_LOAD_STORE_DISK=1 the store's filesystem over --max-store-disk-pct instead; INVALID: a full
 store answers S3 500s, which measure the lab; it wins over a criterion, so a p99 or 5xx failure on a full store is not
 the node's), delivery under 95% of the plan (INVALID, the round stops: the generator or the host, not the node). A node
 that stopped is judged first and still records the store's tmpfs share. The host swap used is only recorded. A container that may swap refuses the run before the first step.
@@ -135,6 +135,16 @@ def host_sample():
     return {"cpu_total": sum(total), "cpu_idle": total[3] + total[4], "available_gb": meminfo["MemAvailable"] / 1048576,
             "loadavg1": float(read("/proc/loadavg").split()[0]),
             "swap_used_mb": (meminfo["SwapTotal"] - meminfo["SwapFree"]) / 1024}
+
+
+def store_disk(store):
+    """(bytes used, bytes available) of the filesystem under the store's /data, or None (also when the store cannot be reached)."""
+    try:
+        out = subprocess.run(["docker", "exec", store, "df", "-Pk", "/data"], capture_output=True, text=True, timeout=SIDE_TIMEOUT_S)
+        fields = out.stdout.strip().split("\n")[-1].split()
+        return (int(fields[2]) * 1024, int(fields[3]) * 1024) if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
 
 
 def fds(node):
@@ -317,6 +327,8 @@ class Sampler(threading.Thread):
         for name, directory in self.dirs.items():
             sample[name] = cgroup_sample(directory)
         sample["fds"] = fds(self.info["node"]["id"])
+        if self.info.get("store_backing") == "disk":
+            sample["store_disk"] = store_disk(self.info["store"]["id"])
         counters = s3_counters(self.info["store"]["ip"])
         sample["s3_errors"] = int(counters[2]) if counters else None
         runtime = admin_json(self.info, "/runtime", 3)
@@ -445,21 +457,27 @@ def admission_summary(samples):
             **{k: last.get(k) for k in ("limit_bytes", "refuse_at_bytes", "max_in_flight", "disk_budget_bytes")}}
 
 
-def judge_store(store, max_pct):
-    """The INVALID reason when the store's tmpfs passed `max_pct` of its size at any sample, else None."""
+def judge_store(store, max_pct, max_disk_pct=90):
+    """The INVALID reason when the store's tmpfs (or, on disk, its filesystem) passed its share at any sample, else None."""
     pct = (store or {}).get("tmpfs_max_pct")
-    return f"store tmpfs {pct:g}% > {max_pct:g}%" if pct is not None and pct > max_pct else None
+    if pct is not None and pct > max_pct:
+        return f"store tmpfs {pct:g}% > {max_pct:g}%"
+    disk = (store or {}).get("disk_max_pct")
+    return f"store disk {disk:g}% > {max_disk_pct:g}%" if disk is not None and disk > max_disk_pct else None
 
 
-def store_summary(samples, tmpfs_bytes):
-    """The store container's memory, its tmpfs (shmem) against the tmpfs size and the S3 5xx answered during the step."""
+def store_summary(samples, tmpfs_bytes, backing="tmpfs"):
+    """The store container's memory, its backing, its tmpfs (shmem) against the tmpfs size, its disk use when on disk, and the S3 5xx answered during the step."""
     mem = [s["store"] for s in samples if s.get("store")]
     errors = [s["s3_errors"] for s in samples if s.get("s3_errors") is not None]
     if not mem:
         return None
     mb = lambda n: round(n / 1048576, 1)
     shmem = max(m["shmem"] for m in mem)
-    return {"memory_max_mb": mb(max(m["memory_current"] for m in mem)), "limit_mb": mb(mem[-1]["limit"]) if mem[-1]["limit"] else None,
+    disks = [s["store_disk"] for s in samples if s.get("store_disk")]
+    disk = {"disk_used_max_mb": mb(max(u for u, _ in disks)), "disk_free_min_mb": mb(min(a for _, a in disks)),
+            "disk_max_pct": round(100 * max(u / (u + a) for u, a in disks), 1)} if disks else {}
+    return {"backing": backing, **disk, "memory_max_mb": mb(max(m["memory_current"] for m in mem)), "limit_mb": mb(mem[-1]["limit"]) if mem[-1]["limit"] else None,
             "tmpfs_max_mb": mb(shmem), "tmpfs_size_mb": mb(tmpfs_bytes) if tmpfs_bytes else None,
             "tmpfs_max_pct": round(100 * shmem / tmpfs_bytes, 1) if tmpfs_bytes else None,
             "s3_errors": errors[-1] - errors[0] if errors else None}
@@ -736,7 +754,7 @@ class Round:
                dead=None, diagnostics=()):
         a, info = self.args, self.info
         record = {"schema": SCHEMA, "scenario": self.scenario, "measure": a.measure, "unit": UNITS[a.measure], "phase": phase, "step": self.index,
-                  "value": value, "duration_s": a.step_s, "store_latency_ms": info["store_latency_ms"], "command": a.command,
+                  "value": value, "duration_s": a.step_s, "store_latency_ms": info["store_latency_ms"], "store_backing": info.get("store_backing", "tmpfs"), "command": a.command,
                   "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
                   "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "store": None, "cells_awake": None, "store_rtt_ms": None,
@@ -747,7 +765,7 @@ class Round:
         errors = {k: n for k, n in merged["statuses"].items() if k not in OK_STATUSES}
         record.update(statuses=merged["statuses"], cpu=usage["cpu"], memory=usage["memory"], fds=usage["fds"], host=usage["host"], swap_usage=usage["swap_usage"],
                       runtime=runtime_summary(samples), series=series(samples), stalls=stall_summary(samples, sampler.stalls if sampler else []), admission=admission_summary(samples),
-                      store=store_summary(samples, info.get("store_tmpfs_bytes")),
+                      store=store_summary(samples, info.get("store_tmpfs_bytes"), info.get("store_backing", "tmpfs")),
                       latency_ms={"p50": percentile(merged["hist"], 50, merged["max_ms"]), "p95": percentile(merged["hist"], 95, merged["max_ms"]),
                                   "p99": percentile(merged["hist"], 99, merged["max_ms"]), "max": percentile(merged["hist"], 100, merged["max_ms"])},
                       status_503={"with_retry_after": merged["statuses"].get("503 retry-after", 0), "without_retry_after": merged["statuses"].get("503 no retry-after", 0)},
@@ -783,7 +801,7 @@ class Round:
         fd_max, fd_limit = usage["fds"]["max"], usage["fds"]["limit"]
         if a.measure == "ws" and fd_max and fd_limit and fd_max >= a.fd_pct / 100 * fd_limit:
             criteria.append(f"file descriptors {fd_max} of {fd_limit}")
-        full = judge_store(record["store"], a.max_store_tmpfs_pct)
+        full = judge_store(record["store"], a.max_store_tmpfs_pct, a.max_store_disk_pct)
         if dead:  # before any invalid judgement: a node that stopped is the result
             if full:
                 record["notes"].append(full)
@@ -924,7 +942,7 @@ def swap(round_, args, info):
         reasons.append(f"cluster-swap-run exited {process.returncode}")
     usage = summarize(samples, 0, info["memory_limit_bytes"]) if all(s.get("node") is not None for s in samples) else {"host": {}, "cpu": {}, "memory": {}, "fds": {}, "swap_usage": {}}
     record = {"schema": SCHEMA, "scenario": round_.scenario, "measure": "swap", "unit": "req/s", "phase": "swap", "step": 1, "value": rate,
-              "duration_s": duration, "store_latency_ms": info["store_latency_ms"], "command": args.command, "planned": round(rate * duration),
+              "duration_s": duration, "store_latency_ms": info["store_latency_ms"], "store_backing": info.get("store_backing", "tmpfs"), "command": args.command, "planned": round(rate * duration),
               "achieved": result.get("sent"), "achieved_rate": round(result.get("sent", 0) / duration, 1),
               "achieved_ratio": round(result.get("sent", 0) / (rate * duration), 3), "latency_ms": {"p50": (result.get("latency_ms") or {}).get("p50"),
               "p95": None, "p99": (result.get("latency_ms") or {}).get("p99"), "p99_peak": p99_peak,
@@ -936,9 +954,9 @@ def swap(round_, args, info):
                        "unknown": result.get("unknown"), "phases": phases, "a_exit_code": result.get("a_exit_code")},
               "cpu": usage["cpu"], "memory": usage["memory"], "fds": usage["fds"], "s3": {}, "host": usage["host"], "swap_usage": usage["swap_usage"], "limits": {},
               "valid": bool(result), "status": "fail" if reasons else "ok", "stop_reason": "; ".join(reasons) or None, "started_at": began}
-    record["store"] = store_summary(samples, info.get("store_tmpfs_bytes"))
+    record["store"] = store_summary(samples, info.get("store_tmpfs_bytes"), info.get("store_backing", "tmpfs"))
     swapped = judge_swap(usage, args.max_generator_swap_mb, args.max_host_swap_growth_mb) if usage["swap_usage"] else None
-    full = judge_store(record["store"], args.max_store_tmpfs_pct)
+    full = judge_store(record["store"], args.max_store_tmpfs_pct, args.max_store_disk_pct)
     if swapped or full:
         record.update(valid=False, status="invalid", stop_reason=swapped or full)
     if not result:
@@ -970,6 +988,7 @@ def main():
     add("--quiet-max-wait", type=float, default=env("QUIET_MAX_WAIT", 1800), help="seconds to wait for that quiet window; then the measure stops with 'host busy' (ATANOR_LOAD_QUIET_MAX_WAIT, 1800)")
     add("--max-generator-swap-mb", type=float, default=env("MAX_GENERATOR_SWAP_MB", 16), help="VmSwap of the load generators growing by more than this in a step makes it INVALID (ATANOR_LOAD_MAX_GENERATOR_SWAP_MB, 16)")
     add("--max-host-swap-growth-mb", type=float, default=env("MAX_HOST_SWAP_GROWTH_MB", 256), help="host swap used growing by more than this during a step (largest sample minus the start) makes it INVALID; the level is only recorded (ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB, 256)")
+    add("--max-store-disk-pct", type=float, default=env("MAX_STORE_DISK_PCT", 90), help="with ATANOR_LOAD_STORE_DISK=1: the store's filesystem above this share used at any sample makes a step INVALID (ATANOR_LOAD_MAX_STORE_DISK_PCT, 90)")
     add("--max-store-tmpfs-pct", type=float, default=env("MAX_STORE_TMPFS_PCT", 90), help="the store's tmpfs above this share of its size at any sample makes a step INVALID, before the criteria (ATANOR_LOAD_MAX_STORE_TMPFS_PCT, 90)")
     add("--min-available-gb", type=float, default=env("MIN_AVAILABLE_GB", 6), help="host MemAvailable below this stops the round (ATANOR_LOAD_MIN_AVAILABLE_GB, 6)")
     add("--sample-s", type=float, default=env("SAMPLE_S", 5), help="seconds between samples (ATANOR_LOAD_SAMPLE_S, 5)")
