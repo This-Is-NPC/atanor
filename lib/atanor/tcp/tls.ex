@@ -241,8 +241,10 @@ defmodule Atanor.TCP.TLS do
       for {name, %{tls: tls} = listener} <- config.listeners,
           tls != nil,
           into: %{} do
+        signature = signature(tls)
+
         case load(tls) do
-          {:ok, material} -> {name, build_entry(name, listener.tls_mode, listener.tls, material)}
+          {:ok, material} -> {name, build_entry(name, listener.tls_mode, listener.tls, material, signature)}
           {:error, reason} -> raise ArgumentError, ":listeners entry #{inspect(name)} tls: #{format_error(reason)}"
         end
       end
@@ -293,19 +295,22 @@ defmodule Atanor.TCP.TLS do
 
   defp reload_entry(state, listener, cause) do
     entry = Map.fetch!(state.entries, listener)
+    # Taken before the files are read: a file that changes after this point is seen as changed by the
+    # next poll, whatever the load found.
+    signature = signature(entry.source)
 
     case load(entry.source) do
       {:ok, material} ->
-        entry = build_entry(listener, entry.mode, entry.source, material)
+        entry = build_entry(listener, entry.mode, entry.source, material, signature)
         :ets.insert(table(state.config.name), {listener, entry})
         Logger.info("atanor: reloaded the TLS certificate of listener #{listener}")
         emit(state, listener, cause, :ok)
         {:ok, %{state | entries: Map.put(state.entries, listener, Map.delete(entry, :ssl))}}
 
       {:error, reason} ->
-        # Keep the old material; remember the new signature so a broken file is
+        # Keep the old material; remember the signature of what was read so that a broken file is
         # not retried and logged every reload_ms. The admin endpoint retries.
-        entry = %{entry | signature: signature(entry.source)}
+        entry = %{entry | signature: signature}
 
         Logger.warning(
           "atanor: could not reload the TLS certificate of listener #{listener}, keeping the previous one: " <>
@@ -331,7 +336,7 @@ defmodule Atanor.TCP.TLS do
 
   defp changed?(entry), do: signature(entry.source) != entry.signature
 
-  defp build_entry(name, mode, source, material) do
+  defp build_entry(name, mode, source, material, signature) do
     %{
       name: name,
       mode: mode,
@@ -339,7 +344,7 @@ defmodule Atanor.TCP.TLS do
       ssl: material.ssl,
       timeout: source.handshake_timeout_ms,
       reload_ms: source.reload_ms,
-      signature: signature(source)
+      signature: signature
     }
   end
 
@@ -405,7 +410,7 @@ defmodule Atanor.TCP.TLS do
   end
 
   defp pem_entries(path) do
-    with {:ok, pem} <- File.read(path) do
+    with {:ok, pem} <- read_file(path) do
       try do
         {:ok, :public_key.pem_decode(pem)}
       rescue
@@ -496,7 +501,7 @@ defmodule Atanor.TCP.TLS do
   # previous one (mtime has a one-second resolution) or that keeps the mtime.
   defp stat(path) do
     with {:ok, %File.Stat{mtime: mtime, size: size}} <- File.stat(path, time: :posix),
-         {:ok, bytes} <- File.read(path) do
+         {:ok, bytes} <- read_file(path) do
       {mtime, size, :crypto.hash(:sha256, bytes)}
     else
       {:error, reason} -> {:error, reason}
@@ -505,6 +510,9 @@ defmodule Atanor.TCP.TLS do
   end
 
   ## Helpers
+
+  # Every read of a pair file goes through here; tests replace it to change a file between two reads.
+  defp read_file(path), do: Application.get_env(:atanor, :tls_read_file, &File.read/1).(path)
 
   defp supported_versions, do: :ssl.versions()[:supported]
 

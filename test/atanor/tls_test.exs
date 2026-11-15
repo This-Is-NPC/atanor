@@ -362,6 +362,56 @@ defmodule Atanor.TLSTest do
     assert say(:ssl, old_tls, "HELO still") == "250 hello still"
   end
 
+  # Every read of the pair files goes through the :tls_read_file hook, so the test decides what each read
+  # of the key returns. One poll reads the key three times (change check, signature, load). The load must
+  # see the new key while the signature sees the old one, as when the key is replaced mid-poll. A signature
+  # taken after the load would call that pair unchanged and the new certificate would never be served.
+  test "a key that changes while a poll runs is picked up", %{dir: dir, cert: cert} do
+    second = TLS.generate!(dir, "two", "two.test")
+    live = Path.join(dir, "live-cert.pem")
+    key = Path.join(dir, "live-key.pem")
+    File.cp!(cert.certfile, live)
+    File.cp!(cert.keyfile, key)
+    {:ok, script} = Agent.start_link(fn -> [] end)
+    new_key = File.read!(second.keyfile)
+
+    Application.put_env(:atanor, :tls_read_file, fn
+      ^key ->
+        case Agent.get_and_update(script, fn
+               [next | rest] -> {next, rest}
+               [] -> {nil, []}
+             end) do
+          nil -> File.read(key)
+          bytes -> {:ok, bytes}
+        end
+
+      path ->
+        File.read(path)
+    end)
+
+    on_exit(fn -> Application.delete_env(:atanor, :tls_read_file) end)
+
+    node = start(cert, :starttls, [], certfile: live, keyfile: key, reload_ms: 3_600_000)
+
+    # The certificate is replaced first. During the poll the key reads are old, old, new, then the file
+    # holds the new key for good.
+    File.cp!(second.certfile, live)
+    File.write!(key, new_key)
+    Agent.update(script, fn _ -> [File.read!(cert.keyfile), File.read!(cert.keyfile), new_key] end)
+    server = Module.concat([node.name, :TLS])
+    send(server, {:poll, "smtp"})
+    send(server, {:poll, "smtp"})
+    # Both polls have been handled once the server answers.
+    _ = :sys.get_state(server)
+
+    tcp = connect_tcp(node)
+    assert line(:tcp, tcp) == "220 smtp ready"
+    assert say(:tcp, tcp, "STARTTLS") == "220 Ready to start TLS"
+    {:ok, tls} = :ssl.connect(tcp, [verify: :verify_none, active: false, mode: :binary], 5_000)
+    assert peer_der(tls) == second.der
+    :ssl.close(tls)
+  end
+
   test "reloads a changed certificate without dropping open connections", %{dir: dir, cert: cert} do
     instance = self()
 
