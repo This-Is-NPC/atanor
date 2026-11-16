@@ -79,6 +79,9 @@ defmodule Atanor.DaemonTest do
           "ATANOR_DRAIN_TIMEOUT_MS" => "9000",
           "ATANOR_DRAIN_CONCURRENCY" => "8",
           "ATANOR_DETECTOR_PAUSE_MS" => "3000",
+          "ATANOR_REBALANCE" => "false",
+          "ATANOR_REBALANCE_MAX_MOVES_PER_S" => "8",
+          "ATANOR_REBALANCE_START_DELAY_MS" => "45000",
           "ATANOR_HTTP_QUEUE_WAIT_MS" => "2500",
           "ATANOR_HTTP_HEADER_TIMEOUT_MS" => "4000",
           "ATANOR_HTTP_BODY_TIMEOUT_MS" => "9000",
@@ -106,6 +109,8 @@ defmodule Atanor.DaemonTest do
                {50_000, 9_000, 8}
 
       assert config.detector.acceptable_pause_ms == 3_000
+      assert config.rebalance == %{enabled: false, max_moves_per_s: 8, start_delay_ms: 45_000}
+      assert errors(env(%{"ATANOR_REBALANCE" => "yes"})) =~ "ATANOR_REBALANCE"
       assert config.http.queue_wait_ms == 2_500
       assert {config.http.header_timeout_ms, config.http.body_timeout_ms} == {4_000, 9_000}
       assert {config.admin.header_timeout_ms, config.admin.body_timeout_ms} == {3_000, 7_000}
