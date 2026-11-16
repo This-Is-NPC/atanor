@@ -64,12 +64,32 @@ Emitted when `hot_cells: [enabled: true]` (design §8.15,
 | --- | --- | --- |
 | `[:atanor, :hot_cell, :sample]` | `cpu` (from 0 to 100: the larger of `scheduler`, the use of the VM's schedulers, and `os`, the use of the machine from `/proc/stat`, `nil` without it), `scheduler`, `os`, `reads`, `writes` (all the cells this node counted), `hot` (hot cells tracked). Once per `interval_ms` | `instance`, `node`, `pressured` (the node is between `cpu_enter` and `cpu_exit`) |
 | `[:atanor, :hot_cell, :decision]` | `hot_ms` (how long the cell has been hot) | `instance`, `cell` (`{namespace, key}`), `action`: `:move` or `:stay`, `reason`: with `:move`, `:load` or `:affinity`; with `:stay`, `:residence`, `:cap`, `:cooldown`, `:on_dedicated`, `:not_pressured`, `:no_target` or `:no_margin`, `target` (the node, with `:move`), `reads`, `writes`, `queue`, `cpu`. For a cell hot for `sustain_ms`; a `:stay` is emitted when its reason changes, a `:move` every time |
-| `[:atanor, :hot_cell, :move]` | `duration` (the whole `Alambique.move/4`: hibernate on the source and wake on the target) | `instance`, `cell`, `from`, `to`, `reason` (`:load`, `:affinity` or `:manual`), `result`: `:ok` or `{:error, reason}` |
+| `[:atanor, :hot_cell, :move]` | `duration` (the whole `Alambique.move/4`: hibernate on the source and wake on the target) | `instance`, `cell`, `from`, `to`, `reason` (`:load`, `:affinity`, `:manual` or `:rebalance`), `result`: `:ok` or `{:error, reason}` |
 
 | `[:atanor, :hot_cell, :replicas]` | `reads` (the cell's reads per second in the cluster, when the change was made) | `instance`, `cell`, `action`: `:on` or `:off`, `result`: `:ok` or `{:error, reason}`. With `hot_cells: [replicas: true]` (design §19.4); a failed change is tried again at the next sample, so an error that repeats is a store problem |
 
 Alert on `:move` with an `{:error, _}` result that repeats for one cell, and on
-`:move` events for one cell closer than the residence time (they are manual).
+`:move` events for one cell closer than the residence time (they are manual or
+`:rebalance`).
+
+## Rebalance on join
+
+Emitted by every node unless `rebalance: [enabled: false]` (design §8.1,
+[how-to-run-a-cluster.md](how-to-run-a-cluster.md#what-happens-when-a-node-joins)). A rebalance move also
+emits `[:atanor, :hot_cell, :move]` with the reason `:rebalance`.
+
+| Event | Measurements | Metadata |
+| --- | --- | --- |
+| `[:atanor, :rebalance, :start]` | `cells` (the cells the first round will move) | `instance`, `node`, `epoch` (counts the changes of the membership this node saw), `members` |
+| `[:atanor, :rebalance, :move]` | `duration` (the whole move, in native time units) | `instance`, `cell` (the Alambique id), `from`, `to`, `result`: `:ok` or `{:error, reason}` |
+| `[:atanor, :rebalance, :stop]` | `moved`, `failed`, `deferred` (cells left for a later round in the last one), `duration` (milliseconds since the plan started) | `instance`, `node`, `epoch`, `members`, `reason`: `:done` (a round found nothing to move) or `:membership_changed` (the plan was dropped and starts again) |
+
+The same state is in `GET /runtime`, under `rebalance`: `phase` (`idle`, `waiting`, `running`,
+`between_rounds` or `done`), `members`, `last_membership_change_ms`, `starts_in_ms`, `pending`,
+`moved`, `failed`, `deferred`, `moving` and `total` since the node started.
+
+Alert on `:move` with an `{:error, _}` result that repeats, and on a `:stop` with
+`failed` above 0 at every join.
 
 ## Crash reports
 
