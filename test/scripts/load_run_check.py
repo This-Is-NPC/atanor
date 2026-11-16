@@ -84,7 +84,7 @@ def new_round(name):
     os.makedirs(out)
     args = argparse.Namespace(out=out, measure=measure[0], step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1e9, min_available_gb=0.0,
                               sample_s=0.05, quiet_window=0.0, quiet_max_wait=5.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
-                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0)
+                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0)
     pid = os.getpid()
     info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"id": "store-id", "ip": "127.0.0.1", "pid": pid},
             "lb": {"pid": pid}, "admin": "http://127.0.0.1:1"}
@@ -224,6 +224,50 @@ def fresh_scenario(name, slow_call):
 
 results["fresh_after_fail"] = fresh_scenario("fresh_after_fail", slow_call=2)
 results["fresh_never_failed"] = fresh_scenario("fresh_never_failed", slow_call=0)
+
+# A stall of the lab is judged on the generator's lag and on one jump of the node's CPU throttling against its usual growth.
+def throttled(*values):
+    return [{"node_throttled_ms": v} for v in values]
+
+
+results["judge_stall"] = {
+    "lag": m.judge_stall(242, throttled(0, 500), 50, 5000),
+    "lag_at_limit": m.judge_stall(50, throttled(0, 500), 50, 5000),
+    "jump": m.judge_stall(1.3, throttled(0, 500, 1000, 7200, 7700), 50, 5000),
+    "saturated": m.judge_stall(1.3, throttled(0, 5500, 11000, 16500, 22000), 50, 5000),
+    "saturated_peak": m.judge_stall(1.3, throttled(0, 3000, 6000, 12000, 15000), 50, 5000),
+    "small_jump": m.judge_stall(1.3, throttled(0, 100, 200, 3200, 3300), 50, 5000),
+    "unknown": m.judge_stall(1.3, throttled(None, None, 9000, None), 50, 5000),
+    "single": m.judge_stall(1.3, throttled(0), 50, 5000),
+    "no_lag": m.judge_stall(None, throttled(0, 500), 50, 5000),
+    "missing_key": m.judge_stall(1.3, [{}, {"node_throttled_ms": 9000}, {}], 50, 5000),
+}
+
+
+# A stalled step is repeated once; a repeat that stalls again is INVALID and ends the round.
+def stall_scenario(name, lags):
+    container()
+    runs = []
+
+    def generators(self, value, sampler):
+        runs.append(value)
+        return [{**DOCUMENT, "lag_ms": {"p99": lags[min(len(runs), len(lags)) - 1]}}]
+
+    real = m.Round.run_generators
+    round_, args = new_round(name)
+    m.Round.run_generators = generators
+    try:
+        summary = m.ramp(round_, args)
+    finally:
+        m.Round.run_generators = real
+    files = sorted(f for f in os.listdir(args.out) if f.endswith(".json") and "summary" not in f)
+    with open(os.path.join(args.out, files[0])) as handle:
+        first = json.load(handle)
+    return {"runs": runs, "files": files, "summary": summary, "first": first}
+
+
+results["stall_once"] = stall_scenario("stall_once", [242, 1])
+results["stall_twice"] = stall_scenario("stall_twice", [242, 300])
 
 # A step that starts with a dead node is invalid, runs no generator and ends the round.
 results["dead_at_start"] = ramp_scenario("dead_at_start", dies_at=0, before={"running": False, "exit_code": 137})

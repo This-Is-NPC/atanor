@@ -19,7 +19,7 @@ Before every step the harness waits for a quiet host (net load below --host-load
 fails), swap in a measured container or generator swap growing over --max-generator-swap-mb, or host swap growing over
 --max-host-swap-growth-mb (INVALID), the store's tmpfs over --max-store-tmpfs-pct (default 90%) of its size at any sample (with ATANOR_LOAD_STORE_DISK=1 the store's filesystem over --max-store-disk-pct instead; INVALID: a full
 store answers S3 500s, which measure the lab; it wins over a criterion, so a p99 or 5xx failure on a full store is not
-the node's), delivery under 95% of the plan (INVALID, the round stops: the generator or the host, not the node). A node
+the node's), a stall (generator lag p99 over --max-lag-ms, or a jump of the node's CPU throttling over --max-throttle-jump-ms and 5x the median: INVALID, `stall:`; the step is repeated once, and when the repeat stalls too the round stops), delivery under 95% of the plan (INVALID, the round stops: the generator or the host, not the node). A node
 that stopped is judged first and still records the store's tmpfs share. The host swap used is only recorded. A container that may swap refuses the run before the first step.
 After the first failing step the ramp refines between the last good value and the failing one (--refine
 bisections, each on a fresh node and store), then repeats the best good step once to confirm it, also fresh. Environment: ATANOR_LOAD_* give defaults.
@@ -32,6 +32,7 @@ import http.client
 import json
 import math
 import os
+import statistics
 import subprocess
 import sys
 import threading
@@ -467,6 +468,21 @@ def judge_store(store, max_pct, max_disk_pct=90):
     return f"store disk {disk:g}% > {max_disk_pct:g}%" if disk is not None and disk > max_disk_pct else None
 
 
+def judge_stall(lag_p99_ms, entries, max_lag_ms, max_jump_ms):
+    """Why a step is INVALID by a stall of the lab, or None: the generator's lag p99 over `max_lag_ms`, or one growth of the node's
+    CPU throttling between two samples of `series` over `max_jump_ms` and over 5 times the median growth (a saturated node throttles
+    at every sample, a stall once). A stall fails a step by chance, so it measures the lab."""
+    if lag_p99_ms is not None and lag_p99_ms > max_lag_ms:  # None: no generator data, unknown
+        return f"stall: generator lag p99 {lag_p99_ms:g} ms > {max_lag_ms:g} ms"
+    values = [e.get("node_throttled_ms") for e in entries]
+    growth = [b - a for a, b in zip(values, values[1:]) if a is not None and b is not None]
+    if growth:
+        jump, typical = max(growth), statistics.median(growth)
+        if jump > max_jump_ms and jump > 5 * typical:
+            return f"stall: node CPU throttling grew {jump} ms between two samples > {max_jump_ms:g} ms and 5 x the median {typical:g} ms"
+    return None
+
+
 def store_summary(samples, tmpfs_bytes, backing="tmpfs"):
     """The store container's memory, its backing, its tmpfs (shmem) against the tmpfs size, its disk use when on disk, and the S3 5xx answered during the step."""
     mem = [s["store"] for s in samples if s.get("store")]
@@ -697,6 +713,22 @@ class Round:
     def step(self, value, phase, fresh=False):
         a = self.args
         self.index += 1
+        record = self.run_once(value, phase, fresh)
+        if (record["stop_reason"] or "").startswith("stall:"):  # a stall fails a step by chance: once more, then the INVALID path
+            first = record
+            say(f"{a.measure} {value} {UNITS[a.measure]}: {first['stop_reason']}; repeating the step once")
+            record = self.run_once(value, phase, fresh)
+            record["first_attempt"] = {k: first[k] for k in ("status", "stop_reason", "latency_ms", "generator", "series")}
+            record["notes"].append(f"first attempt INVALID, repeated once: {first['stop_reason']}")
+        path = self.base(value, phase) + ".json"
+        write_json(path, record)
+        say(f"{a.measure} {value} {UNITS[a.measure]}: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")
+            + f"; planned {record['planned']}, achieved {record['achieved']}, p99 {record['latency_ms']['p99']} ms -> {os.path.basename(path)}")
+        return record
+
+    def run_once(self, value, phase, fresh):
+        """One attempt of a step: the reset of a fresh node, the quiet wait and the run; the record, not yet written."""
+        a = self.args
         reset_s = self.reset() if fresh else None
         quiet, load = wait_quiet(a, self.info)
         if quiet:
@@ -705,10 +737,6 @@ class Round:
             record = self.record(value, phase, None, None, None, "invalid", busy_reason(load, a),
                                  valid=False, host_override={"net_load_last": load})
         record["fresh_node"], record["reset_s"] = fresh, reset_s
-        path = self.base(value, phase) + ".json"
-        write_json(path, record)
-        say(f"{a.measure} {value} {UNITS[a.measure]}: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")
-            + f"; planned {record['planned']}, achieved {record['achieved']}, p99 {record['latency_ms']['p99']} ms -> {os.path.basename(path)}")
         return record
 
     def base(self, value, phase):
@@ -759,7 +787,7 @@ class Round:
                   "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
                   "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "store": None, "cells_awake": None, "store_rtt_ms": None,
-                  "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "node_stopped": bool(dead), "notes": [], "diagnostics": list(diagnostics)}
+                  "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "node_stopped": bool(dead), "notes": [], "first_attempt": None, "diagnostics": list(diagnostics)}
         if merged is None:
             return record
         usage = summarize(samples, sampler_cpu(gens), self.info["memory_limit_bytes"])
@@ -817,6 +845,9 @@ class Round:
             return {**record, "valid": False, "status": "invalid", "stop_reason": "the generator ran out of file descriptors"}
         if full:  # before the criteria: on a full store a failure of the node is caused by the lab
             return {**record, "valid": False, "status": "invalid", "stop_reason": full}
+        stalled = judge_stall(record["generator"]["lag_p99_ms"], record["series"], a.max_lag_ms, a.max_throttle_jump_ms)
+        if stalled:  # before the criteria: a stall fails a step by chance
+            return {**record, "valid": False, "status": "invalid", "stop_reason": stalled}
         if criteria:
             return {**record, "status": "fail", "stop_reason": "; ".join(criteria)}
         if record["achieved_ratio"] is not None and record["achieved_ratio"] < a.delivery:
@@ -991,6 +1022,8 @@ def main():
     add("--max-host-swap-growth-mb", type=float, default=env("MAX_HOST_SWAP_GROWTH_MB", 256), help="host swap used growing by more than this during a step (largest sample minus the start) makes it INVALID; the level is only recorded (ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB, 256)")
     add("--max-store-disk-pct", type=float, default=env("MAX_STORE_DISK_PCT", 90), help="with ATANOR_LOAD_STORE_DISK=1: the store's filesystem above this share used at any sample makes a step INVALID (ATANOR_LOAD_MAX_STORE_DISK_PCT, 90)")
     add("--max-store-tmpfs-pct", type=float, default=env("MAX_STORE_TMPFS_PCT", 90), help="the store's tmpfs above this share of its size at any sample makes a step INVALID, before the criteria (ATANOR_LOAD_MAX_STORE_TMPFS_PCT, 90)")
+    add("--max-lag-ms", type=float, default=env("MAX_LAG_MS", 50), help="generator lag p99 above this makes a step INVALID ('stall:'), repeated once (ATANOR_LOAD_MAX_LAG_MS, 50)")
+    add("--max-throttle-jump-ms", type=float, default=env("MAX_THROTTLE_JUMP_MS", 5000), help="growth of the node's CPU throttling between two samples above this and above 5 times the median growth makes a step INVALID ('stall:'), repeated once (ATANOR_LOAD_MAX_THROTTLE_JUMP_MS, 5000)")
     add("--min-available-gb", type=float, default=env("MIN_AVAILABLE_GB", 6), help="host MemAvailable below this stops the round (ATANOR_LOAD_MIN_AVAILABLE_GB, 6)")
     add("--sample-s", type=float, default=env("SAMPLE_S", 5), help="seconds between samples (ATANOR_LOAD_SAMPLE_S, 5)")
     add("--timeout", type=float, default=env("TIMEOUT", 10), help="seconds before a request counts as unanswered")
