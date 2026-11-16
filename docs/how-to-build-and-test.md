@@ -136,7 +136,7 @@ tune a run; each has a default:
 | --- | --- | --- |
 | `ATANOR_CI_TIMEOUT_STATIC`, `_PART`, `_COVERAGE` | 20, 30, 15 | Timeout of each `static` job, each `part` job and the `coverage` job, in minutes. |
 | `ATANOR_CI_UNIT_PARTS` | `3` | Number of unit parts (ExUnit partitions). |
-| `ATANOR_CI_CLUSTER_PARTS` | `5` | Number of cluster parts. The cluster suite is the longest: raise this first when a run is slow. |
+| `ATANOR_CI_CLUSTER_PARTS` | `6` | Number of cluster parts. The cluster suite is the longest: raise this first when a run is slow. |
 | `ATANOR_TEST_MAX_CASES` | empty (ExUnit's default, twice the cores) | Test modules run at once; the same variable works locally. |
 | `ATANOR_COVERAGE_THRESHOLD` | `90` | Minimum line coverage per language, in percent. |
 
@@ -144,7 +144,7 @@ To run one part on your machine, pass the same arguments the job does (the
 instrumented build takes a few minutes the first time):
 
 ```sh
-mise run test:coverage --no-report --partition 2/5 cluster   # cluster-2 of 5
+mise run test:coverage --no-report --partition 2/6 cluster   # cluster-2 of 6
 mise run test:coverage --no-report native                    # the native part
 mise run test:coverage --report-only                         # merge what is in cover/
 ```
