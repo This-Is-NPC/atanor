@@ -9,7 +9,9 @@ Common: --timeout S (an unanswered request is an error), --tag TEXT (made part o
 rounds do not share cells) and --out FILE (default: standard output). All times are from the schedule,
 not from the moment a request was sent, so a slow server cannot hide behind a slow generator. Each
 document carries `planned`, `sent` and `completed` plus `lag_ms`, how late requests left against the
-schedule, and `cpu_s`, so a generator that is the limit shows itself.
+schedule, `release_lag_ms`, how late the generator itself put them in the queue (a stalled generator; a request
+that then waits for a free connection, because the server answers slowly, adds to `lag_ms` only), and `cpu_s`,
+so a generator that is the limit shows itself.
 
   http   requests at R per second for S seconds over N cells (a share W of them writes) on C keep-alive
          connections. Native: POST|GET /native/CELL on load.localhost. Plain WASM (examples/load-plain, the twin
@@ -52,7 +54,7 @@ def request_for(kind, tag, cell, write, n):
 
 class Recorder:
     def __init__(self):
-        self.statuses, self.hist, self.max_ms, self.lags = {}, {}, 0.0, []
+        self.statuses, self.hist, self.max_ms, self.lags, self.releases = {}, {}, 0.0, [], []
 
     def status(self, key):
         self.statuses[key] = self.statuses.get(key, 0) + 1
@@ -65,11 +67,16 @@ class Recorder:
     def lag(self, ms):
         self.lags.append(ms)
 
+    def release(self, ms):
+        self.releases.append(ms)
+
     def document(self, **fields):
-        lags = sorted(self.lags)
-        lag = {"mean": round(sum(lags) / len(lags), 2), "p99": round(lags[int(len(lags) * 0.99)], 2), "max": round(lags[-1], 2)} if lags else {}
-        return {**fields, "statuses": self.statuses, "hist": self.hist, "max_ms": round(self.max_ms, 3), "lag_ms": lag,
-                "cpu_s": round(time.process_time(), 2)}
+        def summary(values):
+            values = sorted(values)
+            return {"mean": round(sum(values) / len(values), 2), "p99": round(values[int(len(values) * 0.99)], 2), "max": round(values[-1], 2)} if values else {}
+
+        return {**fields, "statuses": self.statuses, "hist": self.hist, "max_ms": round(self.max_ms, 3), "lag_ms": summary(self.lags),
+                "release_lag_ms": summary(self.releases), "cpu_s": round(time.process_time(), 2)}
 
 
 def classify(status, headers):
@@ -141,13 +148,14 @@ async def http_worker(args, queue, recorder, clock):
         writer.close()
 
 
-async def pace(schedule, queue, clock):
-    """Puts each (due, ...) item in the queue when it is due; returns the number put."""
+async def pace(schedule, queue, clock, recorder):
+    """Puts each (due, ...) item in the queue when it is due, recording how late it was put (the generator's own delay); returns the number put."""
     count = 0
     for due, *rest in schedule:
         delay = due - clock()
         if delay > 0:
             await asyncio.sleep(delay)
+        recorder.release(max((clock() - due) * 1000, 0))
         queue.put_nowait((due, *rest))
         count += 1
     return count
@@ -187,7 +195,7 @@ async def run_http(args):
         window = args.duration
     workers = [asyncio.create_task(http_worker(args, queue, recorder, clock)) for _ in range(args.conns)]
     wall = time.time()
-    sent = await pace(schedule, queue, clock)
+    sent = await pace(schedule, queue, clock, recorder)
     for _ in workers:
         queue.put_nowait(None)
     # Bounded drain: a saturated service leaves a backlog, which is a result and not a crash.

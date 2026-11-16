@@ -19,7 +19,7 @@ Before every step the harness waits for a quiet host (net load below --host-load
 fails), swap in a measured container or generator swap growing over --max-generator-swap-mb, or host swap growing over
 --max-host-swap-growth-mb (INVALID), the store's tmpfs over --max-store-tmpfs-pct (default 90%) of its size at any sample (with ATANOR_LOAD_STORE_DISK=1 the store's filesystem over --max-store-disk-pct instead; INVALID: a full
 store answers S3 500s, which measure the lab; it wins over a criterion, so a p99 or 5xx failure on a full store is not
-the node's), a stall (generator lag p99 over --max-lag-ms, or a jump of the node's CPU throttling over --max-throttle-jump-ms and 5x the median: INVALID, `stall:`; the step is repeated once, and when the repeat stalls too the round stops), delivery under 95% of the plan (INVALID, the round stops: the generator or the host, not the node). A node
+the node's), a stall (the generator's own release lag p99 over --max-lag-ms, so a slow node that backs the generator up is not one, or a jump of the node's CPU throttling over --max-throttle-jump-ms and 5x the median: INVALID, `stall:`; the step is repeated once, and when the repeat stalls too the round stops), delivery under 95% of the plan (INVALID, the round stops: the generator or the host, not the node). A node
 that stopped is judged first and still records the store's tmpfs share. The host swap used is only recorded. A container that may swap refuses the run before the first step.
 After the first failing step the ramp refines between the last good value and the failing one (--refine
 bisections, each on a fresh node and store), then repeats the best good step once to confirm it, also fresh. Environment: ATANOR_LOAD_* give defaults.
@@ -469,7 +469,7 @@ def judge_store(store, max_pct, max_disk_pct=90):
 
 
 def judge_stall(lag_p99_ms, entries, max_lag_ms, max_jump_ms):
-    """Why a step is INVALID by a stall of the lab, or None: the generator's lag p99 over `max_lag_ms`, or one growth of the node's
+    """Why a step is INVALID by a stall of the lab, or None: the generator's own lag p99 (its release lag) over `max_lag_ms`, or one growth of the node's
     CPU throttling between two samples of `series` over `max_jump_ms` and over 5 times the median growth (a saturated node throttles
     at every sample, a stall once). A stall fails a step by chance, so it measures the lab."""
     if lag_p99_ms is not None and lag_p99_ms > max_lag_ms:  # None: no generator data, unknown
@@ -616,7 +616,7 @@ def summarize(samples, gen_cpu_total, limit):
 # ---- results of the generators -------------------------------------------------------------------------
 
 def merge(documents):
-    out = {"statuses": {}, "hist": {}, "max_ms": 0.0, "planned": 0, "sent": 0, "completed": 0, "cpu_s": 0.0, "lag_p99": 0.0}
+    out = {"statuses": {}, "hist": {}, "max_ms": 0.0, "planned": 0, "sent": 0, "completed": 0, "cpu_s": 0.0, "lag_p99": 0.0, "release_lag_p99": None}
     for d in documents:
         for key in ("planned", "sent", "completed", "cpu_s"):
             out[key] += d.get(key, 0)
@@ -626,6 +626,9 @@ def merge(documents):
             out["hist"][int(key)] = out["hist"].get(int(key), 0) + n
         out["max_ms"] = max(out["max_ms"], d["max_ms"])
         out["lag_p99"] = max(out["lag_p99"], d["lag_ms"].get("p99", 0))
+        release = (d.get("release_lag_ms") or {}).get("p99")
+        if release is not None:
+            out["release_lag_p99"] = max(out["release_lag_p99"] or 0.0, release)
         for key in ("opened", "failed", "dropped", "held"):
             if key in d:
                 out[key] = out.get(key, 0) + d[key]
@@ -799,7 +802,8 @@ class Round:
                                   "p99": percentile(merged["hist"], 99, merged["max_ms"]), "max": percentile(merged["hist"], 100, merged["max_ms"])},
                       status_503={"with_retry_after": merged["statuses"].get("503 retry-after", 0), "without_retry_after": merged["statuses"].get("503 no retry-after", 0)},
                       limits={"cpus": usage["cpu"]["node_limit_cores"], "memory_mb": usage["memory"]["limit_mb"]},
-                      generator={"sent": merged["sent"], "completed": merged["completed"], "lag_p99_ms": round(merged["lag_p99"], 1), "cpu_cores": usage["cpu"]["generator_cores"]},
+                      generator={"sent": merged["sent"], "completed": merged["completed"], "lag_p99_ms": round(merged["lag_p99"], 1),
+                                 "release_lag_p99_ms": None if merged["release_lag_p99"] is None else round(merged["release_lag_p99"], 1), "cpu_cores": usage["cpu"]["generator_cores"]},
                       cells_awake=None if dead else cells_awake(self.info), store_rtt_ms=None if dead else store_rtt())
         if record["store_rtt_ms"] is None:
             record["notes"].append("store rtt not measured" + (": the node stopped" if dead else ""))
@@ -850,7 +854,8 @@ class Round:
             return {**record, "valid": False, "status": "invalid", "stop_reason": "the generator ran out of file descriptors"}
         if full:  # before the criteria: on a full store a failure of the node is caused by the lab
             return {**record, "valid": False, "status": "invalid", "stop_reason": full}
-        stalled = judge_stall(record["generator"]["lag_p99_ms"], record["series"], a.max_lag_ms, a.max_throttle_jump_ms)
+        gen = record["generator"]  # the generator's own delay; the lag that adds a slow node's wait for a connection is not a stall
+        stalled = judge_stall(gen["lag_p99_ms"] if gen["release_lag_p99_ms"] is None else gen["release_lag_p99_ms"], record["series"], a.max_lag_ms, a.max_throttle_jump_ms)
         if stalled:  # before the criteria: a stall fails a step by chance
             return {**record, "valid": False, "status": "invalid", "stop_reason": stalled}
         if criteria:
@@ -1028,7 +1033,7 @@ def main():
     add("--max-host-swap-growth-mb", type=float, default=env("MAX_HOST_SWAP_GROWTH_MB", 256), help="host swap used growing by more than this during a step (largest sample minus the start) makes it INVALID; the level is only recorded (ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB, 256)")
     add("--max-store-disk-pct", type=float, default=env("MAX_STORE_DISK_PCT", 90), help="with ATANOR_LOAD_STORE_DISK=1: the store's filesystem above this share used at any sample makes a step INVALID (ATANOR_LOAD_MAX_STORE_DISK_PCT, 90)")
     add("--max-store-tmpfs-pct", type=float, default=env("MAX_STORE_TMPFS_PCT", 90), help="the store's tmpfs above this share of its size at any sample makes a step INVALID, before the criteria (ATANOR_LOAD_MAX_STORE_TMPFS_PCT, 90)")
-    add("--max-lag-ms", type=float, default=env("MAX_LAG_MS", 50), help="generator lag p99 above this makes a step INVALID ('stall:'), repeated once (ATANOR_LOAD_MAX_LAG_MS, 50)")
+    add("--max-lag-ms", type=float, default=env("MAX_LAG_MS", 50), help="generator release lag p99 (how late the generator itself queued requests) above this makes a step INVALID ('stall:'), repeated once (ATANOR_LOAD_MAX_LAG_MS, 50)")
     add("--max-throttle-jump-ms", type=float, default=env("MAX_THROTTLE_JUMP_MS", 5000), help="growth of the node's CPU throttling between two samples above this and above 5 times the median growth makes a step INVALID ('stall:'), repeated once (ATANOR_LOAD_MAX_THROTTLE_JUMP_MS, 5000)")
     add("--min-available-gb", type=float, default=env("MIN_AVAILABLE_GB", 6), help="host MemAvailable below this stops the round (ATANOR_LOAD_MIN_AVAILABLE_GB, 6)")
     add("--sample-s", type=float, default=env("SAMPLE_S", 5), help="seconds between samples (ATANOR_LOAD_SAMPLE_S, 5)")

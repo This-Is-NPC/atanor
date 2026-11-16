@@ -269,6 +269,20 @@ defmodule Atanor.LoadRunTest do
     assert twice["first"]["valid"] == false
     assert twice["first"]["first_attempt"]["stop_reason"] =~ "lag p99 242 ms"
 
+    # lag from a saturated node (the generator released on time) is not a stall: the step fails by p99; late release is a stall
+    saturated = r["lag_saturated"]
+    assert %{"status" => "fail", "valid" => true, "stop_reason" => "p99 1900.1 ms > 250 ms"} = saturated
+    assert saturated["generator"]["lag_p99_ms"] == 162.2
+    assert saturated["generator"]["release_lag_p99_ms"] == 1.0
+
+    assert %{"status" => "invalid", "valid" => false, "stop_reason" => "stall: generator lag p99 241.9 ms > 50 ms"} =
+             r["lag_stalled"]
+
+    assert %{"status" => "invalid", "stop_reason" => "stall: generator lag p99 162.2 ms > 50 ms"} =
+             r["lag_old_generator"]
+
+    assert r["lag_old_generator"]["generator"]["release_lag_p99_ms"] == :null
+
     # 503s over 1% of the answers fail a step (a criterion, not INVALID); 0.5% and exactly 1% pass; the useful rate leaves the 503s out
     refused = r["refused"]
 

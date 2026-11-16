@@ -48,6 +48,50 @@ defmodule Atanor.LoadGenTest do
            ]
   end
 
+  # Two connections against a service of 0.4 s per answer cannot carry 20 req/s: requests wait for a free connection (lag),
+  # but the generator itself releases each on time (release lag), which is how a slow node is told from a stalled generator.
+  test "a slow service adds to the lag, not to the release lag" do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(listen)
+    acceptor = spawn_link(fn -> accept_slowly(listen) end)
+
+    {out, status} =
+      System.cmd(
+        Path.expand("scripts/load-gen"),
+        ~w(http --host 127.0.0.1 --kind native --rate 20 --duration 2 --conns 2 --timeout 1 --port #{port}),
+        stderr_to_stdout: true
+      )
+
+    Process.unlink(acceptor)
+    Process.exit(acceptor, :kill)
+    :gen_tcp.close(listen)
+
+    assert status == 0, out
+    document = :json.decode(out)
+    assert document["lag_ms"]["p99"] > 300
+    assert document["release_lag_ms"]["p99"] < 100
+  end
+
+  defp accept_slowly(listen) do
+    case :gen_tcp.accept(listen) do
+      {:ok, socket} ->
+        pid = spawn(fn -> answer_slowly(socket) end)
+        :gen_tcp.controlling_process(socket, pid)
+        accept_slowly(listen)
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  defp answer_slowly(socket) do
+    with {:ok, _request} <- :gen_tcp.recv(socket, 0) do
+      Process.sleep(400)
+      :gen_tcp.send(socket, "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+      answer_slowly(socket)
+    end
+  end
+
   defp accept_forever(listen) do
     case :gen_tcp.accept(listen) do
       {:ok, _socket} -> accept_forever(listen)
