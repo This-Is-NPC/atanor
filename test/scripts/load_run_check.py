@@ -269,6 +269,25 @@ def stall_scenario(name, lags):
 results["stall_once"] = stall_scenario("stall_once", [242, 1])
 results["stall_twice"] = stall_scenario("stall_twice", [242, 300])
 
+# A node saturated above its ceiling backs the generator up: the step lags (p99 162 ms) but the generator released every request on
+# time (release lag 1 ms), so the step fails by p99 (1900 ms) and the ramp refines. A generator that itself released late is a stall.
+def lag_scenario(name, lag, release, p99_bucket):
+    real = m.Round.run_generators
+    doc = {**DOCUMENT, "hist": {str(p99_bucket): 10}, "lag_ms": {"p99": lag}}
+    m.Round.run_generators = lambda self, value, sampler: [doc if release is None else {**doc, "release_lag_ms": {"p99": release}}]
+    measure[0] = "http-native"
+    try:
+        record = scenario(name)["record"]
+    finally:
+        measure[0] = "ws"
+        m.Round.run_generators = real
+    return {k: record[k] for k in ("status", "valid", "stop_reason")} | {"generator": record["generator"]}
+
+
+results["lag_saturated"] = lag_scenario("lag_saturated", 162.2, 1.0, 19000)
+results["lag_stalled"] = lag_scenario("lag_stalled", 241.9, 241.9, 7658)
+results["lag_old_generator"] = lag_scenario("lag_old_generator", 162.2, None, 19000)
+
 # A step fails when 503s (with or without Retry-After) exceed 1% of the answers; exactly 1% passes. 200 answers in one second.
 def refused_scenario(name, statuses):
     real = m.Round.run_generators

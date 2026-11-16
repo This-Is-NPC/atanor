@@ -110,12 +110,18 @@ and `/proc/meminfo`. Per step, in this order:
    same verdict is made on the share of the store's filesystem used (`ATANOR_LOAD_MAX_STORE_DISK_PCT`, 90), for
    example `store disk 93% > 90%`.
 6. **Stall.** The step is INVALID, with a reason that starts with `stall:`, when the lab stopped for a moment
-   and failed the step by chance: the generator's lag p99 (`generator.lag_p99_ms` in the step file) is above
-   50 ms (`--max-lag-ms`, `ATANOR_LOAD_MAX_LAG_MS`; normal steps show 1 to 2 ms), or the node's CPU throttling
+   and failed the step by chance: the generator's own lag p99 (`generator.release_lag_p99_ms` in the step file,
+   how late the generator put requests in its queue) is above 50 ms (`--max-lag-ms`, `ATANOR_LOAD_MAX_LAG_MS`;
+   normal steps show 1 to 8 ms), or the node's CPU throttling
    (`node_throttled_ms` in `series`) grew between two consecutive samples by more than 5000 ms
    (`--max-throttle-jump-ms`, `ATANOR_LOAD_MAX_THROTTLE_JUMP_MS`) and by more than 5 times the median growth
    per sample of the step. A node saturated at every sample throttles at every sample, so its median is high
-   and it is not flagged. A step whose generator lags is not a measurement of the node. Unlike the other
+   and it is not flagged. A step whose generator lags is not a measurement of the node. A node above its ceiling
+   answers slowly, the generator's keep-alive connections are all busy, and requests wait for a free one:
+   `generator.lag_p99_ms` (how late requests left against the schedule) grows, but `release_lag_p99_ms` stays
+   small because the generator itself is on time. That step is not a stall: it is judged by the criteria
+   (usually p99) and fails, so the ramp refines. A step file from a generator that does not report
+   `release_lag_p99_ms` (`null`) is judged on `lag_p99_ms`. Unlike the other
    INVALID verdicts, a stall repeats the step once (a fresh node when the step is fresh), so one chance event
    does not stop the round: the first attempt is kept in `first_attempt` of the step file and in `notes`. When
    the repeat is INVALID too, the usual INVALID path applies: the round stops and `load-run` exits 1.
@@ -136,7 +142,7 @@ In short, what makes a step INVALID (no verdict on the node):
 | Host busy or contaminated | net load 1 core (`--host-load-max`) | no, the round stops |
 | Swap | 16 MB generator, 256 MB host growth, any in a measured container | no, the round stops |
 | Store full | 90% of its tmpfs or disk | no, the round stops |
-| Stall | generator lag p99 over 50 ms, or a throttling jump over 5000 ms and 5 times the median (`--max-lag-ms`, `--max-throttle-jump-ms`) | once; the round stops if the repeat stalls too |
+| Stall | generator release lag p99 over 50 ms, or a throttling jump over 5000 ms and 5 times the median (`--max-lag-ms`, `--max-throttle-jump-ms`) | once; the round stops if the repeat stalls too |
 | Delivery | achieved under 95% of planned | no, the round stops |
 
 The ramp multiplies the value by 2 from a start (`--start`, `--factor`, or `--steps`) until a step fails;
@@ -181,7 +187,7 @@ The report shows the largest cgroup memory and the oom kills of each step.
 
 Every step file also keeps the evidence to tell what the admission gate did, one entry per sample (every `--sample-s`):
 
-- `series`: a list of integer entries, `null` where a source did not answer. `t` is the seconds since the first sample; `memory_current`, `shmem`, `anon` and `inactive_file` come from the node's cgroup; `working_set`, `refusing` (0 or 1), `in_flight`, `refused_memory`, `refused_in_flight` and `refused_disk` from the node's admission (`runtime.admission`, counters since the node started); `beam_total`, `beam_processes`, `beam_binary`, `process_count` and `oom_kill` from the VM and the cgroup events; `store_memory_current`, `store_shmem` (the store's tmpfs use), `store_limit` and `store_s3_errors` (S3 requests the store answered 5xx, from its metrics, since it started) from the store; `store_breaker_open` (1 when a store breaker of the node was open or half-open in that sample, from `runtime.store`) and `node_throttled_ms` (the node cgroup's CPU throttled time since it started, `cpu.stat`) place a stall in the step. `stalls` in the step file tells a stop of the whole VM from a node or store fault: `ticker_stalls` are the times (seconds from the first sample, as `t` of `series`) when a 0.1 s sleep of the harness's own process overshot by a second or more, `breaker_open_at_s` the samples with an open breaker, and `vm_pause_suspected` is true when a stall came within 10 s before the first of them. Together with a high `generator.lag_p99_ms`, it points at the VM and not at the node or the store. The node log has the breaker opening and closing with their times (`atanor: store breaker open ...`) and the store errors behind it.
+- `series`: a list of integer entries, `null` where a source did not answer. `t` is the seconds since the first sample; `memory_current`, `shmem`, `anon` and `inactive_file` come from the node's cgroup; `working_set`, `refusing` (0 or 1), `in_flight`, `refused_memory`, `refused_in_flight` and `refused_disk` from the node's admission (`runtime.admission`, counters since the node started); `beam_total`, `beam_processes`, `beam_binary`, `process_count` and `oom_kill` from the VM and the cgroup events; `store_memory_current`, `store_shmem` (the store's tmpfs use), `store_limit` and `store_s3_errors` (S3 requests the store answered 5xx, from its metrics, since it started) from the store; `store_breaker_open` (1 when a store breaker of the node was open or half-open in that sample, from `runtime.store`) and `node_throttled_ms` (the node cgroup's CPU throttled time since it started, `cpu.stat`) place a stall in the step. `stalls` in the step file tells a stop of the whole VM from a node or store fault: `ticker_stalls` are the times (seconds from the first sample, as `t` of `series`) when a 0.1 s sleep of the harness's own process overshot by a second or more, `breaker_open_at_s` the samples with an open breaker, and `vm_pause_suspected` is true when a stall came within 10 s before the first of them. Together with a high `generator.release_lag_p99_ms`, it points at the VM and not at the node or the store. The node log has the breaker opening and closing with their times (`atanor: store breaker open ...`) and the store errors behind it.
 - `admission`: the thresholds the node judged against (`limit_bytes`, `refuse_at_bytes`, `max_in_flight`, `disk_budget_bytes`), the refusals counted in the step by reason (`refused`, last sample minus first), `refusing_seen`, and the largest `in_flight` and `working_set_max_bytes`. `null` without `/runtime`.
 - `runtime.cgroup_memory_max_bytes`: `memory.max` as the node sees it.
 - `store_backing` (`tmpfs` or `disk`, from `load-env info`) and `store.backing`: where the store's data was.
@@ -214,7 +220,7 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB` | 256 | Growth of the host swap used during a step above which the step is invalid; its level is only recorded. |
 | `ATANOR_LOAD_MAX_STORE_TMPFS_PCT` | 90 | Share of the store's tmpfs size, at any sample, above which the step is invalid (before the criteria). |
 | `ATANOR_LOAD_MAX_STORE_DISK_PCT` | 90 | With `ATANOR_LOAD_STORE_DISK=1`: share of the store's filesystem used, at any sample, above which the step is invalid. |
-| `ATANOR_LOAD_MAX_LAG_MS` | 50 | Generator lag p99 above which a step is invalid (`stall:`) and repeated once. |
+| `ATANOR_LOAD_MAX_LAG_MS` | 50 | Generator release lag p99 above which a step is invalid (`stall:`) and repeated once. |
 | `ATANOR_LOAD_MAX_THROTTLE_JUMP_MS` | 5000 | Growth of the node's CPU throttling between two samples above which, and above 5 times the median growth, a step is invalid (`stall:`) and repeated once. |
 | `ATANOR_LOAD_WRITE_RATIO`, `_CELLS` | 0.5, 64 | http: share of writes, cells the requests spread over. |
 | `ATANOR_LOAD_CELL_PERIOD` | 10 | cells: seconds between the writes to one cell. |
