@@ -87,9 +87,8 @@ def spread_sample(info):
     with lock:
         now, count = time.time(), current_nodes()
         names = [f"node-{i}" for i in range(1, count + 1)]
-        dt, lab["last"] = now - (lab["last"] or now), now
-        for name in names:
-            lab["req"][name] = lab["req"].get(name, 0) + int(dt * RATE / count)
+        for name in names:  # a fixed share per reading, not per elapsed time: a step of the stub is instant on a fast runner
+            lab["req"][name] = lab["req"].get(name, 0) + RATE // 20 // count
             lab["seen"].setdefault(name, now)
         if count == 1:
             lab["errors"] += 1  # the lone node refuses: 5xx until another one is in rotation
