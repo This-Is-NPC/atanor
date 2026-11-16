@@ -81,7 +81,7 @@ emits `[:atanor, :hot_cell, :move]` with the reason `:rebalance`.
 | Event | Measurements | Metadata |
 | --- | --- | --- |
 | `[:atanor, :rebalance, :start]` | `cells` (the cells the first round will move) | `instance`, `node`, `epoch` (counts the changes of the membership this node saw), `members` |
-| `[:atanor, :rebalance, :move]` | `duration` (the whole move, in native time units) | `instance`, `cell` (the Alambique id), `from`, `to`, `result`: `:ok` or `{:error, reason}` |
+| `[:atanor, :rebalance, :move]` | `duration` (the whole move, in native time units) | `instance`, `cell` (the Alambique id), `from`, `to`, `result`: `:ok` or `{:error, reason}`. A cell with a call in flight refuses the move (`{:error, :busy}`): it is tried again in this or a later round and emits no move event until the move ends |
 | `[:atanor, :rebalance, :stop]` | `moved`, `failed`, `deferred` (cells left for a later round in the last one), `duration` (milliseconds since the plan started) | `instance`, `node`, `epoch`, `members`, `reason`: `:done` (a round found nothing to move) or `:membership_changed` (the plan was dropped and starts again) |
 
 The same state is in `GET /runtime`, under `rebalance`: `phase` (`idle`, `waiting`, `running`,

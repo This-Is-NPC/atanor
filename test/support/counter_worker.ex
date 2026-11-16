@@ -7,6 +7,8 @@ defmodule Atanor.Test.CounterWorker do
   that ran the handler (`node`), the node and TXID of the transaction's batch
   (`tx_node`, `txid`), the deployment and the handler's start and end (`from`, `to`, operating system microseconds).
 
+  `POST /h/CELL` with N ms as the body keeps the cell busy for N ms (a call in flight).
+
   `GET /r/CELL?ms=N` lists the numbers in a bounded request (design §19.3): it runs on the ingress node and may
   read data up to N ms old. `POST /r/CELL` tries to write in such a request, which Atanor refuses (409).
   """
@@ -22,6 +24,7 @@ defmodule Atanor.Test.CounterWorker do
   def route_key(%Request{path: "/c/direct/" <> _}, _env), do: :none
   def route_key(%Request{path: "/c/" <> cell}, _env), do: {:cell, "log", cell}
   def route_key(%Request{path: "/v/" <> cell}, _env), do: {:cell, "log", cell}
+  def route_key(%Request{path: "/h/" <> cell}, _env), do: {:cell, "log", cell}
 
   def route_key(%Request{path: "/r/" <> cell, query: "ms=" <> ms}, _env),
     do: {:cell, "log", cell, consistency: {:bounded, String.to_integer(ms)}}
@@ -54,6 +57,12 @@ defmodule Atanor.Test.CounterWorker do
       {:error, reason} ->
         json(500, %{node: node(), error: inspect(reason)})
     end
+  end
+
+  # Holds the cell busy for the number of ms in the body: a call in flight.
+  def handle_request(%Request{method: "POST", path: "/h/" <> cell, body: body}, env) do
+    result = Env.transaction(env, {"log", cell}, fn _tx -> Process.sleep(String.to_integer(body)) end)
+    json(200, %{node: node(), result: inspect(result)})
   end
 
   # No routing key: the handler runs on the ingress node and reaches the cell by itself.

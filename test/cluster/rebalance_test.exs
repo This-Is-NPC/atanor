@@ -152,6 +152,39 @@ defmodule Atanor.Cluster.RebalanceTest do
     C1.check_epochs(Cluster.events(cluster))
   end
 
+  # Calls that keep the cell busy: while `ms` pass, one is running and others wait for the cell.
+  defp hold(cluster, cell, ms) do
+    until = System.monotonic_time(:millisecond) + ms
+
+    if System.monotonic_time(:millisecond) < until do
+      request(cluster, :n1, :post, "/h/#{cell}", body: "200")
+      hold(cluster, cell, until - System.monotonic_time(:millisecond))
+    end
+  end
+
+  test "a cell that is busy is tried again and emits no move event until it moves" do
+    cluster = start(Keyword.put(@rebalance, :start_delay_ms, 3_000))
+    for cell <- @cells, do: {200, _} = write(cluster, :n1, cell, 0)
+
+    :ok = Cluster.add(cluster, :n3)
+    n3 = Cluster.node(cluster, :n3)
+
+    {cell, _, _} =
+      Await.until(fn -> Enum.find(placement(cluster), fn {_, owner, to} -> to == n3 and owner != n3 end) end, 30_000)
+
+    # The calls outlast the delay, so the plan finds the cell with a call in flight.
+    holders = for _ <- 1..3, do: Task.async(fn -> hold(cluster, cell, 7_000) end)
+    Task.await_many(holders, 30_000)
+
+    Await.until(fn -> owner(cluster, :n1, "log", cell) == {:ok, n3} end, 60_000)
+    id = "log." <> cell
+    Await.until(fn -> Enum.any?(moves(cluster), &(&1.meta.cell == id and &1.meta.result == :ok)) end, 30_000)
+
+    results = for %{meta: %{result: result}} <- moves(cluster), do: result
+    refute {:error, :busy} in results, "a busy refusal is retried and emits no move event: #{inspect(results)}"
+    assert Enum.count(moves(cluster), &(&1.meta.cell == id)) == 1
+  end
+
   test "a node that joins and leaves inside the delay moves nothing" do
     cluster = start(Keyword.put(@rebalance, :start_delay_ms, 60_000))
     for cell <- @cells, do: {200, _} = write(cluster, :n1, cell, 0)
