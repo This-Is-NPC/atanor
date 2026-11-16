@@ -290,8 +290,12 @@ run = "scripts/load-run cells"
 description = "Replace the node by another under load at the last approved http-wasm-jobs rate and report the swap duration and p99 peak (arguments: --rate, --trigger sigterm|api, ...); run it last: the old node is removed"
 run = "scripts/load-run swap"
 
+[tasks."load:scale"]
+description = "Ramp the http-native and cells loads on 1, 2 and 3 nodes behind the balancer (ceiling of each, gain over 1 node, requests and awake cells per node), then start the 2nd and 3rd node under a fixed rate and measure the time until the load spreads (arguments: --max-nodes, --loads, --join-rate, --no-join, ...; run load:up once before; docs/how-to-run-the-load-tests.md)"
+run = "scripts/load-run scale"
+
 [tasks."load:explore"]
-description = "Exploration round of one scenario, before the official round: each ramp measure runs only the steps at 75%, 100%, 125% and 150% of the ceiling in --from DIR (75 s each, no refine, no confirm), then the swap at the http-wasm-jobs ceiling (arguments: --from DIR, --ceiling MEASURE=N, --measures, --factors, --step-s, --dry-run; docs/how-to-run-the-load-tests.md)"
+description = "Exploration round of one scenario, before the official round: each ramp measure runs only the steps at 75%, 100%, 125% and 150% of the ceiling in --from DIR (75 s each, no refine, no confirm), then the swap at the http-wasm-jobs ceiling; scale joins when DIR has its summary (arguments: --from DIR, --ceiling MEASURE=N, --measures, --factors, --step-s, --dry-run; docs/how-to-run-the-load-tests.md)"
 run = "scripts/load-explore"
 
 [tasks."load:report"]

@@ -7,19 +7,22 @@
 #
 #   --from DIR        results of the previous round: the `approved` value of each SCENARIO_MEASURE.summary.json is the ceiling
 #   --ceiling M=N     ceiling N for measure M, instead of the one in DIR (repeatable)
-#   --measures LIST   comma separated (default: http-native,http-wasm,http-wasm-jobs,ws,cells,swap)
+#   --measures LIST   comma separated (default: http-native,http-wasm,http-wasm-jobs,ws,cells,swap; scale joins the default, before
+#                     the swap, when DIR has SCENARIO_scale.summary.json or --ceiling scale=LOAD:NODES=N,... is given)
 #   --factors LIST    steps as fractions of the ceiling (default: 0.75,1,1.25,1.5)
 #   --step-s S        seconds per step (default: 75)
 #   --out DIR         results directory (default: load/results/explore-STAMP-SCENARIO)
 #   --dry-run         print the commands and run nothing
 #
 # Each measure starts on a fresh node and store (load-env reset); `mise run load:up` once before builds the images.
+# scale resets its own nodes before every configuration and runs the steps of each ceiling of the previous round (1 to
+# --max-nodes nodes, pass it after --), then the join at 1.5 times the 1-node http-native ceiling.
 # A measure that exits 1 (INVALID) does not stop the others; the exit status is 1 when any did.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 from="" out="" step_s=75 factors="0.75,1,1.25,1.5" dry=0
-measures="http-native,http-wasm,http-wasm-jobs,ws,cells,swap"
+measures="" default_measures="http-native,http-wasm,http-wasm-jobs,ws,cells,swap"
 declare -A ceiling=()
 while (($#)); do
   case $1 in
@@ -37,6 +40,23 @@ done
 extra=("$@")
 scenario=${ATANOR_LOAD_SCENARIO:-A}
 out=${out:-load/results/explore-$(date +%Y%m%d-%H%M%S)-$scenario}
+
+if [[ -z $measures ]]; then
+  measures=$default_measures
+  if [[ -n ${ceiling[scale]:-} || -f ${from:-/nonexistent}/${scenario}_scale.summary.json ]]; then measures=${measures%,swap},scale,swap; fi
+fi
+
+# The ceilings of the scale measure as LOAD:NODES=N,...: --ceiling scale=..., else the summary's `ceilings`.
+scale_ceilings() {
+  local value=${ceiling[scale]:-}
+  if [[ -z $value && -n $from ]]; then
+    local file=$from/${scenario}_scale.summary.json
+    [[ -f $file ]] || { echo "no summary $file and no --ceiling scale=LOAD:NODES=N,..." >&2; return 1; }
+    value=$(jq -r '[(.ceilings // {}) | to_entries[] | .key as $load | .value | to_entries[] | select(.value != null) | "\($load):\(.key)=\(.value)"] | join(",")' "$file")
+  fi
+  [[ $value =~ ^[a-z0-9-]+:[0-9]+=[0-9]+(,[a-z0-9-]+:[0-9]+=[0-9]+)*$ ]] || { echo "no ceilings for scale (the summary has none: pass --ceiling scale=LOAD:NODES=N,...)" >&2; return 1; }
+  echo "$value"
+}
 
 # The ceiling of a measure: --ceiling, else the approved value of the previous round's summary.
 ceiling_of() {
@@ -62,14 +82,22 @@ run() {
 declare -A plan=()
 IFS=, read -r -a list <<<"$measures"
 for m in "${list[@]}"; do   # every ceiling is read before anything starts
-  if [[ $m == swap ]]; then plan[swap]=$(ceiling_of http-wasm-jobs); else c=$(ceiling_of "$m"); plan[$m]=$(steps_of "$c"); fi
+  case $m in
+    swap) plan[swap]=$(ceiling_of http-wasm-jobs) ;;
+    scale) plan[scale]=$(scale_ceilings) ;;
+    *) c=$(ceiling_of "$m"); plan[$m]=$(steps_of "$c") ;;
+  esac
 done
 
 status=0
 export ATANOR_LOAD_OUT=$out
 for m in "${list[@]}"; do
-  if [[ $m == swap ]]; then args=(--rate "${plan[swap]}"); else args=(--steps "${plan[$m]}" --step-s "$step_s" --refine 0 --no-confirm); fi
-  run scripts/load-env reset
+  case $m in
+    swap) args=(--rate "${plan[swap]}") ;;
+    scale) args=(--ceilings "${plan[scale]}" --factors "$factors" --step-s "$step_s" --refine 0 --no-confirm) ;;
+    *) args=(--steps "${plan[$m]}" --step-s "$step_s" --refine 0 --no-confirm) ;;
+  esac
+  [[ $m == scale ]] || run scripts/load-env reset   # scale starts its own nodes
   run scripts/load-run "$m" "${args[@]}" "${extra[@]}" || { echo "load-explore: $m exited $? (a finding)" >&2; status=1; }
 done
 exit $status

@@ -13,18 +13,20 @@ import sys
 
 
 def load(directory):
-    steps, baselines, summaries = [], {}, {}
+    steps, baselines, summaries, joins = [], {}, {}, []
     for path in sorted(glob.glob(os.path.join(directory, "*.json"))):
         with open(path) as file:
             document = json.load(file)
         name = os.path.basename(path)
-        if name.endswith(".baseline.json"):
+        if document.get("schema") == "atanor-load-join-1":
+            joins.append(document)
+        elif name.endswith(".baseline.json"):
             baselines[(document["scenario"], document["measure"])] = document
         elif name.endswith(".summary.json"):
             summaries[(document["scenario"], document["measure"])] = document
         elif document.get("schema") == "atanor-load-step-1":
             steps.append(document)
-    return steps, baselines, summaries
+    return steps, baselines, summaries, joins
 
 
 def num(value, digits=1):
@@ -114,8 +116,57 @@ def swap_section(steps):
     return table(rows, ["swap", "value"])
 
 
+def per_node(counts, share):
+    """"requests (share%)" of each node, in node order; "-" when unknown."""
+    if not counts:
+        return "-"
+    return " / ".join(f"{num(counts[n])} ({100 * (share or {}).get(n, 0):.0f}%)" if share else num(counts[n]) for n in sorted(counts))
+
+
+def scale_section(steps, summary, joins):
+    """The gain per node, the spread of the load over the nodes at each ceiling, the steps of each configuration and the join step."""
+    out = []
+    configs = (summary or {}).get("configs") or []
+    gains = (summary or {}).get("gain") or {}
+    rows = []
+    for c in configs:
+        g = (gains.get(c["load"]) or {}).get(str(c["nodes"])) or {}
+        stop = c.get("invalid") or c.get("skipped") or c.get("stopped_by") or ("ceiling reached without a failure" if c.get("ceiling_reached") else "-")
+        rows.append([c["load"], c["nodes"], num(g.get("ceiling") if g else (c.get("approved") if c.get("approved") is not None else c.get("good")), 0),
+                     "-" if not g else f"{g['gain']:.2f}x", f"{c['nodes']}x", "-" if not g else f"{100 * g['efficiency']:.0f}%",
+                     "yes" if c.get("approved") is not None else "no", stop])
+    out += ["Gain per node (the ceiling of each configuration over the ceiling of 1 node; ideal: N times; `ceiling` is the approved value, or the best step that passed when the round has no confirmation):", "",
+            table(rows, ["load", "nodes", "ceiling", "gain over 1 node", "ideal", "efficiency", "confirmed", "ramp stopped by"]), ""]
+    rows = []
+    for c in configs:
+        d = c.get("distribution")
+        if d:
+            rows.append([c["load"], c["nodes"], per_node(d.get("requests"), d.get("request_share")), num(d.get("request_deviation"), 2),
+                         per_node(d.get("cells_awake"), d.get("cells_share")), num(d.get("cells_deviation"), 2)])
+    if rows:
+        out += ["Requests the balancer sent to each node, and cells awake on each, at the best step (deviation: the largest |share x N - 1|; 0 is an equal split):", "",
+                table(rows, ["load", "nodes", "requests per node (share)", "deviation", "cells awake per node (share)", "deviation"]), ""]
+    for load in sorted({s["load"] for s in steps}):
+        for nodes in sorted({s["nodes"] for s in steps if s["load"] == load}):
+            out += [f"#### {load} on {nodes} node{'s' if nodes > 1 else ''}", "", table(step_rows([s for s in steps if s["load"] == load and s["nodes"] == nodes]), HEADER), ""]
+    for j in joins:
+        g = j.get("generator") or {}
+        rows = []
+        for w in j.get("windows") or []:
+            b = w.get("backend") or {}
+            rows.append([w["nodes"], f"{num(w['start_s'])} - {num(w['end_s'])}", num(w.get("ready_s")), num(w.get("requests_spread_s")), num(w.get("cells_spread_s")),
+                         f"{num(b.get('stot'), 0)} / {num(b.get('hrsp_5xx'), 0)} / {num(b.get('econ'), 0)} / {num(b.get('eresp'), 0)}",
+                         "-" if not w.get("rebalance") else ", ".join(f"{n}: {json.dumps(v)}" for n, v in w["rebalance"].items())])
+        out += [f"#### Join at {num(j.get('rate'), 0)} req/s: {j['status'].upper()}" + (f" ({j['stop_reason']})" if j.get("stop_reason") else ""), "",
+                f"Spread: every node within {j.get('tolerance_pct'):g}% of 1/N for {j.get('hold_samples')} readings {j.get('sample_s'):g} s apart; seconds counted from the start of the node. `null` (-): it never held in the window, or the field is missing.", "",
+                table(rows, ["nodes", "window s", "node ready after s", "requests spread s", "cells spread s", "requests / 5xx / conn errors / response errors (balancer)", "rebalance state (/runtime)"]), "",
+                f"Generator: sent {num(g.get('sent'), 0)}, completed {num(g.get('completed'), 0)}, 503 {num(g.get('status_503'), 0)}, errors {', '.join(f'{k} x{n}' for k, n in (g.get('errors') or {}).items()) or 'none'}.", ""]
+        out += [f"Note: {n}" for n in j.get("notes") or []] + [""] * bool(j.get("notes"))
+    return out
+
+
 def report(directory):
-    steps, baselines, summaries = load(directory)
+    steps, baselines, summaries, joins = load(directory)
     if not steps:
         sys.exit(f"no step results in {directory}")
     out = [f"# Load test report", "", f"Results directory: `{directory}`. Generated by `scripts/load-report` from the step JSON files.", ""]
@@ -124,13 +175,17 @@ def report(directory):
         latency = next(s["store_latency_ms"] for s in steps if s["scenario"] == scenario)
         backing = next(s.get("store_backing", "tmpfs") for s in steps if s["scenario"] == scenario)
         out += [f"## Scenario {scenario}", "", f"Node limits: {num(limits.get('cpus'), 1)} CPU and {num(limits.get('memory_mb'), 0)} MB (scenario memory; the cgroup limit adds the tmpfs); store {'on disk' if backing == 'disk' else 'in tmpfs'} with {latency} ms added per trip.", ""]
-        for measure in ("http-native", "http-wasm", "http-wasm-jobs", "ws", "cells", "swap"):
+        for measure in ("http-native", "http-wasm", "http-wasm-jobs", "ws", "cells", "swap", "scale"):
             mine = [s for s in steps if s["scenario"] == scenario and s["measure"] == measure]
             if not mine:
                 continue
             summary, baseline = summaries.get((scenario, measure)), baselines.get((scenario, measure))
             out += [f"### {measure} ({mine[0]['unit']})", ""]
-            if measure == "swap":
+            if measure == "scale":
+                out += scale_section(mine, summary, [j for j in joins if j["scenario"] == scenario])
+                if summary and summary.get("advice"):
+                    out += [f"**INVALID: {summary['invalid']}.** {summary['advice']}.", ""]
+            elif measure == "swap":
                 out += [swap_section(mine), ""]
             else:
                 out += [table(step_rows(mine), HEADER), ""]
@@ -138,8 +193,8 @@ def report(directory):
                 out += [table(pairs, ["cost per unit", "value"]), ""] if pairs else ["No approved step: the first step already failed or was invalid.", ""]
                 rows = admission_rows(mine, summary)
                 out += [table(rows, ADMISSION_HEADER), ""] if rows else []
-            if summary:
-                stop = summary.get("stopped_by") or summary.get("invalid") or ("ceiling reached without a failure" if summary.get("ceiling_reached") else "none")
+            if summary and measure != "scale":
+                stop =summary.get("stopped_by") or summary.get("invalid") or ("ceiling reached without a failure" if summary.get("ceiling_reached") else "none")
                 out += [f"Ramp stopped by: **{stop}**" + (f" (invalid: {summary['invalid']})" if summary.get("invalid") and summary.get("stopped_by") else "")
                         + ("; the round ended there: the node stopped" if summary.get("node_stopped") else "")
                         + (f"; confirmation repeat: {'passed' if summary.get('confirmed') else 'failed'}" if summary.get("confirmed") is not None else ""), ""]
