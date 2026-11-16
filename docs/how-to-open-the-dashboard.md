@@ -69,8 +69,11 @@ shows is in [screens.md](screens.md).
    ```
 
 3. Move between the pages with the menu: Workers, Deployments, Routes, Cells,
-   Alarms and Jobs are Atanor's, and Metrics charts its telemetry events. The other
-   pages are LiveDashboard's own. On a cluster, the "Selected node" menu picks
+   Alarms and Jobs are Atanor's, and Metrics charts its telemetry events. Home,
+   Memory Allocators and Applications are LiveDashboard's own. The dashboard
+   does not serve its Processes, Ports, Sockets, ETS and OS Data pages, nor the
+   detail of a process: a menu entry is hidden and its address redirects to the
+   home page. On a cluster, the "Selected node" menu picks
    the node whose routes and cells you see. "Update every" sets the refresh.
 
 4. Open Metrics while the node serves traffic. The charts start when you open

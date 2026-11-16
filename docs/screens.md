@@ -3,8 +3,10 @@
 The dashboard is a Phoenix LiveDashboard with six pages of Atanor's and its
 Metrics page. It is read-only. To open it, see
 [how-to-open-the-dashboard.md](how-to-open-the-dashboard.md). The other menu
-entries (Home, OS Data, Memory Allocators, Applications, Processes, Ports,
-Sockets, ETS) are LiveDashboard's own and describe the BEAM node.
+entries (Home, Memory Allocators, Applications) are LiveDashboard's own and
+describe the BEAM node. The Processes, Ports, Sockets, ETS and OS Data pages,
+and the detail view of a process, port or table, are not served: they show
+process state and node internals that can hold secrets.
 
 The images come from a node with synthetic workers, cells, alarms, jobs and traffic.
 `mise run docs:dashboard-screenshots` regenerates them: it runs

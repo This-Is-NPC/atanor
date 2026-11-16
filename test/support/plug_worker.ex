@@ -14,6 +14,8 @@ defmodule Atanor.Test.PlugWorker do
   @impl Plug
   def call(%{request_path: "/boom"}, _opts), do: raise("secret internals")
 
+  def call(%{request_path: "/unsent"} = conn, _opts), do: conn
+
   def call(conn, _opts) do
     env = conn.private[:atanor]
     {:ok, body, conn} = read_body(conn)
