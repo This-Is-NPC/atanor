@@ -4583,6 +4583,9 @@ its transaction (`Jobs.enqueue_direct/4`, `Jobs.enqueue/3`, `Env.enqueue/3`) the
 deleted after the commit, and when the caller owns it (`Jobs.enqueue/5` in a
 worker's `Env.transaction`) there is no after-commit point to run the delete
 (`Alambique.Tx` has no commit hook), so that entry expires after `alarms.timeout_ms`.
+An enqueue or a rearm that finds the row's wake overdue by more than `alarms.timeout_ms` checks the
+entry with one `HEAD` and puts it back when it is missing (a bucket copied while the node
+ran holds cells and index from different moments); a wake that is not overdue costs no request.
 A finish and a scan that both move the row at once leave the entry of the loser;
 the loser deletes it, since the winner's row names the winner's nonce. The
 existing `alarms.clock` drives jobs, cron and alarms, so a `ManualClock` test

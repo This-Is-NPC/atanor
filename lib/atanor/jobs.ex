@@ -774,6 +774,8 @@ defmodule Atanor.Jobs do
         current
 
       true ->
+        {at, nonce} = current
+        heal_index(instance, config, id, Alarms.now(config), at, nonce)
         nil
     end
   end
@@ -803,6 +805,7 @@ defmodule Atanor.Jobs do
     {current_at, current_nonce} = current || {nil, nil}
     next = next_wake(tx, config, now, delay)
     expected = from || current_at
+    if from == nil, do: heal_index(instance, config, id, now, current_at, current_nonce)
 
     cond do
       next == current_at ->
@@ -846,6 +849,24 @@ defmodule Atanor.Jobs do
 
         {:moved, current_at, current_nonce, {next, nonce}, length(rows)}
     end
+  end
+
+  # A wake that is overdue by more than `alarms.timeout_ms` was not claimed: its entry is missing (a bucket
+  # copied while the node ran, the cell newer than the index) or the scheduler is behind. One `HEAD` tells,
+  # and only then; the entry is put back under the nonce the row names (design §12.13). A refused store
+  # call leaves it to the next rearm.
+  defp heal_index(_instance, _config, _id, _now, nil, _nonce), do: :ok
+
+  defp heal_index(instance, config, id, now, at, nonce) do
+    if at <= now - config.alarms.timeout_ms do
+      store = Store.handle(instance)
+      key = Alarms.index_key(at, @jobs_worker, id, config.alarms.shards, nonce)
+
+      if Store.head(store, key) == {:error, :not_found},
+        do: Alarms.put_index(store, config, at, @jobs_worker, id, nonce)
+    end
+
+    :ok
   end
 
   defp apply_rearm(instance, cell, result) do

@@ -98,6 +98,26 @@ defmodule Atanor.JobsTest do
     assert String.contains?(key, "/#{@start + 100_000}/")
   end
 
+  test "an overdue wake whose index object is missing is put back by the next enqueue" do
+    {node, world} = start()
+    store = Atanor.Store.handle(node.name)
+    assert %{status: 200} = enqueue(node, "a", payload: "first", at: @start + 100_000)
+
+    wake = fn ->
+      {:ok, keys, _} = Atanor.Store.list(store, "alarms/")
+      Enum.filter(keys, &String.contains?(&1, "/@jobs/"))
+    end
+
+    assert [key] = wake.()
+    # The copy of the bucket lacks the entry the cell's row names.
+    assert :ok = Atanor.Store.delete(store, key)
+
+    ManualClock.advance(world, 200_000)
+    assert %{status: 200} = enqueue(node, "a", payload: "second", at: @start + 500_000)
+
+    assert until(fn -> effects(node, "a") == ["first"] end, 30_000)
+  end
+
   defp no_wake?(node) do
     match?(
       {:ok, %{rows: []}},
