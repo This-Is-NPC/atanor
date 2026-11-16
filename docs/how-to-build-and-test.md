@@ -109,12 +109,16 @@ The jobs of the workflow, each a mise task:
 | Job | Runs |
 | --- | --- |
 | `static` | `check:compile` (test and dev with warnings as errors), `check:format`, `check:links`, `check:workflows` |
-| `test` | `mise run test`, the quick suite |
-| `native` | `mise run test:native`, the Rust unit tests |
-| `cluster` | `mise run test:cluster`, the tests on peer nodes |
-| `seaweedfs` | `mise run test:seaweedfs`, against a disposable SeaweedFS in Docker (the runner has Docker) |
-| `coverage` | `mise run test:coverage`: line coverage of `lib/` and the Rust crate, 90% per language |
+| `plan` | `scripts/ci-coverage-matrix`: lists the parts below from the two partition counts |
+| `part` (one job each) | `mise run test:coverage --no-report ...`: `native` (Rust unit tests), `seaweedfs` (against a disposable SeaweedFS in Docker; the runner has Docker), `unit-1` to `unit-U` (the quick suite) and `cluster-1` to `cluster-C` (the tests on peer nodes). Each part uploads its coverage as an artifact and fails only when a test fails |
+| `coverage` | downloads the artifacts and runs `mise run test:coverage --report-only`: merges them and fails below 90% line coverage of `lib/` or the Rust crate |
 | `ci` | waits for the others and fails unless all passed; the only check branch protection needs |
+
+Each test runs once, inside coverage, so CI has no separate `mise run test`,
+`test:cluster`, `test:native` or `test:seaweedfs` job. The unit and cluster
+suites are split with ExUnit partitions: every part gets a share of the test
+files (round-robin over the sorted file list), so the parts take about the same
+time. A failing part shows the test name and the seed in its log.
 
 The tools come from `mise.toml`. The caches of `deps`, `_build`, the cargo
 target and the cargo registry are keyed on `mise.toml`, `mix.lock`,
@@ -126,13 +130,25 @@ tune a run; each has a default:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `ATANOR_CI_TIMEOUT_STATIC`, `_TEST`, `_NATIVE`, `_CLUSTER`, `_SEAWEEDFS`, `_COVERAGE` | 20, 30, 30, 40, 30, 90 | Timeout of each job, in minutes. |
+| `ATANOR_CI_TIMEOUT_STATIC`, `_PART`, `_COVERAGE` | 20, 30, 15 | Timeout of each `static` job, each `part` job and the `coverage` job, in minutes. |
+| `ATANOR_CI_UNIT_PARTS` | `3` | Number of unit parts (ExUnit partitions). |
+| `ATANOR_CI_CLUSTER_PARTS` | `5` | Number of cluster parts. The cluster suite is the longest: raise this first when a run is slow. |
 | `ATANOR_TEST_MAX_CASES` | empty (ExUnit's default, twice the cores) | Test modules run at once; the same variable works locally. |
 | `ATANOR_COVERAGE_THRESHOLD` | `90` | Minimum line coverage per language, in percent. |
 
-What stays local, and why: the gate on the pull request needs no local run, so
-coverage, the cluster suite and SeaweedFS are run on demand only, for example
-`mise run test:coverage` to find what lowered the coverage. The benchmarks,
+To run one part on your machine, pass the same arguments the job does (the
+instrumented build takes a few minutes the first time):
+
+```sh
+mise run test:coverage --no-report --partition 2/5 cluster   # cluster-2 of 5
+mise run test:coverage --no-report native                    # the native part
+mise run test:coverage --report-only                         # merge what is in cover/
+```
+
+Coverage, the cluster suite and SeaweedFS also run locally on demand, for
+example `mise run test:coverage` (all of it, about 30 minutes) to find what
+lowered the coverage, or `mise run test:cluster` for the cluster tests alone.
+The benchmarks,
 the load tests, the container cluster, the image smoke tests and the lab are
 never in CI: they measure a machine or need KVM, libvirt or privileged
 containers.

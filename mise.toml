@@ -52,8 +52,12 @@ description = "Run the Rust unit tests of the WASM crate"
 run = "scripts/test-native"
 
 [tasks."test:coverage"]
-description = "Measure line coverage of lib/ and the Rust crate over the unit, cluster, native and SeaweedFS runs; fails below 90% per language (about 30 minutes; see scripts/test-coverage for stages and ATANOR_COVERAGE_* settings)"
+description = "Measure line coverage of lib/ and the Rust crate over the unit, cluster, native and SeaweedFS runs; fails below 90% per language (about 30 minutes; see scripts/test-coverage for stages, --partition, --no-report, --report-only and ATANOR_COVERAGE_* settings)"
 run = "scripts/test-coverage"
+
+[tasks."ci:coverage-matrix"]
+description = "Print the coverage parts of CI as a JSON job matrix (arguments: unit partitions, cluster partitions)"
+run = "scripts/ci-coverage-matrix"
 
 [tasks."bench:wasm"]
 description = "Measure compile, instantiation and requests per second of WASM workers (argument: seconds per case)"

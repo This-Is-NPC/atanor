@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Print the coverage parts of CI as the JSON matrix of a workflow job:
+#
+#   scripts/ci-coverage-matrix UNIT_PARTS CLUSTER_PARTS
+#
+# One entry per part: name (artifact and job label), stage, partition ("N/TOTAL", empty for a stage that is not split).
+# The native and seaweedfs stages run whole; unit and cluster split into the given number of ExUnit partitions.
+set -euo pipefail
+
+unit=${1:?unit partitions} cluster=${2:?cluster partitions}
+for n in "$unit" "$cluster"; do
+  [[ $n =~ ^[1-9][0-9]*$ ]] || { echo "partitions must be a positive integer: $n" >&2; exit 2; }
+done
+
+entries=('{"name":"native","stage":"native","partition":""}' '{"name":"seaweedfs","stage":"seaweedfs","partition":""}')
+for stage in unit cluster; do
+  total=$unit
+  [ "$stage" = unit ] || total=$cluster
+  for ((i = 1; i <= total; i++)); do
+    entries+=("{\"name\":\"$stage-$i\",\"stage\":\"$stage\",\"partition\":\"$i/$total\"}")
+  done
+done
+
+(IFS=,; echo "{\"include\":[${entries[*]}]}")
