@@ -217,8 +217,8 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    `GET /runtime` shows what this node's memory is made of: the VM memory by type,
    the biggest ETS tables and processes (by message queue and by memory), the cgroup
    counters (`memory.current`, `memory.stat`, `oom_kill`), the Wasm gauges and the
-   admission counters (`admission`: requests in flight, refusals by reason (`memory`, `disk`,
-   `in_flight`), the last working set, the disk use of `data_dir` against its budget,
+   admission counters (`admission`: requests in flight, refusals by reason (`refused`: `memory`, `disk`,
+   `in_flight`, `queue_timeout`, `worker_queue` and `nested_calls`), the last working set, the disk use of `data_dir` against its budget,
    and whether the node is refusing, see
    [configuration](configuration.md)) and `store`, the circuit breaker of
    each store location as in `/health`. A
