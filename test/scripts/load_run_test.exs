@@ -123,7 +123,8 @@ defmodule Atanor.LoadRunTest do
              "valid" => true,
              "stop_reason" => :null,
              "service_max_mb" => 600.0,
-             "limit_mb" => 512.0
+             "limit_mb" => 512.0,
+             "refused" => 30
            }
 
     # the swap runs through load-env; the status of the measure: 1 for an invalid step and for a swap that did not pass
@@ -267,6 +268,20 @@ defmodule Atanor.LoadRunTest do
     assert twice["summary"]["invalid"] =~ "stall: generator lag p99 300 ms"
     assert twice["first"]["valid"] == false
     assert twice["first"]["first_attempt"]["stop_reason"] =~ "lag p99 242 ms"
+
+    # 503s over 1% of the answers fail a step (a criterion, not INVALID); 0.5% and exactly 1% pass; the useful rate leaves the 503s out
+    refused = r["refused"]
+
+    assert %{"status" => "fail", "valid" => true, "stop_reason" => "refused 2.0% > 1%", "useful_rate" => 196.0} =
+             refused["two_pct"]
+
+    assert refused["two_pct_no_retry"]["status"] == "fail"
+    assert refused["two_pct_no_retry"]["stop_reason"] =~ "refused 2.0% > 1%"
+    assert %{"status" => "ok", "stop_reason" => :null, "useful_rate" => 199.0} = refused["half_pct"]
+    assert %{"status" => "ok", "stop_reason" => :null, "useful_rate" => 198.0} = refused["one_pct"]
+
+    # the swap keeps accepting 503 with Retry-After
+    assert r["swap"]["refused"] == 30
 
     # a step that starts with a dead node is invalid, runs no generator and ends the round
     start = r["dead_at_start"]

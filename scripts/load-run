@@ -5,11 +5,11 @@
                    [--refine K] [--write-ratio W] [--cells N] [--rate R] ...   (every option: --help)
 
 MEASURE is one of
-  http-native  requests per second to the native worker, reads and writes in cells      (stop: p99, 5xx, errors)
-  http-wasm    the same to the plain WASM worker, the twin of the native one (examples/load-plain)  (stop: p99, 5xx, errors)
-  http-wasm-jobs  the same to the scoreboard, a WASM app that runs a ranking job per write   (stop: p99, 5xx, errors)
-  ws           open idle WebSocket connections with sparse messages                      (stop: memory, fds)
-  cells        cells kept hot at the same time                                           (stop: memory, p99)
+  http-native  requests per second to the native worker, reads and writes in cells      (stop: p99, 5xx, refused, errors)
+  http-wasm    the same to the plain WASM worker, the twin of the native one (examples/load-plain)  (stop: p99, 5xx, refused, errors)
+  http-wasm-jobs  the same to the scoreboard, a WASM app that runs a ranking job per write   (stop: p99, 5xx, refused, errors)
+  ws           open idle WebSocket connections with sparse messages                      (stop: memory, fds, refused)
+  cells        cells kept hot at the same time                                           (stop: memory, p99, refused)
   swap         replace the node by another under load at the last approved http-wasm-jobs rate (stop: loss, duplication, errors)
 
 A step runs the generator (scripts/load-gen, one process per ~600 req/s) for --step-s seconds, samples the
@@ -813,9 +813,14 @@ class Round:
         record["planned"] = merged["planned"]
         record["achieved"] = merged.get("opened", merged["completed"])
         record["achieved_ratio"] = round(record["achieved"] / merged["planned"], 3) if merged["planned"] else None
+        answers = sum(merged["statuses"].values())
+        refused = merged["statuses"].get("503 retry-after", 0) + merged["statuses"].get("503 no retry-after", 0)
         if a.measure != "ws":
             record["achieved_rate"] = round(merged["completed"] / a.step_s, 1)
+            record["useful_rate"] = round((answers - refused) / a.step_s, 1)  # answers that were not refused
         criteria = [dead] if dead else []
+        if answers and refused * 100 / answers > a.max_refused_pct:  # a refusal is an answer, but the capacity it measures is not served
+            criteria.append(f"refused {refused * 100 / answers:.1f}% > {a.max_refused_pct:g}%")
         p99 = record["latency_ms"]["p99"]
         if a.measure != "ws" and p99 is not None and p99 > a.p99_ms:
             criteria.append(f"p99 {p99} ms > {a.p99_ms:g} ms")
@@ -1012,7 +1017,8 @@ def main():
     add("--steps", help="explicit values, comma separated; replaces --start/--factor/--max")
     add("--refine", type=int, default=env("REFINE", 3, int), help="bisections between the last good and the failing step (ATANOR_LOAD_REFINE, 3)")
     add("--p99-ms", type=float, default=env("P99_MS", 250), help="p99 above this fails a step (ATANOR_LOAD_P99_MS, 250)")
-    add("--memory-pct", type=float, default=env("MEMORY_PCT", 90), help="working set (memory.current - inactive_file, as the node measures it) at this share of the scenario memory fails ws and cells steps (ATANOR_LOAD_MEMORY_PCT, 90)")
+    add("--max-refused-pct", type=float, default=env("MAX_REFUSED_PCT", 1), help="503 answers (with or without Retry-After) above this share of all answers fail a step of every measure but swap (ATANOR_LOAD_MAX_REFUSED_PCT, 1)")
+    add("--memory-pct",type=float, default=env("MEMORY_PCT", 90), help="working set (memory.current - inactive_file, as the node measures it) at this share of the scenario memory fails ws and cells steps (ATANOR_LOAD_MEMORY_PCT, 90)")
     add("--fd-pct", type=float, default=env("FD_PCT", 90), help="open descriptors at this share of the limit fail a ws step (ATANOR_LOAD_FD_PCT, 90)")
     add("--delivery", type=float, default=env("DELIVERY", 0.95), help="achieved/planned below this makes a step INVALID (ATANOR_LOAD_DELIVERY, 0.95)")
     add("--host-load-max", type=float, default=env("HOST_LOAD_MAX", 1), help="net host load (busy cores minus the test's own): a step waits until it stays below this for --quiet-window, and a step whose mean exceeds it is INVALID and stops the round (ATANOR_LOAD_HOST_LOAD_MAX, 1)")
