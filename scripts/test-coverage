@@ -88,12 +88,16 @@ if [ $report_only -eq 0 ]; then
   trap cleanup EXIT
   rm -rf "$MIX_BUILD_PATH/lib/atanor"
   [ "$parts" -eq 0 ] || export MIX_TEST_PARTITION=$part
+  # ExUnit deals the sorted files round-robin over the partitions. Dealing only test/cluster keeps the slow
+  # files apart (all of test/ would shift them whenever any test is added); files after -- replace the directory.
+  cluster_paths=()
+  [ ${#mix_args[@]} -gt 0 ] || cluster_paths=(test/cluster)
   for stage in "${stages[@]}"; do
     echo "== stage $stage"
     case $stage in
       native) scripts/test-native ;;
       unit) mise run test --cover --export-coverage "unit$suffix-$stamp" ${partition_args[@]+"${partition_args[@]}"} "${mix_args[@]}" ;;
-      cluster) mise run test:cluster --cover --export-coverage "cluster$suffix-$stamp" ${partition_args[@]+"${partition_args[@]}"} "${mix_args[@]}" ;;
+      cluster) mise run test:cluster --cover --export-coverage "cluster$suffix-$stamp" ${partition_args[@]+"${partition_args[@]}"} ${cluster_paths[@]+"${cluster_paths[@]}"} "${mix_args[@]}" ;;
       seaweedfs) mise run test:seaweedfs --cover --export-coverage "seaweedfs-$stamp" "${mix_args[@]}" ;;
     esac
   done

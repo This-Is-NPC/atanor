@@ -71,9 +71,9 @@ jobs:
       - name: List the parts
         id: matrix
         env:
-          # Variables ATANOR_CI_UNIT_PARTS (default 3) and ATANOR_CI_CLUSTER_PARTS (default 5).
+          # Variables ATANOR_CI_UNIT_PARTS (default 3) and ATANOR_CI_CLUSTER_PARTS (default 6).
           UNIT_PARTS: ${{ vars.ATANOR_CI_UNIT_PARTS || '3' }}
-          CLUSTER_PARTS: ${{ vars.ATANOR_CI_CLUSTER_PARTS || '5' }}
+          CLUSTER_PARTS: ${{ vars.ATANOR_CI_CLUSTER_PARTS || '6' }}
         run: echo "matrix=$(scripts/ci-coverage-matrix "$UNIT_PARTS" "$CLUSTER_PARTS")" >> "$GITHUB_OUTPUT"
 
   # One part of the suite, with coverage on. A part fails only when a test fails (the log has the test
