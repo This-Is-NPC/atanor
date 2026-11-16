@@ -194,7 +194,8 @@ defmodule Atanor.HTTP do
   # A call that the node refused after admitting the request: the reason names the gate (`Atanor.Unavailable.cause/1`).
   defp failure(conn, :overloaded, config) do
     cause = Cell.overload_cause() || :overloaded
-    if cause in [:queue_timeout, :worker_queue, :nested_calls], do: Admission.refuse_call(config.name, cause)
+    # `wake_gate` is counted where the wake is refused, once per call (`Atanor.Cell`).
+    if cause in Admission.call_causes() and cause != :wake_gate, do: Admission.refuse_call(config.name, cause)
 
     :telemetry.execute([:atanor, :http, :reject], %{count: 1}, %{
       reason: cause,

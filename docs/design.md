@@ -888,7 +888,7 @@ A node that restores big cells and has the room can raise them, for example
 limit also has the second guard of §7.1: while the memory gate refuses, a cell
 call that would wake a cell (`Atanor.Cell`: no member of the instance holds it
 awake, `Alambique.owner/3` with `peers: true` is `:none`) is a 503 `overloaded` with `Retry-After`
-and starts no wake, and `Atanor.Admission.stats/1` counts them as `wake_refused`.
+and starts no wake, and `Atanor.Admission.stats/1` counts them as `refused.wake_gate`, next to the other reasons of 503 `overloaded`.
 An admin call (hibernate, move) is not gated, so the node can still shed cells.
 `owner/3` with `peers: true` asks the registries of the members, never the store
 (a store that fails is how the node got here) and never wakes a cell, so a cell

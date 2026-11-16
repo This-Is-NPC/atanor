@@ -67,7 +67,11 @@ defmodule Atanor.AdmissionTest do
                in_flight: 180,
                queue_timeout: 0,
                worker_queue: 0,
-               nested_calls: 0
+               nested_calls: 0,
+               wake_gate: 0,
+               awake_limit: 0,
+               busy: 0,
+               disk_full: 0
              }
 
       Enum.each(handlers, &send(&1, :go))
@@ -99,6 +103,21 @@ defmodule Atanor.AdmissionTest do
 
       send(handler, :go)
       assert {200, _, _} = Task.await(task)
+    end
+
+    test "every cause of a 503 overloaded has its own counter under refused" do
+      node = start(workers: [probe()])
+
+      assert Enum.sort(Admission.call_causes()) ==
+               Enum.sort(~w(wake_gate queue_timeout worker_queue nested_calls awake_limit busy disk_full)a)
+
+      for cause <- Admission.call_causes() do
+        assert Admission.stats(node.name).refused[cause] == 0
+        assert :ok = Admission.refuse_call(node.name, cause)
+        assert Admission.stats(node.name).refused[cause] == 1
+      end
+
+      refute Map.has_key?(Admission.stats(node.name), :wake_refused)
     end
 
     test "a handler that is killed gives its slot back" do

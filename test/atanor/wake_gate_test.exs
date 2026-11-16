@@ -43,7 +43,7 @@ defmodule Atanor.WakeGateTest do
     assert Cell.overload_cause() == :wake_gate
     assert {:error, {:unavailable, :overloaded}} = Cell.query(node.name, cold, "SELECT 1")
     assert {:error, {:unavailable, :overloaded}} = Cell.owner(node.name, cold)
-    assert Admission.stats(node.name).wake_refused == 3
+    assert Admission.stats(node.name).refused.wake_gate == 3
     assert Atanor.Overview.cells_count(node.name).count == 1
 
     # An admin call is how a node sheds cells: it is not gated.

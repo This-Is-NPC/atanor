@@ -36,7 +36,7 @@ curl -s -H "authorization: Bearer $TOKEN" $ADMIN/runtime | jq -c '.admission, .s
 ```
 
 ```text
-{"refused":{"memory":0,"disk":0,"in_flight":0,"nested_calls":0,"queue_timeout":0,"worker_queue":0},"max_in_flight":1024,"disk_refusing":false,"in_flight":0,"refusing":false,"disk_budget_bytes":19899324825,"disk_used_bytes":375776,"limit_bytes":null,"refuse_at_bytes":false,"wake_refused":0,"working_set_bytes":null}
+{"refused":{"memory":0,"disk":0,"in_flight":0,"nested_calls":0,"queue_timeout":0,"worker_queue":0,"wake_gate":0,"awake_limit":0,"busy":0,"disk_full":0},"max_in_flight":1024,"disk_refusing":false,"in_flight":0,"refusing":false,"disk_budget_bytes":19899324825,"disk_used_bytes":375776,"limit_bytes":null,"refuse_at_bytes":false,"working_set_bytes":null}
 {"default":{"state":"closed","failures":0,"since_ms":1794809749751}}
 ```
 
@@ -53,7 +53,7 @@ curl -s -H "authorization: Bearer $TOKEN" $ADMIN/runtime | jq -c '.admission, .s
 | `/runtime` `.admission.disk_used_bytes` / `.disk_budget_bytes` | 0.7 for 5 minutes, 0.9 at once | At 0.7 the node starts to hibernate idle cells to free the disk; at 0.95 it refuses every request ([design §4.4](design.md#44-the-disk-budget)). |
 | `/runtime` `.admission.disk_refusing` | `true` | The disk gate is closed. |
 | `/runtime` `.admission.in_flight` / `.max_in_flight` | 0.7 for 5 minutes | At 1,024 requests at once the node refuses with `in_flight`. A high value with a low CPU means requests wait for the store or a cell. |
-| `/runtime` `.admission.refused.*` | Any increase of `memory`, `disk` or `in_flight`; a rate above 1% of requests for `queue_timeout`, `worker_queue`, `nested_calls` | Each counter is one reason of 503 `overloaded`. They count since the node started: alert on the rate. |
+| `/runtime` `.admission.refused.*` | Any increase of `memory`, `disk` or `in_flight`; a rate above 1% of requests for `wake_gate`, `awake_limit`, `busy`, `disk_full`, `queue_timeout`, `worker_queue`, `nested_calls` | Each counter is one reason of 503 `overloaded`, and every such 503 is in one of them. They count since the node started: alert on the rate. |
 | `/runtime` `.cgroup.events.oom_kill` | Any increase | The kernel killed a process of the container. |
 | `/runtime` `.cgroup.memory_current` / `.memory_max` | 0.9 | `memory_current` includes the page cache; the gate uses the working set, so this is the late warning. `memory_max` is `null` without a limit. |
 | `/runtime` `.top_message_queue[0].message_queue_len` | 10,000 | A process that cannot keep up. `.top_message_queue[0].name` names it. |
