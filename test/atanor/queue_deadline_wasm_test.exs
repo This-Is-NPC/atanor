@@ -15,25 +15,36 @@ defmodule Atanor.QueueDeadlineWasmTest do
   test "calls queued behind spinning guests are refused at the deadline" do
     # The pool has 4 threads (test_helper) and each spinner holds one for the 300 ms of its CPU limit.
     node = start([{"spin", "spin", limits: %{"timeout_ms" => 3000}}], http: [queue_wait_ms: 100])
-    capture([[:atanor, :http, :reject]])
+    capture([[:atanor, :http, :reject], [:atanor, :wasm, :invoke]])
 
     responses =
       1..@spinners
-      |> Enum.map(fn _ -> Task.async(fn -> timed(fn -> request(node, "spin") end) end) end)
+      |> Enum.map(fn _ -> Task.async(fn -> request(node, "spin") end) end)
       |> Task.await_many(30_000)
 
-    queue_timeouts =
-      for {%{status: 503, body: %{"reason" => "queue_timeout"}}, ms} <- responses, do: ms
+    queue_timeouts = for %{status: 503, body: %{"reason" => "queue_timeout"}} <- responses, do: :queue_timeout
 
-    assert length(queue_timeouts) >= 4, inspect(for {r, ms} <- responses, do: {r.status, ms})
-    # They gave up at the deadline, not when a thread came free after the 300 ms of the spinners.
-    assert Enum.all?(queue_timeouts, &(&1 < 280)), inspect(queue_timeouts)
+    assert length(queue_timeouts) >= 4, inspect(for r <- responses, do: r.status)
+
+    # The node times each call from its admission to its result, so a slow client or connection does not
+    # count. A call gave up at the deadline if it ended before any spinner released its thread.
+    calls = invoked()
+    {refused, ran} = Enum.split_with(calls, &(&1.result == :overloaded))
+    assert length(refused) == length(queue_timeouts), inspect(calls)
+    assert ran != []
+    assert Enum.max(Enum.map(refused, & &1.duration)) < Enum.min(Enum.map(ran, & &1.duration)), inspect(calls)
+
     assert_receive {:telemetry, [:atanor, :http, :reject], _, %{reason: :queue_timeout}}
     assert Admission.stats(node.name).refused.queue_timeout == length(queue_timeouts)
   end
 
-  defp timed(fun) do
-    {us, response} = :timer.tc(fun)
-    {response, div(us, 1000)}
+  # The calls the node ended, as their result and duration. Each ends before its response is sent.
+  defp invoked(calls \\ []) do
+    receive do
+      {:telemetry, [:atanor, :wasm, :invoke], %{duration: duration}, %{result: result}} ->
+        invoked([%{result: result, duration: duration} | calls])
+    after
+      0 -> calls
+    end
   end
 end
