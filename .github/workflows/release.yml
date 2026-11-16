@@ -204,3 +204,20 @@ jobs:
       - name: Attach them to the GitHub Release
         working-directory: ${{ runner.temp }}/tarballs
         run: gh release upload "$TAG" ./*.tar.gz ./*.tar.gz.sha256 --clobber --repo "$GITHUB_REPOSITORY"
+
+  # A pushed package is private until its owner makes it public; a private one answers "denied" to users.
+  check-public:
+    needs: [release-please, manifest]
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      VERSION: ${{ needs.release-please.outputs.version }}
+    steps:
+      - name: Pull the image anonymously
+        run: |
+          DOCKER_CONFIG="$(mktemp -d)"
+          export DOCKER_CONFIG
+          if ! docker pull "${IMAGE}:${VERSION}"; then
+            echo "::error::Anonymous pull of ${IMAGE}:${VERSION} was denied: the package must be public (Package settings -> Change visibility), then re-run this job."
+            exit 1
+          fi
