@@ -1,8 +1,10 @@
 name: CI
 
-# The merge gate. It runs what `mise run check` runs, plus the cluster, SeaweedFS and coverage runs
-# (docs/how-to-build-and-test.md). Every step calls a mise task, so a run on a laptop and a run here
-# are the same code. Branch protection needs one check, `ci`, which waits for the other jobs.
+# The merge gate. It runs what `mise run check` runs, plus the cluster, SeaweedFS and Rust suites, and
+# every test runs once, inside coverage: the suites are split into parts that run in parallel, each part
+# uploads its coverage, and the `coverage` job merges them and checks the threshold
+# (docs/how-to-build-and-test.md). Every step calls a mise task or a script, so a run on a laptop and a
+# run here are the same code. Branch protection needs one check, `ci`, which waits for the other jobs.
 
 on:
   pull_request:
@@ -48,75 +50,66 @@ jobs:
       - name: Workflows
         run: mise run check:workflows
 
-  test:
-    name: test
+  # Lists the coverage parts: native, seaweedfs, and the unit and cluster suites split into ExUnit partitions.
+  plan:
+    name: plan
     runs-on: ubuntu-latest
-    # Variable ATANOR_CI_TIMEOUT_TEST, default 30.
-    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_TEST || '30') }}
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup
-        with:
-          cache-name: test
-      - name: Quick suite
-        run: mise run test
+      # The script needs no tools, so this job skips the mise setup (the task ci:coverage-matrix runs the same script).
+      - name: List the parts
+        id: matrix
+        env:
+          # Variables ATANOR_CI_UNIT_PARTS (default 3) and ATANOR_CI_CLUSTER_PARTS (default 5).
+          UNIT_PARTS: ${{ vars.ATANOR_CI_UNIT_PARTS || '3' }}
+          CLUSTER_PARTS: ${{ vars.ATANOR_CI_CLUSTER_PARTS || '5' }}
+        run: echo "matrix=$(scripts/ci-coverage-matrix "$UNIT_PARTS" "$CLUSTER_PARTS")" >> "$GITHUB_OUTPUT"
 
-  native:
-    name: native
+  # One part of the suite, with coverage on. A part fails only when a test fails (the log has the test
+  # name and the seed); the threshold is checked by the coverage job.
+  part:
+    name: ${{ matrix.name }}
+    needs: plan
     runs-on: ubuntu-latest
-    # Variable ATANOR_CI_TIMEOUT_NATIVE, default 30.
-    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_NATIVE || '30') }}
+    # Variable ATANOR_CI_TIMEOUT_PART, default 30.
+    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_PART || '30') }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # One cache name for every part: they all build the same instrumented tree.
       - uses: ./.github/actions/setup
         with:
-          cache-name: native
-      - name: Rust unit tests
-        run: mise run test:native
+          cache-name: coverage
+      # The runner has Docker; the seaweedfs stage starts its disposable container and removes it when it ends.
+      - name: Tests with coverage (${{ matrix.name }})
+        env:
+          STAGE: ${{ matrix.stage }}
+          PARTITION: ${{ matrix.partition }}
+        run: mise run test:coverage --no-report ${PARTITION:+--partition "$PARTITION"} "$STAGE"
+      - name: Upload the coverage of the part
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-${{ matrix.name }}
+          path: cover
+          if-no-files-found: error
+          retention-days: 1
 
-  cluster:
-    name: cluster
-    runs-on: ubuntu-latest
-    # Variable ATANOR_CI_TIMEOUT_CLUSTER, default 40.
-    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_CLUSTER || '40') }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup
-        with:
-          cache-name: cluster
-      - name: Cluster suite
-        run: mise run test:cluster
-
-  seaweedfs:
-    name: seaweedfs
-    runs-on: ubuntu-latest
-    # Variable ATANOR_CI_TIMEOUT_SEAWEEDFS, default 30.
-    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_SEAWEEDFS || '30') }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup
-        with:
-          cache-name: seaweedfs
-      # The runner has Docker; the task starts the disposable container.
-      - name: Tests against SeaweedFS
-        run: mise run test:seaweedfs
-      - name: Remove the SeaweedFS container
-        if: always()
-        run: mise run seaweedfs:down
-
+  # Merges the coverage of every part and checks the threshold per language. It runs no test.
   coverage:
     name: coverage
+    needs: part
     runs-on: ubuntu-latest
-    # Variable ATANOR_CI_TIMEOUT_COVERAGE, default 90 (about 30 minutes on a quiet laptop).
-    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_COVERAGE || '90') }}
+    # Variable ATANOR_CI_TIMEOUT_COVERAGE, default 15.
+    timeout-minutes: ${{ fromJSON(vars.ATANOR_CI_TIMEOUT_COVERAGE || '15') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -124,13 +117,19 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-name: coverage
+      - name: Download the coverage of the parts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-*
+          path: cover
+          merge-multiple: true
       - name: Line coverage of lib/ and the Rust crate
-        run: mise run test:coverage
+        run: mise run test:coverage --report-only
 
   # The required check: it fails unless every job above passed (a skipped or cancelled one fails it).
   ci:
     name: ci
-    needs: [static, test, native, cluster, seaweedfs, coverage]
+    needs: [static, plan, part, coverage]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

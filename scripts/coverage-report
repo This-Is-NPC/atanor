@@ -1,7 +1,7 @@
 #!/usr/bin/env -S mix run --no-start --no-compile --no-deps-check
 # Print a coverage table sorted by coverage (largest gap first on ties) and exit 1 below the threshold.
 #   coverage-report elixir DIR THRESHOLD   merges DIR/*.coverdata; ignores the test_coverage ignore_modules of mix.exs
-#   coverage-report rust JSON THRESHOLD    reads `cargo llvm-cov report --json`
+#   coverage-report rust DIR THRESHOLD     merges DIR/rust-*.lcov (`cargo llvm-cov report --lcov`)
 defmodule CoverageReport do
   def main(["elixir", dir, threshold]) do
     ignore = Mix.Project.config()[:test_coverage][:ignore_modules] || []
@@ -24,21 +24,54 @@ defmodule CoverageReport do
     report("Elixir (lib/)", "module", rows, threshold)
   end
 
-  def main(["rust", json, threshold]) do
-    [%{"files" => files}] = json |> File.read!() |> :json.decode() |> Map.fetch!("data")
+  def main(["rust", dir, threshold]) do
     root = File.cwd!() <> "/"
 
+    # A line is covered when any export ran it; a line one export does not list (test-only code) counts as it is in the others.
+    lines =
+      for file <- Path.wildcard(Path.join(dir, "rust-*.lcov")),
+          record <- file |> File.read!() |> String.split("\nend_of_record", trim: true),
+          reduce: %{} do
+        acc -> merge_record(acc, record)
+      end
+
     rows =
-      for %{"filename" => name, "summary" => %{"lines" => %{"count" => count, "covered" => covered}}} <- files,
-          do: {String.replace_prefix(name, root, ""), covered, count - covered}
+      for {name, hits} <- lines do
+        covered = Enum.count(hits, fn {_, n} -> n > 0 end)
+        {String.replace_prefix(name, root, ""), covered, map_size(hits) - covered}
+      end
 
     report("Rust (native/atanor_wasm)", "file", rows, threshold)
+  end
+
+  defp merge_record(acc, record) do
+    record
+    |> String.split("\n", trim: true)
+    |> Enum.reduce({nil, acc}, fn
+      "SF:" <> name, {_, acc} ->
+        {name, acc}
+
+      "DA:" <> da, {name, acc} when name != nil ->
+        [line, count | _] = String.split(da, ",")
+        {line, count} = {String.to_integer(line), String.to_integer(count)}
+        {name, Map.update(acc, name, %{line => count}, &Map.update(&1, line, count, fn old -> max(old, count) end))}
+
+      _other, state ->
+        state
+    end)
+    |> elem(1)
   end
 
   defp ignored?(mod, ignore), do: Enum.any?(ignore, &(if(is_struct(&1, Regex), do: Regex.match?(&1, inspect(mod)), else: mod == &1)))
 
   defp report(title, label, rows, threshold) do
     {threshold, _} = Float.parse(threshold)
+
+    if rows == [] do
+      IO.puts("FAIL #{title}: no coverage data found")
+      System.halt(1)
+    end
+
     rows = Enum.sort_by(rows, fn {name, cov, not_cov} -> {pct(cov, not_cov), -not_cov, name} end)
     width = rows |> Enum.map(&(&1 |> elem(0) |> String.length())) |> Enum.max(fn -> 10 end) |> max(String.length(label))
 

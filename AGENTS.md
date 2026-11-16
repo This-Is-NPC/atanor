@@ -49,10 +49,11 @@ request.
   (warnings as errors, formatting, docs links, quick suite). The pre-push hook
   runs only the fast checks (`mise run check:fast`); see
   `docs/how-to-build-and-test.md`.
-- Coverage (`mise run test:coverage`, line coverage of `lib/` and the Rust
-  crate, fails below 90% per language) runs in CI. Run it locally only when
-  needed to investigate a drop (about 30 minutes; stages in
-  `scripts/test-coverage`).
+- CI runs each test once, inside coverage, in parallel parts that a last job
+  merges (line coverage of `lib/` and the Rust crate, fails below 90% per
+  language). Run `mise run test:coverage` locally only when needed to
+  investigate a drop (about 30 minutes; stages, `--partition` and
+  `--report-only` in `scripts/test-coverage`).
 - Batch related edits before running checks. Repeat checks when new changes,
   failures, or unresolved concerns justify another run.
 - Tests wait for observable state, output, or signals. Timeouts bound failure.

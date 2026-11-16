@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # Measure test coverage of the production code: Elixir (lib/) and Rust (native/atanor_wasm).
 #
-#   scripts/test-coverage [--keep] [--report-only] [STAGE...] [-- MIX_TEST_ARGS...]
+#   scripts/test-coverage [--keep] [--report-only] [--no-report] [--partition N/TOTAL] [STAGE...] [-- MIX_TEST_ARGS...]
 #
-# STAGE is native, unit, cluster or seaweedfs (default: all). Each stage exports its results; the report merges
-# everything collected so far. Data is cleared first unless --keep or --report-only is given, so a long stage can be
-# run in parts (--keep cluster -- test/cluster/a_test.exs). Arguments after -- go to `mix test` in the stages run.
+# STAGE is native, unit, cluster or seaweedfs (default: all). Each stage exports its results (Elixir coverdata and a
+# Rust lcov file in cover/); the report merges every export in cover/. Data is cleared first unless --keep or
+# --report-only is given, so a long stage can be run in parts (--keep cluster -- test/cluster/a_test.exs).
+# Arguments after -- go to `mix test` in the stages run.
+#
+# CI runs each part on its own runner and merges them in a last job:
+#   --partition N/TOTAL  run the N-th of TOTAL ExUnit partitions (1-based) of the unit and cluster stages
+#   --no-report          export only: no report and no threshold, so a part never fails on coverage alone
+#   --report-only        report on the exports found in cover/ (downloaded artifacts); runs no test and needs no Rust
 #
 # The Elixir runs use `mix test --cover`, and the Rust library is built instrumented (cargo-llvm-cov) in a separate
 # build path and target directory, so the Rust lines run by the Elixir WASM tests and by peer nodes count too.
@@ -23,11 +29,17 @@ root=$PWD
 crate=$root/native/atanor_wasm
 
 threshold=${ATANOR_COVERAGE_THRESHOLD:-90}
-keep=0 report_only=0 stages=() mix_args=()
+keep=0 report_only=0 no_report=0 part=1 parts=0 stages=() mix_args=()
 while [ $# -gt 0 ]; do
   case $1 in
     --keep) keep=1 ;;
     --report-only) report_only=1 ;;
+    --no-report) no_report=1 ;;
+    --partition)
+      [[ ${2:-} =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] || { echo "--partition needs N/TOTAL" >&2; exit 2; }
+      part=${BASH_REMATCH[1]} parts=${BASH_REMATCH[2]}
+      [ "$part" -le "$parts" ] || { echo "--partition: N is above TOTAL" >&2; exit 2; }
+      shift ;;
     --) shift; mix_args=("$@"); break ;;
     native|unit|cluster|seaweedfs) stages+=("$1") ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -36,20 +48,25 @@ while [ $# -gt 0 ]; do
 done
 [ ${#stages[@]} -gt 0 ] || stages=(native unit cluster seaweedfs)
 
-# Instrumented Rust: cargo-llvm-cov sets the flags and the profile file; keep them out of the normal target dir.
-set -a
-eval "$(cd "$crate" && cargo llvm-cov show-env --export-prefix 2>/dev/null)"
-set +a
-export CARGO_TARGET_DIR=$crate/target/llvm-cov-target
-export CARGO_LLVM_COV_TARGET_DIR=$CARGO_TARGET_DIR CARGO_LLVM_COV_BUILD_DIR=$CARGO_TARGET_DIR
-export LLVM_PROFILE_FILE=$CARGO_TARGET_DIR/atanor_wasm-%p-%m.profraw
-export MIX_BUILD_PATH=$root/_build/coverage
-export MIX_ENV=test
-
 cover=$root/cover
 stamp=$(date +%s)
+# Names the exports, so parts run on other machines never collide when their files are merged.
+suffix=
+[ "$parts" -eq 0 ] || suffix=-p${part}of${parts}
+# Elixir stages that split their files over the ExUnit partitions.
+partition_args=()
+[ "$parts" -eq 0 ] || partition_args=(--partitions "$parts")
 
 if [ $report_only -eq 0 ]; then
+  # Instrumented Rust: cargo-llvm-cov sets the flags and the profile file; keep them out of the normal target dir.
+  set -a
+  eval "$(cd "$crate" && cargo llvm-cov show-env --export-prefix 2>/dev/null)"
+  set +a
+  export CARGO_TARGET_DIR=$crate/target/llvm-cov-target
+  export CARGO_LLVM_COV_TARGET_DIR=$CARGO_TARGET_DIR CARGO_LLVM_COV_BUILD_DIR=$CARGO_TARGET_DIR
+  export LLVM_PROFILE_FILE=$CARGO_TARGET_DIR/atanor_wasm-%p-%m.profraw
+  export MIX_BUILD_PATH=$root/_build/coverage MIX_ENV=test
+
   if [ $keep -eq 0 ]; then
     rm -rf "$cover"
     (cd "$crate" && cargo llvm-cov clean --profraw-only)
@@ -70,24 +87,29 @@ if [ $report_only -eq 0 ]; then
   }
   trap cleanup EXIT
   rm -rf "$MIX_BUILD_PATH/lib/atanor"
+  [ "$parts" -eq 0 ] || export MIX_TEST_PARTITION=$part
   for stage in "${stages[@]}"; do
     echo "== stage $stage"
     case $stage in
       native) scripts/test-native ;;
-      unit) mise run test --cover --export-coverage "unit-$stamp" "${mix_args[@]}" ;;
-      cluster) mise run test:cluster --cover --export-coverage "cluster-$stamp" "${mix_args[@]}" ;;
+      unit) mise run test --cover --export-coverage "unit$suffix-$stamp" ${partition_args[@]+"${partition_args[@]}"} "${mix_args[@]}" ;;
+      cluster) mise run test:cluster --cover --export-coverage "cluster$suffix-$stamp" ${partition_args[@]+"${partition_args[@]}"} "${mix_args[@]}" ;;
       seaweedfs) mise run test:seaweedfs --cover --export-coverage "seaweedfs-$stamp" "${mix_args[@]}" ;;
     esac
   done
+
+  # The Rust lines this run covered; the report merges every export in cover/.
+  ignore=()
+  [ -z "${ATANOR_COVERAGE_RUST_IGNORE:-}" ] || ignore=(--ignore-filename-regex "$ATANOR_COVERAGE_RUST_IGNORE")
+  name=$(IFS=-; echo "${stages[*]}")
+  (cd "$crate" && cargo llvm-cov report --release --lcov --output-path "$cover/rust-$name$suffix-$stamp.lcov" ${ignore[@]+"${ignore[@]}"})
+else
+  export MIX_BUILD_PATH=$root/_build/coverage MIX_ENV=test
 fi
 
+[ $no_report -eq 0 ] || exit 0
 echo "== report"
 status=0
 scripts/coverage-report elixir "$cover" "$threshold" || status=1
-
-json=$cover/rust.json
-ignore=()
-[ -z "${ATANOR_COVERAGE_RUST_IGNORE:-}" ] || ignore=(--ignore-filename-regex "$ATANOR_COVERAGE_RUST_IGNORE")
-(cd "$crate" && cargo llvm-cov report --release --json --summary-only --output-path "$json" ${ignore[@]+"${ignore[@]}"})
-scripts/coverage-report rust "$json" "$threshold" || status=1
+scripts/coverage-report rust "$cover" "$threshold" || status=1
 exit $status

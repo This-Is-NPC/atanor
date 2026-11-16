@@ -16,21 +16,32 @@ rustup component (`rustup component add llvm-tools`).
    (lines, uncovered lines, percent), then a `TOTAL` line per language.
 3. The exit status is non-zero when a language is below the threshold.
 
-CI runs the same task in the `coverage` job of every pull request
-([how-to-build-and-test.md](how-to-build-and-test.md#run-the-gate)), so a local run
-is only for finding what lowered the coverage.
+CI runs the same script, split into parts that run in parallel and a last job
+that merges them
+([how-to-build-and-test.md](how-to-build-and-test.md#run-the-gate)), so a local
+run is only for finding what lowered the coverage.
 
-To run part of it, name the stages (`native`, `unit`, `cluster`, `seaweedfs`),
-add `--keep` to keep the data of earlier runs, and `--report-only` to print the
-report again:
+To run part of it, name the stages (`native`, `unit`, `cluster`, `seaweedfs`).
+These options change what runs:
+
+- `--keep` keeps the data of earlier runs (otherwise `cover/` is cleared).
+- `--partition N/TOTAL` runs the N-th of TOTAL ExUnit partitions of the unit and
+  cluster stages (1-based). The exports carry the partition in their names.
+- `--no-report` exports only: no report and no threshold, so a part fails on
+  test failures alone. CI parts use it.
+- `--report-only` merges and reports the exports found in `cover/` (for example
+  downloaded artifacts). It runs no test and needs no Rust toolchain.
 
 ```sh
 scripts/test-coverage unit                       # clears old data, runs one stage
 scripts/test-coverage --keep cluster -- test/cluster/jobs_test.exs
+scripts/test-coverage --no-report --partition 1/3 unit
 scripts/test-coverage --report-only
 ```
 
-Arguments after `--` go to `mix test`. Results are in `cover/` (git-ignored).
+Arguments after `--` go to `mix test`. Results are in `cover/` (git-ignored):
+`*.coverdata` for Elixir and `rust-*.lcov` for Rust. The report merges every
+export: an Elixir line or a Rust line is covered when any export ran it.
 
 ## Settings
 
