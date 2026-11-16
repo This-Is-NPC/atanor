@@ -65,6 +65,9 @@ defmodule AtanorTestkit.Cluster do
     [:atanor, :hot_cell, :decision],
     [:atanor, :hot_cell, :move],
     [:atanor, :hot_cell, :replicas],
+    [:atanor, :rebalance, :start],
+    [:atanor, :rebalance, :stop],
+    [:atanor, :rebalance, :move],
     [:atanor, :http, :reject],
     [:atanor, :alarm, :fired],
     [:atanor, :alarm, :failed],
@@ -579,7 +582,13 @@ defmodule AtanorTestkit.Cluster do
 
     atanor_opts =
       Keyword.merge(
-        [poll_interval_ms: 500, port: 0, admin: [token: @token, port: restart_opts[:admin_port] || 0]],
+        # The rebalance on join is off unless a test asks for it: it moves cells of tests that add peers.
+        [
+          poll_interval_ms: 500,
+          port: 0,
+          rebalance: [enabled: false],
+          admin: [token: @token, port: restart_opts[:admin_port] || 0]
+        ],
         Keyword.merge(Keyword.drop(opts[:atanor] || [], [:alambique]), own)
       ) ++
         [

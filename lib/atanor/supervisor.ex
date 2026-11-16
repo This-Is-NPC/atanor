@@ -139,8 +139,10 @@ defmodule Atanor.Supervisor do
   defp auth(%Config{auth: auth}) when map_size(auth) == 0, do: []
   defp auth(config), do: [{Atanor.Auth.Keys, config}]
 
-  defp hot_cells(%Config{hot_cells: %{enabled: false}}), do: []
-  defp hot_cells(config), do: [{Atanor.HotCells, config}]
+  # The placement server also gates the cells that the rebalance moves, so it runs for either.
+  defp hot_cells(%Config{hot_cells: %{enabled: false}, rebalance: %{enabled: false}}), do: []
+  defp hot_cells(%Config{rebalance: %{enabled: false}} = config), do: [{Atanor.HotCells, config}]
+  defp hot_cells(config), do: [{Atanor.HotCells, config}, {Atanor.Rebalance, config}]
 
   defp dashboard(%Config{dashboard: nil}), do: []
   defp dashboard(config), do: [{Atanor.Dashboard.Supervisor, config}]

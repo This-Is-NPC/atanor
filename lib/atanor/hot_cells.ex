@@ -84,7 +84,7 @@ defmodule Atanor.HotCells do
   @doc """
   Moves the cell to `node` now, by the same path as the loop: the other nodes are told, so the cap, the
   residence time and the cooldown apply to what follows. Returns what `Alambique.move/4` returns.
-  `{:error, :disabled}` when the loop is off.
+  `{:error, :disabled}` when neither the loop nor the rebalance is on.
   """
   @spec move(atom, address, node, atom) :: {:ok, node} | {:error, term}
   def move(instance, address, node, reason \\ :manual) do
@@ -100,6 +100,17 @@ defmodule Atanor.HotCells do
     end
   end
 
+  @doc """
+  The cells the rebalance on join leaves alone (design §8.1): the hot ones this node tracks, the ones that moved
+  within `residence_ms` and the ones moving now. The loop wins over the rebalance.
+  """
+  @spec pinned(atom) :: MapSet.t(String.t())
+  def pinned(instance), do: GenServer.call(server(instance), :pinned)
+
+  @doc "Whether the server runs: the loop or the rebalance is on, so cells are gated while they move."
+  @spec gated?(Atanor.Config.t()) :: boolean
+  def gated?(config), do: config.hot_cells.enabled or config.rebalance.enabled
+
   @doc "What this node knows: its load, the hot cells it serves, its peers' load, moves in progress and recent."
   @spec status(atom) :: map | {:error, :disabled}
   def status(instance) do
@@ -112,7 +123,7 @@ defmodule Atanor.HotCells do
     :ets.new(server(config.name), [:named_table, :public, :set, write_concurrency: true])
     :ets.new(gate(config.name), [:named_table, :public, :set, read_concurrency: true])
     :ok = :pg.join(@scope, group(config.prefix), self())
-    Cpu.enable()
+    if cfg.enabled, do: Cpu.enable()
     send(self(), :tick)
 
     {:ok,
@@ -121,7 +132,7 @@ defmodule Atanor.HotCells do
        prefix: config.prefix,
        cfg: cfg,
        schedulers: Cpu.schedulers(),
-       cpu_sample: Cpu.sample(cfg.os_cpu),
+       cpu_sample: cfg.enabled && Cpu.sample(cfg.os_cpu),
        at: now(),
        cpu: 0.0,
        pressured: false,
@@ -141,7 +152,7 @@ defmodule Atanor.HotCells do
   @impl true
   def handle_info(:tick, state) do
     Process.send_after(self(), :tick, state.cfg.interval_ms)
-    {:noreply, tick(state)}
+    {:noreply, if(state.cfg.enabled, do: tick(state), else: prune(state))}
   end
 
   # The load message also lists the moves its sender runs, so a node that missed a `:moving` (it had just
@@ -163,7 +174,11 @@ defmodule Atanor.HotCells do
   @impl true
   def handle_call({:begin, id, target, reason}, _from, state), do: {:reply, :ok, begin(state, id, target, reason)}
 
+  def handle_call(:status, _from, %{cfg: %{enabled: false}} = state), do: {:reply, {:error, :disabled}, state}
   def handle_call(:status, _from, state), do: {:reply, report(state), state}
+
+  def handle_call(:pinned, _from, state),
+    do: {:reply, MapSet.new(Map.keys(state.cells) ++ Map.keys(state.moved) ++ Map.keys(state.moving)), state}
 
   @impl true
   def handle_cast({:replicas, id, action, result, reads}, state) do

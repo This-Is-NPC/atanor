@@ -105,6 +105,12 @@ defmodule Atanor.Daemon do
      "The same for the admin API (`admin: [header_timeout_ms:]`). Default 10000."},
     {"ATANOR_ADMIN_BODY_TIMEOUT_MS", :integer,
      "The same for the body of an admin request, a package upload included (`admin: [body_timeout_ms:]`). Default 120000."},
+    {"ATANOR_REBALANCE", :boolean,
+     "Whether the node moves awake cells to the node that now prefers them when a node joins (`rebalance: [enabled:]`). Default true."},
+    {"ATANOR_REBALANCE_MAX_MOVES_PER_S", :integer,
+     "The most cells the node moves in a second, 1 to 20 (`rebalance: [max_moves_per_s:]`). Default 5."},
+    {"ATANOR_REBALANCE_START_DELAY_MS", :integer,
+     "How long the membership must stay unchanged before the moves start (`rebalance: [start_delay_ms:]`). Default 30000."},
     {"ATANOR_GROUP", :group,
      "The discovery group: a node dials only the nodes of its own group. Default none. A node that replaces another in a swap takes one."},
     {"ATANOR_REGISTRY_TTL_MS", :integer,
@@ -439,6 +445,9 @@ defmodule Atanor.Daemon do
         else: {:error, "must be 1 to 64 letters, digits, '.', '_' or '-'"}
       )
 
+  defp parse(:boolean, text) when text in ["true", "false"], do: {:ok, text == "true"}
+  defp parse(:boolean, _text), do: {:error, "must be true or false"}
+
   defp parse(:integer, text) do
     if text =~ ~r/\A[0-9]+\z/, do: {:ok, String.to_integer(text)}, else: {:error, "must be a non-negative integer"}
   end
@@ -516,6 +525,11 @@ defmodule Atanor.Daemon do
         drain_concurrency: v["ATANOR_DRAIN_CONCURRENCY"]
       )
       |> put_group(:detector, acceptable_pause_ms: v["ATANOR_DETECTOR_PAUSE_MS"])
+      |> put_group(:rebalance,
+        enabled: v["ATANOR_REBALANCE"],
+        max_moves_per_s: v["ATANOR_REBALANCE_MAX_MOVES_PER_S"],
+        start_delay_ms: v["ATANOR_REBALANCE_START_DELAY_MS"]
+      )
       |> put_group(:http,
         queue_wait_ms: v["ATANOR_HTTP_QUEUE_WAIT_MS"],
         header_timeout_ms: v["ATANOR_HTTP_HEADER_TIMEOUT_MS"],

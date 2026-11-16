@@ -222,6 +222,9 @@ defmodule Atanor.Config do
     tags: [],
     affinity: []
   }
+  # Rebalance on join (design §8.1): `max_moves_per_s` is the most cells this node moves in a second (1 to
+  # 20), `start_delay_ms` is how long the membership must stay unchanged before a plan starts.
+  @rebalance %{enabled: true, max_moves_per_s: 5, start_delay_ms: 30_000}
   # Retries of a call whose owner moved or was lost, the longest a forwarded call may run, how long a call
   # waits for a leaving owner to hand off (design §8.11), and how a node keeps from starting handlers for a
   # cell it lost (design §8.13).
@@ -330,6 +333,7 @@ defmodule Atanor.Config do
     detector: @detector,
     takeover: @takeover,
     hot_cells: @hot_cells,
+    rebalance: @rebalance,
     routing: @routing,
     stop: @stop,
     migrate: @migrate,
@@ -394,6 +398,7 @@ defmodule Atanor.Config do
     :detector,
     :takeover,
     :hot_cells,
+    :rebalance,
     :routing,
     :stop,
     :migrate,
@@ -576,6 +581,7 @@ defmodule Atanor.Config do
       detector: detector!(opts[:detector]),
       takeover: settings!(opts[:takeover], @takeover, :takeover),
       hot_cells: hot_cells!(opts[:hot_cells], Keyword.get(opts, :alambique, [])),
+      rebalance: rebalance!(opts[:rebalance]),
       routing: settings!(opts[:routing], @routing, :routing),
       stop: stop!(opts[:stop]),
       migrate: settings!(opts[:migrate], @migrate, :migrate),
@@ -1160,6 +1166,12 @@ defmodule Atanor.Config do
     )
 
     Map.merge(hot, %{tags: tags, affinity: affinity})
+  end
+
+  defp rebalance!(opts) do
+    rebalance = settings!(opts, @rebalance, :rebalance)
+    check!(rebalance.max_moves_per_s in 1..20, ":rebalance :max_moves_per_s must be from 1 to 20")
+    rebalance
   end
 
   defp setting?(default, value) when is_boolean(default), do: is_boolean(value)

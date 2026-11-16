@@ -153,6 +153,10 @@ defmodule Atanor do
       `:replica_enter` (1000) reads per second in the cluster for `:sustain_ms`,
       and off after `:replica_hold_ms` (60 000) under `:replica_exit` (500), design
       §19.4; it needs `alambique: [replicas: ...]`).
+    * `:rebalance` - the move of awake cells to the node that now prefers them
+      when a node joins (design §8.1); on by default. `:enabled` (true),
+      `:max_moves_per_s` (5, from 1 to 20) and `:start_delay_ms` (30 000, how
+      long the membership must stay unchanged before the moves start).
     * `:routing` - retries of a call whose owner moved or was lost (design
       §8.4): `:attempts` (3), `:retry_ms` (50) and `:remote_timeout_ms` (60 000,
       the longest a forwarded call may run), `:owner_check` (true),
