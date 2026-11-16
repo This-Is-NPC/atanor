@@ -346,6 +346,39 @@ still gets the 503: the runtime keeps the availability reason of the cell call.
 
 [design.md §8.4](design.md#84-when-the-node-is-lost) has the full table.
 
+## What a cluster gains per node
+
+Does a second and a third node raise the ceiling, and how fast does a node that joins take its share? The
+load-test measure `scale` ([how to run it](how-to-run-the-load-tests.md#the-scale-measure)) answers it for scenario A
+(each node 1 CPU and 512 MB, the store with 25 ms added per trip, the nodes behind the load balancer). The tables
+below are filled from the official round; until it has run, they hold no numbers.
+
+Ceiling of each load (approved value) and the gain over 1 node; the ideal is 2x and 3x:
+
+| Load | Nodes | Ceiling | Gain over 1 node | Ideal | Efficiency |
+| --- | --- | --- | --- | --- | --- |
+| `http-native` (req/s) | 1 | to be filled by the official round | 1.00x | 1x | 100% |
+| `http-native` (req/s) | 2 | to be filled by the official round | to be filled | 2x | to be filled |
+| `http-native` (req/s) | 3 | to be filled by the official round | to be filled | 3x | to be filled |
+| `cells` (cells) | 1 | to be filled by the official round | 1.00x | 1x | 100% |
+| `cells` (cells) | 2 | to be filled by the official round | to be filled | 2x | to be filled |
+| `cells` (cells) | 3 | to be filled by the official round | to be filled | 3x | to be filled |
+
+Share of the requests and of the awake cells on each node at the ceiling (an equal split is 1/N):
+
+| Load | Nodes | Requests per node | Cells awake per node |
+| --- | --- | --- | --- |
+| `http-native` | 2, 3 | to be filled by the official round | to be filled by the official round |
+| `cells` | 2, 3 | to be filled by the official round | to be filled by the official round |
+
+Join (the load at 1.5 times the 1-node ceiling; the time counts from the start of the node, until every node
+holds its 1/N share within 25% for 3 readings 2 s apart):
+
+| Node that joins | Requests spread (s) | Cells spread (s) | Errors and 503 answers during the join |
+| --- | --- | --- | --- |
+| 2nd | to be filled by the official round | to be filled by the official round | to be filled by the official round |
+| 3rd | to be filled by the official round | to be filled by the official round | to be filled by the official round |
+
 ## Troubleshooting
 
 - **`/health` lists only one node.** The nodes are not connected. Check that

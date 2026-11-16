@@ -17,6 +17,7 @@ machine say how the harness works, not what a release holds: run the real ramps 
 | `load:ws`: open idle WebSockets, one message per socket every 30 s | connections | working set at 90% of the limit (see [the memory criterion](#the-memory-criterion)), or file descriptors at 90% of the limit, 503 answers over 1% of all answers (`--max-refused-pct`), or a socket that cannot connect or is dropped | MB and descriptors per connection |
 | `load:http-wasm-jobs`: writes and reads of the scoreboard, a job-heavy WASM app (not comparable with native) | requests per second | p99 > 250 ms, 503 answers over 1% of all answers (`--max-refused-pct`, stop reason `refused N% > 1%`), any other 5xx, or any error | req/s per vCPU, fixed MB, MB per req/s (its S3 trips and bytes per request are not comparable with native) |
 | `load:cells`: cells written once every 10 s, all awake together | cells | working set at 90% of the limit, p99 > 250 ms, or 503 answers over 1% of all answers (`--max-refused-pct`) | MB per hot cell |
+| `load:scale`: `http-native` and `cells` on 1, 2 and 3 nodes behind the balancer, then a node joining under load (see [the scale measure](#the-scale-measure)) | requests per second and cells, per node count | the criteria of `http-native` and `cells`, per configuration; the join has no verdict, it records | the ceiling of each configuration, the gain over 1 node, requests and awake cells per node, the time until the load spreads after a join |
 | `load:swap`: node A replaced by B under load | none (one run at the last approved `http-wasm-jobs` rate: run that measure first, or pass `--rate`) | an acknowledged write lost or duplicated, or an answer other than 503 with `Retry-After` (503 with `Retry-After` stays accepted: the refused criterion does not apply) | swap duration and p99 peak |
 
 ### The workers of the http measures
@@ -53,7 +54,7 @@ One container per service, all of the project `atanor-cluster` (`scripts/cluster
 | No swap | Every measured container has `memswap_limit` equal to `mem_limit`, so it cannot swap (zram or disk swap on the host would void the memory numbers). `load-run` checks `docker inspect` (`Memory` set and `MemorySwap` equal to it) and, when readable, the cgroup's `memory.swap.max` (0) before the first step, and refuses to run otherwise (`scripts/load-env check-swap`). Recreate a cluster started before this limit existed with `load:down` and `load:up`. |
 | Store | SeaweedFS in its own container (2 CPUs, 2 GB plus its tmpfs of 1 GB, outside the node's limit), data in tmpfs, or on the host's disk with `ATANOR_LOAD_STORE_DISK=1` ([when to use it](#when-the-store-fills-its-tmpfs)). |
 | Store latency | `tc netem delay 25ms` on the store's network interface, so every answer the store sends waits 25 ms: each trip costs 25 ms more. The node image has `tc`; `atanor-load-tc` joins the store's network namespace with `NET_ADMIN`, applies the qdisc and exits. The qdisc needs no root on the host. A request on a warm connection pays the latency once; a `curl` that opens a connection pays it twice, because the handshake answer waits too. `load:up` checks that the round trip from the node to the store grew by at least 80% of the added latency (observed: 1.0 ms to 51.1 ms for a new connection) and every step records it (`store_rtt_ms`). |
-| Balancer | HAProxy (2 CPUs) is in the path only for `load:swap`. The other measures send to the node's address. |
+| Balancer | HAProxy (2 CPUs) is in the path for `load:swap` and `load:scale`. The other measures send to the node's address. |
 | Generator | `scripts/load-gen`, outside the node's limit: Python `asyncio`, open loop, keep-alive connections, one process per about 600 req/s. Latency counts from the scheduled time of a request. |
 | Workers | `AtanorLoad.Worker` (native, [cluster/load/lib/atanor_load/worker.ex](../cluster/load/lib/atanor_load/worker.ex); `load:up` builds the image `atanor-cluster-load:local` from [cluster/load/Dockerfile](../cluster/load/Dockerfile), a [derived image](how-to-build-a-derived-image.md) of the release with the tools of the harness target, because a native module must be loaded in the node), the plain WASM worker `load-plain` (`mise run build:load-plain`, [examples/load-plain](../examples/load-plain)) and the scoreboard example (WASM). All three are deployed by `load:up`. |
 
@@ -225,6 +226,11 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_WRITE_RATIO`, `_CELLS` | 0.5, 64 | http: share of writes, cells the requests spread over. |
 | `ATANOR_LOAD_CELL_PERIOD` | 10 | cells: seconds between the writes to one cell. |
 | `ATANOR_LOAD_OPEN_RATE`, `_WS_INTERVAL` | 100, 30 | Sockets opened or cells touched per second; seconds between messages of a socket (the node closes a silent socket after 60 s). |
+| `ATANOR_LOAD_NODES` | 1 | Nodes `load-env up` starts (1 to 10); `load:scale` sets it itself. |
+| `ATANOR_LOAD_MAX_NODES`, `_SCALE_FACTOR` | 3, 1.25 | scale: the most nodes to run; growth of the ramps of 2 or more nodes. |
+| `ATANOR_LOAD_JOIN_FACTOR` | 1.5 | scale: the join rate as a multiple of the 1-node ceiling (`--join-rate` sets it directly). |
+| `ATANOR_LOAD_JOIN_WARMUP_S`, `_JOIN_OBSERVE_S`, `_JOIN_NODE_WAIT_S`, `_JOIN_NODE_TIMEOUT_S`, `_JOIN_SAMPLE_S` | 30, 120, 90, 300, 2 | scale: load on one node before the first join; seconds from a node's start to the next one's and after the last; seconds the load budgets for a node to start; seconds before a node that does not become ready makes the join INVALID; seconds between readings. |
+| `ATANOR_LOAD_SPREAD_TOL_PCT`, `_SPREAD_HOLD`, `_SPREAD_MIN_CELLS` | 25, 3, 10 | scale: tolerance around 1/N, consecutive readings that must hold, and the least awake cells that make a reading count. |
 
 ## Prerequisites
 
@@ -275,6 +281,79 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
    The report is `ATANOR_LOAD_OUT/report.md`: per scenario and measure, the steps, the cost per unit at the
    approved step, the criterion that stopped the ramp and the command to reproduce it.
 
+## The scale measure
+
+**The question:** how much more does a cluster of 2 or 3 nodes hold than one node, how evenly do the nodes share
+the work, and how fast does a node that joins take its share?
+
+`load:scale` runs on scenario A (each node 1 CPU and 512 MB; scenario B works the same way) behind the load
+balancer, with 1, 2 and 3 nodes. It starts its own nodes: run `mise run load:up` once before it, to build the
+images, and no more. Every configuration starts on a fresh store and fresh nodes (`scripts/load-env reset`, with
+`ATANOR_LOAD_NODES=N`), the generators send to the balancer (the other measures send to the node), and the
+store's disk and 25 ms of added latency follow `ATANOR_LOAD_STORE_DISK` as everywhere else.
+
+```sh
+mise run load:up
+mise run load:scale                                   # http-native and cells, 1 to 3 nodes, then the join
+mise run load:scale -- --max-nodes 2 --loads http-native
+mise run load:scale -- --join-rate 900                # the join at a fixed rate instead of 1.5 times the 1-node ceiling
+```
+
+**The ramps.** For each load (`http-native` and `cells`; `--loads` also takes `http-wasm` and `http-wasm-jobs`)
+and each node count, the ramp of [how a step is judged](#how-a-step-is-judged) runs unchanged: the same criteria,
+the same INVALID rules (host load, swap, full store, stall, delivery), the same refine and confirmation. One node
+starts at `--start`; 2 or more start at the approved value of one node fewer and grow by `--scale-factor` (1.25), because
+the ceiling can hardly be below it. The working-set criterion of `cells` judges the fullest node. A node that stops
+(any of them) is a result of the step, with the node named in the reason.
+
+**What each configuration records.**
+
+| Field | Meaning |
+| --- | --- |
+| `ceilings` | The approved value of each load on each node count (in an exploration, which has no confirmation, the best step that passed). |
+| `gain` | Per node count: the ceiling over the ceiling of 1 node (`gain`), the ideal (`ideal`: 2 and 3) and `efficiency` (gain over ideal). |
+| `distribution` (each ramp's summary and the step files) | Requests the balancer sent to each node during the step (growth of HAProxy's `stot` per server), the cells awake on each (the `nodes` of the admin API's `/cells`), their shares and the deviation: the largest `|share x N - 1|`, 0 for an equal split. The balancer counts what it sent to a node, not who owns the cell, and the cells are what each node holds awake. |
+
+Step files are named `SCENARIO_scale-LOAD-nN_NN-PHASE-VALUE.json` and have `measure: scale`, `load` and `nodes`.
+The summary is `SCENARIO_scale.summary.json`.
+
+**The join.** After the ramps, `scale` starts one node on a fresh store and sends `http-native` at a fixed rate,
+`--join-rate` or `--join-factor` (1.5) times the 1-node ceiling, an overload on purpose. After `--join-warmup-s`
+(30 s) it starts node 2 (`scripts/load-env add-node 2`, which waits until the node is healthy and in the
+balancer's rotation), then, `--join-observe-s` (120 s) after it started, node 3. The load never stops. Every
+`--join-sample-s` (2 s) it reads the balancer's per-node requests and the cells awake per node.
+
+*Spread time*, for each join, in seconds from the moment the node was started: the first of `--spread-hold` (3)
+consecutive readings in which every node has its 1/N share within `--spread-tol-pct` (25%) of it. Two times are
+recorded: `requests_spread_s` (requests of each reading interval, with at least a quarter of the expected requests
+in all) and `cells_spread_s` (cells awake on each node, at least `--spread-min-cells` (10) in all). A time is null
+when it never held in the window of that join (it ends when the next node starts, or with the load). The
+requests spread when the node enters the rotation; the cells spread only if cells move to the new node, which
+needs the rebalance on join. A cluster without it shows `cells_spread_s: null`, which is a result. Each window
+also records the balancer's counters (requests, 5xx answers, connection and response errors, retries), and the
+generator's totals (503 and errors) for the whole join: the 503 answers of the first window are the overload of
+one node. The join's `rebalance` is what each node's `/runtime` says under `rebalance` at the end of each window;
+a field that is missing is null, and the report says so. The file is `SCENARIO_scale-join_01-join-RATE.json`.
+
+**The VM budget and INVALID.** The load VM has 4 vCPU: 3 nodes at 1 CPU, the store, the balancer and the
+generators. The host guards of every step apply (net host load under 1 core, free memory, swap); every node's CPU
+counts as the test's own, so a quiet VM passes with 3 nodes. The join judges the same guard over its readings, leaving out the
+seconds in which a node was starting. When a step is INVALID, `scale` records it, runs no larger
+configuration (and none for the other loads), and the summary says `largest_fit` and
+`rerun with --max-nodes N`: rerun with the largest count that fit. Nothing asks for more resources than
+`--max-nodes` nodes, and the exit status is 1 for an INVALID step, as for any measure.
+
+**Cost.** Estimates from the harness's timings, not measurements. A step is 180 s of load, at least 60 s of quiet
+wait and about 10 s of judging; a reset of 1 to 3 nodes takes 1 to 2 min. A 1-node ramp of one load is about
+13 steps with the refinement and the confirmation, about 55 min; the ramps of 2 and 3 nodes start higher and take
+8 to 10 steps, about 40 min each. Two loads on 3 configurations: about 4.5 h, and the join about 11 min
+(reset, quiet wait, `--join-warmup-s` plus two windows of `--join-observe-s` plus `--join-node-wait-s`, and
+the last window). `--max-nodes 2` saves a third.
+
+**The report.** `mise run load:report -- DIR` adds, under `scale`, the gain-per-node table (the same table the
+[cluster guide](how-to-run-a-cluster.md#what-a-cluster-gains-per-node) fills from the official round), the table of
+requests and cells per node, the steps of every configuration and the join.
+
 ## The exploration round
 
 **The question:** how do I find the defects of the product or the harness before the official round, so that the
@@ -304,7 +383,13 @@ ATANOR_LOAD_SCENARIO=B mise run load:explore -- --from load/results/PREVIOUS
 
 The task resets the node and the store before each measure, runs `scripts/load-run MEASURE --steps ... --step-s 75
 --refine 0 --no-confirm`, and the swap last (`--rate CEILING`). To redo one measure after a fix, name it:
-`mise run load:explore -- --from DIR --measures ws`. Other options: `--ceiling MEASURE=N`, `--factors`,
+`mise run load:explore -- --from DIR --measures ws`. **Scale** joins the default list, before the swap, when
+`--from` holds `SCENARIO_scale.summary.json` (or `--ceiling scale=LOAD:NODES=N,...` is given; the summary's
+`ceilings` are the input): it runs the same 75% to 150% steps on 1 to `--max-nodes` nodes (pass `--max-nodes` after `--`)
+and then the join at 1.5 times the 1-node `http-native` ceiling, and starts its own nodes, so the task does not reset
+before it. Its time is in [the scale measure](#the-scale-measure): at most about 80 min for 3 nodes (4 steps of about
+2.5 min per load and configuration, a reset of 1 to 2 min each, and the join of about 10 min), which comes on top of
+the budget below. Other options: `--ceiling MEASURE=N`, `--factors`,
 `--step-s`, `--out`, and load-run options after `--`. A measure that exits 1 does not stop the others; the task
 exits 1 when any did. Results go to `load/results/explore-STAMP-SCENARIO`; they are never mixed with the official
 round's directory.
@@ -346,6 +431,7 @@ mise run load:cells -- --steps 20,40 --refine 0 --cell-period 5
 mise run load:http-wasm -- --steps 10 --refine 0
 mise run load:http-wasm-jobs -- --steps 10 --refine 0
 mise run load:swap -- --rate 10 --swap-warmup 5 --swap-overlap 3 --swap-settle 8
+mise run load:scale -- --max-nodes 2 --loads http-native --steps 10,20 --max 40 --refine 0 --join-warmup-s 10 --join-observe-s 30
 mise run load:report -- "$ATANOR_LOAD_OUT"
 mise run load:down
 ```

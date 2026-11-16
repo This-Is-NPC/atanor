@@ -11,6 +11,9 @@ MEASURE is one of
   ws           open idle WebSocket connections with sparse messages                      (stop: memory, fds, refused)
   cells        cells kept hot at the same time                                           (stop: memory, p99, refused)
   swap         replace the node by another under load at the last approved http-wasm-jobs rate (stop: loss, duplication, errors)
+  scale        the http-native and the cells ramps on 1, 2 and 3 nodes behind the load balancer (the ceiling of each, the gain over 1 node,
+               the requests and awake cells per node), then a join: the 2nd and 3rd node start under a fixed rate and the time until the
+               load spreads is measured (--max-nodes caps the nodes; every ramp rule above applies; docs/how-to-run-the-load-tests.md)
 
 A step runs the generator (scripts/load-gen, one process per ~600 req/s) for --step-s seconds, samples the
 node's cgroup, the host and the store every --sample-s seconds, and writes one JSON file, atomically.
@@ -28,10 +31,12 @@ Exit status: 1 when a step ended INVALID (the lab, not the node: there is no ver
 check and not a ramp, also when it failed; 0 when the measure recorded a verdict, a failed step or a stopped node included.
 """
 import argparse
+import copy
 import http.client
 import json
 import math
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -49,7 +54,7 @@ CORES = os.cpu_count()
 OK_STATUSES = {"200", "201", "message answered", "503 retry-after", "reconnected"}
 LOG_CAP_BYTES = 5 * 1048576
 TICK_S, STALL_S = 0.1, 1.0  # the stall ticker: its period and the overshoot that is recorded
-UNITS = {"http-native": "req/s", "http-wasm": "req/s", "http-wasm-jobs": "req/s", "ws": "connections", "cells": "cells", "swap": "req/s"}
+UNITS = {"http-native": "req/s", "http-wasm": "req/s", "http-wasm-jobs": "req/s", "ws": "connections", "cells": "cells", "swap": "req/s", "scale": "req/s or cells"}
 
 
 def env(name, default, cast=float):
@@ -193,6 +198,55 @@ def cells_awake(info):
     return document.get("total") if isinstance(document, dict) else None
 
 
+def haproxy_stats(url):
+    """The balancer's CSV stats as {(proxy, server): {column: value}}; None when it does not answer."""
+    try:
+        lines = urllib.request.urlopen(url, timeout=3).read().decode().splitlines()
+    except (OSError, http.client.HTTPException, ValueError):
+        return None
+    if not lines or not lines[0].startswith("# "):
+        return None
+    names = lines[0][2:].split(",")
+    return {(f[0], f[1]): dict(zip(names, f)) for f in (line.split(",") for line in lines[1:]) if len(f) > 1}
+
+
+def requests_by_node(stats):
+    """{"node-N": requests the balancer sent to that node (stot)}; None without stats."""
+    found = {}
+    for (proxy, server), row in (stats or {}).items():
+        match = re.fullmatch(r"node(\d+)", server)
+        if proxy == "atanor_http" and match and row.get("stot", "").isdigit():
+            found[f"node-{match.group(1)}"] = int(row["stot"])
+    return found or None
+
+
+def backend_counters(stats):
+    """The counters of the http backend that show trouble during a join; None without stats."""
+    row = (stats or {}).get(("atanor_http", "BACKEND"))
+    if not row:
+        return None
+    return {k: int(row[k]) for k in ("stot", "hrsp_5xx", "econ", "eresp", "wretr", "wredis") if row.get(k, "").isdigit()}
+
+
+def cells_by_node(info):
+    """{"node-N": cells awake on that node} from the admin API's /cells; None when it does not answer or a node has no count."""
+    document = admin_json(info, "/cells", 5)
+    nodes = document.get("nodes") if isinstance(document, dict) else None
+    found = {}
+    for name, report in (nodes.items() if isinstance(nodes, dict) else []):
+        match = re.search(r"node-\d+", str(name))
+        count = report.get("count") if isinstance(report, dict) else None
+        if match and isinstance(count, int):
+            found[match.group(0)] = count
+    return found or None
+
+
+def spread_sample(info):
+    """What the balancer and the admin API say now about the spread of the load over the nodes (None for what they do not say)."""
+    stats = haproxy_stats(info["stats"])
+    return {"requests": requests_by_node(stats), "backend": backend_counters(stats), "cells": cells_by_node(info)}
+
+
 def load_env(*args):
     return subprocess.run([f"{HERE}/load-env", *args], check=True, capture_output=True, text=True).stdout.strip()
 
@@ -304,14 +358,31 @@ def generators_cpu(pids):
     return None if None in readings else sum(readings)
 
 
-class Sampler(threading.Thread):
-    """Reads the node, the store, the host and the generators every `period` seconds until stopped."""
+def node_ids(info):
+    """The container ids of the nodes of the lab: all the running ones of a cluster, else the one node."""
+    return [n["id"] for n in info.get("nodes") or [info["node"]]]
 
-    def __init__(self, info, period):
+
+def lab_dirs(info):
+    """The cgroup directories of the lab: `node`, the store, the balancer and, in a cluster, `extraN` for each node beyond `node`."""
+    dirs = {name: cgroup_dir(info[name]["pid"]) for name in ("node", "store", "lb")}
+    others = [n for n in info.get("nodes") or [] if n["id"] != info["node"]["id"]]
+    dirs.update({f"extra{i}": cgroup_dir(n["pid"]) for i, n in enumerate(others, 1)})
+    return dirs
+
+
+class Sampler(threading.Thread):
+    """Reads the node(s), the store, the host and the generators every `period` seconds until stopped."""
+
+    def __init__(self, info, period, spread=False):
         super().__init__(daemon=True)
-        self.info, self.period, self.pids, self.stop_flag = info, period, [], threading.Event()
-        self.dirs = {name: cgroup_dir(info[name]["pid"]) for name in ("node", "store", "lb")}
+        self.info, self.period, self.spread, self.pids, self.stop_flag = info, period, spread, [], threading.Event()
+        self.dirs = lab_dirs(info)
         self.samples, self.stalls = [], []
+
+    def refresh(self):
+        """Reads the nodes' cgroups again, after a node joined (`info` was updated)."""
+        self.dirs = lab_dirs(self.info)
 
     def watch(self):
         """A ticker in the harness's own process: a sleep of TICK_S that overshoots by STALL_S or more means the whole VM (or the
@@ -326,9 +397,11 @@ class Sampler(threading.Thread):
     def take(self):
         sample = {"t": time.time(), "host": host_sample(), "gen_cpu_s": generators_cpu(self.pids), "self_cpu_s": process_cpu(os.getpid()),
                   "gen_swap_mb": sum(vm_swap_mb(p) for p in self.pids)}
-        for name, directory in self.dirs.items():
+        for name, directory in dict(self.dirs).items():
             sample[name] = cgroup_sample(directory)
         sample["fds"] = fds(self.info["node"]["id"])
+        if self.spread:  # the scale measure: where the requests and the cells are
+            sample["spread"] = spread_sample(self.info)
         if self.info.get("store_backing") == "disk":
             sample["store_disk"] = store_disk(self.info["store"]["id"])
         counters = s3_counters(self.info["store"]["ip"])
@@ -502,7 +575,8 @@ def store_summary(samples, tmpfs_bytes, backing="tmpfs"):
 
 def own_cpu_s(sample):
     """CPU seconds the lab used so far: node, store, balancer, generators and this harness; None when any reading is missing."""
-    parts = [sample[n].get("cpu_s") for n in ("node", "store", "lb")] + [sample.get("gen_cpu_s"), sample.get("self_cpu_s")]
+    lab = ("node", "store", "lb") + tuple(k for k in sample if k.startswith("extra"))  # every node of a cluster is the lab's own
+    parts = [sample[n].get("cpu_s") for n in lab] + [sample.get("gen_cpu_s"), sample.get("self_cpu_s")]
     return None if any(p is None for p in parts) else sum(parts)
 
 
@@ -544,7 +618,7 @@ def busy_reason(load, args):
 def quiet_sample(dirs):
     """The part of a sample that net_load reads, for the wait before a step."""
     sample = {"t": time.time(), "host": host_sample(), "gen_cpu_s": 0.0, "self_cpu_s": process_cpu(os.getpid())}
-    for name in ("node", "store", "lb"):  # no lab running: nothing of it to count out
+    for name in {"node", "store", "lb", *dirs}:  # no lab running: nothing of it to count out
         sample[name] = cgroup_sample(dirs[name]) if name in dirs else {"cpu_s": 0.0}
     return sample
 
@@ -553,7 +627,7 @@ def wait_quiet(args, info):
     """Waits until the foreign host load stays below --host-load-max for --quiet-window seconds. (True, load) when it did;
     (False, last load) after --quiet-max-wait seconds of not."""
     try:
-        dirs = {name: cgroup_dir(info[name]["pid"]) for name in ("node", "store", "lb")}
+        dirs = lab_dirs(info)
     except (OSError, RuntimeError, KeyError):
         dirs = {}
     intervals, previous, deadline, load, announced = [], quiet_sample(dirs), time.time() + args.quiet_max_wait, None, False
@@ -586,7 +660,9 @@ def summarize(samples, gen_cpu_total, limit):
         return None if a is None or b is None else (b - a) / span
 
     node, store, lb = cores("node"), cores("store"), cores("lb")
-    nets = [n for n in (net_load(a, b) for a, b in zip(samples, samples[1:])) if n]
+    names = ["node"] + sorted(k for k in first if k.startswith("extra"))  # the nodes of a cluster; the criteria hold for the fullest one
+    fullest = max((max(s[n]["memory_current"] - s[n].get("inactive_file", 0) for s in samples if s.get(n)) for n in names if any(s.get(n) for s in samples)), default=None)
+    nets =[n for n in (net_load(a, b) for a, b in zip(samples, samples[1:])) if n]
     mem = [s["node"] for s in samples if s["node"]]
     current = [m["memory_current"] for m in mem]
     service = [m["memory_current"] - m.get("inactive_file", 0) for m in mem]
@@ -594,14 +670,15 @@ def summarize(samples, gen_cpu_total, limit):
     mb = lambda n: round(n / 1048576, 1)
     return {
         "cpu": {"node_cores": round(node, 3) if node is not None else None, "store_cores": round(store or 0, 3), "lb_cores": round(lb or 0, 3),
-                "generator_cores": round(gen_cpu_total / span, 3), "node_limit_cores": mem[-1]["cpu_limit"] if mem else None},
+                "generator_cores": round(gen_cpu_total / span, 3), "node_limit_cores": mem[-1]["cpu_limit"] if mem else None,
+                "nodes_cores": [None if cores(n) is None else round(cores(n), 3) for n in names] if len(names) > 1 else None},
         "memory": {"service_mb": mb(service[-1]) if service else None, "service_max_mb": mb(max(service)) if service else None,
                    "tmpfs_mb": mb(mem[-1]["shmem"]) if mem else None,
                    "tmpfs_start_mb": mb(mem[0]["shmem"]) if mem else None, "tmpfs_max_mb": mb(max(m["shmem"] for m in mem)) if mem else None,
                    "tmpfs_growth_mb": mb(max(m["shmem"] for m in mem) - mem[0]["shmem"]) if mem else None, "current_mb": mb(current[-1]) if current else None,
                    "current_max_mb": mb(max(current)) if current else None,
                    "peak_mb": mb(mem[-1]["peak"]) if mem else None, "limit_mb": mb(limit) if limit else None,
-                   "max_pct_of_limit": round(100 * max(service) / limit, 1) if service and limit else None},
+                   "max_pct_of_limit": round(100 * max(fullest, max(service)) / limit, 1) if service and limit else None},
         "fds": {"count": fd[-1][0] if fd else None, "max": max((f[0] for f in fd), default=None), "limit": fd[-1][1] if fd else None},
         "host": {"busy_cores_mean": round(sum(b for b, _ in nets) / len(nets), 2) if nets else None,
                  "net_load_mean": round(sum(n for _, n in nets) / len(nets), 2) if nets else None,
@@ -611,6 +688,70 @@ def summarize(samples, gen_cpu_total, limit):
         "swap_usage": {**dict(zip(("generator_start_mb", "generator_max_mb", "generator_growth_mb"), swap_growth_mb([s["gen_swap_mb"] for s in samples]))),
                        "containers_max_mb": {n: container_swap_max_mb(samples, n) for n in ("node", "store", "lb")}},
     }
+
+
+# ---- the spread of the load over the nodes -------------------------------------------------------------
+
+def deviation(counts, names):
+    """How far the shares of `names` are from an equal split: the largest |share x N - 1| (0.2: a node holds 20% more or less than 1/N).
+    A node without a count holds 0. None when the nodes hold nothing."""
+    total = sum(counts.get(n, 0) for n in names)
+    return max(abs(counts.get(n, 0) / total * len(names) - 1) for n in names) if total and names else None
+
+
+def shares(counts, names):
+    """{node: share of the total}, None when `counts` is unknown or empty."""
+    total = sum(counts.get(n, 0) for n in names) if counts else 0
+    return {n: round(counts.get(n, 0) / total, 3) for n in names} if total else None
+
+
+def distribution(samples, names):
+    """Requests the balancer sent to each node during a step (last sample minus first) and the cells awake on each at the end,
+    with their shares and how far they are from an equal split. None without a cluster or without any reading."""
+    seen = [s["spread"] for s in samples if s.get("spread")]
+    if not names or not seen:
+        return None
+    requests = [s["requests"] for s in seen if s["requests"]]
+    cells = [s["cells"] for s in seen if s["cells"]]
+    sent = {n: requests[-1].get(n, 0) - requests[0].get(n, 0) for n in names} if len(requests) > 1 else None
+    awake = {n: cells[-1].get(n, 0) for n in names} if cells else None
+    dev = lambda counts: None if not counts or deviation(counts, names) is None else round(deviation(counts, names), 3)
+    return {"nodes": names, "requests": sent, "request_share": shares(sent, names), "request_deviation": dev(sent),
+            "cells_awake": awake, "cells_share": shares(awake, names), "cells_deviation": dev(awake)}
+
+
+def interval_points(series, names):
+    """[(t, requests of each node in the interval starting at t)] from [(t, cumulative requests per node)]; an interval without
+    both readings, or where a counter went back, is left out."""
+    points = []
+    for (a, x), (_, y) in zip(series, series[1:]):
+        if x and y and all(y.get(n, 0) >= x.get(n, 0) for n in names):
+            points.append((a, {n: y.get(n, 0) - x.get(n, 0) for n in names}))
+    return points
+
+
+def spread_time(points, names, tol, hold, min_total):
+    """The t of the first of `hold` consecutive points, each with at least `min_total` in all and every node of `names` within
+    `tol` (a fraction) of its equal share; None when that never held. Points: [(t, {node: count})]."""
+    run, start = 0, None
+    for t, counts in points:
+        dev = deviation(counts, names) if sum(counts.get(n, 0) for n in names) >= min_total else None
+        if dev is None or dev > tol:
+            run = 0
+            continue
+        start = t if run == 0 else start
+        run += 1
+        if run >= hold:
+            return start
+    return None
+
+
+def gain(ceilings):
+    """{nodes: {ceiling, gain over 1 node, ideal, efficiency}} from {nodes: ceiling}; the ceiling of 1 node is the base. {} without it."""
+    base = ceilings.get(1)
+    if not base:
+        return {}
+    return {n: {"ceiling": c, "gain": round(c / base, 2), "ideal": n, "efficiency": round(c / base / n, 2)} for n, c in sorted(ceilings.items()) if c}
 
 
 # ---- results of the generators -------------------------------------------------------------------------
@@ -652,14 +793,23 @@ def percentile(hist, p, max_ms):
 # ---- one step ------------------------------------------------------------------------------------------
 
 class Round:
-    def __init__(self, args, info):
+    def __init__(self, args, info, stem=None):
         self.args, self.info, self.index = args, info, 0
         self.scenario = info["scenario"]
+        self.stem = stem  # the scale measure: its step files and records are of "scale", whatever load the step runs
         self.tag = f"s{int(time.time()) % 100000}"  # one name space per run: the cells of a smaller step stay hot in a larger one
 
+    def target(self):
+        """(host, port) the generators send to: the balancer for a cluster (scale), else the node itself."""
+        if self.stem:
+            host, _, port = self.info["http"].removeprefix("http://").rpartition(":")
+            return host, port
+        return self.info["node"]["ip"], "4000"
+
     def gen_commands(self, value):
-        a, node = self.args, self.info["node"]["ip"]
-        common = ["--host", node, "--port", "4000", "--timeout", str(a.timeout), "--tag", self.tag]
+        a = self.args
+        host, port = self.target()
+        common = ["--host", host, "--port", port, "--timeout", str(a.timeout), "--tag", self.tag]
         kind = {"http-native": "native", "http-wasm": "plain", "http-wasm-jobs": "wasm"}.get(a.measure, a.worker)
         if a.measure.startswith("http"):
             procs = max(1, math.ceil(value / a.rate_per_proc))
@@ -743,13 +893,19 @@ class Round:
         return record
 
     def base(self, value, phase):
-        return os.path.join(self.args.out, f"{self.scenario}_{self.args.measure}_{self.index:02d}-{phase}-{value}")
+        return os.path.join(self.args.out, f"{self.scenario}_{self.stem or self.args.measure}_{self.index:02d}-{phase}-{value}")
 
     def node_stop(self, value, phase, before):
-        """(reason, diagnostics files) when the node died, restarted or was OOM-killed since `before`; else (None, [])."""
-        node, after = self.info["node"]["id"], node_state(self.info["node"]["id"])
-        reason = node_death(before, after)
-        return (reason, save_node_diagnostics(self.base(value, phase), node, after, self.info["store"])) if reason else (None, [])
+        """(reason, diagnostics files) when a node died, restarted or was OOM-killed since `before` ({id: state}); else (None, []).
+        With several nodes the reason says which."""
+        ids = node_ids(self.info)
+        for node in ids:
+            after = node_state(node)
+            reason = node_death(before.get(node), after)
+            if reason:
+                label = next((n["name"] for n in self.info.get("nodes") or [] if n["id"] == node), node)
+                return (f"{label}: {reason}" if len(ids) > 1 else reason), save_node_diagnostics(self.base(value, phase), node, after, self.info["store"])
+        return None, []
 
     def attempt(self, value, phase):
         a, info = self.args, self.info
@@ -757,10 +913,10 @@ class Round:
         if available < a.min_available_gb:
             return self.record(value, phase, None, None, None, "invalid", "host memory", valid=False,
                                host_override={"available_gb_min": round(available, 1)})
-        node_before = node_state(info["node"]["id"])
-        if node_before and (node_before.get("gone") or not node_before["running"]):  # nothing to measure; the nodes do not restart
+        node_before = {node: node_state(node) for node in node_ids(info)}
+        if any(s and (s.get("gone") or not s["running"]) for s in node_before.values()):  # nothing to measure; the nodes do not restart
             return self.record(value, phase, None, None, None, "invalid", "node not running at step start", valid=False, dead="node not running at step start")
-        sampler = Sampler(info, a.sample_s)
+        sampler = Sampler(info, a.sample_s, spread=bool(self.stem))
         s3_before = s3_counters(info["store"]["ip"])
         sampler.samples.append(sampler.take())
         sampler.start()
@@ -785,7 +941,8 @@ class Round:
     def record(self, value, phase, merged, samples, s3, status, reason, valid=True, host_override=None, began=None, gens=None, sampler=None,
                dead=None, diagnostics=()):
         a, info = self.args, self.info
-        record = {"schema": SCHEMA, "scenario": self.scenario, "measure": a.measure, "unit": UNITS[a.measure], "phase": phase, "step": self.index,
+        record = {"schema": SCHEMA, "scenario": self.scenario, "measure": "scale" if self.stem else a.measure, "load": a.measure if self.stem else None,
+                  "nodes": len(node_ids(info)) if self.stem else None, "distribution": None, "unit": UNITS[a.measure], "phase": phase, "step": self.index,
                   "value": value, "duration_s": a.step_s, "store_latency_ms": info["store_latency_ms"], "store_backing": info.get("store_backing", "tmpfs"), "command": a.command,
                   "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
@@ -804,7 +961,8 @@ class Round:
                       limits={"cpus": usage["cpu"]["node_limit_cores"], "memory_mb": usage["memory"]["limit_mb"]},
                       generator={"sent": merged["sent"], "completed": merged["completed"], "lag_p99_ms": round(merged["lag_p99"], 1),
                                  "release_lag_p99_ms": None if merged["release_lag_p99"] is None else round(merged["release_lag_p99"], 1), "cpu_cores": usage["cpu"]["generator_cores"]},
-                      cells_awake=None if dead else cells_awake(self.info), store_rtt_ms=None if dead else store_rtt())
+                      cells_awake=None if dead else cells_awake(self.info), store_rtt_ms=None if dead else store_rtt(),
+                      distribution=distribution(samples, [n["name"] for n in info.get("nodes") or []]))
         if record["store_rtt_ms"] is None:
             record["notes"].append("store rtt not measured" + (": the node stopped" if dead else ""))
         if record["cells_awake"] is None:
@@ -919,7 +1077,8 @@ def ramp(round_, args):
         confirmed = r["status"] == "ok"
         stopped = r if r["status"] == "invalid" else None
     last_fail = next((s for s in reversed(steps) if s["status"] == "fail"), None)
-    return {"approved": good if confirmed or node_stopped else None, "confirmed": confirmed, "node_stopped": node_stopped or any(x["node_stopped"] for x in steps), "first_failure": failed,
+    best = next((s for s in reversed(steps) if s["status"] == "ok" and s["value"] == good), None)
+    return {"approved": good if confirmed or node_stopped else None, "confirmed": confirmed, "good": good, "distribution": best["distribution"] if best else None, "node_stopped": node_stopped or any(x["node_stopped"] for x in steps), "first_failure": failed,
             "stopped_by": last_fail["stop_reason"] if last_fail else None, "invalid": stopped["stop_reason"] if stopped else None,
             "ceiling_reached": failed is None and stopped is None and good is not None}
 
@@ -1010,6 +1169,270 @@ def swap(round_, args, info):
             "invalid": record["stop_reason"] if record["status"] == "invalid" else None, "status": record["status"]}
 
 
+# ---- the scale measure ---------------------------------------------------------------------------------
+
+RAMPS = {"http-native": (25, 20000), "http-wasm": (25, 20000), "http-wasm-jobs": (25, 20000), "ws": (100, 60000), "cells": (100, 100000), "swap": (0, 0), "scale": (0, 0)}
+SCALE_LOADS = ("http-native", "http-wasm", "http-wasm-jobs", "cells")
+JOIN_SCHEMA = "atanor-load-join-1"
+
+
+class LabError(Exception):
+    """The lab could not be brought to the wanted number of nodes: an INVALID result of the scale measure, not of the product."""
+
+
+def parse_ceilings(text):
+    """{(load, nodes): ceiling} from "http-native:1=400,cells:2=9000" (the exploration round passes the ceilings of an earlier one)."""
+    found = {}
+    for item in filter(None, (text or "").split(",")):
+        key, _, value = item.partition("=")
+        load, _, nodes = key.partition(":")
+        found[(load, int(nodes))] = int(float(value))
+    return found
+
+
+def steps_of(ceiling, factors):
+    """The values of a ramp as fractions of a ceiling: rounded, at least 1, repeats dropped."""
+    out = []
+    for factor in factors:
+        value = max(1, int(ceiling * factor + 0.5))
+        if not out or out[-1] != value:
+            out.append(value)
+    return out
+
+
+def fresh_cluster(nodes):
+    """A new store and `nodes` nodes behind the balancer with empty data (load-env reset) and its info; LabError when it fails."""
+    os.environ["ATANOR_LOAD_NODES"] = str(nodes)
+    try:
+        say(f"resetting the lab: {nodes} node{'s' if nodes > 1 else ''} and the store")
+        load_env("reset")
+        info = json.loads(load_env("info"))
+        load_env("check-swap")
+    except subprocess.CalledProcessError as error:
+        raise LabError(f"the lab did not start with {nodes} nodes: {(error.stderr or '').strip()[-300:]}") from error
+    if len(info.get("nodes") or []) != nodes:
+        raise LabError(f"the lab runs {len(info.get('nodes') or [])} nodes, not {nodes}")
+    return info
+
+
+def scale_config(args, load, nodes, previous, given):
+    """The ramp of one load on `nodes` nodes behind the balancer; the ramp's summary with the load and the nodes. `previous`: the ceiling on
+    one node fewer, where a larger configuration starts; `given`: the ceilings of an earlier round (the steps are fractions of them)."""
+    a = copy.copy(args)
+    a.measure, a.steps = load, args.steps if nodes == 1 else None
+    a.start, a.max, a.factor = args.start or RAMPS[load][0], args.max or RAMPS[load][1], args.factor
+    if given:
+        if (load, nodes) not in given:
+            return {"load": load, "nodes": nodes, "approved": None, "good": None, "invalid": None, "skipped": f"no ceiling for {load} on {nodes} nodes in --ceilings"}
+        a.steps =",".join(str(v) for v in steps_of(given[(load, nodes)], [float(f) for f in args.factors.split(",")]))
+    elif nodes > 1 and previous and not a.steps:
+        a.start, a.factor = previous, args.scale_factor  # the ceiling can hardly be below the one of fewer nodes
+    try:
+        info = fresh_cluster(nodes)
+    except LabError as error:
+        return {"load": load, "nodes": nodes, "approved": None, "good": None, "invalid": str(error)}
+    round_ = Round(a, info, stem=f"scale-{load}-n{nodes}")
+    say(f"scale: {load} on {nodes} node{'s' if nodes > 1 else ''}")
+    summary = ramp(round_, a)
+    return {"load": load, "nodes": nodes, **summary}
+
+
+def ceiling_of(config):
+    """The ceiling a configuration reached: the approved value, else (no confirmation: the exploration) the best step that passed."""
+    return config.get("approved") if config.get("approved") is not None else config.get("good")
+
+
+def rebalance_state(info):
+    """What each node's /runtime says under `rebalance` (the rebalance feature's state); None for a node that does not say."""
+    found = {}
+    for node in info.get("nodes") or []:
+        runtime = admin_json({"admin": f"http://{node['ip']}:4001"}, "/runtime", 5)
+        found[node["name"]] = runtime.get("rebalance") if isinstance(runtime, dict) else None
+    return found
+
+
+class SpreadPoller(threading.Thread):
+    """Reads the balancer's per-node requests and the admin API's cells per node every `period` seconds until stopped."""
+
+    def __init__(self, info, period):
+        super().__init__(daemon=True)
+        self.info, self.period, self.stop_flag, self.samples = info, period, threading.Event(), []
+
+    def run(self):
+        while not self.stop_flag.is_set():
+            try:
+                self.samples.append({"t": time.time(), **spread_sample(self.info)})
+            except Exception as error:  # a reading is lost, not the join
+                say(f"spread sample failed: {error}")
+            self.stop_flag.wait(self.period)
+
+    def finish(self):
+        self.stop_flag.set()
+        self.join()
+
+
+def counter_delta(window):
+    """The growth of the backend's counters (requests, 5xx answers, connection and response errors, retries, redispatches) over the samples."""
+    seen = [s["backend"] for s in window if s.get("backend")]
+    return {k: seen[-1][k] - seen[0][k] for k in seen[0] if k in seen[-1]} if len(seen) > 1 else None
+
+
+def join_windows(poller, events, args, rate):
+    """One entry per window: before the first join (1 node), then from each node's start to the next one's (the last to the end of the
+    load). The spread time of a join is the seconds from `node-N` start (`join_start`) to the first of `hold` consecutive samples where every
+    node has its 1/N share within `tol`, for the requests of each interval and for the cells awake; null when it never held in the window."""
+    samples = poller.samples
+    if not samples:
+        return []
+    bounds = [samples[0]["t"]] + [e["join_t"] for e in events] + [samples[-1]["t"] + 1e-6]
+    tol, hold = args.spread_tol_pct / 100, args.spread_hold
+    min_requests, min_cells = max(20, int(0.25 * rate * args.join_sample_s)), args.spread_min_cells
+    out = []
+    for i, (start, end) in enumerate(zip(bounds, bounds[1:])):
+        nodes, event = i + 1, events[i - 1] if i else None
+        names = [f"node-{n}" for n in range(1, nodes + 1)]
+        window = [s for s in samples if start <= s["t"] < end]
+        entry = {"nodes": nodes, "start_s": round(start - samples[0]["t"], 1), "end_s": round(min(end, samples[-1]["t"]) - samples[0]["t"], 1), "backend": counter_delta(window),
+                 "requests_spread_s": None, "requests_spread_since_ready_s": None, "cells_spread_s": None, "cells_spread_since_ready_s": None,
+                 "request_share_end": None, "cells_share_end": None, "ready_s": None if event is None else event["ready_s"], "rebalance": None if event is None else event.get("rebalance")}
+        if event is not None:
+            points = interval_points([(s["t"], s.get("requests")) for s in window], names)
+            cells = [(s["t"], s["cells"]) for s in window if s.get("cells")]
+            for key, at in (("requests", spread_time(points, names, tol, hold, min_requests)), ("cells", spread_time(cells, names, tol, hold, min_cells))):
+                if at is not None:
+                    entry[f"{key}_spread_s"] = round(at - start, 1)
+                    entry[f"{key}_spread_since_ready_s"] = round(max(at - start - event["ready_s"], 0), 1)
+            tail = points[-hold:]
+            entry["request_share_end"] = shares({n: sum(c[n] for _, c in tail) for n in names}, names) if tail else None
+            entry["cells_share_end"] = shares(cells[-1][1], names) if cells else None
+        out.append(entry)
+    return out
+
+
+def join_host_load(samples, events, sample_s):
+    """Mean net host load of the join, leaving out the intervals in which a node was starting: the sampler cannot count its CPU as the lab's own before it is ready."""
+    excluded = [(e["join_t"], e["ready_t"] + 2 * sample_s) for e in events]
+    loads = [n[1] for a, b in zip(samples, samples[1:]) if not any(b["t"] > s and a["t"] < e for s, e in excluded) for n in [net_load(a, b)] if n]
+    return round(sum(loads) / len(loads), 2) if loads else None
+
+
+def join(args, rate, nodes_max):
+    """Starts one node under the load at `rate`, then adds node 2 up to `nodes_max`, one per --join-observe-s, and measures when the load spreads."""
+    record = {"schema": JOIN_SCHEMA, "measure": "scale", "phase": "join", "unit": "req/s", "rate": rate, "nodes_max": nodes_max, "command": args.command,
+              "tolerance_pct": args.spread_tol_pct, "hold_samples": args.spread_hold, "sample_s": args.join_sample_s, "windows": [], "generator": None,
+              "host": {}, "valid": True, "status": "ok", "stop_reason": None, "notes": [], "started_at": time.time()}
+    try:
+        info = fresh_cluster(1)
+    except LabError as error:
+        return {**record, "valid": False, "status": "invalid", "stop_reason": str(error)}
+    record.update(scenario=info["scenario"], store_latency_ms=info["store_latency_ms"], store_backing=info.get("store_backing", "tmpfs"))
+    available = host_sample()["available_gb"]
+    if available < args.min_available_gb:
+        return {**record, "valid": False, "status": "invalid", "stop_reason": "host memory", "host": {"available_gb_min": round(available, 1)}}
+    quiet, load = wait_quiet(args, info)
+    if not quiet:
+        return {**record, "valid": False, "status": "invalid", "stop_reason": busy_reason(load, args), "host": {"net_load_last": load}}
+    jargs = copy.copy(args)
+    jargs.measure = "http-native"
+    jargs.step_s = args.join_warmup_s + (nodes_max - 1) * (args.join_observe_s + args.join_node_wait_s) + args.join_observe_s
+    round_ = Round(jargs, info, stem="scale-join")
+    sampler, poller = Sampler(info, args.sample_s), SpreadPoller(info, args.join_sample_s)
+    sampler.samples.append(sampler.take())
+    sampler.start()
+    poller.start()
+    outcome, events, failure = {}, [], None
+
+    def drive():
+        try:
+            outcome["documents"] = round_.run_generators(rate, sampler)
+        except Exception as error:  # the generator broke: the join is void
+            outcome["error"] = str(error)
+
+    load_thread = threading.Thread(target=drive, daemon=True)
+    load_thread.start()
+    load_thread.join(args.join_warmup_s)
+    for nodes in range(2, nodes_max + 1):
+        if not load_thread.is_alive():
+            failure = f"the load ended before node-{nodes} started"
+            break
+        began = time.time()
+        try:
+            subprocess.run([f"{HERE}/load-env", "add-node", str(nodes)], check=True, capture_output=True, text=True, timeout=args.join_node_timeout_s)
+            info.update(json.loads(load_env("info")))
+        except (subprocess.SubprocessError, OSError, ValueError) as error:
+            failure = f"node-{nodes} did not join: {(getattr(error, 'stderr', None) or str(error)).strip()[-300:]}"
+            break
+        sampler.refresh()
+        events.append({"nodes": nodes, "join_t": began, "ready_t": time.time(), "ready_s": round(time.time() - began, 1)})
+        load_thread.join(max(began + args.join_observe_s - time.time(), 0))
+        events[-1]["rebalance"] = rebalance_state(info)
+    load_thread.join()
+    samples = sampler.finish()
+    poller.finish()
+    documents = outcome.get("documents")
+    if documents:
+        merged = merge(documents)
+        errors = {k: n for k, n in merged["statuses"].items() if k not in OK_STATUSES}
+        record["generator"] = {"sent": merged["sent"], "completed": merged["completed"], "statuses": merged["statuses"], "errors": errors,
+                               "status_503": merged["statuses"].get("503 retry-after", 0) + merged["statuses"].get("503 no retry-after", 0)}
+    record["windows"] = join_windows(poller, events, args, rate)
+    mean = join_host_load(samples, events, args.sample_s)
+    record["host"] = {"net_load_mean": mean, "available_gb_min": round(min(s["host"]["available_gb"] for s in samples), 1)}
+    if events and all(v is None for e in events for v in (e.get("rebalance") or {}).values()):
+        record["notes"].append("no node reports a rebalance state in /runtime")
+    contaminated = judge_host(mean, args.host_load_max)
+    reason = contaminated or failure or (f"generator: {outcome['error']}" if outcome.get("error") else None)
+    if reason:
+        record.update(valid=False, status="invalid", stop_reason=reason)
+    path = os.path.join(args.out, f"{info['scenario']}_scale-join_01-join-{rate}.json")
+    write_json(path, record)
+    spread = [(w["nodes"], w["requests_spread_s"], w["cells_spread_s"]) for w in record["windows"] if w["nodes"] > 1]
+    say(f"scale join at {rate} req/s: {record['status']}" + (f" ({reason})" if reason else "") + f"; spread (nodes, requests s, cells s): {spread} -> {os.path.basename(path)}")
+    return record
+
+
+def scale(args):
+    """The scale measure: each load on 1 to --max-nodes nodes, the gain over one node, and the join step. The summary."""
+    loads = [l for l in args.loads.split(",") if l]
+    if not loads or any(l not in SCALE_LOADS for l in loads):
+        sys.exit(f"--loads takes {', '.join(SCALE_LOADS)}")
+    given = parse_ceilings(args.ceilings)
+    fit, configs, invalids = args.max_nodes, [], []
+    for load in loads:
+        previous = None
+        for nodes in range(1, fit + 1):
+            config = scale_config(args, load, nodes, previous, given)
+            configs.append(config)
+            if config.get("invalid"):  # the lab, not the node, broke at this size: no larger one is measured
+                invalids.append({"load": load, "nodes": nodes, "reason": config["invalid"]})
+                fit = nodes - 1
+                break
+            previous = ceiling_of(config) or previous
+        if not fit:
+            break
+    ceilings = {load: {c["nodes"]: ceiling_of(c) for c in configs if c["load"] == load and ceiling_of(c) is not None} for load in loads}
+    gains = {load: gain(c) for load, c in ceilings.items()}
+    base = next((ceilings[l][1] for l in sorted(loads, key=lambda l: l != "http-native") if l.startswith("http") and 1 in ceilings[l]), None)
+    rate = args.join_rate or (round(base * args.join_factor) if base else None)
+    joined = None
+    if args.no_join:
+        note = "join skipped (--no-join)"
+    elif fit < 2:
+        note = f"join skipped: {fit} node fits"
+    elif not rate:
+        note = "join skipped: no 1-node http ceiling and no --join-rate"
+    else:
+        joined, note = join(args, rate, fit), None
+        if joined["status"] == "invalid":
+            invalids.append({"load": "join", "nodes": fit, "reason": joined["stop_reason"]})
+    advice = None
+    if invalids and fit < args.max_nodes:
+        advice = f"the lab did not hold {args.max_nodes} nodes: rerun with --max-nodes {fit}" if fit else "not even one node ran without an INVALID step: the host is over its limit"
+    return {"approved": None, "confirmed": None, "stopped_by": None, "invalid": invalids[0]["reason"] if invalids else None, "invalids": invalids,
+            "max_nodes": args.max_nodes, "largest_fit": fit, "advice": advice, "cpu_cores_host": CORES, "ceilings": ceilings, "gain": gains,
+            "configs": configs, "join": None if joined is None else {k: joined[k] for k in ("status", "stop_reason", "rate", "windows", "generator")}, "join_note": note}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("measure", choices=list(UNITS))
@@ -1056,12 +1479,37 @@ def main():
     add("--swap-overlap", type=float, default=env("SWAP_OVERLAP", 5))
     add("--swap-settle", type=float, default=env("SWAP_SETTLE", 30))
     add("--swap-timeout", type=float, default=900)
+    add("--max-nodes", type=int, default=env("MAX_NODES", 3, int), help="scale: the most nodes to run, 1 to 10 (ATANOR_LOAD_MAX_NODES, 3); a configuration whose step is INVALID (the host over its limit) stops the larger ones: rerun with the largest that fit")
+    add("--loads", default="http-native,cells", help="scale: the loads to ramp on every configuration (http-native,cells)")
+    add("--scale-factor", type=float, default=env("SCALE_FACTOR", 1.25), help="scale: growth between the steps of 2 or more nodes, which start at the ceiling of one node fewer (ATANOR_LOAD_SCALE_FACTOR, 1.25)")
+    add("--ceilings", default="", help="scale: ceilings of an earlier round, LOAD:NODES=N,... : each ramp then runs the --factors steps of its ceiling (the exploration round)")
+    add("--factors", default="0.75,1,1.25,1.5", help="scale: the steps of --ceilings as fractions of each ceiling")
+    add("--no-join", action="store_true", help="scale: skip the join step")
+    add("--join-rate", type=float, help="scale: requests per second of the join step (default: --join-factor times the 1-node http-native ceiling)")
+    add("--join-factor", type=float, default=env("JOIN_FACTOR", 1.5), help="scale: the join rate as a multiple of the 1-node ceiling (ATANOR_LOAD_JOIN_FACTOR, 1.5)")
+    add("--join-warmup-s", type=float, default=env("JOIN_WARMUP_S", 30), help="scale: seconds of load on one node before the first join (ATANOR_LOAD_JOIN_WARMUP_S, 30)")
+    add("--join-observe-s", type=float, default=env("JOIN_OBSERVE_S", 120), help="scale: seconds from the start of a node to the start of the next one, and after the last (ATANOR_LOAD_JOIN_OBSERVE_S, 120)")
+    add("--join-node-wait-s", type=float, default=env("JOIN_NODE_WAIT_S", 90), help="scale: seconds the load budgets for a node to start, per join (ATANOR_LOAD_JOIN_NODE_WAIT_S, 90)")
+    add("--join-node-timeout-s", type=float, default=env("JOIN_NODE_TIMEOUT_S", 300), help="scale: seconds before a node that does not become ready makes the join INVALID (ATANOR_LOAD_JOIN_NODE_TIMEOUT_S, 300)")
+    add("--join-sample-s", type=float, default=env("JOIN_SAMPLE_S", 2), help="scale: seconds between the readings of the balancer and the admin API during the join (ATANOR_LOAD_JOIN_SAMPLE_S, 2)")
+    add("--spread-tol-pct", type=float, default=env("SPREAD_TOL_PCT", 25), help="scale: a node's share is spread when within this percent of 1/N (ATANOR_LOAD_SPREAD_TOL_PCT, 25)")
+    add("--spread-hold", type=int, default=env("SPREAD_HOLD", 3, int), help="scale: consecutive readings that must be within the tolerance (ATANOR_LOAD_SPREAD_HOLD, 3)")
+    add("--spread-min-cells", type=int, default=env("SPREAD_MIN_CELLS", 10, int), help="scale: awake cells below this in all are too few to judge a spread (ATANOR_LOAD_SPREAD_MIN_CELLS, 10)")
     args = parser.parse_args()
-    defaults = {"http-native": (25, 20000), "http-wasm": (25, 20000), "http-wasm-jobs": (25, 20000), "ws": (100, 60000), "cells": (100, 100000), "swap": (0, 0)}[args.measure]
-    args.start = args.start or defaults[0]
-    args.max = args.max or defaults[1]
+    args.start = args.start or RAMPS[args.measure][0] or None
+    args.max = args.max or RAMPS[args.measure][1] or None
     args.command = "mise run load:" + args.measure + " -- " + " ".join(sys.argv[2:])
     os.makedirs(args.out, exist_ok=True)
+    if args.measure == "scale":
+        if not 1 <= args.max_nodes <= 10:
+            sys.exit("--max-nodes takes 1 to 10")
+        scenario = os.environ.get("ATANOR_LOAD_SCENARIO", "A")
+        say(f"scale on scenario {scenario}, up to {args.max_nodes} nodes, {args.step_s:g} s per step, results in {args.out}")
+        summary = scale(args)
+        summary.update(scenario=scenario, measure="scale", command=args.command)
+        write_json(os.path.join(args.out, f"{scenario}_scale.summary.json"), summary)
+        say(f"summary: {json.dumps(summary)}")
+        sys.exit(exit_status("scale", summary))
     try:
         load_env("check-swap")
     except subprocess.CalledProcessError as error:

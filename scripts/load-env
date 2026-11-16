@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# The environment of the load tests: up | latency | deploy | rtt | check-swap | info | swap | reset | down. Settings: ATANOR_LOAD_*
+# The environment of the load tests: up | latency | deploy | rtt | check-swap | info | add-node | swap | reset | down. Settings: ATANOR_LOAD_*
 # (docs/how-to-run-the-load-tests.md). Safe to rerun; touches only the project atanor-cluster
 # and the container atanor-load-tc, by id or exact name.
 #
-#   up       scenario A or B: build, start one node (cgroup limits, data in tmpfs) with the store
+#   up       scenario A or B: build, start one node (ATANOR_LOAD_NODES: that many; cgroup limits, data in tmpfs) with the store
 #            (tmpfs, or the host's disk with ATANOR_LOAD_STORE_DISK=1; 25 ms added per trip), deploy the native, the plain WASM and the scoreboard worker
 #   latency  (re)apply the added store latency, and print the round trip from the node to the store
 #   deploy   deploy the native worker (cluster/load), the plain WASM worker (examples/load-plain) and the scoreboard (WASM) to the node
 #   rtt      print the round trip from the node to the store in ms (median of three); empty when unknown
 #   check-swap [ID...]  refuse (exit 1) a container that may swap; default: the running nodes, store and lb
-#   info     print the containers, addresses and cgroup directories as JSON
+#   info     print the containers (every running node too), addresses, the balancer's stats URL and cgroup pids as JSON
+#   add-node N  start node-N next to the running ones and wait until it is in the balancer's rotation
 #   swap [ARGS]  scripts/cluster-swap-run ARGS with the nodes' image (node B starts from the load image)
 #   reset    down, then up: a new node and a new store with empty data (the next step starts from nothing)
 #   down     remove the containers, network and volumes
@@ -90,6 +91,35 @@ deploy() {
   "$repo/scripts/cluster-deploy-example"
 }
 
+# The running nodes as a JSON array sorted by name: id, name (node-N), address and pid of each.
+nodes_json() {
+  local id items=()
+  for id in $(docker ps -q --filter "label=$label" --filter status=running --filter "name=^/?$CLUSTER-node-[0-9]+$"); do
+    items+=("$(jq -n --arg id "$id" --arg name "$(container_name "$id")" --arg ip "$(container_ip "$id")" --arg pid "$(docker inspect -f '{{.State.Pid}}' "$id")" \
+      '{id: $id, name: ($name | sub("^atanor-cluster-"; "")), ip: $ip, pid: ($pid | tonumber)}')")
+  done
+  printf '%s\n' "${items[@]}" | jq -s 'sort_by(.name)'
+}
+
+# add_node N: start node-N next to the running ones (the scale measure's join step) and wait until it is healthy and in
+# the balancer's rotation together with the others.
+add_node() {
+  local n=${1:-} timeout_s=${ATANOR_CLUSTER_UP_TIMEOUT:-300} deadline up
+  [[ $n =~ ^([2-9]|10)$ ]] || { echo "add-node takes the number of the node to start, 2 to 10" >&2; exit 2; }
+  export ATANOR_CLUSTER_RELEASE=${ATANOR_CLUSTER_RELEASE:-$(cluster_release_id)}
+  ATANOR_CLUSTER_STOP_GRACE=$(stop_grace)s || exit 1
+  export ATANOR_CLUSTER_STOP_GRACE
+  compose up -d --no-deps --no-recreate "node-$n"
+  deadline=$((SECONDS + timeout_s))
+  while :; do
+    up=$(curl -s -m 2 "$(published_url 8404)/stats;csv" | awk -F, '$1 == "atanor_http" && $2 ~ /^node/ && $18 == "UP"' | wc -l || true)
+    [[ $(docker inspect -f '{{.State.Health.Status}}' "$(cluster_container "node-$n")") == healthy && $up -ge $n ]] && break
+    (( SECONDS < deadline )) || { echo "node-$n is not ready after ${timeout_s}s ($up servers up in the balancer)" >&2; exit 1; }
+    sleep 1
+  done
+  echo "node-$n ready, $up nodes in rotation"
+}
+
 info() {
   local node store lb
   node=$(node_id) store=$(cluster_container store) lb=$(cluster_container lb)
@@ -97,9 +127,9 @@ info() {
     --arg node "$node" --arg nodeip "$(container_ip "$node")" --arg nodepid "$(docker inspect -f '{{.State.Pid}}' "$node")" \
     --arg store "$store" --arg storeip "$(container_ip "$store")" --arg storepid "$(docker inspect -f '{{.State.Pid}}' "$store")" \
     --arg lb "$lb" --arg lbpid "$(docker inspect -f '{{.State.Pid}}' "$lb")" \
-    --arg http "$(published_url 4000)" --arg admin "$(published_url 4001)" \
+    --arg http "$(published_url 4000)" --arg admin "$(published_url 4001)" --arg stats "$(published_url 8404)/stats;csv" --argjson nodes "$(nodes_json)" \
     '{scenario: $scenario, memory_limit_bytes: ($memory | tonumber), store_latency_ms: ($latency | tonumber), store_tmpfs_bytes: ($storetmpfs | tonumber), store_backing: $backing,
-      node: {id: $node, ip: $nodeip, pid: ($nodepid | tonumber)},
+      node: {id: $node, ip: $nodeip, pid: ($nodepid | tonumber)}, nodes: $nodes, stats: $stats,
       store: {id: $store, ip: $storeip, pid: ($storepid | tonumber)},
       lb: {id: $lb, pid: ($lbpid | tonumber)}, http: $http, admin: $admin}'
 }
@@ -130,6 +160,7 @@ case ${1:-} in
   swap) shift; exec "$repo/scripts/cluster-swap-run" "$@" ;;
   latency) latency ;;
   deploy) deploy ;;
+  add-node) shift; add_node "$@" ;;
   rtt) store_rtt "$(node_id)"; echo ;;
   check-swap) shift; check_swap "$@" ;;
   info) info ;;
