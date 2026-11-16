@@ -247,8 +247,12 @@ Atanor passes through.
 **Memory.** The memory of a node grows with its awake cells. Atanor keeps
 512 KiB of SQLite page cache per cell. When the node has a memory limit (a
 cgroup v2 limit, or `memory: [limit_bytes:]`), the awake cells may use half of
-it (`memory: [awake_fraction: 0.5]`), and the least used cells hibernate past
-that.
+the room between what the node uses when it boots (the BEAM and the data
+directory, which counts when it is in memory) and the refuse mark
+(`memory: [awake_fraction: 0.5]`), and the least used cells hibernate past
+that: before the node refuses requests. With 160 MiB at boot that is 137.6 MiB on a
+512 MiB node and 790.4 MiB on a 2 GiB one; it is never above half the limit
+nor below a tenth of it ([design §4.3](design.md)).
 The wakes in flight have a share too, and the guests of WASM workers that wait take the rest (`1 - wake_fraction`, below): `memory: [wake_fraction: 0.5]` of the headroom
 between the refuse mark and the limit derives `awake: [max_wakes:]` and
 `restore: [max_inflight_bytes:]` unless you give them (a 512 MiB

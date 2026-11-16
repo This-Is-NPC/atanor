@@ -3,22 +3,67 @@ defmodule Atanor.Memory do
   # The memory ceiling of the awake cells (Alambique `awake: [max_bytes:]`), derived from the node's memory
   # limit unless the operator sets it (design §4.3).
 
+  @mib 1_048_576
+  @default_refuse_fraction 0.85
+  # The least the awake cells get, as a share of the limit, when the baseline leaves almost no headroom.
+  @min_awake_fraction 0.1
+
   @doc """
   `{max_bytes, source}` for the awake cells. `explicit` is `awake: [max_bytes:]` when the operator gave it
   (a `nil` value there means no ceiling). The source is `:option`, `:limit_bytes`, `:cgroup` or `:none`.
-  """
-  @spec awake_max_bytes(map, {:ok, pos_integer | nil} | :error) :: {pos_integer | nil, atom}
-  def awake_max_bytes(_memory, {:ok, max_bytes}), do: {max_bytes, :option}
 
-  def awake_max_bytes(memory, :error) do
+  Derived, it is `awake_fraction` of the headroom between the working set at boot (`baseline`: the BEAM and the
+  data directory before any cell is awake; `nil` when unreadable) and the refuse mark, so the cells hibernate
+  before the node refuses. It is at least a tenth of the limit and at most `limit * awake_fraction`, which is
+  all of it without a baseline (design §4.3).
+  """
+  @spec awake_max_bytes(map, {:ok, pos_integer | nil} | :error, non_neg_integer | nil) :: {pos_integer | nil, atom}
+  def awake_max_bytes(memory, explicit, baseline \\ nil)
+  def awake_max_bytes(_memory, {:ok, max_bytes}, _baseline), do: {max_bytes, :option}
+
+  def awake_max_bytes(memory, :error, baseline) do
     case limit(memory) do
       {nil, _source} -> {nil, :none}
-      {bytes, source} -> {max(1, trunc(bytes * memory.awake_fraction)), source}
+      {bytes, source} -> {derived_awake(memory, bytes, baseline), source}
     end
   end
 
-  @mib 1_048_576
-  @default_refuse_fraction 0.85
+  defp derived_awake(memory, limit, nil), do: max(1, trunc(limit * memory.awake_fraction))
+
+  defp derived_awake(memory, limit, baseline) do
+    mark = limit * (memory.refuse_fraction || @default_refuse_fraction)
+    ceiling = limit * memory.awake_fraction
+
+    (mark - baseline)
+    |> Kernel.*(memory.awake_fraction)
+    |> max(limit * @min_awake_fraction)
+    |> min(ceiling)
+    |> trunc()
+    |> max(1)
+  end
+
+  @doc """
+  `{:ok, bytes}`: the working set of the cgroup, its usage minus the file cache the kernel can drop (without
+  `memory.stat` all usage counts); `:error` when `memory.current` cannot be read.
+  """
+  @spec working_set(map) :: {:ok, non_neg_integer} | :error
+  def working_set(%{current_path: current_path, stat_path: stat_path}) do
+    with {:ok, text} <- File.read(current_path),
+         {current, _} <- Integer.parse(text) do
+      {:ok, max(current - inactive_file(stat_path), 0)}
+    else
+      _ -> :error
+    end
+  end
+
+  defp inactive_file(path) do
+    with {:ok, text} <- File.read(path),
+         [_, bytes] <- Regex.run(~r/^inactive_file (\d+)$/m, text) do
+      String.to_integer(bytes)
+    else
+      _ -> 0
+    end
+  end
 
   @doc """
   The bytes that wakes in flight may hold: `wake_fraction` of the headroom between the refuse mark and the

@@ -687,11 +687,18 @@ defmodule Atanor.Config do
     Map.merge(disk, %{budget: budget, budget_source: source})
   end
 
-  # `awake: [max_bytes:]` is the operator's when given (nil: no ceiling); else it follows the memory limit.
+  # `awake: [max_bytes:]` is the operator's when given (nil: no ceiling); else it follows the memory limit and
+  # the working set now, at boot, before any cell is awake.
   defp awake_budget(alambique, memory) do
     awake = Keyword.get(alambique, :awake, [])
 
-    case Atanor.Memory.awake_max_bytes(memory, Keyword.fetch(awake, :max_bytes)) do
+    baseline =
+      case Atanor.Memory.working_set(memory) do
+        {:ok, bytes} -> bytes
+        :error -> nil
+      end
+
+    case Atanor.Memory.awake_max_bytes(memory, Keyword.fetch(awake, :max_bytes), baseline) do
       {max_bytes, source} when source in [:limit_bytes, :cgroup] ->
         {Keyword.put(alambique, :awake, Keyword.put(awake, :max_bytes, max_bytes)), source}
 

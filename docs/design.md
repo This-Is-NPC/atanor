@@ -798,7 +798,7 @@ the node, so a container with a limit needs no option:
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `memory: [limit_bytes:]` | `nil` | the memory limit of the node, when it is not the cgroup's. Overrides the detection |
-| `memory: [awake_fraction:]` | 0.5 | share of that limit given to `awake: [max_bytes:]`, a number above 0 and at most 1. The rest is for the BEAM, the 150 KiB per cell that `max_bytes` does not count, the stores and the file cache |
+| `memory: [awake_fraction:]` | 0.5 | share of the headroom between the working set at boot and the refuse mark given to `awake: [max_bytes:]` (below), a number above 0 and at most 1. The rest is for the 150 KiB per cell that `max_bytes` does not count, the data directory when it is in memory, the stores and the file cache |
 | `memory: [cgroup_path:]` | `/sys/fs/cgroup/memory.max` | the cgroup v2 file read when `limit_bytes` is `nil`: a byte count, or `max` for no limit |
 | `memory: [wake_fraction:]` | 0.5 | share of the headroom between the refuse mark and the limit that the wakes in flight may fill, a number above 0 and at most 1; derives `awake: [max_wakes:]` and `restore: [max_inflight_bytes:]` unless given (below) |
 | `memory: [refuse_fraction:]` | 0.85 | the ingress refuses with 503 while the working set is at least this share of the limit (§7.1, Admission); `nil` turns it off |
@@ -806,14 +806,33 @@ the node, so a container with a limit needs no option:
 | `memory: [current_path:]`, `[stat_path:]` | `/sys/fs/cgroup/memory.current`, `memory.stat` | the cgroup v2 files of the working set |
 
 The ceiling is, in order: the `awake: [max_bytes:]` the operator gave (`nil`
-there means no ceiling), `limit_bytes * awake_fraction`, the cgroup limit
-times `awake_fraction`, or none when the node has no limit, or the file is
-missing or unreadable (`Atanor.Memory`). The node logs the value and where it
-came from when it starts: `atanor: awake cells limited to 1073741824 bytes
+there means no ceiling), or, from the limit (`limit_bytes`, else the cgroup's),
+
+  `clamp(awake_fraction * (refuse_fraction * limit - baseline), limit / 10, awake_fraction * limit)`
+
+or none when the node has no limit, or the file is missing or unreadable
+(`Atanor.Memory`). `baseline` is the working set of the cgroup when the node
+builds its configuration: the BEAM and the data directory before any cell is
+awake. Measured that way the ceiling follows the node that runs: a fixed
+allowance for the BEAM would leave nothing on a small node and too much on a
+big one. A cell that is awake costs its page cache (512 KiB) and about 150 KiB
+more, so a ceiling of `awake_fraction` of the room below the refuse mark makes
+the cells hibernate before the memory gate refuses, and leaves the rest for the
+cells' growth, the wakes and, in memory, the files of the cells. The ceiling is
+never above `limit * awake_fraction` (the value without a baseline, also used
+when `memory.current` is unreadable) and never below a tenth of the limit.
+With a baseline of 160 MiB, a node of 512 MiB gets 137.6 MiB (256 MiB before)
+and one of 2 GiB gets 790.4 MiB (1 GiB before). The node logs the value and where it
+came from when it starts: `atanor: awake cells limited to 144284057 bytes
 (cgroup)`. In the container cluster (`cluster/compose.yml`) each node has
-`mem_limit` (`ATANOR_CLUSTER_NODE_MEMORY`, 2g), so with the default fraction its
-ceiling is 1 GiB. With `ATANOR_CLUSTER_TMPFS=1` the cell files count against
-that limit too; give the node more memory rather than a larger fraction.
+`mem_limit` (`ATANOR_CLUSTER_NODE_MEMORY`, 2g). With `ATANOR_CLUSTER_TMPFS=1`
+the cell files live in tmpfs and count against that limit: the baseline holds
+only the files present at boot, so the files that the cells write later come out
+of the room that `awake_fraction` leaves, and a node that holds many cells needs
+more memory rather than a larger fraction. A load of 650 cells per node on a
+512 MiB node with tmpfs (measured: the working set reached the refuse mark at
+488 cells, with 244 MiB of cache under a ceiling of 256 MiB) is the case this
+ceiling is for.
 The load harness sets `ATANOR_MEMORY_LIMIT` to the scenario memory (`ATANOR_CLUSTER_MEMORY_LIMIT`) while the container limit adds the tmpfs, so the gates see the scenario's machine.
 *Memory of the wakes.* A wake restores the state of a cell from the store, and
 a store that fails makes it worse: an upload that fails stops the cell, and every
