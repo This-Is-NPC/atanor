@@ -8,18 +8,20 @@ defmodule Atanor.Rebalance do
   moves those whose preferred node is another one, with `Alambique.move/4` through `Atanor.HotCells.move/4`
   (which gates the callers while the cell moves).
 
-  **A plan per membership.** A change of the members, or of this node being ready, starts the wait of
-  `start_delay_ms`; a change during the wait or the plan starts it again, so a node that joins and leaves
-  quickly moves nothing. The plan lists the cells awake here whose preferred node is another, coldest
-  first (`Alambique.cells/2`, `last_used`), and moves one at a time, at most `max_moves_per_s` a second.
+  **A plan per membership.** A change of the members (the `[:alambique, :membership, :changed]` event), or of
+  this node being ready, starts the wait of `start_delay_ms`; a change during the wait or the plan starts it
+  again, so a node that joins and leaves quickly moves nothing. The plan lists the cells awake here whose
+  preferred node is another, coldest first (`Alambique.cells/2`, `last_used`), and moves one at a time, at most
+  `max_moves_per_s` a second.
 
-  **What is left alone.** A cell with a call in flight (`Alambique.load/2`, `pending`) waits a few steps and,
-  if it stays busy, is left for the next round of the plan. A round runs five seconds after the last one ended,
+  **What is left alone.** A move asks `only_if_idle`: a cell with a call in flight answers `{:error, :busy}`,
+  goes back to the queue and, after a few tries, is left for the next round of the plan. A round runs five seconds after the last one ended,
   twelve at most, and the plan ends with the first round that finds nothing to move. A cell the plan handed out
   is never handed out again while the membership stays, so a cell that comes back, or whose move failed, is not
-  chased: it keeps working where it is. The cells that `Atanor.HotCells.pinned/1` names, the hot ones and those that moved within
-  `residence_ms`, are not touched: the hot-cell loop wins, and a cell moved by pressure or by a rebalance
-  elsewhere is not moved back. A target that the detector blocks is skipped.
+  chased: it keeps working where it is. The cells that `Atanor.HotCells.pinned/1` names, the hot ones and those that
+  the loop moved within `residence_ms`, are not touched: the hot-cell loop wins, and a cell moved by pressure
+  is not moved back. A rebalance move starts no residence time, so a cell that arrives by rebalance can move
+  on in the next one. A target that the detector blocks is skipped.
 
   Moves are one at a time, so the cost to the callers is one cell paused at once.
   """
@@ -34,6 +36,7 @@ defmodule Atanor.Rebalance do
   @round_ms 5_000
   @rounds 12
   @page 1_000
+  @event [:alambique, :membership, :changed]
 
   def child_spec(config) do
     %{id: __MODULE__, start: {GenServer, :start_link, [__MODULE__, config, [name: server(config.name)]]}}
@@ -54,7 +57,12 @@ defmodule Atanor.Rebalance do
   @impl true
   def init(config) do
     cfg = config.rebalance
+    Process.flag(:trap_exit, true)
 
+    # Alambique does not emit the first view of the members, so they are read once, after the subscription
+    # (a change in between only repeats the event).
+    :telemetry.detach(handler(config.name))
+    :ok = :telemetry.attach(handler(config.name), @event, &__MODULE__.forward/4, {self(), config.alambique})
     send(self(), :tick)
 
     {:ok,
@@ -64,7 +72,7 @@ defmodule Atanor.Rebalance do
        cfg: cfg,
        step_ms: div(1000, cfg.max_moves_per_s),
        key: nil,
-       members: [],
+       members: Alambique.members(config.alambique),
        epoch: 0,
        changed_at: now(),
        phase: :idle,
@@ -89,7 +97,19 @@ defmodule Atanor.Rebalance do
       {:noreply, state}
   end
 
+  def handle_info({:members, members}, state), do: {:noreply, %{state | members: members}}
   def handle_info(_message, state), do: {:noreply, state}
+
+  @impl true
+  def terminate(_reason, state), do: :telemetry.detach(handler(state.name))
+
+  @doc false
+  def forward(_event, _measurements, %{instance: instance, members: members}, {pid, instance}),
+    do: send(pid, {:members, members})
+
+  def forward(_event, _measurements, _metadata, _config), do: :ok
+
+  defp handler(name), do: {__MODULE__, name}
 
   @impl true
   def handle_call(:status, _from, state), do: {:reply, report(state), state}
@@ -106,31 +126,38 @@ defmodule Atanor.Rebalance do
       result: if(ok?, do: :ok, else: result)
     })
 
-    state = %{state | in_flight: nil, total: bump(state.total, ok?)}
-    {:noreply, if(epoch == state.epoch, do: count(state, ok?), else: state)}
+    state = %{state | in_flight: nil}
+    current? = epoch == state.epoch
+
+    # A cell with a call in flight stays: it goes back to the plan, and is no failure.
+    case result do
+      {:error, :busy} -> {:noreply, if(current?, do: %{state | plan: Plan.busy(state.plan, id)}, else: state)}
+      _ -> {:noreply, state |> count_total(ok?) |> count(current?, ok?)}
+    end
   end
 
-  defp bump(total, true), do: %{total | moved: total.moved + 1}
-  defp bump(total, false), do: %{total | failed: total.failed + 1}
+  defp count_total(state, ok?), do: %{state | total: bump(state.total, ok?)}
 
-  defp count(state, true), do: %{state | moved: state.moved + 1}
-  defp count(state, false), do: %{state | failed: state.failed + 1}
+  defp bump(counts, true), do: %{counts | moved: counts.moved + 1}
+  defp bump(counts, false), do: %{counts | failed: counts.failed + 1}
 
-  # A change of the members, or of whether this node serves, makes a new plan that waits for the delay.
+  defp count(state, true, ok?), do: bump(state, ok?)
+  defp count(state, false, _ok?), do: state
+
+  # A change of the members, or of whether this node serves, makes a new plan that waits for the delay. The
+  # members come from the membership event; whether the node serves is read here.
   defp observe(state) do
-    members = Alambique.Membership.nodes(Alambique.Config.fetch!(state.alambique))
-    active? = Registry.state(state.name) == :ready and node() in members
-    key = {members, active?}
-    if key == state.key, do: state, else: changed(state, key, members, active?)
+    active? = Registry.state(state.name) == :ready and node() in state.members
+    key = {state.members, active?}
+    if key == state.key, do: state, else: changed(state, key, active?)
   end
 
-  defp changed(state, key, members, active?) do
+  defp changed(state, key, active?) do
     state = if state.phase in [:running, :between_rounds], do: stop(state, :membership_changed), else: state
 
     %{
       state
       | key: key,
-        members: members,
         epoch: state.epoch + 1,
         changed_at: now(),
         phase: if(active?, do: :waiting, else: :idle),
@@ -165,8 +192,7 @@ defmodule Atanor.Rebalance do
   defp settle(state), do: if(Plan.pending(state.plan) == 0, do: stop(%{state | phase: :done}, :done), else: state)
 
   defp next_round(state) do
-    config = Alambique.Config.fetch!(state.alambique)
-    preferred = &Alambique.Membership.preferred(config, &1)
+    preferred = &Alambique.preferred(state.alambique, &1)
     plan = Plan.round(state.plan, entries(state.alambique), preferred, node(), HotCells.pinned(state.name))
     %{state | plan: plan, phase: :running, rounds: state.rounds + 1}
   end
@@ -185,10 +211,9 @@ defmodule Atanor.Rebalance do
   end
 
   defp step(state) do
-    config = Alambique.Config.fetch!(state.alambique)
     pinned = HotCells.pinned(state.name)
 
-    case Plan.next(state.plan, &check(state, config, pinned, &1)) do
+    case Plan.next(state.plan, &check(state, pinned, &1)) do
       {{:move, id, target}, plan} ->
         start_move(state, id, target)
         %{state | plan: plan, in_flight: id}
@@ -199,17 +224,14 @@ defmodule Atanor.Rebalance do
     end
   end
 
-  # What a cell is now: it may have gone to sleep, been pinned, or have a call running.
-  defp check(state, config, pinned, id) do
-    with false <- MapSet.member?(pinned, id),
-         target = Alambique.Membership.preferred(config, id),
-         true <- target != node() and not Detector.blocked?(state.name, target),
-         {:ok, %{pending: 0, waking: false}} <- Alambique.load(state.alambique, id) do
-      {:move, target}
-    else
-      {:ok, _busy} -> :busy
-      _ -> :stay
-    end
+  # What a cell is now: it may have gone to sleep, been pinned, or be preferred here again. A call in flight is
+  # not checked here: the move itself answers `{:error, :busy}` (`only_if_idle`).
+  defp check(state, pinned, id) do
+    target = Alambique.preferred(state.alambique, id)
+
+    if MapSet.member?(pinned, id) or target == node() or Detector.blocked?(state.name, target),
+      do: :stay,
+      else: {:move, target}
   end
 
   # The next round finds what this one left (busy cells) or what came back, and ends the plan when it finds nothing.
