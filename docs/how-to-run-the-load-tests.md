@@ -381,17 +381,18 @@ each reading, `t` (seconds from the first), `new_5xx` (the balancer's backend 5x
 
 **The CPU budget.** The nodes, the store and the balancer have CPU limits (scenario A: 1 CPU per node, 2 for the
 store and 2 for the balancer; `ATANOR_LOAD_STORE_CPUS` and `ATANOR_LOAD_LB_CPUS`), and the generators and the
-harness need cores too. `load:scale` refuses to start when `--max-nodes` times the node CPUs plus the store's and the
-balancer's exceed the host's cores, and prints the `--max-nodes` that fits. A 4-core host has room for 2 nodes of
-scenario A only with `ATANOR_LOAD_STORE_CPUS=1 ATANOR_LOAD_LB_CPUS=1` (2 + 1 + 1 = 4), set before `load:up`. `--allow-oversubscribed` runs anyway; the steps are then still
-judged by the host-saturated rule above.
+harness need cores too. The limits are caps, not reservations, so `load:scale` never refuses on their sum. When
+`--max-nodes` times the node CPUs plus the store's and the balancer's exceed the host's cores it prints a warning
+once, and the scale summary records `cpu_caps_sum`, `host_cores` and `cpu_caps_warning`. The guard is the
+host-saturated rule above: a step whose mean busy cores pass 85% of the host's cores is INVALID, and `largest_fit`
+and the advice say how many nodes the host held.
 
 **The default ceilings.** Each ramp ends at `--max` when nothing fails: 20000 req/s for `http-native`, 100000 for
 `cells`. A configuration that gets there has `ceiling_reached: true`: its ceiling is a lower bound, not the node's limit, and
 the gain computed from it is too.
 
 **INVALID.** The host guards of every step apply (net host load under 1 core, busy cores under 85% of the host's,
-free memory, swap); every node's CPU counts as the test's own. The join judges the same guard over its readings, leaving out the
+free memory, swap); every node's CPU counts as the test's own. The join judges the same guards (net load and busy share, `host.busy_cores_mean` in its file) over its readings, leaving out the
 seconds in which a node was starting. When a step is INVALID, `scale` records it, runs no larger
 configuration (and none for the other loads), and the summary says `largest_fit` and
 `rerun with --max-nodes N`: rerun with the largest count that fit. Nothing asks for more resources than

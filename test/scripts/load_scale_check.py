@@ -318,6 +318,8 @@ record, _ = run_join("join_busy", force_busy=True, quiet_max_wait=0.3)
 results["join_busy"] = {"status": record["status"], "valid": record["valid"], "reason": record["stop_reason"]}
 record, _ = run_join("join_contaminated", busy_at=1, host_load_max=1.0, quiet_max_wait=2.0)
 results["join_contaminated"] = {"status": record["status"], "reason": record["stop_reason"]}
+record, _ = run_join("join_saturated", busy_at=1, host_load_max=100.0, max_busy_share=0.2)
+results["join_saturated"] = {"status": record["status"], "valid": record["valid"], "reason": record["stop_reason"], "busy": record["host"]["busy_cores_mean"]}
 real_cluster = m.fresh_cluster
 m.fresh_cluster = lambda nodes: (_ for _ in ()).throw(m.LabError("the lab did not start with 1 nodes"))
 record, _ = run_join("join_lab")

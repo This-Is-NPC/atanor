@@ -482,7 +482,7 @@ results["ticker"] = [over for _, over in ticker.stalls]
 real_cores = m.CORES
 m.CORES = 4
 results["judge_busy"] = [m.judge_busy(3.5, 0.85), m.judge_busy(3.4, 0.85), m.judge_busy(None, 0.85)]
-results["oversubscribed"] = [m.cpu_oversubscribed(n, {"node_cpus": 1, "store_cpus": s, "lb_cpus": s}, 4) for n, s in ((3, 2), (1, 2), (2, 1), (3, 1))]
+results["cpu_caps"] = [list(m.cpu_caps(n, {"node_cpus": 1, "store_cpus": s, "lb_cpus": s}, 4)) for n, s in ((3, 2), (1, 2), (2, 1), (3, 1))]
 m.CORES = real_cores
 # The ws ramp must stay under the node's connection cap, and the cap under its descriptor limit.
 results["ws_cap"] = [m.ws_cap_problem(51200, 16384, None), m.ws_cap_problem(100, 16384, None), m.ws_cap_problem(51200, 70000, 65536), m.ws_cap_problem(51200, 70000, 1048576)]

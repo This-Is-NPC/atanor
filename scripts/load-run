@@ -627,16 +627,14 @@ def judge_busy(busy, share):
     return f"host saturated: {busy:g} busy cores > {limit:g} ({share:.0%} of {CORES} cores)" if busy is not None and busy > limit else None
 
 
-def cpu_oversubscribed(nodes, limits, cores):
-    """Why a scale run of up to `nodes` nodes does not fit on a host of `cores` cores, or None: the nodes, the store and the balancer
-    together get more CPU than the host has, so the generator and the harness would starve them. `limits`: the CPU limits of one node,
-    the store and the balancer, from `load-env limits`."""
+def cpu_caps(nodes, limits, cores):
+    """(sum of the CPU limits of up to `nodes` nodes, the store and the balancer, a warning when it exceeds `cores`, else None).
+    The limits are caps, not reservations: the run goes on and `judge_busy` guards each step. `limits`: from `load-env limits`."""
     wanted = nodes * limits["node_cpus"] + limits["store_cpus"] + limits["lb_cpus"]
-    if wanted <= cores:
-        return None
-    fits = max(int((cores - limits["store_cpus"] - limits["lb_cpus"]) // limits["node_cpus"]), 1)
-    return (f"{nodes} nodes x {limits['node_cpus']:g} CPUs + store {limits['store_cpus']:g} + balancer {limits['lb_cpus']:g} = {wanted:g} CPUs "
-            f"> {cores} host cores; use --max-nodes {fits}, lower ATANOR_LOAD_STORE_CPUS and ATANOR_LOAD_LB_CPUS, or pass --allow-oversubscribed")
+    warning = None if wanted <= cores else (
+        f"the CPU limits add up to {wanted:g} ({nodes} nodes x {limits['node_cpus']:g} + store {limits['store_cpus']:g} + balancer {limits['lb_cpus']:g}), "
+        f"more than the host's {cores} cores; they are caps, so the run goes on, and a step that fills the host is INVALID (host saturated)")
+    return wanted, warning
 
 
 def busy_reason(load, args):
@@ -1427,10 +1425,11 @@ def join_windows(poller, events, args, rate):
 
 
 def join_host_load(samples, events, sample_s):
-    """Mean net host load of the join, leaving out the intervals in which a node was starting: the sampler cannot count its CPU as the lab's own before it is ready."""
+    """(mean net host load, mean busy cores) of the join, leaving out the intervals in which a node was starting: the sampler cannot count its CPU as the lab's own before it is ready."""
     excluded = [(e["join_t"], e["ready_t"] + 2 * sample_s) for e in events]
-    loads = [n[1] for a, b in zip(samples, samples[1:]) if not any(b["t"] > s and a["t"] < e for s, e in excluded) for n in [net_load(a, b)] if n]
-    return round(sum(loads) / len(loads), 2) if loads else None
+    loads = [n for a, b in zip(samples, samples[1:]) if not any(b["t"] > s and a["t"] < e for s, e in excluded) for n in [net_load(a, b)] if n]
+    mean = lambda values: round(sum(values) / len(values), 2) if values else None
+    return mean([n[1] for n in loads]), mean([n[0] for n in loads])
 
 
 def join(args, rate, nodes_max):
@@ -1493,11 +1492,11 @@ def join(args, rate, nodes_max):
         record["generator"] = {"sent": merged["sent"], "completed": merged["completed"], "statuses": merged["statuses"], "errors": errors,
                                "status_503": merged["statuses"].get("503 retry-after", 0) + merged["statuses"].get("503 no retry-after", 0)}
     record["windows"] = join_windows(poller, events, args, rate)
-    mean = join_host_load(samples, events, args.sample_s)
-    record["host"] = {"net_load_mean": mean, "available_gb_min": round(min(s["host"]["available_gb"] for s in samples), 1)}
+    mean, busy = join_host_load(samples, events, args.sample_s)
+    record["host"] = {"net_load_mean": mean, "busy_cores_mean": busy, "available_gb_min": round(min(s["host"]["available_gb"] for s in samples), 1)}
     if events and all(v is None for e in events for v in (e.get("rebalance") or {}).values()):
         record["notes"].append("no node reports a rebalance state in /runtime")
-    contaminated = judge_host(mean, args.host_load_max)
+    contaminated = judge_host(mean, args.host_load_max) or judge_busy(busy, args.max_busy_share)
     reason = contaminated or failure or (f"generator: {outcome['error']}" if outcome.get("error") else None)
     if reason:
         record.update(valid=False, status="invalid", stop_reason=reason)
@@ -1569,7 +1568,6 @@ def main():
     add("--delivery", type=float, default=env("DELIVERY", 0.95), help="achieved/planned below this makes a step INVALID (ATANOR_LOAD_DELIVERY, 0.95)")
     add("--host-load-max", type=float, default=env("HOST_LOAD_MAX", 1), help="net host load (busy cores minus the test's own): a step waits until it stays below this for --quiet-window, and a step whose mean exceeds it is INVALID and stops the round (ATANOR_LOAD_HOST_LOAD_MAX, 1)")
     add("--max-busy-share", type=float, default=env("MAX_BUSY_SHARE", 0.85), help="mean busy cores of the host above this share of its cores make a step INVALID: the generator, balancer, store and nodes share the host, so the node is not the limit (ATANOR_LOAD_MAX_BUSY_SHARE, 0.85)")
-    add("--allow-oversubscribed", action="store_true", help="scale: run although --max-nodes x the node CPUs + the store's + the balancer's exceed the host's cores (refused by default)")
     add("--quiet-window", type=float, default=env("QUIET_WINDOW", 60), help="seconds the net host load must stay below --host-load-max before each step (ATANOR_LOAD_QUIET_WINDOW, 60)")
     add("--quiet-max-wait", type=float, default=env("QUIET_MAX_WAIT", 1800), help="seconds to wait for that quiet window; then the measure stops with 'host busy' (ATANOR_LOAD_QUIET_MAX_WAIT, 1800)")
     add("--max-generator-swap-mb", type=float, default=env("MAX_GENERATOR_SWAP_MB", 16), help="VmSwap of the load generators growing by more than this in a step makes it INVALID (ATANOR_LOAD_MAX_GENERATOR_SWAP_MB, 16)")
@@ -1622,13 +1620,13 @@ def main():
     if args.measure == "scale":
         if not 1 <= args.max_nodes <= 10:
             sys.exit("--max-nodes takes 1 to 10")
-        crowded = cpu_oversubscribed(args.max_nodes, json.loads(load_env("limits")), CORES)
-        if crowded and not args.allow_oversubscribed:
-            sys.exit(f"refusing to run, the host is too small: {crowded}")
+        caps_sum, warning = cpu_caps(args.max_nodes, json.loads(load_env("limits")), CORES)
+        if warning:
+            say(f"warning: {warning}")
         scenario = os.environ.get("ATANOR_LOAD_SCENARIO", "A")
         say(f"scale on scenario {scenario}, up to {args.max_nodes} nodes, {args.step_s:g} s per step, results in {args.out}")
         summary = scale(args)
-        summary.update(scenario=scenario, measure="scale", command=args.command)
+        summary.update(scenario=scenario, measure="scale", command=args.command, cpu_caps_sum=caps_sum, host_cores=CORES, cpu_caps_warning=warning)
         write_json(os.path.join(args.out, f"{scenario}_scale.summary.json"), summary)
         say(f"summary: {json.dumps(summary)}")
         sys.exit(exit_status("scale", summary))
