@@ -109,7 +109,9 @@ defmodule Atanor.Test.Rolling do
     {:ok, :ok} = Cluster.call(cluster, leaving, Supervisor, :stop, [supervisor])
     Cluster.kill(cluster, leaving)
 
-    Cluster.inject(cluster, leaving, kind: :latency, ms: @latency_ms, times: 5)
+    # The requests of the deployment load (`list`, `get`) only: the store check of the start (puts and a
+    # delete, before the instance runs) would use up the slowed requests, and the node would load at full speed.
+    Cluster.inject(cluster, leaving, kind: :latency, ms: @latency_ms, times: 5, ops: [:list, :get])
     started = now()
     node = Cluster.node(cluster, leaving)
     instance = Cluster.instance(cluster)
