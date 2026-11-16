@@ -109,15 +109,35 @@ and `/proc/meminfo`. Per step, in this order:
    tmpfs with `ATANOR_LOAD_STORE_TMPFS_SIZE`. With `ATANOR_LOAD_STORE_DISK=1` there is no store tmpfs to judge; the
    same verdict is made on the share of the store's filesystem used (`ATANOR_LOAD_MAX_STORE_DISK_PCT`, 90), for
    example `store disk 93% > 90%`.
-6. **Criteria.** The step fails when any criterion of the table above broke.
-7. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
+6. **Stall.** The step is INVALID, with a reason that starts with `stall:`, when the lab stopped for a moment
+   and failed the step by chance: the generator's lag p99 (`generator.lag_p99_ms` in the step file) is above
+   50 ms (`--max-lag-ms`, `ATANOR_LOAD_MAX_LAG_MS`; normal steps show 1 to 2 ms), or the node's CPU throttling
+   (`node_throttled_ms` in `series`) grew between two consecutive samples by more than 5000 ms
+   (`--max-throttle-jump-ms`, `ATANOR_LOAD_MAX_THROTTLE_JUMP_MS`) and by more than 5 times the median growth
+   per sample of the step. A node saturated at every sample throttles at every sample, so its median is high
+   and it is not flagged. A step whose generator lags is not a measurement of the node. Unlike the other
+   INVALID verdicts, a stall repeats the step once (a fresh node when the step is fresh), so one chance event
+   does not stop the round: the first attempt is kept in `first_attempt` of the step file and in `notes`. When
+   the repeat is INVALID too, the usual INVALID path applies: the round stops and `load-run` exits 1.
+7. **Criteria.** The step fails when any criterion of the table above broke.
+8. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
    failure of the node. A saturated node breaks p99 first, so it is a failure, not an invalid step.
    A saturated node that answers too slowly leaves a backlog in the generator. The generator keeps the
    backlog bounded: a request picked up more than `--timeout` (10 s) after it was due, and any request
    still queued or in flight `--timeout + 5` s after the last one was due, is counted as
-   `error: not completed`. That is an error, so the step fails (step 6), as a measured saturation; the
+   `error: not completed`. That is an error, so the step fails (step 7), as a measured saturation; the
    generator still writes its document. INVALID stays for real generator problems: a crash, no file
    descriptors, CPU or swap.
+
+In short, what makes a step INVALID (no verdict on the node):
+
+| Cause | Limit (option) | Repeated? |
+| --- | --- | --- |
+| Host busy or contaminated | net load 1 core (`--host-load-max`) | no, the round stops |
+| Swap | 16 MB generator, 256 MB host growth, any in a measured container | no, the round stops |
+| Store full | 90% of its tmpfs or disk | no, the round stops |
+| Stall | generator lag p99 over 50 ms, or a throttling jump over 5000 ms and 5 times the median (`--max-lag-ms`, `--max-throttle-jump-ms`) | once; the round stops if the repeat stalls too |
+| Delivery | achieved under 95% of planned | no, the round stops |
 
 The ramp multiplies the value by 2 from a start (`--start`, `--factor`, or `--steps`) until a step fails;
 it then bisects `--refine` times (3) between the last good and the failing value and repeats the best good
@@ -192,6 +212,8 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB` | 256 | Growth of the host swap used during a step above which the step is invalid; its level is only recorded. |
 | `ATANOR_LOAD_MAX_STORE_TMPFS_PCT` | 90 | Share of the store's tmpfs size, at any sample, above which the step is invalid (before the criteria). |
 | `ATANOR_LOAD_MAX_STORE_DISK_PCT` | 90 | With `ATANOR_LOAD_STORE_DISK=1`: share of the store's filesystem used, at any sample, above which the step is invalid. |
+| `ATANOR_LOAD_MAX_LAG_MS` | 50 | Generator lag p99 above which a step is invalid (`stall:`) and repeated once. |
+| `ATANOR_LOAD_MAX_THROTTLE_JUMP_MS` | 5000 | Growth of the node's CPU throttling between two samples above which, and above 5 times the median growth, a step is invalid (`stall:`) and repeated once. |
 | `ATANOR_LOAD_WRITE_RATIO`, `_CELLS` | 0.5, 64 | http: share of writes, cells the requests spread over. |
 | `ATANOR_LOAD_CELL_PERIOD` | 10 | cells: seconds between the writes to one cell. |
 | `ATANOR_LOAD_OPEN_RATE`, `_WS_INTERVAL` | 100, 30 | Sockets opened or cells touched per second; seconds between messages of a socket (the node closes a silent socket after 60 s). |

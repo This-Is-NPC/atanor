@@ -238,6 +238,36 @@ defmodule Atanor.LoadRunTest do
     assert ramp["generator_runs"] == 2
     assert length(ramp["files"]) == 2
 
+    # a stall of the lab: a high generator lag, or one jump of the node's CPU throttling far above its usual growth; a saturated node is not one
+    stall = r["judge_stall"]
+    assert stall["lag"] =~ ~r/^stall: generator lag p99 242 ms > 50 ms$/
+    assert stall["jump"] =~ ~r/^stall: node CPU throttling grew 6200 ms .* > 5000 ms and 5 x the median 500 ms$/
+    assert stall["lag_at_limit"] == :null
+    assert stall["saturated"] == :null
+    assert stall["saturated_peak"] == :null
+    assert stall["small_jump"] == :null
+    assert stall["unknown"] == :null
+    assert stall["single"] == :null
+    assert stall["no_lag"] == :null
+    assert stall["missing_key"] == :null
+
+    # a stalled step is repeated once and keeps the first attempt; a repeat that stalls too is INVALID and ends the round
+    once = r["stall_once"]
+    assert once["runs"] == [10, 10, 20, 20]
+    assert once["summary"]["invalid"] == :null
+    assert once["first"]["status"] == "ok"
+    assert once["first"]["first_attempt"]["status"] == "invalid"
+    assert once["first"]["first_attempt"]["stop_reason"] =~ "stall: generator lag"
+    assert once["first"]["first_attempt"]["generator"]["lag_p99_ms"] == 242.0
+    assert Enum.any?(once["first"]["notes"], &(&1 =~ "repeated once"))
+
+    twice = r["stall_twice"]
+    assert twice["runs"] == [10, 10]
+    assert length(twice["files"]) == 1
+    assert twice["summary"]["invalid"] =~ "stall: generator lag p99 300 ms"
+    assert twice["first"]["valid"] == false
+    assert twice["first"]["first_attempt"]["stop_reason"] =~ "lag p99 242 ms"
+
     # a step that starts with a dead node is invalid, runs no generator and ends the round
     start = r["dead_at_start"]
     assert start["generator_runs"] == 0
