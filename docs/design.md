@@ -1061,6 +1061,7 @@ a `placement:` the operator also names the `meta_store:` that holds the rest:
 | `<prefix>/jobs/dead/<cell-id>/<job-id>` | dead-letter index entries (§15.4) |
 | `<prefix>/versions/<worker>/id/<package id>`, `.../log/<unix microseconds>-<package id>` | the version index of a worker: a guard object and a log entry per uploaded package (§10.2.1) |
 | `<prefix>/audit/<time>-<random>` | one audit log entry of the admin API (§10.2.1) |
+| `<prefix>/tokens/<id>` | one scoped admin token: its scopes, expiry, revocation and the SHA-256 of its secret (§10.2.1) |
 | `<prefix>/cells/...` | alambique, with `store:` (a placement decides its own layout) |
 
 Listings of the metadata store (worker heads) page with `metadata.page_size`
