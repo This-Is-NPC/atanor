@@ -26,13 +26,32 @@ You start one node over a local S3 (SeaweedFS), deploy a WASM worker to it and c
 Everything runs in containers named `atanor-*`; the last step removes them.
 
 You need Docker, `git`, `curl` and `openssl`, on Linux or macOS. Run the blocks in order, in one
-shell, in an empty directory.
+shell, in an empty directory. `IMAGE` is set in step 1 and used in steps 4 and 5, so a new shell
+needs the `export` again.
 
 1. Name the image and fetch the example worker: a manifest and a compiled WASM component.
+
+   No release has published the container image yet (`ghcr.io/this-is-npc/atanor` answers `denied`);
+   the first one will come with the 0.4.0 release. Until then, build it from source and use it as
+   `IMAGE` (about 20 minutes on a clean 2 vCPU machine, see
+   [what it costs](docs/how-to-build-the-release.md#what-it-costs)):
+
+   ```sh
+   git clone --depth 1 https://github.com/This-Is-NPC/atanor.git atanor-src
+   docker build --target runtime -t atanor:local atanor-src
+   export IMAGE=atanor:local
+   ```
+
+   Once a release has published the image, use it instead and skip the build:
 
    ```sh
    export IMAGE=ghcr.io/this-is-npc/atanor:latest
    git clone --depth 1 https://github.com/This-Is-NPC/atanor.git atanor-src
+   ```
+
+   Then, either way, fetch the example worker:
+
+   ```sh
    mkdir atanor-hello atanor-secrets
    cp atanor-src/examples/hello-wasm/atanor.json atanor-src/test/fixtures/wasm/hello.wasm atanor-hello/
    ```
@@ -117,13 +136,16 @@ shell, in an empty directory.
    hello GET /hello/world? authority=localhost body=
    ```
 
-7. Remove everything this section created, the downloaded images included. If you use the SeaweedFS
-   image for something else, leave out its name on the `docker rmi` line. `-v` also removes the
-   anonymous volume that the SeaweedFS image declares.
+7. Remove everything this section created, the images included. The commands are separate so you
+   can run them again after a partial install: one that finds nothing to remove prints an error
+   and the next still runs. If you use the SeaweedFS image for something else, leave out its line.
+   `-v` also removes the anonymous volume that the SeaweedFS image declares.
 
    ```sh
-   docker rm -fv atanor-node atanor-store && docker network rm atanor-net
-   docker rmi "$IMAGE" chrislusf/seaweedfs:4.48
+   docker rm -fv atanor-node atanor-store
+   docker network rm atanor-net
+   docker rmi "$IMAGE"
+   docker rmi chrislusf/seaweedfs:4.48
    rm -rf atanor-src atanor-hello atanor-secrets
    ```
 
@@ -132,7 +154,7 @@ steps take 12.9 s in all: step 3 1.3 s, step 4 2.4 s, step 5 3.8 s, step 6 5.0 s
 deployment at its next poll). The times leave out the image pulls (the SeaweedFS image is about
 725 MB). On a clean 2 vCPU, 3 GB virtual machine the first start of the node in step 4 took 38.6 s,
 the next two 15.2 s and about 6.4 s, against 2.4 s on the laptop; the whole sequence took about 51 s
-there, pulls excluded. The image is 55 MB to pull (compressed) and 224 MB on disk once
+there, pulls excluded; the first pull of the SeaweedFS image took about 75 s on that VM. The image is 55 MB to pull (compressed) and 224 MB on disk once
 unpacked. The `package` id and the byte count in your output may differ.
 
 From here: [deploy changes and roll back](docs/how-to-deploy-a-worker.md), [write your own WASM
@@ -162,14 +184,33 @@ Atanor ships as one daemon, configured by `ATANOR_*` environment variables or a 
 ([reference](docs/configuration.md#the-daemon-environment-and-file)).
 
 - **Container image:** `ghcr.io/this-is-npc/atanor` (`:latest` or a version tag), for linux/amd64 and
-  linux/arm64. It starts a node with no argument and runs the `atanor` command for `deploy`, `status`
+  linux/arm64. No release has published it yet; the first one will come with 0.4.0, and until then
+  you build it from source (below). It starts a node with no argument and runs the `atanor` command for `deploy`, `status`
   and the rest.
-- **Tarball:** `atanor-<version>-linux-<arch>.tar.gz` on each GitHub release. It needs glibc 2.38 or later,
+- **Tarball:** `atanor-<version>-linux-<arch>.tar.gz` on each GitHub release from 0.4.0 on (the
+  earlier releases have none; [build it](docs/how-to-build-the-release.md#build-the-tarball) yourself
+  meanwhile). It needs glibc 2.38 or later,
   OpenSSL 3.4 or later, `libstdc++6` and `libncurses6` ([details](docs/how-to-build-the-release.md#build-the-tarball)).
-- **From source:** [how to build the image](docs/how-to-build-the-release.md).
+- **From source:** `docker build --target runtime -t atanor:local .` in a clone of the repository, then
+  use `atanor:local` as the image ([how to build the image](docs/how-to-build-the-release.md)).
 - **Your own Elixir code beside a node** (Phoenix, LiveView, native workers): [build a derived
   image](docs/how-to-build-a-derived-image.md). Putting Atanor into an arbitrary application's
   supervision tree is not a supported way to install it.
+
+## Uninstall
+
+The [quick start](#run-it-in-1-minute) removes what it created in its step 7. For a real install:
+
+1. Stop the node and give it time to hand its cells back: `docker stop --time 90 <node>` (or
+   `systemctl stop`, for the tarball), then `docker rm -v <node>`.
+2. Remove the local copies of cells: the volume or directory mounted at `/var/lib/atanor/cells` (the
+   `data_dir`; `ATANOR_DATA_DIR` changes it). They are copies: the bucket holds the data.
+3. Remove the secrets you created for it: the files behind `ATANOR_ADMIN_TOKEN_FILE`,
+   `ATANOR_COOKIE_FILE` and the S3 key files, and revoke the S3 keys at your provider.
+4. Remove the image (`docker rmi <image>`) or the unpacked tarball directory.
+
+Uninstalling never touches the bucket. Its contents (cells, packages, the node list) are your data:
+delete them yourself, with your S3 tools, only when you no longer want them.
 
 ## Interface
 
