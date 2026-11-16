@@ -299,8 +299,10 @@ curl -s -H "authorization: Bearer $TOKEN" "$ADMIN/jobs/rooms/alpha?limit=500" | 
 lasts, and a restart of the node did not change it. The cell's own table of wake-ups had a row for a wake
 (`@jobs|1794809947744|6b0c7899|0`) whose index object was not in the bucket. The design says a node finds due
 jobs through the index under `alarms/` ([design §15.12](design.md#1512-the-claims-of-a-node-that-hands-its-cells-back)),
-and an enqueue leaves a wake that it believes has an entry alone. It is a limit of the restore, and a defect if
-you expect a live copy to be usable as it is ([what-does-not-work.md](what-does-not-work.md)).
+and an enqueue left a wake that it believed had an entry alone. That was fixed: when the wake of a cell is overdue by
+more than `alarms.timeout_ms`, the next enqueue or re-arm of that cell checks the index object and puts it back if
+it is missing. What remains is a cell with pending jobs that gets no new enqueue: it stays stuck
+([what-does-not-work.md](what-does-not-work.md)). Enqueue a job to the cell, or use the repair below.
 
 Copying `alarms/` last (a second `mc mirror` after the first, with `--exclude 'atanor/alarms/*'`) did not avoid
 it: the room `delta`, copied that way with a writer running, came back with `{"last_seq":50,"ranked_through":44}`.
@@ -322,7 +324,7 @@ sleep 8; curl -s -H "host: scoreboard.localhost" http://127.0.0.1:14030/rooms/de
 ```
 
 (`%40` is `@`: S3 signs the encoded path.) Alarms set with `set_alarm` have the same index and were not tested;
-**inference:** they are affected the same way. Until this is fixed, prefer the cold copy.
+**inference:** they are affected the same way. Prefer a copy taken after `POST /drain`.
 
 ### Keep the copy safe
 

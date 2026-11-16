@@ -1059,6 +1059,8 @@ a `placement:` the operator also names the `meta_store:` that holds the rest:
 | `<prefix>/crashes/<node>/<id>` | one crash report (§17.2) |
 | `<prefix>/rehearsals/<id>` | one migration rehearsal record and report (§17.3) |
 | `<prefix>/jobs/dead/<cell-id>/<job-id>` | dead-letter index entries (§15.4) |
+| `<prefix>/versions/<worker>/id/<package id>`, `.../log/<unix microseconds>-<package id>` | the version index of a worker: a guard object and a log entry per uploaded package (§10.2.1) |
+| `<prefix>/audit/<time>-<random>` | one audit log entry of the admin API (§10.2.1) |
 | `<prefix>/cells/...` | alambique, with `store:` (a placement decides its own layout) |
 
 Listings of the metadata store (worker heads) page with `metadata.page_size`
@@ -1284,7 +1286,8 @@ open socket is never closed by the gates. A request that is already in when the
 gate turns on is not stopped, so while the memory gate refuses, a cell call for
 a cell with no process on the node, which would wake it, is a 503 `overloaded`
 (§4.3, memory of the wakes). The `reason` of every 503 `overloaded` names the gate that
-refused: `memory`, `disk` or `in_flight` (the ingress gates), `wake_gate` (the wake
+refused: `memory`, `disk` or `in_flight` (the ingress gates; `refused` in `/runtime` counts these three
+and also `queue_timeout`, `worker_queue` and `nested_calls`, named below), `wake_gate` (the wake
 refused above), `awake_limit` (Alambique's `awake` limits, `{:error, :overloaded}`),
 `busy` (a cell's `max_pending` or the node's statement slots, `{:error, :busy}`),
 `disk_full` (the write found no room), `worker_queue` (the WASM `queue` was full, refused as the
@@ -1353,8 +1356,10 @@ property that no `queue_timeout` matches a committed write) and
 
 The listener is bounded: `http.max_connections` (16,384) is the total for the
 listener, WebSockets included, divided among `http.acceptors` (10) because
-ThousandIsland counts per acceptor; a client over the cap waits in the
-accept queue of the operating system. `http.read_timeout_ms` (10,000) closes a
+ThousandIsland counts per acceptor; a client over the cap is still accepted,
+and its acceptor retries 5 times, 1 s apart (ThousandIsland's defaults, which
+Atanor does not change), to find room, blocked meanwhile; it then closes the
+connection. `http.read_timeout_ms` (10,000) closes a
 connection that does not send the next bytes of a header or a body in time.
 It is a wait per read, so two absolute deadlines sit over it for HTTP/1
 (`Atanor.HTTP.Deadline`): `http.header_timeout_ms` (10,000) to the end of the
@@ -3279,7 +3284,7 @@ JSON; `GET` unless the table says otherwise:
 | `POST /tokens`, `GET /tokens`, `GET /tokens/:id`, `POST /tokens/:id/revoke`, `GET /audit` | scoped tokens and the audit log, `cluster:admin` (§10.2.1) |
 | `/deployments` | for every node, what it applied for each worker: `head`, `applied`, `serving` and `error` (`{:code_mismatch, ...}`, a route not allowed, ...) |
 | `/routes` | this node's HTTP routes and TCP listeners with their ports |
-| `/runtime` | what this node's memory is made of, for finding what grows: `:erlang.memory()` by type, process, port and run queue counts, the 5 biggest ETS tables, the 10 processes with the longest message queue and the 10 largest (pid, name, initial call, current function), the cgroup v2 `memory.current`, `memory.max`, `memory.stat` (anon, file, shmem, sock, slab, kernel_stack, inactive_file, active_file) and `memory.events` (oom, oom_kill), read next to `:memory` `:cgroup_path` (null when a file is missing; `memory_max` is null for `max`), and the native Wasm gauges (§14). One bounded scan of at most 100,000 processes; this node only |
+| `/runtime` | what this node's memory is made of, for finding what grows (it also returns `admission`, the counters of `Atanor.Admission.stats/1` (§7.1), and `store`, the breaker of each store location as `/health` shows it): `:erlang.memory()` by type, process, port and run queue counts, the 5 biggest ETS tables, the 10 processes with the longest message queue and the 10 largest (pid, name, initial call, current function), the cgroup v2 `memory.current`, `memory.max`, `memory.stat` (anon, file, shmem, sock, slab, kernel_stack, inactive_file, active_file) and `memory.events` (oom, oom_kill), read next to `:memory` `:cgroup_path` (null when a file is missing; `memory_max` is null for `max`), and the native Wasm gauges (§14). One bounded scan of at most 100,000 processes; this node only |
 | `POST /auth/keys/flush` | drops this node's cached OIDC discovery documents and keys, `cluster:admin` (§7.5); answers `node` and `flushed`, the issuers dropped |
 | `POST /listeners/:name/reload-tls` | reloads the certificate files of one TLS listener (§7.3); 404 `unknown_listener`, 409 `no_tls`, 422 `reload_failed` (the previous certificate keeps serving) |
 | `/cells` | for every node, the number of live cells; with `?node=NAME` one page of that node's cells (`limit` 1 to `:admin`'s `max_limit`, 1,000, default `default_limit`, 100, and `after=<cell id>` from the previous page's `next`) |
