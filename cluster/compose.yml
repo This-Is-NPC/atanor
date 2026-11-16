@@ -105,6 +105,7 @@ services:
       ATANOR_DRAIN_CONCURRENCY: ${ATANOR_CLUSTER_DRAIN_CONCURRENCY:-}
       ATANOR_LEASE_TTL_MS: ${ATANOR_CLUSTER_LEASE_TTL_MS:-30000}
       ATANOR_NET_TICKTIME: ${ATANOR_CLUSTER_NET_TICKTIME:-60}
+      ATANOR_HTTP_MAX_CONNECTIONS: ${ATANOR_CLUSTER_HTTP_MAX_CONNECTIONS:-}
     volumes: [/var/lib/atanor]
     depends_on:
       bucket: {condition: service_completed_successfully}
