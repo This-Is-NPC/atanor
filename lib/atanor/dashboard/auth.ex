@@ -32,8 +32,43 @@ if Code.ensure_loaded?(Phoenix.LiveDashboard) do
     @doc "Whether a session map carries the sign-in."
     def authorized?(session), do: is_map(session) and Map.get(session, @key) == true
 
-    def on_mount(:default, _params, session, socket) do
-      if authorized?(session), do: {:cont, socket}, else: {:halt, Phoenix.LiveView.redirect(socket, to: "/")}
+    # The pages that stay. LiveDashboard's Processes, Ports, Sockets, ETS and OS Data pages, and the
+    # detail view (`?info=`, which any page opens), show process state and dictionaries, which can
+    # hold secrets, and the dependency has no option to leave them out.
+    @pages ~w(home metrics applications memory_allocators workers deployments routes cells alarms jobs)
+
+    def on_mount(:default, params, session, socket) do
+      cond do
+        not authorized?(session) -> {:halt, Phoenix.LiveView.redirect(socket, to: "/")}
+        not in_scope?(params) -> {:halt, Phoenix.LiveView.redirect(socket, to: "/")}
+        true -> {:cont, Phoenix.LiveView.attach_hook(socket, :atanor_scope, :handle_params, &scope/3)}
+      end
+    end
+
+    # A patch inside the LiveView skips the plug and `on_mount`, so each one is checked again.
+    defp scope(params, _uri, socket) do
+      if in_scope?(params),
+        do: {:cont, hide_links(socket)},
+        else: {:halt, Phoenix.LiveView.redirect(socket, to: "/")}
+    end
+
+    defp in_scope?(params) do
+      is_map(params) and not is_map_key(params, "info") and Map.get(params, "page", "home") in @pages
+    end
+
+    # The menu is built at mount from every page.
+    defp hide_links(socket) do
+      Phoenix.Component.update(socket, :menu, fn menu ->
+        links =
+          Enum.map(menu.links, fn
+            {:enabled, _anchor, route} = link -> if Atom.to_string(route) in @pages, do: link, else: :skip
+            {:disabled, _anchor} -> :skip
+            {:disabled, _anchor, _url} -> :skip
+            link -> link
+          end)
+
+        %{menu | links: links}
+      end)
     end
 
     # Failed tokens are limited per client address, like the admin listener's.

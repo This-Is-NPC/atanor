@@ -70,6 +70,19 @@ defmodule Atanor.DashboardTest do
       assert html_response(get(signed_in(), "/workers"), 200) =~ "Workers"
     end
 
+    # A supervisor report (a failed start, a restart limit) prints the child spec, and `:sys` shows the state.
+    test "the endpoint's child spec and the supervisor's state hold neither the token nor the key base" do
+      start()
+      {:dictionary, dictionary} = Process.info(Process.whereis(Atanor.Dashboard.Endpoint), :dictionary)
+      [dashboard | _] = Keyword.fetch!(dictionary, :"$ancestors")
+      {:ok, spec} = :supervisor.get_childspec(dashboard, Atanor.Dashboard.Endpoint)
+
+      for shown <- [inspect(spec), inspect(:sys.get_state(dashboard))] do
+        refute shown =~ @token
+        refute shown =~ "secret_key_base"
+      end
+    end
+
     test "without the option nothing listens" do
       node = Node.start()
       on_exit(fn -> Node.stop(node) end)
@@ -177,9 +190,47 @@ defmodule Atanor.DashboardTest do
     end
 
     test "a LiveView does not mount without the session" do
-      socket = %Phoenix.LiveView.Socket{}
+      socket = %Phoenix.LiveView.Socket{
+        router: Atanor.Dashboard.Router,
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}}
+      }
+
       assert {:halt, _} = Auth.on_mount(:default, %{}, %{}, socket)
-      assert {:cont, ^socket} = Auth.on_mount(:default, %{}, %{"atanor_dashboard" => true}, socket)
+      assert {:cont, _} = Auth.on_mount(:default, %{}, %{"atanor_dashboard" => true}, socket)
+    end
+  end
+
+  describe "scope" do
+    @refused ~w(processes ports sockets ets os_mon)
+
+    test "the pages that show process state, ports, sockets, ETS and OS data are refused" do
+      start()
+
+      for name <- @refused do
+        assert {:error, {:redirect, %{to: "/"}}} = live(signed_in(), "/" <> name), name
+      end
+    end
+
+    test "the process modal is refused on a page that is kept, at mount and on a patch" do
+      start()
+      Process.put(:dictionary_canary, "canary-f4")
+      info = Phoenix.LiveDashboard.PageBuilder.encode_pid(self())
+
+      assert {:error, {:redirect, %{to: "/"}}} = live(signed_in(), "/workers?info=#{info}")
+
+      {view, html} = page("/workers")
+      refute html =~ "canary-f4"
+      render_patch(view, "/workers?info=#{info}")
+      assert_redirect(view, "/")
+    end
+
+    test "the menu offers only the pages that open" do
+      start()
+      {_view, html} = page("/workers")
+      assert html =~ ~s(href="/deployments")
+      assert html =~ ~s(href="/metrics")
+
+      for name <- @refused, do: refute(html =~ ~s(href="/#{name}"), name)
     end
   end
 

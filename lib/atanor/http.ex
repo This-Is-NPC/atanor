@@ -288,8 +288,13 @@ defmodule Atanor.HTTP do
       %Plug.Conn{state: state} = conn when state in [:sent, :chunked, :upgraded, :file] ->
         {:ok, conn}
 
+      %Plug.Conn{} = other ->
+        # Not `inspect(other)`: it prints the request headers, Authorization among them.
+        Workers.log(deployment, "returned an unsent conn", "#{other.method} #{other.request_path} (#{other.state})")
+        {:error, json(conn, 500, "internal_error")}
+
       other ->
-        Workers.log(deployment, "returned an unsent conn", inspect(other, limit: 5))
+        Workers.log(deployment, "returned a non-conn", inspect(other, limit: 5, printable_limit: 80))
         {:error, json(conn, 500, "internal_error")}
     end
   catch

@@ -263,5 +263,16 @@ defmodule Atanor.RoutingTest do
       log = capture_log(fn -> assert get(node, "/boom").body == ~s({"error":"internal_error"}) end)
       assert log =~ "worker web (deployment "
     end
+
+    test "log an unsent conn without its headers", %{node: node} do
+      log =
+        capture_log(fn ->
+          resp = get(node, "/unsent", headers: [{"authorization", "Bearer canary-f7"}])
+          assert resp.body == ~s({"error":"internal_error"})
+        end)
+
+      assert log =~ "returned an unsent conn: GET /unsent (unset)"
+      refute log =~ "canary-f7"
+    end
   end
 end
