@@ -18,7 +18,8 @@ so a generator that is the limit shows itself.
          of the native worker): POST|GET /plain/CELL on loadwasm.localhost. WASM (the scoreboard):
          POST /rooms/ROOM/scores, GET /rooms/ROOM on scoreboard.localhost.
   cells  every one of N cells is written once (opening, at --open-rate), then each gets one write
-         every --period seconds for --duration seconds: N cells stay hot together.
+         every --period seconds for --duration seconds (the hold): N cells stay hot together. The document's
+         `opening` has the statuses, the latency histogram and `max_ms` of the opening's writes alone.
   ws     N WebSocket connections opened at --open-rate per second, each attached to one of --rooms
          rooms with `join ROOM` and repeating that frame every --interval seconds (the node closes a
          socket that is silent for 60 s), held for --duration seconds after the last one opened.
@@ -55,14 +56,20 @@ def request_for(kind, tag, cell, write, n):
 class Recorder:
     def __init__(self):
         self.statuses, self.hist, self.max_ms, self.lags, self.releases = {}, {}, 0.0, [], []
+        self.opening = {"statuses": {}, "hist": {}, "max_ms": 0.0}  # the same, for the requests of the opening phase (cells)
 
-    def status(self, key):
+    def status(self, key, opening=False):
         self.statuses[key] = self.statuses.get(key, 0) + 1
+        if opening:
+            self.opening["statuses"][key] = self.opening["statuses"].get(key, 0) + 1
 
-    def latency(self, ms):
+    def latency(self, ms, opening=False):
         bucket = min(int(ms * BUCKET), 10 * 1000 * BUCKET)
         self.hist[bucket] = self.hist.get(bucket, 0) + 1
         self.max_ms = max(self.max_ms, ms)
+        if opening:
+            self.opening["hist"][bucket] = self.opening["hist"].get(bucket, 0) + 1
+            self.opening["max_ms"] = max(self.opening["max_ms"], ms)
 
     def lag(self, ms):
         self.lags.append(ms)
@@ -115,9 +122,9 @@ async def http_worker(args, queue, recorder, clock):
         item = await queue.get()
         if item is None:
             break
-        due, method, path, host = item
+        due, method, path, host, opening = item
         if clock() - due > args.timeout:  # open loop: too late to measure, so it counts as failed and is not sent
-            recorder.status(NOT_COMPLETED)
+            recorder.status(NOT_COMPLETED, opening)
             continue
         for attempt in (1, 2):
             reused = writer is not None
@@ -128,8 +135,8 @@ async def http_worker(args, queue, recorder, clock):
                 recorder.lag(max((clock() - due) * 1000, 0))
                 writer.write(f"{method} {path} HTTP/1.1\r\nhost: {host}\r\ncontent-length: {len(body)}\r\n\r\n".encode() + body)
                 status, headers = await asyncio.wait_for(read_response(reader), args.timeout)
-                recorder.latency((clock() - due) * 1000)
-                recorder.status(classify(status, headers))
+                recorder.latency((clock() - due) * 1000, opening)
+                recorder.status(classify(status, headers), opening)
                 if headers.get("connection") == "close":
                     writer.close()
                     writer = None
@@ -140,9 +147,9 @@ async def http_worker(args, queue, recorder, clock):
                 writer = None
                 # The node closed an idle keep-alive connection before it saw this request: send it again once.
                 if attempt == 1 and reused and isinstance(error, (asyncio.IncompleteReadError, ConnectionError)):
-                    recorder.status("reconnected")
+                    recorder.status("reconnected", opening)
                     continue
-                recorder.status(f"error: {error_kind(error)}")
+                recorder.status(f"error: {error_kind(error)}", opening)
                 break
     if writer is not None:
         writer.close()
@@ -166,20 +173,21 @@ def http_schedule(args, start):
     n = 0
     while n < int(args.rate * args.duration):
         write = rng.random() < args.write_ratio
-        yield (start + n / args.rate, *request_for(args.kind, args.tag, rng.randrange(args.cells), write, n))
+        yield (start + n / args.rate, *request_for(args.kind, args.tag, rng.randrange(args.cells), write, n), False)
         n += 1
 
 
 def cells_schedule(args, start):
+    """(due, method, path, host, opening): `opening` is true for the first write of each cell, which wakes the cell."""
     n = 0
     for cell in range(args.cells):  # opening: one write per cell
-        yield (start + cell / args.open_rate, *request_for(args.kind, args.tag, cell, True, n))
+        yield (start + cell / args.open_rate, *request_for(args.kind, args.tag, cell, True, n), True)
         n += 1
     hold = start + args.cells / args.open_rate + args.settle
     rounds = int(args.duration / args.period)
     for r in range(rounds):  # then one write per cell and period, spread over the period
         for cell in range(args.cells):
-            yield (hold + r * args.period + cell * args.period / args.cells, *request_for(args.kind, args.tag, cell, True, n))
+            yield (hold + r * args.period + cell * args.period / args.cells, *request_for(args.kind, args.tag, cell, True, n), False)
             n += 1
 
 
@@ -207,9 +215,16 @@ async def run_http(args):
     for _ in range(planned - answered - recorder.statuses.get(NOT_COMPLETED, 0)):
         recorder.status(NOT_COMPLETED)
     completed = answered
+    opening = None
+    if args.mode == "cells":  # the opening's own record: the rest of the requests are the hold
+        statuses = recorder.opening["statuses"]
+        missing = args.cells - sum(n for k, n in statuses.items() if k != "reconnected")
+        if missing > 0:
+            statuses[NOT_COMPLETED] = statuses.get(NOT_COMPLETED, 0) + missing
+        opening = {"planned": args.cells, **recorder.opening, "max_ms": round(recorder.opening["max_ms"], 3)}
     rate = args.rate if args.mode == "http" else planned / (args.cells / args.open_rate + args.settle + args.duration)
     return recorder.document(mode=args.mode, kind=args.kind, planned=planned, sent=sent, completed=completed, window_s=window,
-                             planned_rate=round(rate, 2), conns=args.conns, started_at=wall, ended_at=time.time())
+                             planned_rate=round(rate, 2), conns=args.conns, started_at=wall, ended_at=time.time(), opening=opening)
 
 
 def frame(opcode, payload):

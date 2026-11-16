@@ -16,7 +16,7 @@ machine say how the harness works, not what a release holds: run the real ramps 
 | `load:http-native`, `load:http-wasm`: reads and writes in cells; same work in both (see [the workers](#the-workers-of-the-http-measures)) | requests per second | p99 > 250 ms, 503 answers over 1% of all answers (`--max-refused-pct`, stop reason `refused N% > 1%`), any other 5xx, or any error | req/s per vCPU, fixed MB, MB per req/s, S3 trips and bytes per request |
 | `load:ws`: open idle WebSockets, one message per socket every 30 s | connections | working set at 90% of the limit (see [the memory criterion](#the-memory-criterion)), or file descriptors at 90% of the limit, 503 answers over 1% of all answers (`--max-refused-pct`), or a socket that cannot connect or is dropped | MB and descriptors per connection |
 | `load:http-wasm-jobs`: writes and reads of the scoreboard, a job-heavy WASM app (not comparable with native) | requests per second | p99 > 250 ms, 503 answers over 1% of all answers (`--max-refused-pct`, stop reason `refused N% > 1%`), any other 5xx, or any error | req/s per vCPU, fixed MB, MB per req/s (its S3 trips and bytes per request are not comparable with native) |
-| `load:cells`: cells written once every 10 s, all awake together | cells | working set at 90% of the limit, p99 > 250 ms, or 503 answers over 1% of all answers (`--max-refused-pct`) | MB per hot cell |
+| `load:cells`: cells written once every 10 s, all awake together | cells | working set at 90% of the limit, p99 > 250 ms, or 503 answers over 1% of all answers (`--max-refused-pct`); the last two are judged on the hold, after the opening (see [the opening](#the-opening-of-the-cells-measure)) | MB per hot cell |
 | `load:scale`: `http-native` and `cells` on 1, 2 and 3 nodes behind the balancer, then a node joining under load (see [the scale measure](#the-scale-measure)) | requests per second and cells, per node count | the criteria of `http-native` and `cells`, per configuration; the join has no verdict, it records | the ceiling of each configuration, the gain over 1 node, requests and awake cells per node, the time until the load spreads after a join |
 | `load:swap`: node A replaced by B under load | none (one run at the last approved `http-wasm-jobs` rate: run that measure first, or pass `--rate`) | an acknowledged write lost or duplicated, or an answer other than 503 with `Retry-After` (503 with `Retry-After` stays accepted: the refused criterion does not apply) | swap duration and p99 peak |
 
@@ -53,7 +53,7 @@ One container per service, all of the project `atanor-cluster` (`scripts/cluster
 | Service data | The node's data directory is a tmpfs (`ATANOR_LOAD_TMPFS_SIZE`, 256 MB). A tmpfs counts against its container's memory limit, so the container's limit (`mem_limit` and `memswap_limit`) is the scenario memory **plus** the tmpfs size (scenario A: 512 + 256 = 768 MB), so that a full tmpfs cannot get the node OOM-killed. The node itself is given the scenario memory as its limit (`ATANOR_MEMORY_LIMIT`, set from `ATANOR_LOAD_MEMORY`), not the container limit, so its gates and the awake and WASM waiting limits it derives from the limit are those of a 512 MB (A) or 2 GB (B) machine. The tmpfs is a lab stand-in for the disk of a real machine; the node's working set counts it, so a tmpfs that fills takes memory from the 512 MB, which is conservative. `shmem`, the tmpfs, is reported apart. |
 | No swap | Every measured container has `memswap_limit` equal to `mem_limit`, so it cannot swap (zram or disk swap on the host would void the memory numbers). `load-run` checks `docker inspect` (`Memory` set and `MemorySwap` equal to it) and, when readable, the cgroup's `memory.swap.max` (0) before the first step, and refuses to run otherwise (`scripts/load-env check-swap`). Recreate a cluster started before this limit existed with `load:down` and `load:up`. |
 | Store | SeaweedFS in its own container (2 CPUs, 2 GB plus its tmpfs of 1 GB, outside the node's limit), data in tmpfs, or on the host's disk with `ATANOR_LOAD_STORE_DISK=1` ([when to use it](#when-the-store-fills-its-tmpfs)). |
-| Store latency | `tc netem delay 25ms` on the store's network interface, so every answer the store sends waits 25 ms: each trip costs 25 ms more. The node image has `tc`; `atanor-load-tc` joins the store's network namespace with `NET_ADMIN`, applies the qdisc and exits. The qdisc needs no root on the host. A request on a warm connection pays the latency once; a `curl` that opens a connection pays it twice, because the handshake answer waits too. `load:up` checks that the round trip from the node to the store grew by at least 80% of the added latency (observed: 1.0 ms to 51.1 ms for a new connection) and every step records it (`store_rtt_ms`). |
+| Store latency | `tc netem delay 25ms` on the store's network interface, so every answer the store sends waits 25 ms: each trip costs 25 ms more. The node image has `tc`; `atanor-load-tc` joins the store's network namespace with `NET_ADMIN`, applies the qdisc and exits. The qdisc needs no root on the host. A request on a warm connection pays the latency once; a `curl` that opens a connection pays it twice, because the handshake answer waits too. `load:up` checks that the round trip from the node to the store grew by at least 80% of the added latency and every step records it (`store_rtt_ms`). Both time the second of two requests of one `curl` run, on the reused connection, which is the cost of one trip as the node pays it; the line reads `store round trip from the node, on a reused connection: A ms -> B ms`. An earlier version timed a new connection (1.0 ms to 51.1 ms observed), which includes the handshake. |
 | Balancer | HAProxy (2 CPUs) is in the path for `load:swap` and `load:scale`. The other measures send to the node's address. |
 | Generator | `scripts/load-gen`, outside the node's limit: Python `asyncio`, open loop, keep-alive connections, one process per about 600 req/s. Latency counts from the scheduled time of a request. |
 | Workers | `AtanorLoad.Worker` (native, [cluster/load/lib/atanor_load/worker.ex](../cluster/load/lib/atanor_load/worker.ex); `load:up` builds the image `atanor-cluster-load:local` from [cluster/load/Dockerfile](../cluster/load/Dockerfile), a [derived image](how-to-build-a-derived-image.md) of the release with the tools of the harness target, because a native module must be loaded in the node), the plain WASM worker `load-plain` (`mise run build:load-plain`, [examples/load-plain](../examples/load-plain)) and the scoreboard example (WASM). All three are deployed by `load:up`. |
@@ -81,6 +81,13 @@ and `/proc/meminfo`. Per step, in this order:
    cores. The mean covers the counted intervals; `host.net_load_skipped` in the step JSON is how many were
    left out. The quiet wait leaves them out too, and a skipped interval ends the quiet run, so a failed read
    restarts the 60 s window. When every interval of a step is skipped the step is not judged by this rule.
+   The same step is also INVALID when the host itself ran out of cores: the mean busy cores
+   (`host.busy_cores_mean`, the lab's own CPU included) above 85% of the host's cores (`--max-busy-share`,
+   `ATANOR_LOAD_MAX_BUSY_SHARE`), for example `host saturated: 3.6 busy cores > 3.4 (85% of 4 cores)`. The
+   generator, the balancer, the store and the nodes share the host, so a node that cannot get a core is not
+   at its own limit. The generator's lag cannot show this: it includes the wait for a slow node
+   (`generator.lag_p99_ms`), and the generator's own release lag (the stall check, step 6) stays small while the host
+   is full. This verdict follows the foreign-load one and the round stops.
 3. **Swap.** The step is INVALID (not a failure of the node; the round stops) when any of these holds:
    - a measured container (node, store or balancer) swapped: its cgroup `memory.swap.current` was above 0 at any sample. It is read from the host through the cgroup of the container's init PID, with the other cgroup reads. When it is unreadable it is recorded as null and not judged;
    - the `VmSwap` of the load generators (`/proc/PID/status`, summed over the processes `load-run` started and their children) grew by more than 16 MB (`ATANOR_LOAD_MAX_GENERATOR_SWAP_MB`);
@@ -141,6 +148,7 @@ In short, what makes a step INVALID (no verdict on the node):
 | Cause | Limit (option) | Repeated? |
 | --- | --- | --- |
 | Host busy or contaminated | net load 1 core (`--host-load-max`) | no, the round stops |
+| Host saturated | mean busy cores over 85% of the host's cores (`--max-busy-share`) | no, the round stops |
 | Swap | 16 MB generator, 256 MB host growth, any in a measured container | no, the round stops |
 | Store full | 90% of its tmpfs or disk | no, the round stops |
 | Stall | generator release lag p99 over 50 ms, or a throttling jump over 5000 ms and 5 times the median (`--max-lag-ms`, `--max-throttle-jump-ms`) | once; the round stops if the repeat stalls too |
@@ -196,6 +204,34 @@ Every step file also keeps the evidence to tell what the admission gate did, one
 
 The report adds, per measure, the refusals by reason, whether the gate was refusing, the largest in-flight count, the store tmpfs fill and the store 5xx at the approved step and at the first failing one.
 
+### The opening of the cells measure
+
+A `cells` step first writes each of its N cells once, at `--open-rate` (100 cells/s): the opening. Every one of
+those writes wakes a cold cell, so it pays the store trips that a hot cell does not. The rest of the step, one
+write per cell every `--cell-period`, is the hold: the cells being kept hot is what the measure is about.
+p99 and the refused share are judged on the hold alone, so an opening that is slow or refused (a node under
+a burst of cold starts) does not fail a ramp that the hold passes. In the step file `latency_ms` is the hold's, and
+`opening` has the opening's own figures: `planned`, `answers`, `refused`, `refused_pct` and `latency_ms`
+(`statuses` stays the whole step's). The log line ends `(hold; opening p99 N ms, refused M)`. Errors other
+than 503 still fail a step, wherever they happen. In the generator's document the opening is `opening`, with its
+statuses and histogram; `load-run` subtracts it from the totals to get the hold.
+
+### The connection cap of the ws measure
+
+The node holds at most `http.max_connections` connections (16384 by default, plus its 10 acceptors, so 16390;
+[`ATANOR_HTTP_MAX_CONNECTIONS`](configuration.md)). A `ws` ramp that reaches it measures the cap, not the node's
+memory. `ATANOR_LOAD_HTTP_MAX_CONNECTIONS` sets it on the nodes of the lab; it is read when the nodes start, so set
+it before `load:up` (and the same for every command of the session). `load:ws` refuses to run, before any step,
+when its highest step is not below the cap (the default ramp goes up to 51200 connections) or the cap is not below
+the node's descriptor limit (`ulimit -n` of the container, the Docker default unless set), and says which value to
+use. Every step file records the cap as `http_max_connections` (the configured one, or 16384 when unset). For example:
+
+```sh
+export ATANOR_LOAD_HTTP_MAX_CONNECTIONS=65536
+mise run load:down && mise run load:up
+mise run load:ws
+```
+
 ## Settings
 
 Every option has a flag (`--help` on `scripts/load-run`) and an environment variable.
@@ -221,6 +257,8 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB` | 256 | Growth of the host swap used during a step above which the step is invalid; its level is only recorded. |
 | `ATANOR_LOAD_MAX_STORE_TMPFS_PCT` | 90 | Share of the store's tmpfs size, at any sample, above which the step is invalid (before the criteria). |
 | `ATANOR_LOAD_MAX_STORE_DISK_PCT` | 90 | With `ATANOR_LOAD_STORE_DISK=1`: share of the store's filesystem used, at any sample, above which the step is invalid. |
+| `ATANOR_LOAD_MAX_BUSY_SHARE` | 0.85 | Share of the host's cores that the mean busy cores of a step may reach before the step is invalid (`host saturated`). |
+| `ATANOR_LOAD_HTTP_MAX_CONNECTIONS` | unset (the node's 16384) | The nodes' `http.max_connections`. The `ws` measure needs it above its highest step ([the connection cap](#the-connection-cap-of-the-ws-measure)). Set it before `load:up`. |
 | `ATANOR_LOAD_MAX_LAG_MS` | 50 | Generator release lag p99 above which a step is invalid (`stall:`) and repeated once. |
 | `ATANOR_LOAD_MAX_THROTTLE_JUMP_MS` | 5000 | Growth of the node's CPU throttling between two samples above which, and above 5 times the median growth, a step is invalid (`stall:`) and repeated once. |
 | `ATANOR_LOAD_WRITE_RATIO`, `_CELLS` | 0.5, 64 | http: share of writes, cells the requests spread over. |
@@ -335,9 +373,25 @@ generator's totals (503 and errors) for the whole join: the 503 answers of the f
 one node. The join's `rebalance` is what each node's `/runtime` says under `rebalance` at the end of each window;
 a field that is missing is null, and the report says so. The file is `SCENARIO_scale-join_01-join-RATE.json`.
 
-**The VM budget and INVALID.** The load VM has 4 vCPU: 3 nodes at 1 CPU, the store, the balancer and the
-generators. The host guards of every step apply (net host load under 1 core, free memory, swap); every node's CPU
-counts as the test's own, so a quiet VM passes with 3 nodes. The join judges the same guard over its readings, leaving out the
+Each window of the join also records `cells_in_band_s`, the first reading in which the cells were within the
+tolerance (held or not, unlike `cells_spread_s`, which needs `--spread-hold` readings in a row), and `samples`: for
+each reading, `t` (seconds from the first), `new_5xx` (the balancer's backend 5xx answers since the previous reading),
+`moved` (the cells each node's rebalance has moved so far, `total.moved` of its `/runtime`) and `moved_new`
+(the growth of their sum), so a burst of 5xx can be set against the moves. Each is null when the reading did not say.
+
+**The CPU budget.** The nodes, the store and the balancer have CPU limits (scenario A: 1 CPU per node, 2 for the
+store and 2 for the balancer; `ATANOR_LOAD_STORE_CPUS` and `ATANOR_LOAD_LB_CPUS`), and the generators and the
+harness need cores too. `load:scale` refuses to start when `--max-nodes` times the node CPUs plus the store's and the
+balancer's exceed the host's cores, and prints the `--max-nodes` that fits. A 4-core host has room for 2 nodes of
+scenario A only with `ATANOR_LOAD_STORE_CPUS=1 ATANOR_LOAD_LB_CPUS=1` (2 + 1 + 1 = 4), set before `load:up`. `--allow-oversubscribed` runs anyway; the steps are then still
+judged by the host-saturated rule above.
+
+**The default ceilings.** Each ramp ends at `--max` when nothing fails: 20000 req/s for `http-native`, 100000 for
+`cells`. A configuration that gets there has `ceiling_reached: true`: its ceiling is a lower bound, not the node's limit, and
+the gain computed from it is too.
+
+**INVALID.** The host guards of every step apply (net host load under 1 core, busy cores under 85% of the host's,
+free memory, swap); every node's CPU counts as the test's own. The join judges the same guard over its readings, leaving out the
 seconds in which a node was starting. When a step is INVALID, `scale` records it, runs no larger
 configuration (and none for the other loads), and the summary says `largest_fit` and
 `rerun with --max-nodes N`: rerun with the largest count that fit. Nothing asks for more resources than

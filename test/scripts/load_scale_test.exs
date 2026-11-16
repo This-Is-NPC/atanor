@@ -119,7 +119,28 @@ defmodule Atanor.LoadScaleTest do
     assert join["ready_s"] >= 0.2
     assert join["requests_share_end"] == %{"node-1" => 0.5, "node-2" => 0.5}
     assert join["cells_share_end"] == %{"node-1" => 0.5, "node-2" => 0.5}
-    assert join["rebalance"] == %{"node-1" => %{"moves" => 3}, "node-2" => %{"moves" => 3}}
+    state = %{"moves" => 3, "total" => %{"moved" => 7}}
+    assert join["rebalance"] == %{"node-1" => state, "node-2" => state}
+
+    # every reading of a window has the 5xx and the moves since the previous one: the lone node refuses, the moves are the nodes' totals
+    series = r["join_series"]
+    assert [[:null, %{"node-1" => 7}], [n, %{"node-1" => 7}]] = series["lone"]
+    assert n > 0
+    assert series["joined"] == [0, %{"node-1" => 7, "node-2" => 7}, 0]
+
+    assert series["in_band_s"] > 0 and series["in_band_s"] <= join["cells_spread_s"] and
+             series["first_window_in_band"] == :null
+
+    assert r["window_series"] == [
+             %{"t" => 0.0, "moved" => %{"node-1" => 1, "node-2" => :null}, "new_5xx" => :null, "moved_new" => :null},
+             %{"t" => 2.0, "moved" => %{"node-1" => 4, "node-2" => 2}, "new_5xx" => 3, "moved_new" => 5},
+             %{"t" => 4.0, "moved" => %{}, "new_5xx" => :null, "moved_new" => :null}
+           ]
+
+    # the host's cores run out at 2 nodes: that step is INVALID and the larger ones are not run
+    saturated = r["saturated"]
+    assert saturated["invalid"] =~ ~r/^host saturated: [\d.]+ busy cores > 1.6 \(20% of 8 cores\)$/
+    assert saturated["largest_fit"] == 1
     assert join["errors_before"] > 0 and join["generator"] == 10
     assert join["file"] == ["A_scale-join_01-join-2000.json"] and join["notes"] == []
 

@@ -46,6 +46,9 @@ LOAD_MEMORY_BYTES=$(size_bytes "$LOAD_MEMORY") && tmpfs_bytes=$(size_bytes "$LOA
   || { echo "ATANOR_LOAD_MEMORY, _TMPFS_SIZE, _STORE_MEMORY and _STORE_TMPFS_SIZE must be sizes (use k, m or g)" >&2; exit 1; }
 export ATANOR_CLUSTER_NODE_CPUS=$LOAD_CPUS ATANOR_CLUSTER_NODE_MEMORY=$((LOAD_MEMORY_BYTES + tmpfs_bytes))
 export ATANOR_CLUSTER_MEMORY_LIMIT=$LOAD_MEMORY_BYTES
+# The node's http.max_connections (empty: its default, 16384). The ws measure needs it above its highest step; scripts/load-run checks.
+[[ -z ${ATANOR_LOAD_HTTP_MAX_CONNECTIONS:-} || $ATANOR_LOAD_HTTP_MAX_CONNECTIONS =~ ^[1-9][0-9]*$ ]] || { echo "ATANOR_LOAD_HTTP_MAX_CONNECTIONS must be a whole number" >&2; exit 1; }
+export ATANOR_CLUSTER_HTTP_MAX_CONNECTIONS=${ATANOR_LOAD_HTTP_MAX_CONNECTIONS:-}
 export ATANOR_CLUSTER_TMPFS_SIZE=$LOAD_TMPFS_SIZE ATANOR_CLUSTER_STORE_TMPFS_SIZE=$LOAD_STORE_TMPFS_SIZE
 export ATANOR_CLUSTER_STORE_CPUS=${ATANOR_LOAD_STORE_CPUS:-2} ATANOR_CLUSTER_STORE_MEMORY=$((store_memory_bytes + store_tmpfs_bytes))
 export ATANOR_CLUSTER_LB_CPUS=${ATANOR_LOAD_LB_CPUS:-2} ATANOR_CLUSTER_LB_MEMORY=${ATANOR_LOAD_LB_MEMORY:-512m}

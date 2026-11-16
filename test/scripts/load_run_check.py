@@ -84,7 +84,7 @@ def new_round(name):
     os.makedirs(out)
     args = argparse.Namespace(out=out, measure=measure[0], step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1e9, min_available_gb=0.0,
                               sample_s=0.05, quiet_window=0.0, quiet_max_wait=5.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
-                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, no_confirm=False, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0)
+                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, max_busy_share=1e9, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, no_confirm=False, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0)
     pid = os.getpid()
     info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"id": "store-id", "ip": "127.0.0.1", "pid": pid},
             "lb": {"pid": pid}, "admin": "http://127.0.0.1:1"}
@@ -103,6 +103,18 @@ def scenario(name, during=lambda: None, error=None, before=None, info=None):
 results = {}
 # The node is fine; only the store rtt measurement fails (load-env exits 1).
 results["rtt_fails"] = scenario("rtt_fails")
+# cells: 10 opening writes (half of them refused, 300 ms) and 10 hold writes (all answered, 0.5 ms). The hold is judged: the step passes,
+# and the opening's p99 and refusals are reported apart; the whole-step statuses stay.
+real_document, real_measure = DOCUMENT, measure[0]
+DOCUMENT = {"statuses": {"200": 15, "503 retry-after": 5}, "hist": {"3000": 10, "5": 10}, "max_ms": 300.0, "planned": 20, "sent": 20, "completed": 20, "cpu_s": 0.1,
+            "lag_ms": {"p99": 1}, "opening": {"planned": 10, "statuses": {"200": 5, "503 retry-after": 5}, "hist": {"3000": 10}, "max_ms": 300.0}}
+measure[0] = "cells"
+results["cells_hold"] = scenario("cells_hold")
+DOCUMENT["opening"]["hist"] = {"3000": 5, "5": 5}  # the opening is clean and the hold has the 503s: the step fails on them
+DOCUMENT["opening"]["statuses"] = {"200": 10}
+DOCUMENT["hist"], DOCUMENT["statuses"] = {"3000": 5, "5": 15}, {"200": 15, "503 retry-after": 5}
+results["cells_hold_refused"] = scenario("cells_hold_refused")
+DOCUMENT, measure[0] = real_document, real_measure
 # The node is OOM-killed during the step.
 results["oom"] = scenario("oom", during=lambda: container(running=False, oom=True, exit_code=137))
 # The node exits 137 and the generator fails because of it.
@@ -466,4 +478,14 @@ try:
 finally:
     m.time.sleep, m.time.monotonic = real_sleep, real_monotonic
 results["ticker"] = [over for _, over in ticker.stalls]
+# The host's own cores: a step whose mean busy cores pass the share of them is INVALID; the scale measure refuses a host that is too small.
+real_cores = m.CORES
+m.CORES = 4
+results["judge_busy"] = [m.judge_busy(3.5, 0.85), m.judge_busy(3.4, 0.85), m.judge_busy(None, 0.85)]
+results["oversubscribed"] = [m.cpu_oversubscribed(n, {"node_cpus": 1, "store_cpus": s, "lb_cpus": s}, 4) for n, s in ((3, 2), (1, 2), (2, 1), (3, 1))]
+m.CORES = real_cores
+# The ws ramp must stay under the node's connection cap, and the cap under its descriptor limit.
+results["ws_cap"] = [m.ws_cap_problem(51200, 16384, None), m.ws_cap_problem(100, 16384, None), m.ws_cap_problem(51200, 70000, 65536), m.ws_cap_problem(51200, 70000, 1048576)]
+results["max_connections"] = [m.http_max_connections(), m.os.environ.update(ATANOR_LOAD_HTTP_MAX_CONNECTIONS="70000") or m.http_max_connections()]
+m.os.environ.pop("ATANOR_LOAD_HTTP_MAX_CONNECTIONS")
 print(json.dumps(results))
