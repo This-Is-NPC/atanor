@@ -290,6 +290,10 @@ run = "scripts/load-run cells"
 description = "Replace the node by another under load at the last approved http-wasm-jobs rate and report the swap duration and p99 peak (arguments: --rate, --trigger sigterm|api, ...); run it last: the old node is removed"
 run = "scripts/load-run swap"
 
+[tasks."load:explore"]
+description = "Exploration round of one scenario, before the official round: each ramp measure runs only the steps at 75%, 100%, 125% and 150% of the ceiling in --from DIR (75 s each, no refine, no confirm), then the swap at the http-wasm-jobs ceiling (arguments: --from DIR, --ceiling MEASURE=N, --measures, --factors, --step-s, --dry-run; docs/how-to-run-the-load-tests.md)"
+run = "scripts/load-explore"
+
 [tasks."load:report"]
 description = "Write report.md of a results directory (argument: DIR, e.g. load/results/STAMP): steps, cost per unit and the criterion that stopped each ramp"
 run = "scripts/load-report"
