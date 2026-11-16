@@ -13,11 +13,11 @@ machine say how the harness works, not what a release holds: run the real ramps 
 
 | Measure (task) | Ramp | A step fails when | Cost per unit |
 | --- | --- | --- | --- |
-| `load:http-native`, `load:http-wasm`: reads and writes in cells; same work in both (see [the workers](#the-workers-of-the-http-measures)) | requests per second | p99 > 250 ms, a 5xx other than 503 with `Retry-After`, or any error | req/s per vCPU, fixed MB, MB per req/s, S3 trips and bytes per request |
-| `load:ws`: open idle WebSockets, one message per socket every 30 s | connections | working set at 90% of the limit (see [the memory criterion](#the-memory-criterion)), or file descriptors at 90% of the limit (or a socket that cannot connect or is dropped) | MB and descriptors per connection |
-| `load:http-wasm-jobs`: writes and reads of the scoreboard, a job-heavy WASM app (not comparable with native) | requests per second | p99 > 250 ms, a 5xx other than 503 with `Retry-After`, or any error | req/s per vCPU, fixed MB, MB per req/s (its S3 trips and bytes per request are not comparable with native) |
-| `load:cells`: cells written once every 10 s, all awake together | cells | working set at 90% of the limit, or p99 > 250 ms | MB per hot cell |
-| `load:swap`: node A replaced by B under load | none (one run at the last approved `http-wasm-jobs` rate: run that measure first, or pass `--rate`) | an acknowledged write lost or duplicated, or an answer other than 503 with `Retry-After` | swap duration and p99 peak |
+| `load:http-native`, `load:http-wasm`: reads and writes in cells; same work in both (see [the workers](#the-workers-of-the-http-measures)) | requests per second | p99 > 250 ms, 503 answers over 1% of all answers (`--max-refused-pct`, stop reason `refused N% > 1%`), any other 5xx, or any error | req/s per vCPU, fixed MB, MB per req/s, S3 trips and bytes per request |
+| `load:ws`: open idle WebSockets, one message per socket every 30 s | connections | working set at 90% of the limit (see [the memory criterion](#the-memory-criterion)), or file descriptors at 90% of the limit, 503 answers over 1% of all answers (`--max-refused-pct`), or a socket that cannot connect or is dropped | MB and descriptors per connection |
+| `load:http-wasm-jobs`: writes and reads of the scoreboard, a job-heavy WASM app (not comparable with native) | requests per second | p99 > 250 ms, 503 answers over 1% of all answers (`--max-refused-pct`, stop reason `refused N% > 1%`), any other 5xx, or any error | req/s per vCPU, fixed MB, MB per req/s (its S3 trips and bytes per request are not comparable with native) |
+| `load:cells`: cells written once every 10 s, all awake together | cells | working set at 90% of the limit, p99 > 250 ms, or 503 answers over 1% of all answers (`--max-refused-pct`) | MB per hot cell |
+| `load:swap`: node A replaced by B under load | none (one run at the last approved `http-wasm-jobs` rate: run that measure first, or pass `--rate`) | an acknowledged write lost or duplicated, or an answer other than 503 with `Retry-After` (503 with `Retry-After` stays accepted: the refused criterion does not apply) | swap duration and p99 peak |
 
 ### The workers of the http measures
 
@@ -143,6 +143,7 @@ The ramp multiplies the value by 2 from a start (`--start`, `--factor`, or `--st
 it then bisects `--refine` times (3) between the last good and the failing value and repeats the best good
 value once to confirm it. Every step writes one JSON file, atomically (temporary file, then rename), named
 `SCENARIO_MEASURE_NN-PHASE-VALUE.json`, with: scenario and limits, measure, value, planned and achieved,
+`achieved_rate` (completed requests per second) and `useful_rate` (non-503 answers per second),
 p50/p95/p99/max, status counts (503 with and without `Retry-After`), node CPU cores, memory (service,
 tmpfs, peak since the container started, and the largest `memory.current` of the node's cgroup,
 `current_max_mb`; `service_max_mb` and `max_pct_of_limit` are the working set (`memory.current - inactive_file`, what the node's memory gate reads, tmpfs included) and its share of the scenario
@@ -203,6 +204,7 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_STEP_S` | 180 | Seconds of load per step. |
 | `ATANOR_LOAD_FACTOR`, `_REFINE` | 2, 3 | Growth of the ramp, bisections. |
 | `ATANOR_LOAD_P99_MS` | 250 | p99 that fails an http or cells step. |
+| `ATANOR_LOAD_MAX_REFUSED_PCT` | 1 | Share of 503 answers, of all answers, above which an http, ws or cells step fails (`--max-refused-pct`). Not used by `load:swap`. |
 | `ATANOR_LOAD_MEMORY_PCT`, `_FD_PCT` | 90, 90 | Share of the limits that fails a ws or cells step. |
 | `ATANOR_LOAD_DELIVERY` | 0.95 | Achieved/planned below which a step is invalid. |
 | `ATANOR_LOAD_HOST_LOAD_MAX` | 1 | Net host load (cores) below which the host is quiet; a step whose mean is above it is invalid and stops the round. |

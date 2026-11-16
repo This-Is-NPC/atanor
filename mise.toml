@@ -263,15 +263,15 @@ description = "Remove the load-test containers, network and volumes (project ata
 run = "scripts/load-env down"
 
 [tasks."load:http-native"]
-description = "Ramp requests per second to the native worker until p99 > 250 ms, a 5xx other than 503 with Retry-After, or an error (arguments: --step-s, --start, --steps, ...; --help lists all)"
+description = "Ramp requests per second to the native worker until p99 > 250 ms, 503 answers over 1% of all answers, any other 5xx, or an error (arguments: --step-s, --start, --steps, ...; --help lists all)"
 run = "scripts/load-run http-native"
 
 [tasks."load:http-wasm"]
-description = "Ramp requests per second to the plain WASM worker (the twin of the native one) until p99 > 250 ms, a 5xx other than 503 with Retry-After, or an error (same arguments as load:http-native)"
+description = "Ramp requests per second to the plain WASM worker (the twin of the native one) until p99 > 250 ms, 503 answers over 1% of all answers, any other 5xx, or an error (same arguments as load:http-native)"
 run = "scripts/load-run http-wasm"
 
 [tasks."load:http-wasm-jobs"]
-description = "Ramp requests per second to the scoreboard (WASM app, a ranking job per write) until p99 > 250 ms, a 5xx other than 503 with Retry-After, or an error (same arguments as load:http-native); its approved rate is the swap's"
+description = "Ramp requests per second to the scoreboard (WASM app, a ranking job per write) until p99 > 250 ms, 503 answers over 1% of all answers, any other 5xx, or an error (same arguments as load:http-native); its approved rate is the swap's"
 run = "scripts/load-run http-wasm-jobs"
 
 [tasks."load:ws"]

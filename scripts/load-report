@@ -41,7 +41,7 @@ def step_rows(steps):
     rows = []
     for s in steps:
         lat, mem, cpu = s["latency_ms"], s.get("memory", {}), s.get("cpu", {})
-        rows.append([s["step"], s["phase"], f"{s['value']:g}", f"{num(s['planned'], 0)} / {num(s['achieved'], 0)}", num(lat["p50"]), num(lat["p95"]), num(lat["p99"]), num(lat["max"]),
+        rows.append([s["step"], s["phase"], f"{s['value']:g}", f"{num(s['planned'], 0)} / {num(s['achieved'], 0)}", num(s.get("useful_rate")), num(lat["p50"]), num(lat["p95"]), num(lat["p99"]), num(lat["max"]),
                      f"{s['status_503']['with_retry_after']} / {s['status_503']['without_retry_after']}", num(cpu.get("node_cores"), 2),
                      f"{num(mem.get('service_mb'))} / {num(mem.get('tmpfs_mb'))} / {num(mem.get('peak_mb'))}", num(mem.get("current_max_mb")),
                      num((s.get("runtime") or {}).get("oom_kill"), 0), num(s.get("fds", {}).get("count"), 0),
@@ -52,7 +52,7 @@ def step_rows(steps):
     return rows
 
 
-HEADER = ["step", "phase", "value", "planned / achieved", "p50 ms", "p95 ms", "p99 ms", "max ms", "503 with / without Retry-After", "CPU cores",
+HEADER = ["step", "phase", "value", "planned / achieved", "useful rate (non-503 per s)", "p50 ms", "p95 ms", "p99 ms", "max ms", "503 with / without Retry-After", "CPU cores",
           "MB service / tmpfs / peak", "MB cgroup max (with tmpfs)", "oom kills", "fds", "S3 bytes / trips", "net host load (loadavg)", "generator swap growth MB", "host swap max MB", "status"]
 
 
@@ -67,7 +67,7 @@ def cost(measure, steps, baseline, summary):
     out = [("approved step", f"{approved:g} {best['unit']}")]
     if measure.startswith("http"):
         rate, cores = best.get("achieved_rate"), cpu.get("node_cores")
-        out += [("req/s per vCPU", num(rate / cores) if cores else "-"), ("fixed MB (idle, before the load)", num(base)),
+        out += [("useful rate (non-503 answers per s)", num(best.get("useful_rate"))), ("req/s per vCPU", num(rate / cores) if cores else "-"), ("fixed MB (idle, before the load)", num(base)),
                 ("marginal MB per req/s", num((mem["service_mb"] - base) / rate, 3) if base is not None and rate else "-")]
     elif measure == "ws":
         n = best["achieved"]

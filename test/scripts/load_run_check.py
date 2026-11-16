@@ -84,7 +84,7 @@ def new_round(name):
     os.makedirs(out)
     args = argparse.Namespace(out=out, measure=measure[0], step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1e9, min_available_gb=0.0,
                               sample_s=0.05, quiet_window=0.0, quiet_max_wait=5.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
-                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0)
+                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0)
     pid = os.getpid()
     info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"id": "store-id", "ip": "127.0.0.1", "pid": pid},
             "lb": {"pid": pid}, "admin": "http://127.0.0.1:1"}
@@ -269,6 +269,26 @@ def stall_scenario(name, lags):
 results["stall_once"] = stall_scenario("stall_once", [242, 1])
 results["stall_twice"] = stall_scenario("stall_twice", [242, 300])
 
+# A step fails when 503s (with or without Retry-After) exceed 1% of the answers; exactly 1% passes. 200 answers in one second.
+def refused_scenario(name, statuses):
+    real = m.Round.run_generators
+    m.Round.run_generators = lambda self, value, sampler: [{**DOCUMENT, "statuses": statuses, "hist": {"5": 200}, "planned": 200, "sent": 200, "completed": 200, "opened": 200}]
+    measure[0] = "http-wasm"
+    try:
+        record = scenario(name)["record"]
+    finally:
+        measure[0] = "ws"
+        m.Round.run_generators = real
+    return {k: record[k] for k in ("status", "valid", "stop_reason", "useful_rate")}
+
+
+results["refused"] = {
+    "two_pct": refused_scenario("refused_two", {"200": 196, "503 retry-after": 4}),
+    "two_pct_no_retry": refused_scenario("refused_two_nr", {"200": 196, "503 no retry-after": 4}),
+    "half_pct": refused_scenario("refused_half", {"200": 199, "503 retry-after": 1}),
+    "one_pct": refused_scenario("refused_one", {"200": 198, "503 retry-after": 2}),
+}
+
 # A step that starts with a dead node is invalid, runs no generator and ends the round.
 results["dead_at_start"] = ramp_scenario("dead_at_start", dies_at=0, before={"running": False, "exit_code": 137})
 
@@ -288,7 +308,7 @@ os.makedirs(os.path.join(work, "scripts"))
 stub = os.path.join(work, "scripts", "load-env")  # the swap runs through `load-env swap`
 with open(stub, "w") as file:
     file.write("#!/bin/sh\n[ \"$1\" = swap ] || exit 2\nwhile [ $# -gt 0 ]; do [ \"$1\" = --out ] && out=$2; shift; done\nmkdir -p \"$out\"\n"
-               "echo '{\"sent\": 100, \"duration_s\": 10, \"a_exit_s\": 1.5, \"lost\": 0, \"duplicated\": 0, \"errors\": {}, \"phases\": {\"warmup\": {\"p99\": 20, \"max\": 30}}}' > \"$out/result.json\"\n")
+               "echo '{\"sent\": 100, \"duration_s\": 10, \"a_exit_s\": 1.5, \"lost\": 0, \"duplicated\": 0, \"errors\": {\"503 held_elsewhere\": 30},\"phases\": {\"warmup\": {\"p99\": 20, \"max\": 30}}}' > \"$out/result.json\"\n")
 os.chmod(stub, os.stat(stub).st_mode | stat.S_IXUSR)
 m.Sampler.take = lambda self: memory_sample(time.time(), 650, 256)
 swap_round, swap_args = new_round("swap")
@@ -303,7 +323,8 @@ results["exit_status"] = {"swap_ok": m.exit_status("swap", swap_summary), "swap_
 with open(os.path.join(swap_args.out, "A_swap_01-swap-10.json")) as file:
     swap_record = json.load(file)
 results["swap"] = {k: swap_record[k] for k in ("status", "valid", "stop_reason")} | {"service_max_mb": swap_record["memory"]["service_max_mb"],
-                                                                                    "limit_mb": swap_record["memory"]["limit_mb"]}
+                                                                                    "limit_mb": swap_record["memory"]["limit_mb"],
+                                                                                    "refused": swap_record["status_503"]["with_retry_after"]}
 
 # Host swap is judged by its growth during the step; a high but flat level is valid.
 def swap_usage(start, peak):
