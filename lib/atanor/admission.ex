@@ -56,6 +56,10 @@ defmodule Atanor.Admission do
   @refused_queue 11
   @refused_worker_queue 12
   @refused_nested 13
+  @refused_awake_limit 14
+  @refused_busy 15
+  @refused_disk_full 16
+  @counters 16
   @deadline {__MODULE__, :deadline}
 
   @doc "The gap, as a fraction of the limit, between the refuse and the resume marks."
@@ -187,11 +191,19 @@ defmodule Atanor.Admission do
   def expired?, do: remaining() != :infinity and remaining() <= 0
 
   @doc false
-  # Counts a call the node refused after admitting the request: `:queue_timeout`, `:worker_queue` or `:nested_calls`.
-  @spec refuse_call(atom, :queue_timeout | :worker_queue | :nested_calls) :: :ok
+  # Counts a call the node refused after admitting the request, by the gate that refused it (`call_causes/0`).
+  @call_causes [:wake_gate, :queue_timeout, :worker_queue, :nested_calls, :awake_limit, :busy, :disk_full]
+  @spec call_causes() :: [atom]
+  def call_causes, do: @call_causes
+
+  @spec refuse_call(atom, atom) :: :ok
+  def refuse_call(name, :wake_gate), do: add(name, @refused_wake)
   def refuse_call(name, :queue_timeout), do: add(name, @refused_queue)
   def refuse_call(name, :worker_queue), do: add(name, @refused_worker_queue)
   def refuse_call(name, :nested_calls), do: add(name, @refused_nested)
+  def refuse_call(name, :awake_limit), do: add(name, @refused_awake_limit)
+  def refuse_call(name, :busy), do: add(name, @refused_busy)
+  def refuse_call(name, :disk_full), do: add(name, @refused_disk_full)
 
   defp add(name, counter) do
     :atomics.add(handle(name).counters, counter, 1)
@@ -203,13 +215,6 @@ defmodule Atanor.Admission do
   # work the gate cannot stop at the ingress once the request is in.
   @spec memory_refusing?(atom) :: boolean
   def memory_refusing?(name), do: refusing?(handle(name))
-
-  @doc false
-  @spec refuse_wake(atom) :: :ok
-  def refuse_wake(name) do
-    :atomics.add(handle(name).counters, @refused_wake, 1)
-    :ok
-  end
 
   @doc false
   # The disk use of `data_dir`, from `Atanor.Disk`.
@@ -243,10 +248,11 @@ defmodule Atanor.Admission do
   @doc """
   What the admission of a running node has done: the requests in flight now, the refusals by reason, the
   last working set and the limit it is judged against (`nil` when the memory gate is off), the disk use and
-  budget (`nil` when the disk gate is off), whether the gates are refusing now, and `wake_refused`: the cell
-  calls refused because they would have woken a cell while the memory gate was refusing. `refused.queue_timeout`
-  counts the requests refused because they waited past `http: [queue_wait_ms:]`, `refused.worker_queue` the WASM calls
-  refused because the queue was full and `refused.nested_calls` the calls between workers refused at `max_nested_calls`.
+  budget (`nil` when the disk gate is off) and whether the gates are refusing now. Every 503 `overloaded` is in
+  `refused` under its reason: `memory`, `disk` and `in_flight` at the ingress, then `wake_gate` (the cell calls
+  that would have woken a cell while the memory gate was refusing), `queue_timeout` (waited past
+  `http: [queue_wait_ms:]`), `worker_queue` (the WASM queue was full), `nested_calls` (calls between workers
+  refused at `max_nested_calls`), `awake_limit` (the awake cells are at their ceiling), `busy` and `disk_full`.
   """
   @spec stats(atom) :: map
   def stats(name) do
@@ -262,13 +268,16 @@ defmodule Atanor.Admission do
         in_flight: :atomics.get(counters, @refused_in_flight),
         queue_timeout: :atomics.get(counters, @refused_queue),
         worker_queue: :atomics.get(counters, @refused_worker_queue),
-        nested_calls: :atomics.get(counters, @refused_nested)
+        nested_calls: :atomics.get(counters, @refused_nested),
+        wake_gate: :atomics.get(counters, @refused_wake),
+        awake_limit: :atomics.get(counters, @refused_awake_limit),
+        busy: :atomics.get(counters, @refused_busy),
+        disk_full: :atomics.get(counters, @refused_disk_full)
       },
       working_set_bytes: if(handle.memory, do: :atomics.get(counters, @working_set)),
       limit_bytes: handle.limit,
       refuse_at_bytes: if(handle.memory, do: trunc(handle.model.refuse_at)),
       refusing: refusing?(handle),
-      wake_refused: :atomics.get(counters, @refused_wake),
       disk_used_bytes: if(handle.disk, do: :atomics.get(counters, @disk_used)),
       disk_budget_bytes: handle.disk_budget,
       disk_refusing: disk_refusing?(handle)
@@ -293,7 +302,7 @@ defmodule Atanor.Admission do
     handle = %{
       pid: self(),
       table: :ets.new(__MODULE__, [:set, :public, write_concurrency: true]),
-      counters: :atomics.new(13, []),
+      counters: :atomics.new(@counters, []),
       max_in_flight: config.http.max_in_flight,
       queue_wait_ms: config.http.queue_wait_ms,
       memory: memory?,

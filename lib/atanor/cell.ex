@@ -129,7 +129,7 @@ defmodule Atanor.Cell do
   # `owner/3` with `peers: true` asks the members' registries, never the store, and never wakes a cell.
   defp wake_gate(instance, config, id) do
     if Admission.memory_refusing?(instance) and not match?({:ok, _}, Alambique.owner(config.alambique, id, peers: true)) do
-      Admission.refuse_wake(instance)
+      Admission.refuse_call(instance, :wake_gate)
       mark_overload(:wake_gate)
       {:error, {:unavailable, :overloaded}}
     else

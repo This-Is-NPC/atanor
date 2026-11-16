@@ -100,7 +100,11 @@ defmodule Atanor.LoadRunTest do
              "disk" => 0,
              "queue_timeout" => 0,
              "worker_queue" => 0,
-             "nested_calls" => 0
+             "nested_calls" => 0,
+             "wake_gate" => 0,
+             "awake_limit" => 0,
+             "busy" => 0,
+             "disk_full" => 0
            }
 
     assert record["store"]["tmpfs_max_pct"] == 50.0
