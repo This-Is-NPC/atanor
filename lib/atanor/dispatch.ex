@@ -438,7 +438,7 @@ defmodule Atanor.Dispatch do
         :owned
 
       true ->
-        if config.hot_cells.enabled, do: Atanor.HotCells.hold(instance, id, config.hot_cells.move_timeout_ms)
+        if Atanor.HotCells.gated?(config), do: Atanor.HotCells.hold(instance, id, config.hot_cells.move_timeout_ms)
 
         query = &Alambique.query(config.alambique, id, "SELECT 1", [], &1)
 

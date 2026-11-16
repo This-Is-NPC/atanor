@@ -97,9 +97,21 @@ defmodule Atanor.Overview do
   defp status(:draining), do: "draining"
   defp status(:stopping), do: "stopping"
 
-  @doc "What this node's memory is made of (`GET /runtime`); the cgroup is the one of `:memory` `:cgroup_path`."
+  @doc """
+  What this node's memory is made of and the state of its rebalance on join (`GET /runtime`); the cgroup is
+  the one of `:memory` `:cgroup_path`.
+  """
   def runtime(name) do
-    Atanor.RuntimeSample.sample(name, Path.dirname(Registry.config(name).memory.cgroup_path))
+    name
+    |> Atanor.RuntimeSample.sample(Path.dirname(Registry.config(name).memory.cgroup_path))
+    |> Map.put(:rebalance, rebalance(name))
+  end
+
+  defp rebalance(name) do
+    case Atanor.Rebalance.status(name) do
+      {:error, :disabled} -> %{enabled: false}
+      status -> status |> Map.put(:enabled, true) |> stringify()
+    end
   end
 
   @doc "The HTTP and TCP routes this node serves."

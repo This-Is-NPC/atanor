@@ -114,7 +114,7 @@ defmodule Atanor.Cell do
 
       with :ok <- wake_gate(instance, config, id),
            :ok <- patience() do
-        if config.hot_cells.enabled, do: HotCells.hold(instance, id, config.hot_cells.move_timeout_ms)
+        if HotCells.gated?(config), do: HotCells.hold(instance, id, config.hot_cells.move_timeout_ms)
 
         case within_deadline(config.alambique, id, :touch, [], &Alambique.touch(config.alambique, id, &1)) do
           {:error, :timeout} -> if Admission.expired?(), do: queue_timeout(), else: {:error, :timeout}
@@ -140,7 +140,7 @@ defmodule Atanor.Cell do
   # A call waits while its cell moves (design §8.15), then counts for the placement of hot cells.
   defp hot_cells(instance, config, id, kind) do
     HotCells.hold(instance, id, config.hot_cells.move_timeout_ms)
-    HotCells.count(instance, id, kind)
+    if config.hot_cells.enabled, do: HotCells.count(instance, id, kind)
   end
 
   @doc "Puts the cell to sleep. See `Alambique.hibernate/3`."
@@ -173,7 +173,7 @@ defmodule Atanor.Cell do
       # An admin call (hibernate, move, position) is how a node sheds cells: it is not gated.
       with :ok <- if(kind == :admin, do: :ok, else: wake_gate(instance, config, id)),
            :ok <- if(kind == :admin, do: :ok, else: handler_patience()) do
-        if config.hot_cells.enabled and kind != :admin, do: hot_cells(instance, config, id, kind)
+        if HotCells.gated?(config) and kind != :admin, do: hot_cells(instance, config, id, kind)
         Process.delete(@bounded)
         Process.delete(@unsent)
         instance |> run(id, fun, config.takeover.attempts, nil) |> timed_out(kind) |> wrote(kind)
