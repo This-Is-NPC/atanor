@@ -1064,7 +1064,8 @@ are `test/atanor/disk_test.exs`, `disk_property_test.exs` and
 
 Atanor writes its metadata through the `Alambique.Store` behaviour, in the
 same store as the cells, under the operator's prefix (default `atanor`). With
-`store:` and `prefix:` Atanor gives Alambique the prefix `<prefix>/cells`. With
+`store:` and `prefix:` Atanor gives Alambique the prefix `<prefix>/cells`; deploys that share
+a store need prefixes where neither is a path prefix of the other (Alambique 0.11 rule). With
 a `placement:` the operator also names the `meta_store:` that holds the rest:
 
 | Key | Content |
@@ -2032,18 +2033,28 @@ others.
 
 Each node does it for the cells it serves, so one cell has one decider, as in
 §8.15. A change of the members, or of this node being ready, starts a plan that
-waits `start_delay_ms` (30 s). A change during the wait or the plan starts it
+waits `start_delay_ms` (30 s); the members come from Alambique's
+`[:alambique, :membership, :changed]` telemetry event (the node reads them once at start). A change during the wait or the plan starts it
 again, so a node that joins and leaves quickly moves nothing. The plan lists, with
 `Alambique.cells/2`, the cells awake here whose preferred node is another one, coldest first
 (`last_used`), and moves one at a time with `Atanor.HotCells.move/4` (which tells
 the other nodes and gates the callers while the cell moves), at most
 `max_moves_per_s` (5) a second. Before each move it looks again: the cell must
-still be awake, its preferred node must still be another, that node must not be
-blocked by the failure detector, and `Alambique.load/2` must say that no call is
-waiting on it (`pending` is 0 and it is not waking). A busy cell waits for the
-next steps and, if it stays busy, for the next round: a round runs five seconds
-after the last, twelve at most, and the plan ends with the first round that finds
-nothing.
+still be awake, its preferred node (`Alambique.preferred/2`) must still be another, and
+that node must not be blocked by the failure detector. The move asks `only_if_idle` of
+`Alambique.move/4`: the owner decides while it handles the request, so there is no window
+between a check and the move. A cell with a call in flight answers `{:error, :busy}`, goes
+back to the queue and, if it stays busy for four tries, waits for the next round: a round
+runs five seconds after the last, twelve at most, and the plan ends with the first round
+that finds nothing.
+
+**Pace.** `max_moves_per_s` is a ceiling, not a rate. Moves are serial: the next one
+starts at the first step (`1000 / max_moves_per_s` ms) after the previous one ends, so the
+pace is bounded by the duration of a move, which hibernates the cell (an upload of its
+state to the store) and wakes it on the target, plus the five seconds of a round that busy
+cells defer. A cell that is called all the time is often busy. In a load test (600 req/s
+over 64 hot cells) a node made 27 moves in about 67 s, one per 2.5 s. The cause comes from
+reading the code, not from a measure of each move.
 
 **Defaults.** They are a starting point, not a measurement. `start_delay_ms` 30 s is
 longer than the registry's refresh (3 s) and the detector's settling, so a node that
@@ -2056,12 +2067,13 @@ the plan steps once per `1000 / max_moves_per_s` ms.
 **No loops.** A plan hands a cell out once while the membership stays (`attempted`
 in `Atanor.Rebalance.Plan`): a move that failed is not repeated, and a cell that
 came back to this node is not chased. The cells that `Atanor.HotCells.pinned/1`
-names are not touched: the hot ones the loop tracks, those that moved in the last
-`residence_ms` (the loop broadcasts every move it runs, so every node knows
-them) and those moving now. A cell moved by pressure, or by another node's
-rebalance, is therefore not moved back. **Precedence:** the hot-cell loop wins.
+names are not touched: the hot ones the loop tracks, those that the loop moved in the last
+`residence_ms` (it broadcasts every move it runs, so every node knows
+them) and those moving now. A cell moved by pressure is therefore not moved back. A
+rebalance move starts no residence time, on the source or the target, so a cell that
+arrives by rebalance can move on when another node joins. **Precedence:** the hot-cell loop wins.
 The rebalance moves go through the same path as the loop's, so they
-count in its residence time, cooldown and cap: while a rebalance runs, the loop's
+count in its cooldown and cap: while a rebalance runs, the loop's
 node cooldown (30 s) can delay a hot cell's move by up to that long. The server of
 the placement runs when either is on, because it also holds the callers of a cell that moves.
 

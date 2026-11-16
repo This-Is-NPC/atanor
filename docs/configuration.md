@@ -27,7 +27,7 @@ children = [
 
 | Option | What it sets |
 | --- | --- |
-| `store:`, `prefix:` | The S3-compatible store that holds both the cells and Atanor's own metadata under `prefix:`. `placement:` with `meta_store:` replaces it when cells live in several places. |
+| `store:`, `prefix:` | The S3-compatible store that holds both the cells and Atanor's own metadata under `prefix:`. `placement:` with `meta_store:` replaces it when cells live in several places. Deploys that share a store need prefixes where neither is a path prefix of the other (Alambique 0.11 rule; Atanor uses `<prefix>/cells`). |
 | `data_dir:` | The directory of the local copies of cells. One instance holds it (a lock on `data_dir/lock`) on a case-sensitive file system; a second instance, or another file system, fails to start with `data_dir_in_use` or `data_dir_case_insensitive`, logged by the node. |
 | `secrets:` | The values of the secrets the workers are granted. |
 | `hosts:`, `listeners:` | The routes a manifest may activate. `listeners: %{"smtp" => 2525}` opens that port while a worker claims it. The long form adds `tls_mode:` and `tls:`, `protocol: :ranch` and `ip:` (the address to bind); a Ranch protocol gets the listener name as `:atanor_listener`. |
