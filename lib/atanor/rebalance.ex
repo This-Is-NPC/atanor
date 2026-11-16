@@ -117,22 +117,24 @@ defmodule Atanor.Rebalance do
   @impl true
   def handle_cast({:result, epoch, id, target, result, duration}, state) do
     ok? = match?({:ok, _}, result)
-
-    :telemetry.execute([:atanor, :rebalance, :move], %{duration: duration}, %{
-      instance: state.name,
-      cell: id,
-      from: node(),
-      to: target,
-      result: if(ok?, do: :ok, else: result)
-    })
-
     state = %{state | in_flight: nil}
     current? = epoch == state.epoch
 
-    # A cell with a call in flight stays: it goes back to the plan, and is no failure.
+    # A cell with a call in flight stays: it goes back to the plan, and is neither a failure nor a move event.
     case result do
-      {:error, :busy} -> {:noreply, if(current?, do: %{state | plan: Plan.busy(state.plan, id)}, else: state)}
-      _ -> {:noreply, state |> count_total(ok?) |> count(current?, ok?)}
+      {:error, :busy} ->
+        {:noreply, if(current?, do: %{state | plan: Plan.busy(state.plan, id)}, else: state)}
+
+      _ ->
+        :telemetry.execute([:atanor, :rebalance, :move], %{duration: duration}, %{
+          instance: state.name,
+          cell: id,
+          from: node(),
+          to: target,
+          result: if(ok?, do: :ok, else: result)
+        })
+
+        {:noreply, state |> count_total(ok?) |> count(current?, ok?)}
     end
   end
 
