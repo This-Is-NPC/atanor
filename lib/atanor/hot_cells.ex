@@ -169,7 +169,9 @@ defmodule Atanor.HotCells do
 
   def handle_info({:moving, id, source, target}, state), do: {:noreply, moving(state, id, source, target)}
 
-  def handle_info({:moved, id, source, target}, state), do: {:noreply, finished(state, id, source, target)}
+  def handle_info({:moved, id, source, target, reason}, state),
+    do: {:noreply, finished(state, id, source, target, reason)}
+
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
@@ -197,8 +199,8 @@ defmodule Atanor.HotCells do
   end
 
   def handle_cast({:finished, id, target, record}, state) do
-    state = finished(state, id, node(), target)
-    announce_finished(state, id, target)
+    state = finished(state, id, node(), target, record.reason)
+    announce_finished(state, id, target, record.reason)
     {:noreply, %{state | recent: Enum.take([record | state.recent], @recent)}}
   end
 
@@ -477,20 +479,22 @@ defmodule Atanor.HotCells do
     result
   end
 
-  defp finished(state, id, source, target) do
+  # A rebalance move does not start the residence time: the next rebalance round may move the cell again.
+  defp finished(state, id, source, target, reason) do
     :ets.delete(gate(state.name), id)
     now = now()
     until = now + state.cfg.node_cooldown_ms
+    moved = if reason == :rebalance, do: state.moved, else: Map.put(state.moved, id, now)
 
     %{
       state
       | moving: Map.delete(state.moving, id),
-        moved: Map.put(state.moved, id, now),
+        moved: moved,
         cooling: state.cooling |> Map.put(source, until) |> Map.put(target, until)
     }
   end
 
-  defp announce_finished(state, id, target), do: tell(state, {:moved, id, node(), target})
+  defp announce_finished(state, id, target, reason), do: tell(state, {:moved, id, node(), target, reason})
 
   defp report(state) do
     now = now()

@@ -72,12 +72,11 @@ defmodule Atanor.Cluster.RebalanceTest do
   # Where each cell is and where its preferred node says it should be, by the view of `:n1`.
   defp placement(cluster) do
     cells = Module.concat(Cluster.instance(cluster), Cells)
-    {:ok, config} = Cluster.call(cluster, :n1, Alambique.Config, :fetch!, [cells])
 
     for cell <- @cells do
       # A cell that is moving right now has no owner for a moment.
       owner = with {:ok, owner} <- owner(cluster, :n1, "log", cell), do: owner
-      {:ok, preferred} = Cluster.call(cluster, :n1, Alambique.Membership, :preferred, [config, "log." <> cell])
+      {:ok, preferred} = Cluster.call(cluster, :n1, Alambique, :preferred, [cells, "log." <> cell])
       {cell, owner, preferred}
     end
   end
@@ -120,6 +119,15 @@ defmodule Atanor.Cluster.RebalanceTest do
 
     done = moves(cluster)
     assert done != [] and Enum.all?(done, &(&1.meta.result == :ok and &1.meta.to == n3))
+
+    # A rebalance move starts no residence time on any node: the cells that arrived stay free for a later
+    # rebalance (a pinned cell was never moved on, so the third node took too few from the second).
+    moved_ids = MapSet.new(done, & &1.meta.cell)
+
+    for name <- [:n1, :n2, :n3] do
+      {:ok, pinned} = Cluster.call(cluster, name, Atanor.HotCells, :pinned, [Cluster.instance(cluster)])
+      assert MapSet.disjoint?(pinned, moved_ids), "#{name} pins cells that a rebalance moved"
+    end
 
     # A cell moves at most once, and only the plans of the three members moved anything.
     assert done |> Enum.frequencies_by(& &1.meta.cell) |> Map.values() |> Enum.all?(&(&1 == 1))
