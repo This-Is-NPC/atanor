@@ -113,6 +113,8 @@ Rules:
 | `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY` | `shutdown_ms`, `drain_timeout_ms`, `drain_concurrency` | 75000, 15000, 64 | `stop:` ([above](#the-instance)). The grace period of a stop must exceed the first ([rule](#the-stop-grace-period)). |
 | `ATANOR_DETECTOR_PAUSE_MS` | `detector_pause_ms` | 2000 | `detector: [acceptable_pause_ms:]`. |
 | `ATANOR_HTTP_QUEUE_WAIT_MS` | `http_queue_wait_ms` | 5000 | `http: [queue_wait_ms:]`: how long an admitted request may wait before the node answers 503 `queue_timeout` ([below](#cells-limits-memory-and-store-requests)). 0 turns it off. |
+| `ATANOR_HTTP_HEADER_TIMEOUT_MS`, `ATANOR_HTTP_BODY_TIMEOUT_MS` | `http_header_timeout_ms`, `http_body_timeout_ms` | 10000, 30000 | `http: [header_timeout_ms:, body_timeout_ms:]`: the whole time a client may take to send the headers and the body of an HTTP/1 request. A slower request is closed (a body: 408) and frees its connection ([below](#slow-clients)). |
+| `ATANOR_ADMIN_HEADER_TIMEOUT_MS`, `ATANOR_ADMIN_BODY_TIMEOUT_MS` | `admin_header_timeout_ms`, `admin_body_timeout_ms` | 10000, 120000 | The same for the admin API (`admin: [...]`); the body time allows a package upload. |
 | `ATANOR_GROUP` | `group` | none | The discovery group: a node dials only the nodes of its own group (`registry: [meta: %{"group" => ...}]`). A node that replaces another in a swap takes one, so that the two do not form a cluster ([how-to-replace-a-node.md](how-to-replace-a-node.md)). 1 to 64 letters, digits, `.`, `_` or `-`. |
 | `ATANOR_REGISTRY_TTL_MS` | `registry_ttl_ms` | 15000 | How long the node's entry under `<prefix>/nodes/` is live without a renewal (`alambique: [registry: [ttl_ms:]]`). A node that stopped without leaving is forgotten after it plus the skew margin (2 s). It must exceed twice the skew margin and `ATANOR_REGISTRY_RENEW_MS`. |
 | `ATANOR_REGISTRY_RENEW_MS` | `registry_renew_ms` | 3000 | How often the node renews its entry and reads the peers; a new node is found within about this time (`registry: [renew_ms:]`). It costs two small requests per period per node. |
@@ -273,6 +275,24 @@ body, when either gate is closed:
 - `http: [max_in_flight: 1_024]`: requests served at once on the node. A WebSocket
   holds no slot after the upgrade. The memory gate is the main guard; this one
   bounds the handlers when the limit is high or unknown.
+
+A request holds its slot while the node works on it, not while the client sends
+the body: the slot is given up for the read and taken again after it (a refusal
+then is a 503 `overloaded` as above).
+
+#### Slow clients
+
+`http: [read_timeout_ms: 10_000]` bounds each read, so a client that sends a
+byte every few seconds would hold its connection for ever. Two absolute
+deadlines close it. An HTTP/1 request whose headers take longer than
+`http: [header_timeout_ms: 10_000]` is closed (counted from the accept for the
+first request of a connection, from its first bytes for the next ones). A body that takes
+longer than `http: [body_timeout_ms: 30_000]` is answered 408 and closed.
+The admin listener has `admin: [header_timeout_ms: 10_000, body_timeout_ms: 120_000]`.
+Raise `body_timeout_ms` if clients upload `max_body_bytes` over a slow link.
+Each has an [environment variable](#the-daemon-environment-and-file). HTTP/2 streams keep Bandit's own
+body deadline, which a trickle does not extend; the headers of HTTP/2 and the
+dashboard listener have no total deadline. There is no limit per client address.
 
 Open WebSockets are not closed by either gate. Refusals count in
 `Atanor.Admission.stats/1` and `[:atanor, :http, :reject]` (reasons `:memory` and

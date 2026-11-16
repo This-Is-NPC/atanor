@@ -20,8 +20,8 @@ defmodule Atanor.Admission do
   kept in the process dictionary of the request process. The places where a request waits, not where it works,
   ask `remaining/0` and refuse with 503 `queue_timeout` once it has passed (design §7.1): before the handler
   starts, while the cell owner is found or woken, and for a cell call or a WASM queue slot while the handler has
-  not written yet. The time that the client takes to send the body is not waiting and moves the deadline
-  (`excluding/1`).
+  not written yet. A request gives its slot up while the client sends the body, and the deadline starts again
+  when it is admitted after it.
 
   A request is an ETS row keyed by its process: the in-flight count is the table size. A handler that is
   killed does not run `after`, so the sampler also drops the rows of dead processes on every tick.
@@ -185,21 +185,6 @@ defmodule Atanor.Admission do
   @doc false
   @spec expired?() :: boolean
   def expired?, do: remaining() != :infinity and remaining() <= 0
-
-  @doc false
-  # Runs `fun`, which waits for the client, and gives the deadline the time it took.
-  @spec excluding((-> result)) :: result when result: term
-  def excluding(fun) do
-    started = System.monotonic_time(:millisecond)
-    result = fun.()
-
-    case Process.get(@deadline) do
-      nil -> :ok
-      deadline -> Process.put(@deadline, deadline + System.monotonic_time(:millisecond) - started)
-    end
-
-    result
-  end
 
   @doc false
   # Counts a call the node refused after admitting the request: `:queue_timeout`, `:worker_queue` or `:nested_calls`.

@@ -80,6 +80,10 @@ defmodule Atanor.DaemonTest do
           "ATANOR_DRAIN_CONCURRENCY" => "8",
           "ATANOR_DETECTOR_PAUSE_MS" => "3000",
           "ATANOR_HTTP_QUEUE_WAIT_MS" => "2500",
+          "ATANOR_HTTP_HEADER_TIMEOUT_MS" => "4000",
+          "ATANOR_HTTP_BODY_TIMEOUT_MS" => "9000",
+          "ATANOR_ADMIN_HEADER_TIMEOUT_MS" => "3000",
+          "ATANOR_ADMIN_BODY_TIMEOUT_MS" => "7000",
           "ATANOR_ADVERTISE" => "node-a.example",
           "ATANOR_REGISTRY_TTL_MS" => "9000",
           "ATANOR_REGISTRY_RENEW_MS" => "1500"
@@ -103,6 +107,8 @@ defmodule Atanor.DaemonTest do
 
       assert config.detector.acceptable_pause_ms == 3_000
       assert config.http.queue_wait_ms == 2_500
+      assert {config.http.header_timeout_ms, config.http.body_timeout_ms} == {4_000, 9_000}
+      assert {config.admin.header_timeout_ms, config.admin.body_timeout_ms} == {3_000, 7_000}
     end
 
     test "the registry advertises the node name, with a join time of seconds by default" do

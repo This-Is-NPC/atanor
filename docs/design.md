@@ -1347,13 +1347,26 @@ listener, WebSockets included, divided among `http.acceptors` (10) because
 ThousandIsland counts per acceptor; a client over the cap waits in the
 accept queue of the operating system. `http.read_timeout_ms` (10,000) closes a
 connection that does not send the next bytes of a header or a body in time.
-It is a wait per read, not a deadline for the whole request: a client that
-sends one byte every few seconds, or chunks of a chunked body, still keeps its
-connection, and so many connections each. There is no limit per client
-address; a reverse proxy or the firewall (`limit_conn`, `nft meter`) does that.
+It is a wait per read, so two absolute deadlines sit over it for HTTP/1
+(`Atanor.HTTP.Deadline`): `http.header_timeout_ms` (10,000) to the end of the
+headers (from the accept for the first request of a connection, from the
+first bytes for the next ones), and `http.body_timeout_ms`
+(30,000) for the body. The listener runs Bandit with a transport that caps
+every read at the armed deadline, so a client that sends a byte just inside
+`read_timeout_ms` is cut when the deadline passes (Bandit answers 408 and
+closes). A handler wrapper arms the header deadline for each chunk of a
+connection; the plug clears it and arms the body one around `read_body`. A
+request whose body is pending gives up its in-flight slot for the read and
+takes it again after (`Atanor.Admission`): a slow client holds a connection,
+counted by `max_connections`, not a slot. A Plug worker reads its own body
+inside its slot, bounded by the same deadline. HTTP/2 streams have Bandit's own
+body deadline, which a trickle of data does not extend; there is no total
+deadline for HTTP/2 headers. There is no limit per client address; a reverse
+proxy or the firewall (`limit_conn`, `nft meter`) does that.
 `http.http_2: false` serves HTTP/1.1 only. The admin listener has the same
-settings under `admin:` (`max_connections` 128, `acceptors` 4); the dashboard
-listener has none yet.
+settings under `admin:` (`max_connections` 128, `acceptors` 4,
+`header_timeout_ms` 10,000, `body_timeout_ms` 120,000, for package uploads);
+the dashboard listener has none yet.
 
 Failures are JSON and leak no internals: no route is 404, a body over
 `max_body_bytes` (option of `{Atanor, opts}`, default 1,000,000) is 413, a
@@ -1365,14 +1378,16 @@ worker that raises, exits or returns something other than a valid
 
 #### Limits
 
-**Slow and many clients are bounded per read and per listener, not per
-client.** The bounds are described above. Bandit offers no deadline for the
-whole request, so a reverse proxy or a firewall in front of the node must
-enforce header and body deadlines and per-address limits (nginx
-`client_header_timeout`, `limit_conn`; `nft meter`). `http.max_connections` and
-`admin.max_connections` cap their listener only, so one address can use the
-whole cap. Keep the dashboard, which has no cap, on loopback. Evidence:
-`test/atanor/http_ingress_test.exs` (the cap and the read timeout hold).
+**Slow and many clients are bounded per request and per listener, not per
+client.** HTTP/1 headers and bodies have absolute deadlines (above), so slow
+clients free their connections, and a slow body holds no in-flight slot.
+A reverse proxy or a firewall in front of the node must still enforce
+per-address limits (nginx `limit_conn`; `nft meter`) and the deadlines of
+HTTP/2 headers. `http.max_connections` and `admin.max_connections` cap their
+listener only, so one address can use the whole cap for as long as the
+deadlines allow. Keep the dashboard, which has no cap and no total deadline, on
+loopback. Evidence: `test/atanor/http_ingress_test.exs` (the cap, the read
+timeout, slow bodies and slow admin headers).
 
 ### 7.2 Routing keys and dispatch
 
