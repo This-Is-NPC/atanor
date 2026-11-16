@@ -144,7 +144,7 @@ m.admin_json = lambda info, path, timeout: lab["runtime"] if path == "/runtime" 
 def make_args(out, **over):
     values = dict(out=out, measure="scale", step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1.0, min_available_gb=0.0, sample_s=0.05, quiet_window=0.0,
                   quiet_max_wait=2.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0, max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0,
-                  max_lag_ms=50.0, max_throttle_jump_ms=5000.0, command="test", steps=None, start=None, max=None, factor=2, refine=0, no_confirm=False,
+                  max_lag_ms=50.0, max_throttle_jump_ms=5000.0, max_busy_share=0.85, command="test", steps=None, start=None, max=None, factor=2, refine=0, no_confirm=False,
                   max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0, rate_per_proc=600.0, conns_per_rate=0.5, write_ratio=0.5, cells=64, worker="native", cell_period=10.0,
                   cells_conns=64, ws_interval=30.0, max_nodes=3, loads="http-native", scale_factor=1.25, ceilings="", factors="0.75,1,1.25,1.5", no_join=True, join_rate=None,
                   join_factor=1.5, join_warmup_s=0.3, join_observe_s=1.2, join_node_wait_s=0.2, join_node_timeout_s=10.0, join_sample_s=0.05, spread_tol_pct=25.0,
@@ -254,6 +254,10 @@ results["invalid"] = {"invalid": summary["invalid"], "invalids": summary["invali
                       "statuses": [s["status"] for s in step3], "valid": [s["valid"] for s in step3], "ceilings": sorted(summary["ceilings"]["http-native"]),
                       "exit": m.exit_status("scale", summary), "join_note": summary["join_note"]}
 
+# The host's cores run out at 2 nodes (2.5 busy cores of 8 against a share of 0.2): INVALID, whatever the foreign load.
+summary, out = run_scale("saturated", steps="50,100,200", busy_at=2, host_load_max=100.0, max_busy_share=0.2)
+results["saturated"] = {"invalid": summary["invalid"], "largest_fit": summary["largest_fit"], "ceilings": sorted(summary["ceilings"]["http-native"])}
+
 # Nothing fits: the first configuration is INVALID, no second one starts.
 summary, out = run_scale("invalid_one", steps="50,100,200", busy_at=1)
 results["invalid_one"] = {"largest_fit": summary["largest_fit"], "configs": [c["nodes"] for c in summary["configs"]], "resets": sorted(set(lab["resets"])), "advice": summary["advice"]}
@@ -291,8 +295,13 @@ def run_join(name, mode="rebalance", runtime=None, busy_at=None, force_busy=Fals
         lab["force_busy"] = False
 
 
-record, out = run_join("join", runtime={"rebalance": {"moves": 3}})
+record, out = run_join("join", runtime={"rebalance": {"moves": 3, "total": {"moved": 7}}})
 window = record["windows"][1]
+results["join_series"] = {"lone": [(e["new_5xx"], e["moved"]) for e in record["windows"][0]["samples"]][:2], "joined": [(e["new_5xx"], e["moved"], e["moved_new"]) for e in window["samples"]][-1],
+                          "in_band_s": window["cells_in_band_s"], "first_window_in_band": record["windows"][0]["cells_in_band_s"]}
+reads = [{"t": 10.0, "backend": {"hrsp_5xx": 2}, "rebalance": {"node-1": {"total": {"moved": 1}}, "node-2": None}},
+         {"t": 12.0, "backend": {"hrsp_5xx": 5}, "rebalance": {"node-1": {"total": {"moved": 4}}, "node-2": {"moved": 2}}}, {"t": 14.0}]
+results["window_series"] = m.window_series(reads, 10.0)
 results["join"] = {"status": record["status"], "windows": [w["nodes"] for w in record["windows"]], "requests_spread_s": window["requests_spread_s"], "cells_spread_s": window["cells_spread_s"],
                    "ready_s": window["ready_s"], "requests_share_end": window["request_share_end"], "cells_share_end": window["cells_share_end"],
                    "rebalance": window["rebalance"], "errors_before": record["windows"][0]["backend"]["hrsp_5xx"], "generator": record["generator"]["status_503"],

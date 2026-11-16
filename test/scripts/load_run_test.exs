@@ -22,6 +22,31 @@ defmodule Atanor.LoadRunTest do
     assert "store rtt not measured" in ok["notes"]
     assert ok["diagnostics"] == []
 
+    # cells: p99 and refusals are judged on the hold; the opening's are apart, and the step records the node's connection cap
+    hold = r["cells_hold"]["record"]
+    assert hold["status"] == "ok" and hold["latency_ms"]["p99"] < 10
+
+    assert hold["opening"]["refused"] == 5 and hold["opening"]["refused_pct"] == 50.0 and
+             hold["opening"]["latency_ms"]["p99"] > 250
+
+    assert hold["statuses"] == %{"200" => 15, "503 retry-after" => 5} and hold["http_max_connections"] == 16_384
+    refused = r["cells_hold_refused"]["record"]
+    assert refused["status"] == "fail" and refused["stop_reason"] =~ "refused 50.0%"
+    assert refused["opening"]["refused"] == 0
+    assert r["rtt_fails"]["record"]["opening"] == :null
+
+    # the host's cores: busy cores over 85% of them are INVALID; a scale run that does not fit the host is refused with the node count that fits
+    assert r["judge_busy"] == ["host saturated: 3.5 busy cores > 3.4 (85% of 4 cores)", :null, :null]
+    [three, one, two, three_small] = r["oversubscribed"]
+    assert three =~ "3 nodes x 1 CPUs + store 2 + balancer 2 = 7 CPUs > 4 host cores; use --max-nodes 1"
+    assert one =~ "use --max-nodes 1" and two == :null and three_small =~ "use --max-nodes 2"
+
+    # the ws ramp stays under the node's connection cap, and the cap under its descriptor limit
+    [reaches, fits, over_fds, below] = r["ws_cap"]
+    assert reaches =~ "reaches the node's http.max_connections 16384" and fits == :null
+    assert over_fds =~ "not below its descriptor limit 65536" and below == :null
+    assert r["max_connections"] == [16_384, 70_000]
+
     # the admin API is unreachable: the runtime is unknown, the step is not
     assert ok["runtime"] == :null
     assert ok["memory"]["current_max_mb"] == :null
@@ -483,6 +508,49 @@ defmodule Atanor.LoadRunTest do
         )
 
       {out, status, System.monotonic_time(:second) - started}
+    end
+  end
+
+  describe "the measurements of load-env" do
+    setup %{dir: dir} do
+      scripts = Path.join(dir, "scripts")
+      File.mkdir_p!(scripts)
+      for name <- ~w(load-env load-common cluster-common), do: File.cp!("scripts/" <> name, Path.join(scripts, name))
+      {:ok, scripts: scripts}
+    end
+
+    test "limits prints the CPU limits of a node, the store and the balancer", %{scripts: scripts} do
+      {out, 0} =
+        System.cmd(Path.join(scripts, "load-env"), ["limits"],
+          env: [{"ATANOR_LOAD_SCENARIO", "B"}, {"ATANOR_LOAD_STORE_CPUS", "1"}, {"ATANOR_LOAD_LB_CPUS", "0.5"}]
+        )
+
+      assert :json.decode(out) == %{"node_cpus" => 2, "store_cpus" => 1, "lb_cpus" => 0.5}
+    end
+
+    test "the store round trip is the second request of one curl run, on the reused connection", %{
+      dir: dir,
+      scripts: scripts
+    } do
+      # a stub docker: `ps` finds a node; `exec ... curl URL URL` answers the connect-heavy first time, then the reused one
+      bin = Path.join(dir, "bin")
+      File.mkdir_p!(bin)
+
+      File.write!(Path.join(bin, "docker"), """
+      #!/bin/sh
+      case "$1" in
+        ps) echo node1 ;;
+        exec) n=0; for a in "$@"; do case $a in http://*) n=$((n+1)) ;; esac; done
+              if [ $n -ge 2 ]; then printf '0.080\\n0.030\\n'; else printf '0.080\\n'; fi ;;
+      esac
+      """)
+
+      File.chmod!(Path.join(bin, "docker"), 0o755)
+
+      {out, 0} =
+        System.cmd(Path.join(scripts, "load-env"), ["rtt"], env: [{"PATH", bin <> ":" <> System.get_env("PATH")}])
+
+      assert String.trim(out) == "30.0"
     end
   end
 

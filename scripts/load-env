@@ -10,6 +10,7 @@
 #   rtt      print the round trip from the node to the store in ms (median of three); empty when unknown
 #   check-swap [ID...]  refuse (exit 1) a container that may swap; default: the running nodes, store and lb
 #   info     print the containers (every running node too), addresses, the balancer's stats URL and cgroup pids as JSON
+#   limits   print the CPU limits of one node, the store and the balancer as JSON
 #   add-node N  start node-N next to the running ones and wait until it is in the balancer's rotation
 #   swap [ARGS]  scripts/cluster-swap-run ARGS with the nodes' image (node B starts from the load image)
 #   reset    down, then up: a new node and a new store with empty data (the next step starts from nothing)
@@ -20,13 +21,15 @@ source "$(dirname "$0")/load-common"
 TC=atanor-load-tc
 node_id() { running_node; }
 
-# Median of the round trips from the node to the store's S3 port, in ms (three tries). Prints nothing
+# Median of the round trips from the node to the store's S3 port, in ms (three tries). Each try is two requests of one curl run: the
+# second reuses the connection, so it costs one trip, as the node's requests do, and not the connect plus the trip. Prints nothing
 # when the node or the curl fails: the round trip is then unknown, and the callers decide.
 store_rtt() {
   local node=${1:-} i t times=()
   [[ -n $node ]] || return 0
   for i in 1 2 3; do
-    t=$(docker exec "$node" curl -s -o /dev/null -w '%{time_total}' http://store:8333/ 2>/dev/null) || continue
+    t=$(docker exec "$node" curl -s -o /dev/null -w '%{time_total}\n' http://store:8333/ http://store:8333/ 2>/dev/null | tail -n 1) || continue
+    [[ -n $t ]] || continue
     times+=("$t")
   done
   [[ ${#times[@]} -gt 0 ]] || return 0
@@ -54,7 +57,7 @@ latency() {
   [[ $LOAD_STORE_LATENCY_MS -le 0 ]] || tc_store "$store" add dev eth0 root netem delay "${LOAD_STORE_LATENCY_MS}ms"
   after=$(store_rtt "$node")
   [[ -n $before && -n $after ]] || { echo "the store round trip could not be measured (before: '${before}', after: '${after}')" >&2; exit 1; }
-  echo "store round trip from the node: ${before} ms -> ${after} ms (added latency ${LOAD_STORE_LATENCY_MS} ms)"
+  echo "store round trip from the node, on a reused connection: ${before} ms -> ${after} ms (added latency ${LOAD_STORE_LATENCY_MS} ms)"
   if [[ $LOAD_STORE_LATENCY_MS -gt 0 ]]; then
     awk -v b="$before" -v a="$after" -v m="$LOAD_STORE_LATENCY_MS" 'BEGIN { exit !(a - b >= m * 0.8) }' \
       || { echo "the added latency is not visible" >&2; exit 1; }
@@ -164,6 +167,8 @@ case ${1:-} in
   rtt) store_rtt "$(node_id)"; echo ;;
   check-swap) shift; check_swap "$@" ;;
   info) info ;;
+  limits) jq -n --arg n "$LOAD_CPUS" --arg s "$ATANOR_CLUSTER_STORE_CPUS" --arg l "$ATANOR_CLUSTER_LB_CPUS" \
+            '{node_cpus: ($n | tonumber), store_cpus: ($s | tonumber), lb_cpus: ($l | tonumber)}' ;;
   down) tear_down ;;
-  *) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

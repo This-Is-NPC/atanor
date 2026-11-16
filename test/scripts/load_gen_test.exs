@@ -72,6 +72,52 @@ defmodule Atanor.LoadGenTest do
     assert document["release_lag_ms"]["p99"] < 100
   end
 
+  # The opening of a cells run is recorded apart: its statuses and histogram are the writes that woke each cell, the rest is the hold.
+  test "a cells run reports the opening writes apart from the hold" do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(listen)
+    acceptor = spawn_link(fn -> accept_answering(listen) end)
+
+    {out, status} =
+      System.cmd(
+        Path.expand("scripts/load-gen"),
+        ~w(cells --host 127.0.0.1 --kind native --cells 5 --period 1 --duration 2 --settle 0 --open-rate 50 --conns 2 --timeout 2 --port #{port}),
+        stderr_to_stdout: true
+      )
+
+    Process.unlink(acceptor)
+    Process.exit(acceptor, :kill)
+    :gen_tcp.close(listen)
+
+    assert status == 0, out
+    document = :json.decode(out)
+    assert document["planned"] == 15
+    assert document["opening"]["planned"] == 5
+    assert document["opening"]["statuses"] == %{"200" => 5}
+    assert document["opening"]["hist"] |> Map.values() |> Enum.sum() == 5
+    assert document["statuses"]["200"] == 15
+    assert document["hist"] |> Map.values() |> Enum.sum() == 15
+  end
+
+  defp accept_answering(listen) do
+    case :gen_tcp.accept(listen) do
+      {:ok, socket} ->
+        pid = spawn(fn -> answer_now(socket) end)
+        :gen_tcp.controlling_process(socket, pid)
+        accept_answering(listen)
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  defp answer_now(socket) do
+    with {:ok, _request} <- :gen_tcp.recv(socket, 0) do
+      :gen_tcp.send(socket, "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+      answer_now(socket)
+    end
+  end
+
   defp accept_slowly(listen) do
     case :gen_tcp.accept(listen) do
       {:ok, socket} ->
