@@ -28,7 +28,8 @@ store_rtt() {
   local node=${1:-} i t times=()
   [[ -n $node ]] || return 0
   for i in 1 2 3; do
-    t=$(docker exec "$node" curl -s -o /dev/null -w '%{time_total}\n' http://store:8333/ http://store:8333/ 2>/dev/null | tail -n 1) || continue
+    # One -o per URL: a single -o covers only the first, and the second body would print before the time.
+    t=$(docker exec "$node" curl -s -o /dev/null -o /dev/null -w '%{time_total}\n' http://store:8333/ http://store:8333/ 2>/dev/null | tail -n 1) || continue
     [[ -n $t ]] || continue
     times+=("$t")
   done
