@@ -21,9 +21,12 @@ runs:
         path: |
           deps
           _build
+          priv
           native/atanor_wasm/target
           ~/.cargo/registry
           ~/.cargo/git
+        # priv holds the NIFs (priv/native); _build only links to it, so both are cached together and a
+        # restored _build never skips the Rustler compile while its NIFs are missing.
         # The tool versions (mise.toml) and the locks decide whether a build is reusable.
         key: ci-${{ runner.os }}-${{ inputs.cache-name }}-${{ hashFiles('mise.toml', 'mix.lock', 'alambique.ref', 'native/atanor_wasm/Cargo.lock') }}
         restore-keys: |
