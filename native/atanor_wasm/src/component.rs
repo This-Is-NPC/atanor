@@ -3,13 +3,15 @@
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::sync::{Arc, Mutex};
 
+use hmac::{Hmac, Mac};
 use rustler::{NifMap, Resource};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use wasmtime::component::{types::ComponentItem, Component, Linker};
 use wasmtime::Engine;
 use wasmtime_wasi_http::p2::bindings::ProxyPre;
@@ -20,6 +22,11 @@ use crate::guest::State;
 use crate::handlers::{alarm, job, local, socket};
 use crate::host;
 use crate::stats;
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Set once a cache file has been rejected, so the log shows one line.
+static WARNED: AtomicBool = AtomicBool::new(false);
 
 /// A compiled component.
 pub struct Compiled {
@@ -103,9 +110,10 @@ fn fingerprint(engine: &Engine) -> String {
 
 /// Compiles `bytes`, or loads the compiled code from `<dir>/<key>-<engine>.cwasm`
 /// and writes it there after a compile. Wasmtime checks that a file matches
-/// the engine's version and settings; the digest in front of the payload
-/// catches truncation and bit rot, because deserializing damaged code is not
-/// safe. Any failure to use the file means a recompile.
+/// the engine's version and settings. The MAC in front of the payload, keyed
+/// with a secret only the node holds (`<dir>.key`) and bound to the file name,
+/// shows that this node wrote it: deserializing code is not safe otherwise.
+/// Any failure to use the file means a recompile.
 pub fn compile(
     engine: &Engine,
     bytes: &[u8],
@@ -116,7 +124,7 @@ pub fn compile(
 
     if let Some(path) = &path {
         if let Ok(file) = std::fs::read(path) {
-            match load(engine, &file) {
+            match node_key(path).and_then(|key| load(engine, &file, &key, path)) {
                 Some(component) => {
                     stats::bump(&stats::DISK_HITS);
                     return Ok((tracked(component), Source::Disk));
@@ -131,34 +139,92 @@ pub fn compile(
     stats::bump(&stats::COMPILED);
     if let Some(path) = &path {
         // A cache that cannot be written only costs the next start a compile.
-        if let Ok(serialized) = component.serialize() {
-            let _ = store(path, &serialized);
+        if let (Ok(serialized), Some(key)) = (component.serialize(), node_key(path)) {
+            let _ = store(path, &key, &serialized);
         }
     }
     Ok((tracked(component), source))
 }
 
-fn load(engine: &Engine, file: &[u8]) -> Option<Component> {
-    let (digest, payload) = file.split_at_checked(32)?;
-    if Sha256::digest(payload).as_slice() != digest {
+fn mac(key: &[u8], path: &Path, payload: &[u8]) -> HmacSha256 {
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC takes any key length");
+    mac.update(path.file_name().map_or(&[][..], |n| n.as_encoded_bytes()));
+    mac.update(&[0]);
+    mac.update(payload);
+    mac
+}
+
+fn load(engine: &Engine, file: &[u8], key: &[u8], path: &Path) -> Option<Component> {
+    let (tag, payload) = file.split_at_checked(32)?;
+    if mac(key, path, payload).verify_slice(tag).is_err() {
+        if !WARNED.swap(true, Relaxed) {
+            eprintln!(
+                "atanor_wasm: rejected a compile cache file this node did not write: {}",
+                path.display()
+            );
+        }
         return None;
     }
     // SAFETY: the payload is the output of `Component::serialize` that this
-    // process or an earlier one wrote to the node's own data directory, and
-    // the digest shows it is unchanged.
+    // node wrote, and the MAC under the node's secret shows it is unchanged
+    // and was written for this file name.
     unsafe { Component::deserialize(engine, payload).ok() }
 }
 
-fn store(path: &Path, serialized: &[u8]) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+fn store(path: &Path, key: &[u8], serialized: &[u8]) -> std::io::Result<()> {
+    let tag = mac(key, path, serialized).finalize().into_bytes();
+    write_private(path, &[&tag, serialized])?;
+    // A directory made by an earlier release may be open to others.
+    match path.parent() {
+        Some(dir) => std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)),
+        None => Ok(()),
     }
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    let mut file = std::fs::File::create(&tmp)?;
-    file.write_all(&Sha256::digest(serialized))?;
-    file.write_all(serialized)?;
-    file.sync_all()?;
-    std::fs::rename(tmp, path)
+}
+
+/// The node's cache secret, `<dir>.key` next to the cache directory (not in
+/// it), created on first use.
+fn node_key(path: &Path) -> Option<[u8; 32]> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let key_path = path.parent()?.with_extension("key");
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Ok(bytes) = std::fs::read(&key_path) {
+        if let Ok(key) = <[u8; 32]>::try_from(bytes) {
+            return Some(key);
+        }
+    }
+    let mut key = [0u8; 32];
+    getrandom::fill(&mut key).ok()?;
+    write_private(&key_path, &[&key]).ok()?;
+    Some(key)
+}
+
+/// Writes `parts` to `path` through a new random-named file in the same
+/// directory, then renames it. The directory is 0700 and the file 0600.
+fn write_private(path: &Path, parts: &[&[u8]]) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    let mut suffix = [0u8; 8];
+    getrandom::fill(&mut suffix).map_err(std::io::Error::other)?;
+    let tmp = dir.join(format!(".tmp-{}", u64::from_le_bytes(suffix)));
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        for part in parts {
+            file.write_all(part)?;
+        }
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// Whether the host provides `name` under `grants`.
@@ -314,11 +380,32 @@ mod tests {
         &engine::runtime().unwrap().engine
     }
 
+    /// The cache directory inside `tmp`; the key file lands beside it.
+    fn wasm_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+        tmp.path().join("wasm")
+    }
+
+    /// The only `.cwasm` file in `dir`.
+    fn cache_file(dir: &Path) -> std::path::PathBuf {
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == "cwasm"))
+            .collect();
+        assert_eq!(files.len(), 1, "{files:?}");
+        files.remove(0)
+    }
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
     #[test]
     fn serialized_code_is_reused_from_disk() {
-        let dir = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = wasm_dir(&tmp);
         let bytes = fixture("hello");
-        let cache = Some((dir.path(), "abc"));
+        let cache = Some((dir.as_path(), "abc"));
 
         let (_, first) = compile(engine(), &bytes, cache).unwrap();
         let (_, second) = compile(engine(), &bytes, cache).unwrap();
@@ -326,17 +413,72 @@ mod tests {
     }
 
     #[test]
-    fn damaged_cache_files_are_recompiled_and_rewritten() {
-        let dir = tempfile::tempdir().unwrap();
+    fn the_cache_is_private_to_the_node() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = wasm_dir(&tmp);
+        // A directory left open by an earlier release is tightened.
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        compile(engine(), &fixture("hello"), Some((&dir, "abc"))).unwrap();
+
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&cache_file(&dir)), 0o600);
+        assert_eq!(mode(&tmp.path().join("wasm.key")), 0o600);
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(names.len(), 1, "no temporary file is left");
+    }
+
+    #[test]
+    fn a_digest_without_the_node_key_is_rejected() {
+        use sha2::Digest;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = wasm_dir(&tmp);
         let bytes = fixture("hello");
-        let cache = Some((dir.path(), "abc"));
+        let cache = Some((dir.as_path(), "abc"));
         compile(engine(), &bytes, cache).unwrap();
-        let file = std::fs::read_dir(dir.path())
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
+        let file = cache_file(&dir);
+
+        // Valid code behind a plain SHA-256, as anyone who can write the
+        // directory can compute.
+        let payload = std::fs::read(&file).unwrap().split_off(32);
+        let mut forged = Sha256::digest(&payload).to_vec();
+        forged.extend_from_slice(&payload);
+        std::fs::write(&file, forged).unwrap();
+
+        let (_, source) = compile(engine(), &bytes, cache).unwrap();
+        assert_eq!(source, Source::Recompiled);
+        let (_, source) = compile(engine(), &bytes, cache).unwrap();
+        assert_eq!(source, Source::Disk, "the recompile rewrote the file");
+    }
+
+    #[test]
+    fn a_file_copied_to_another_name_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = wasm_dir(&tmp);
+        let bytes = fixture("hello");
+        compile(engine(), &bytes, Some((&dir, "one"))).unwrap();
+        let one = cache_file(&dir);
+        let two = dir.join(
+            one.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace("one", "two"),
+        );
+        std::fs::copy(&one, &two).unwrap();
+
+        let (_, source) = compile(engine(), &bytes, Some((&dir, "two"))).unwrap();
+        assert_eq!(source, Source::Recompiled);
+    }
+
+    #[test]
+    fn damaged_cache_files_are_recompiled_and_rewritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = wasm_dir(&tmp);
+        let bytes = fixture("hello");
+        let cache = Some((dir.as_path(), "abc"));
+        compile(engine(), &bytes, cache).unwrap();
+        let file = cache_file(&dir);
         let original = std::fs::read(&file).unwrap();
 
         let mut flipped = original.clone();
@@ -354,10 +496,11 @@ mod tests {
 
     #[test]
     fn a_file_for_another_key_is_not_used() {
-        let dir = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = wasm_dir(&tmp);
         let bytes = fixture("hello");
-        compile(engine(), &bytes, Some((dir.path(), "one"))).unwrap();
-        let (_, source) = compile(engine(), &bytes, Some((dir.path(), "two"))).unwrap();
+        compile(engine(), &bytes, Some((&dir, "one"))).unwrap();
+        let (_, source) = compile(engine(), &bytes, Some((&dir, "two"))).unwrap();
         assert_eq!(source, Source::Compiled);
     }
 
