@@ -271,6 +271,7 @@ To develop Atanor ([how to build and test](docs/how-to-build-and-test.md)):
 [docs/README.md](docs/README.md) maps every page. Start with:
 
 - [Run it in production](docs/how-to-run-in-production.md): balancer, TLS, private network, credentials.
+- [Operate it](docs/how-to-operate-atanor.md): what to monitor and alert on, backup and restore, upgrades, common incidents.
 - [Deploy a worker](docs/how-to-deploy-a-worker.md) with the `atanor` command, through a node or straight into the bucket ([reference](docs/cli.md)).
 - [Write a WASM worker](docs/how-to-write-a-wasm-worker.md), or [a native one](docs/how-to-write-a-native-worker.md).
 - [Configure a node](docs/configuration.md).

@@ -114,3 +114,21 @@ testkit MemoryStore's 5 s `GenServer` timeout, which v0.10.1 removed; the failur
 and `detail`. The next load round will confirm whether that was the trigger;
 this entry stays open until then. The next occurrence names its cause. Until then: stall seen once between 72.3 s and 73.8 s of the step,
 requests in flight 2 to 50, generator lag p99 5,523.9 ms, node 0.31 and store 0.23 cores.
+
+## Jobs never start in a cell restored from a copy of a live bucket
+
+**What happens.** A bucket copied while nodes serve (for example `mc mirror`) can hold a cell whose `@jobs` wake
+row names an index object under `alarms/` that the copy lacks, because the index and the cells are copied at
+different moments. After the restore the cell's `pending` jobs stay pending and a `running` job whose claim
+has expired is not claimed again, for minutes and across a node restart. An enqueue does not repair it: it keeps
+a wake that it believes has an entry (design §15.12).
+
+**Workaround.** Take the copy after every node drained, or write the missing index object by hand
+([how-to-operate-atanor.md](how-to-operate-atanor.md#restore-from-a-copy-of-a-live-bucket)). `set_alarm` alarms use
+the same index and were not tested.
+
+**Evidence.** Two restores of a copy taken with a writer running: `{"last_seq":86,"ranked_through":83}` with
+jobs `{"done":82,"pending":3,"running":1}` after more than 3 minutes, and `{"last_seq":50,"ranked_through":44}`
+when `alarms/` was copied last. The cell file held `@jobs|1794809947744|6b0c7899|0` and the bucket had no such
+index object. Writing the object made `ranked_through` equal `last_seq` within 8 s. A copy taken after `POST
+/drain` restored with every job run.
