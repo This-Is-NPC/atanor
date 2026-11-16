@@ -83,7 +83,8 @@ defmodule Atanor.HotCells do
 
   @doc """
   Moves the cell to `node` now, by the same path as the loop: the other nodes are told, so the cap, the
-  residence time and the cooldown apply to what follows. Returns what `Alambique.move/4` returns.
+  residence time and the cooldown apply to what follows (a `:rebalance` move gives `{:error, :busy}` for a
+  cell with a call in flight). Returns what `Alambique.move/4` returns.
   `{:error, :disabled}` when neither the loop nor the rebalance is on.
   """
   @spec move(atom, address, node, atom) :: {:ok, node} | {:error, term}
@@ -448,7 +449,8 @@ defmodule Atanor.HotCells do
   # Runs the move and tells the server and, through it, the peers.
   defp run(instance, address, id, target, reason, timeout) do
     started = System.monotonic_time()
-    result = Cell.move(instance, address, target, timeout: timeout)
+    # A rebalance move leaves a busy cell where it is: the owner decides, so there is no check-then-move window.
+    result = Cell.move(instance, address, target, timeout: timeout, only_if_idle: reason == :rebalance)
     duration = System.monotonic_time() - started
 
     meta = %{

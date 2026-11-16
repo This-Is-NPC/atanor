@@ -44,24 +44,29 @@ defmodule Atanor.RebalancePlanTest do
       assert Plan.pending(plan) == 0
     end
 
-    test "leaves a cell with a call in flight for the next steps, and then for the next round" do
+    test "takes a cell that answered busy back to the queue, and leaves it for the next round after a few tries" do
       plan = Plan.round(Plan.new(), [{"busy", 1}, {"idle", 2}], fn _ -> :other end, :me, [])
-      check = fn id -> if id == "busy", do: :busy, else: {:move, :other} end
+      check = fn _ -> {:move, :other} end
 
+      assert {{:move, "busy", :other}, plan} = Plan.next(plan, check)
+      plan = Plan.busy(plan, "busy")
       assert {{:move, "idle", :other}, plan} = Plan.next(plan, check)
       assert Plan.pending(plan) == 1
 
-      plan = Enum.reduce(1..2, plan, fn _, plan -> elem(Plan.next(plan, check), 1) end)
-      assert {plan.deferred, Plan.pending(plan)} == {0, 1}
-      assert {:none, plan} = Plan.next(plan, check)
-      assert {plan.deferred, Plan.pending(plan)} == {1, 0}
-    end
+      plan =
+        Enum.reduce(1..2, plan, fn _, plan ->
+          assert {{:move, "busy", :other}, plan} = Plan.next(plan, check)
+          Plan.busy(plan, "busy")
+        end)
 
-    test "looks at each cell once per step, up to a bound" do
-      entries = for i <- 1..100, do: {"c#{i}", i}
-      plan = Plan.round(Plan.new(), entries, fn _ -> :other end, :me, [])
-      assert {:none, plan} = Plan.next(plan, fn _ -> :busy end)
-      assert Plan.pending(plan) == 100
+      assert {plan.deferred, Plan.pending(plan)} == {0, 1}
+      assert {{:move, "busy", :other}, plan} = Plan.next(plan, check)
+      plan = Plan.busy(plan, "busy")
+      assert {plan.deferred, Plan.pending(plan)} == {1, 0}
+
+      # The deferred cell is handed out again by the next round.
+      plan = Plan.round(plan, [{"busy", 1}, {"idle", 2}], fn _ -> :other end, :me, [])
+      assert drain(plan, check) == ["busy"]
     end
   end
 
@@ -126,18 +131,21 @@ defmodule Atanor.RebalancePlanTest do
     check = fn id ->
       target = preferred(view.(node), id)
 
-      cond do
-        cluster.where[id] != node or target == node or target not in cluster.members -> :stay
-        faults? and :rand.uniform() < 0.1 -> :busy
-        true -> {:move, target}
-      end
+      if cluster.where[id] != node or target == node or target not in cluster.members,
+        do: :stay,
+        else: {:move, target}
     end
 
     case Plan.next(plans[node], check) do
       {{:move, id, target}, plan} ->
-        outcome = if faults?, do: outcome(:rand.uniform()), else: :ok
-        where = if outcome == :ok, do: Map.put(cluster.where, id, target), else: cluster.where
-        run(node, {%{cluster | where: where}, Map.put(plans, node, plan), [{node, id} | handed]}, env)
+        if faults? and :rand.uniform() < 0.1 do
+          # A cell with a call in flight answers busy and the move does not happen.
+          run(node, {cluster, Map.put(plans, node, Plan.busy(plan, id)), handed}, env)
+        else
+          outcome = if faults?, do: outcome(:rand.uniform()), else: :ok
+          where = if outcome == :ok, do: Map.put(cluster.where, id, target), else: cluster.where
+          run(node, {%{cluster | where: where}, Map.put(plans, node, plan), [{node, id} | handed]}, env)
+        end
 
       {:none, plan} ->
         acc = {cluster, Map.put(plans, node, plan), handed}
