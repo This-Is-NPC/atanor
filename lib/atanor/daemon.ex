@@ -97,6 +97,8 @@ defmodule Atanor.Daemon do
     {"ATANOR_DETECTOR_PAUSE_MS", :integer, "The pause the failure detector tolerates. Default 2000."},
     {"ATANOR_HTTP_QUEUE_WAIT_MS", :integer,
      "How long an admitted request may wait for its handler, a worker slot or a cell before a 503 `queue_timeout` (`http: [queue_wait_ms:]`). Default 5000; 0 turns it off."},
+    {"ATANOR_HTTP_MAX_CONNECTIONS", :integer,
+     "The most connections the HTTP listener holds at once (`http: [max_connections:]`). Default 16384; at least the acceptors (10)."},
     {"ATANOR_HTTP_HEADER_TIMEOUT_MS", :integer,
      "The whole time a client may take to send the headers of a request, HTTP/1 (`http: [header_timeout_ms:]`). Default 10000."},
     {"ATANOR_HTTP_BODY_TIMEOUT_MS", :integer,
@@ -532,6 +534,7 @@ defmodule Atanor.Daemon do
       )
       |> put_group(:http,
         queue_wait_ms: v["ATANOR_HTTP_QUEUE_WAIT_MS"],
+        max_connections: v["ATANOR_HTTP_MAX_CONNECTIONS"],
         header_timeout_ms: v["ATANOR_HTTP_HEADER_TIMEOUT_MS"],
         body_timeout_ms: v["ATANOR_HTTP_BODY_TIMEOUT_MS"]
       )
