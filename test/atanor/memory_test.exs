@@ -12,8 +12,23 @@ defmodule Atanor.MemoryTest do
       data_dir: System.tmp_dir!(),
       port: 0,
       alambique: alambique,
-      memory: opts
+      # No working set to read unless the test gives one: the ceiling is then the plain share of the limit.
+      memory: with_current_path(opts)
     )
+  end
+
+  defp with_current_path(opts) when is_list(opts),
+    do: Keyword.put_new(opts, :current_path, "/nonexistent/memory.current")
+
+  defp with_current_path(opts), do: opts
+
+  @mib 1_048_576
+
+  # A node that booted with `baseline` bytes of working set.
+  defp booted(dir, baseline, opts) do
+    current = Path.join(dir, "memory.current")
+    File.write!(current, "#{baseline}\n")
+    opts ++ [current_path: current, stat_path: Path.join(dir, "memory.stat")]
   end
 
   defp cgroup(dir, content) do
@@ -68,11 +83,55 @@ defmodule Atanor.MemoryTest do
     assert max_bytes(config) == 500
   end
 
+  describe "the awake ceiling from the working set at boot" do
+    test "it is the share of the headroom between the baseline and the refuse mark", %{tmp_dir: dir} do
+      baseline = 160 * @mib
+
+      # 512 MiB: refuse mark 435.2 MiB, (435.2 - 160) / 2 = 137.6 MiB (256 MiB without the baseline).
+      small = build(booted(dir, baseline, limit_bytes: 512 * @mib))
+      assert max_bytes(small) == trunc((512 * @mib * 0.85 - baseline) * 0.5)
+      assert max_bytes(small) in (137 * @mib)..(138 * @mib)
+      assert small.memory.awake_source == :limit_bytes
+
+      # 2 GiB: (1740.8 - 160) / 2 = 790.4 MiB (1 GiB without the baseline).
+      big = build(booted(dir, baseline, limit_bytes: 2048 * @mib))
+      assert max_bytes(big) in (790 * @mib)..(791 * @mib)
+    end
+
+    test "it never passes the plain share, and keeps a tenth of the limit when the baseline leaves no room", %{
+      tmp_dir: dir
+    } do
+      assert max_bytes(build(booted(dir, 0, limit_bytes: 1000))) == 425
+      assert max_bytes(build(booted(dir, 0, limit_bytes: 1000, awake_fraction: 0.25))) == 212
+      assert max_bytes(build(booted(dir, 900, limit_bytes: 1000))) == 100
+      assert max_bytes(build(booted(dir, 5000, limit_bytes: 1000))) == 100
+      # A share under a tenth is the share.
+      assert max_bytes(build(booted(dir, 5000, limit_bytes: 1000, awake_fraction: 0.05))) == 50
+    end
+
+    test "the refuse mark moves it, and without a mark the default one is used", %{tmp_dir: dir} do
+      assert max_bytes(build(booted(dir, 100, limit_bytes: 1000, refuse_fraction: 0.5))) == 200
+      assert max_bytes(build(booted(dir, 100, limit_bytes: 1000, refuse_fraction: nil))) == 375
+    end
+
+    test "the file cache does not count in the baseline", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "memory.stat"), "anon 1\ninactive_file 300\n")
+      assert max_bytes(build(booted(dir, 400, limit_bytes: 1000))) == 375
+    end
+
+    test "an unreadable working set or a node without a limit keeps the plain share", %{tmp_dir: dir} do
+      assert max_bytes(build(limit_bytes: 1000)) == 500
+      assert max_bytes(build(cgroup(dir, "max\n") ++ booted(dir, 100, []))) == nil
+    end
+
+    test "an operator's max_bytes is not derived from the baseline", %{tmp_dir: dir} do
+      assert max_bytes(build(booted(dir, 900, limit_bytes: 1000), awake: [max_bytes: 777])) == 777
+    end
+  end
+
   defp wakes(config) do
     {config.alambique_opts[:awake][:max_wakes], config.alambique_opts[:restore][:max_inflight_bytes]}
   end
-
-  @mib 1_048_576
 
   test "the wakes in flight are derived from the headroom above the refuse mark", %{tmp_dir: dir} do
     # 15% of the limit is headroom, half of it is for wakes: 38.4 MiB on 512 MiB, 153.6 MiB on 2 GiB.

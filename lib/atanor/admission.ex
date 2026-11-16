@@ -349,7 +349,7 @@ defmodule Atanor.Admission do
   end
 
   defp sample(%{handle: %{counters: counters}, model: model, memory: memory} = state) do
-    case working_set(memory) do
+    case Memory.working_set(memory) do
       {:ok, bytes} ->
         {:ok, model} = step(model, {:sample, bytes})
         :atomics.put(counters, @working_set, bytes)
@@ -366,24 +366,5 @@ defmodule Atanor.Admission do
   defp sweep(table) do
     for [pid] <- :ets.match(table, {:"$1"}), not Process.alive?(pid), do: :ets.delete(table, pid)
     :ok
-  end
-
-  # The working set: usage minus the file cache the kernel can drop. Without `memory.stat` all usage counts.
-  defp working_set(%{current_path: current_path, stat_path: stat_path}) do
-    with {:ok, text} <- File.read(current_path),
-         {current, _} <- Integer.parse(text) do
-      {:ok, max(current - inactive_file(stat_path), 0)}
-    else
-      _ -> :error
-    end
-  end
-
-  defp inactive_file(path) do
-    with {:ok, text} <- File.read(path),
-         [_, bytes] <- Regex.run(~r/^inactive_file (\d+)$/m, text) do
-      String.to_integer(bytes)
-    else
-      _ -> 0
-    end
   end
 end

@@ -313,7 +313,8 @@ defmodule Atanor do
       secrets the workers' manifests grant (design §4). Never in manifests.
     * `:memory` - the memory limit of the node and how much of it the awake cells
       may use (design §4.3): `limit_bytes` (default `nil`: read the cgroup),
-      `awake_fraction` (0.5, above 0 and at most 1) and `cgroup_path`
+      `awake_fraction` (0.5, above 0 and at most 1: the share of the room between the working set
+      at boot and the refuse mark, at most that share of the limit and at least a tenth of it) and `cgroup_path`
       (`/sys/fs/cgroup/memory.max`, cgroup v2; `max` or a missing file is no
       limit). The result is the default of `alambique: [awake: [max_bytes:]]`;
       the node logs it and its source at start. `wake_fraction` (0.5, above 0 and at most 1)
