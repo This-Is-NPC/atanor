@@ -140,9 +140,11 @@ defmodule Atanor.Cluster.RoutingTest do
       {:ok, echo_owner} = wake(c, "echo")
       owner = name_of(c, echo_owner)
       ingress = Enum.find(Cluster.names(c), &(&1 != owner))
-      # The ingress knows the owner, which is gone before the next call starts.
       assert {:ok, %{status: 200}} = request(c, ingress, :post, "/keyed/echo")
       Cluster.kill(c, owner)
+      # Until the detector has the owner down, a forward may still go out on the dying link and is
+      # then an unknown outcome (design 8.4); the call must find the owner blocked.
+      await_state(c, ingress, owner, :down)
 
       assert {:ok, resp} = request(c, ingress, :post, "/keyed/echo")
       assert resp.status == 503
