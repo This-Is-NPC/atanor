@@ -281,7 +281,7 @@ defmodule Atanor.Admission do
       },
       working_set_bytes: if(handle.memory, do: :atomics.get(counters, @working_set)),
       limit_bytes: handle.limit,
-      refuse_at_bytes: handle.memory && trunc(handle.model.refuse_at),
+      refuse_at_bytes: if(handle.memory, do: trunc(handle.model.refuse_at)),
       refusing: refusing?(handle),
       wake_refused: :atomics.get(counters, @refused_wake),
       disk_used_bytes: if(handle.disk, do: :atomics.get(counters, @disk_used)),

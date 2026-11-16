@@ -227,6 +227,7 @@ defmodule Atanor.AdmissionTest do
       node = start(workers: [probe()], memory: [current_path: current, sample_ms: 20] ++ memory)
       refute Admission.stats(node.name).refusing
       assert Admission.stats(node.name).working_set_bytes == nil
+      assert Admission.stats(node.name).refuse_at_bytes == nil
       assert {200, _, _} = echo(node)
     end
   end
