@@ -95,6 +95,10 @@ that use it are tagged `cluster` and run with `mise run test:cluster`.
 CI is the merge gate. `master` requires the check `ci` of the workflow
 `.github/workflows/ci.yml`, which runs on every pull request to `master` and on
 every push to `master`. A new push to a pull request cancels its older run.
+The release pull request is opened by release-please with the workflow token,
+which starts no pull_request run, so its `ci` check comes from a run that
+`release.yml` dispatches on the release branch. To dispatch it by hand:
+`gh workflow run ci.yml --repo This-Is-NPC/atanor --ref <release-branch>`.
 The pre-push hook runs only the fast checks, so a loaded machine does not
 block a push.
 

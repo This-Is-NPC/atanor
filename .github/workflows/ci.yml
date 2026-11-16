@@ -6,19 +6,25 @@ name: CI
 # (docs/how-to-build-and-test.md). Every step calls a mise task or a script, so a run on a laptop and a
 # run here are the same code. Branch protection needs one check, `ci`, which waits for the other jobs.
 
+# Release pull requests are opened by release-please with the workflow token, which starts no
+# pull_request run. release.yml dispatches this workflow on the release branch instead
+# (workflow_dispatch below), and the `ci` check lands on the branch head commit.
+
 on:
   pull_request:
     branches: [master]
   push:
     branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# A new push to a pull request cancels the older run; runs on master are never cancelled.
+# A new push to a pull request cancels the older run; runs on master are never cancelled. A dispatch
+# run is keyed by its branch, so it only replaces an older dispatch on the same branch.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 env:
   # Test modules run at once (ExUnit max_cases). Repository variable ATANOR_TEST_MAX_CASES;

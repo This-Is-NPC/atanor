@@ -139,7 +139,11 @@ and then:
    from the two digests.
 3. `attach-tarballs` attaches the tarballs to the GitHub Release.
 
-The workflow has no test job: the gate is CI on the pull request (`.github/workflows/ci.yml`). Every action is
+The workflow has no test job: the gate is CI on the pull request (`.github/workflows/ci.yml`).
+The release pull request is opened with the workflow token, which starts no
+pull_request run, so the job `ci-on-release-pr` dispatches `ci.yml` on the release
+branch and the `ci` check comes from that run. To dispatch it by hand:
+`gh workflow run ci.yml --repo This-Is-NPC/atanor --ref <release-branch>`. Every action is
 pinned by commit SHA, the default token is read-only, and `packages: write` and
 `contents: write` are given only to the jobs that push images and attach files. The
 build cache is the GitHub Actions cache (`type=gha`), one scope per architecture.
