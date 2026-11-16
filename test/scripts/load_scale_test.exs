@@ -159,6 +159,10 @@ defmodule Atanor.LoadScaleTest do
     assert r["join_busy"]["reason"] =~ "host busy"
     assert r["join_contaminated"]["status"] == "invalid"
     assert r["join_contaminated"]["reason"] =~ ~r/^host contaminated: net load [\d.]+ > 1$/
+    saturated_join = r["join_saturated"]
+    assert saturated_join["status"] == "invalid" and saturated_join["valid"] == false
+    assert saturated_join["reason"] =~ ~r/^host saturated: [\d.]+ busy cores > 1.6 \(20% of 8 cores\)$/
+    assert saturated_join["busy"] > 1.6
     assert r["join_lab"] == %{"status" => "invalid", "reason" => "the lab did not start with 1 nodes"}
 
     # the report: the gain per node and the join

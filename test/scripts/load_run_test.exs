@@ -35,11 +35,11 @@ defmodule Atanor.LoadRunTest do
     assert refused["opening"]["refused"] == 0
     assert r["rtt_fails"]["record"]["opening"] == :null
 
-    # the host's cores: busy cores over 85% of them are INVALID; a scale run that does not fit the host is refused with the node count that fits
+    # the host's cores: busy cores over 85% of them are INVALID; CPU limits that add up to more than the host's cores are a warning, never a refusal
     assert r["judge_busy"] == ["host saturated: 3.5 busy cores > 3.4 (85% of 4 cores)", :null, :null]
-    [three, one, two, three_small] = r["oversubscribed"]
-    assert three =~ "3 nodes x 1 CPUs + store 2 + balancer 2 = 7 CPUs > 4 host cores; use --max-nodes 1"
-    assert one =~ "use --max-nodes 1" and two == :null and three_small =~ "use --max-nodes 2"
+    [[7, three], [5, one], [4, two], [5, _]] = r["cpu_caps"]
+    assert three =~ "add up to 7 (3 nodes x 1 + store 2 + balancer 2), more than the host's 4 cores"
+    assert one =~ "add up to 5" and two == :null
 
     # the ws ramp stays under the node's connection cap, and the cap under its descriptor limit
     [reaches, fits, over_fds, below] = r["ws_cap"]
