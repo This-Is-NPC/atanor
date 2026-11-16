@@ -106,7 +106,9 @@ defmodule Atanor.Config do
   # Outbound HTTP (design §4.1): the body and the time of a whole fetch, redirects included.
   @calls %{max_depth: 8, max_redirects: 5, fetch_max_bytes: 8_000_000, fetch_timeout_ms: 30_000}
   # The ingress (design §7.1). `max_connections` is the total of the listener, `read_timeout_ms` the wait for
-  # the next bytes of the request (header or body), the two after bound the work of matching a route, and
+  # the next bytes of the request (header or body), `header_timeout_ms` and `body_timeout_ms` the whole time to
+  # read the headers and the body of an HTTP/1 request (`Atanor.HTTP.Deadline`), the two after bound the work
+  # of matching a route, and
   # `max_in_flight` is the requests the node serves at once before it refuses with 503 (`Atanor.Admission`);
   # `queue_wait_ms` is how long an admitted request may wait before its handler runs, 5 s, below the 10 s that
   # clients commonly give up at (`:infinity` or 0 turns it off).
@@ -117,6 +119,8 @@ defmodule Atanor.Config do
     max_connections: 16_384,
     acceptors: 10,
     read_timeout_ms: 10_000,
+    header_timeout_ms: 10_000,
+    body_timeout_ms: 30_000,
     max_path_segments: 64,
     max_host_labels: 16,
     http_2: true
@@ -128,6 +132,8 @@ defmodule Atanor.Config do
     max_connections: 128,
     acceptors: 4,
     read_timeout_ms: 10_000,
+    header_timeout_ms: 10_000,
+    body_timeout_ms: 120_000,
     http_2: true,
     unknown_token_ms: 2_000,
     unknown_tokens: 1_000

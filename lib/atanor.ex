@@ -95,8 +95,8 @@ defmodule Atanor do
       request must send it as a bearer token), `:port` (default 4001, `0` for an
       ephemeral one), `:ip` (default loopback), `:default_limit` (100 cells per
       page) and `:max_limit` (1 000); `:max_connections` (128, shared by
-      `:acceptors`, 4), `:read_timeout_ms` (10 000) and `:http_2` (true), as
-      in `:http`; `:unknown_token_ms` (2 000, how long a scoped token id that
+      `:acceptors`, 4), `:read_timeout_ms` (10 000), `:header_timeout_ms` (10 000),
+      `:body_timeout_ms` (120 000) and `:http_2` (true), as in `:http`; `:unknown_token_ms` (2 000, how long a scoped token id that
       the store does not have is refused without asking the store again) and
       `:unknown_tokens` (1 000 such ids kept); `:max_failures` (10) failed
       tokens per client address in `:failure_window_ms` (60 000), after which
@@ -272,7 +272,10 @@ defmodule Atanor do
       `:max_connections` (16 384, the total of open connections, WebSockets
       included) shared by `:acceptors` (10); `:read_timeout_ms` (10 000, how
       long the listener waits for the next bytes of a request, header or body,
-      before it closes the connection); `:max_path_segments` (64) and
+      before it closes the connection); `:header_timeout_ms` (10 000) and
+      `:body_timeout_ms` (30 000), the whole time an HTTP/1 request may take to
+      send its headers and its body, after which it is closed (a body: 408)
+      whatever it sent; `:max_path_segments` (64) and
       `:max_host_labels` (16), beyond which a request is 400; and `:http_2`
       (true; false serves HTTP/1.1 only).
     * `:overview` - `:timeout_ms` (5000) of the admin and dashboard calls to

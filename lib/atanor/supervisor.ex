@@ -103,7 +103,14 @@ defmodule Atanor.Supervisor do
 
   # ThousandIsland counts connections per acceptor, so the total cap is the rounded-up share of each.
   defp listener_options(%{max_connections: max, acceptors: acceptors, read_timeout_ms: read_timeout_ms}),
-    do: [num_acceptors: acceptors, num_connections: div(max + acceptors - 1, acceptors), read_timeout: read_timeout_ms]
+    do: [
+      num_acceptors: acceptors,
+      num_connections: div(max + acceptors - 1, acceptors),
+      read_timeout: read_timeout_ms,
+      # The header and body deadlines of an HTTP/1 request (`Atanor.HTTP.Deadline`).
+      transport_module: Atanor.HTTP.Deadline.Transport,
+      handler_module: Atanor.HTTP.Deadline.Handler
+    ]
 
   # Connects to the nodes the registry lists (design §8.16); a VM that is not distributed has none to reach.
   defp discovery(%Config{alambique_opts: opts} = config) do

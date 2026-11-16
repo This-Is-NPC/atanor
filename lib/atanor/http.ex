@@ -23,7 +23,7 @@ defmodule Atanor.HTTP do
 
   alias Atanor.{Admission, Auth, Cell, Dispatch, Env, Registry, Request, Response, Route, Telemetry, Workers}
   alias Atanor.Diagnostics.Breadcrumb
-  alias Atanor.HTTP.Socket
+  alias Atanor.HTTP.{Deadline, Socket}
 
   @rejections %{400 => "bad_request", 404 => "not_found", 413 => "payload_too_large"}
 
@@ -33,6 +33,8 @@ defmodule Atanor.HTTP do
   @impl true
   def call(conn, name) do
     config = Registry.config(name)
+    # The headers are read: their deadline is over, the body has its own.
+    Deadline.clear()
 
     case Admission.enter(name) do
       :ok ->
@@ -47,15 +49,19 @@ defmodule Atanor.HTTP do
 
       {:refuse, reason} ->
         # Before the route, the token and the body: a refused request costs almost nothing.
-        :telemetry.execute([:atanor, :http, :reject], %{count: 1}, %{
-          reason: reason,
-          status: 503,
-          host: conn.host,
-          worker: nil
-        })
-
-        unavailable(conn, "overloaded", Atom.to_string(reason), config.http.retry_after_s)
+        refuse(conn, reason, config)
     end
+  end
+
+  defp refuse(conn, reason, config) do
+    :telemetry.execute([:atanor, :http, :reject], %{count: 1}, %{
+      reason: reason,
+      status: 503,
+      host: conn.host,
+      worker: nil
+    })
+
+    unavailable(conn, "overloaded", Atom.to_string(reason), config.http.retry_after_s)
   end
 
   defp admitted(conn, name, config) do
@@ -97,7 +103,10 @@ defmodule Atanor.HTTP do
     end
   end
 
-  defp dispatch(conn, %Env{deployment: %{plug?: true}} = env, _config), do: serve_plug(conn, env)
+  # A Plug reads its own body, so the deadline covers the reads it makes.
+  defp dispatch(conn, %Env{deployment: %{plug?: true}} = env, config),
+    do: Deadline.within(config.http.body_timeout_ms, fn -> serve_plug(conn, env) end)
+
   defp dispatch(conn, env, config), do: serve(conn, env, config)
 
   defp deny(conn, env, config, status, challenge, error, reason) do
@@ -125,17 +134,38 @@ defmodule Atanor.HTTP do
 
   defp upgrade?(conn), do: Enum.any?(get_req_header(conn, "upgrade"), &(String.downcase(&1) == "websocket"))
 
+  # The slot is given up while the client sends the body, which is not the node working, and taken again
+  # after: a slow client holds a connection, not a slot. The read has an absolute deadline.
   defp serve_request(conn, env, config) do
-    # The client sending the body is not the node being slow: the wait deadline does not run meanwhile.
-    read =
-      Admission.excluding(fn ->
-        read_body(conn,
-          length: config.max_body_bytes,
-          read_length: config.max_body_bytes,
-          read_timeout: config.http.read_timeout_ms
-        )
-      end)
+    if body?(conn) do
+      Admission.leave(config.name)
+      read = read(conn, config)
 
+      case Admission.enter(config.name) do
+        :ok -> served(read, conn, env, config)
+        {:refuse, reason} -> refuse(conn, reason, config)
+      end
+    else
+      served(read(conn, config), conn, env, config)
+    end
+  end
+
+  defp body?(conn) do
+    get_req_header(conn, "transfer-encoding") != [] or
+      Enum.any?(get_req_header(conn, "content-length"), &(&1 != "0"))
+  end
+
+  defp read(conn, config) do
+    Deadline.within(config.http.body_timeout_ms, fn ->
+      read_body(conn,
+        length: config.max_body_bytes,
+        read_length: config.max_body_bytes,
+        read_timeout: config.http.read_timeout_ms
+      )
+    end)
+  end
+
+  defp served(read, conn, env, config) do
     case read do
       {:ok, body, conn} ->
         request = request(conn, body)

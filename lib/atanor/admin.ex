@@ -30,6 +30,7 @@ defmodule Atanor.Admin do
 
   alias Atanor.Admin.{Audit, Scope, Throttle, Tokens}
   alias Atanor.Deployments.{Head, Service, Versions}
+  alias Atanor.HTTP.Deadline
   alias Atanor.{Deployments, Jobs, Manifest, Overview, Registry, Rehearsal, Sweeps}
   alias Atanor.Sweeps.Undo
 
@@ -41,6 +42,11 @@ defmodule Atanor.Admin do
 
   @impl true
   def call(conn, name) do
+    # The headers are read: the deadline of the reads that remain is the body's (`Atanor.HTTP.Deadline`).
+    Deadline.within(Registry.config(name).admin.body_timeout_ms, fn -> handle(conn, name) end)
+  end
+
+  defp handle(conn, name) do
     {need, event} = permission(conn)
 
     case authenticate(conn, name) do

@@ -97,6 +97,14 @@ defmodule Atanor.Daemon do
     {"ATANOR_DETECTOR_PAUSE_MS", :integer, "The pause the failure detector tolerates. Default 2000."},
     {"ATANOR_HTTP_QUEUE_WAIT_MS", :integer,
      "How long an admitted request may wait for its handler, a worker slot or a cell before a 503 `queue_timeout` (`http: [queue_wait_ms:]`). Default 5000; 0 turns it off."},
+    {"ATANOR_HTTP_HEADER_TIMEOUT_MS", :integer,
+     "The whole time a client may take to send the headers of a request, HTTP/1 (`http: [header_timeout_ms:]`). Default 10000."},
+    {"ATANOR_HTTP_BODY_TIMEOUT_MS", :integer,
+     "The whole time a client may take to send the body of a request, HTTP/1 (`http: [body_timeout_ms:]`). Default 30000."},
+    {"ATANOR_ADMIN_HEADER_TIMEOUT_MS", :integer,
+     "The same for the admin API (`admin: [header_timeout_ms:]`). Default 10000."},
+    {"ATANOR_ADMIN_BODY_TIMEOUT_MS", :integer,
+     "The same for the body of an admin request, a package upload included (`admin: [body_timeout_ms:]`). Default 120000."},
     {"ATANOR_GROUP", :group,
      "The discovery group: a node dials only the nodes of its own group. Default none. A node that replaces another in a swap takes one."},
     {"ATANOR_REGISTRY_TTL_MS", :integer,
@@ -488,7 +496,10 @@ defmodule Atanor.Daemon do
     opts =
       [store: store, data_dir: v["ATANOR_DATA_DIR"] || @default_data_dir, ip: ip, port: port]
       |> put_unless(prefix == "", :prefix, prefix)
-      |> put_listener(:admin, v["ATANOR_ADMIN_LISTEN"], 4001, v["ATANOR_ADMIN_TOKEN"])
+      |> put_listener(:admin, v["ATANOR_ADMIN_LISTEN"], 4001, v["ATANOR_ADMIN_TOKEN"],
+        header_timeout_ms: v["ATANOR_ADMIN_HEADER_TIMEOUT_MS"],
+        body_timeout_ms: v["ATANOR_ADMIN_BODY_TIMEOUT_MS"]
+      )
       |> put_listener(:dashboard, v["ATANOR_DASHBOARD_LISTEN"], 4002, v["ATANOR_DASHBOARD_TOKEN"])
       |> put_group(:release, id: v["ATANOR_RELEASE"])
       |> put_group(:memory, limit_bytes: v["ATANOR_MEMORY_LIMIT"])
@@ -505,7 +516,11 @@ defmodule Atanor.Daemon do
         drain_concurrency: v["ATANOR_DRAIN_CONCURRENCY"]
       )
       |> put_group(:detector, acceptable_pause_ms: v["ATANOR_DETECTOR_PAUSE_MS"])
-      |> put_group(:http, queue_wait_ms: v["ATANOR_HTTP_QUEUE_WAIT_MS"])
+      |> put_group(:http,
+        queue_wait_ms: v["ATANOR_HTTP_QUEUE_WAIT_MS"],
+        header_timeout_ms: v["ATANOR_HTTP_HEADER_TIMEOUT_MS"],
+        body_timeout_ms: v["ATANOR_HTTP_BODY_TIMEOUT_MS"]
+      )
 
     validate(opts)
   end
@@ -539,11 +554,13 @@ defmodule Atanor.Daemon do
   defp put_unless(opts, true, _key, _value), do: opts
   defp put_unless(opts, false, key, value), do: opts ++ [{key, value}]
 
-  defp put_listener(opts, _name, nil, _port, nil), do: opts
+  defp put_listener(opts, name, listen, port, token, extra \\ [])
+  defp put_listener(opts, _name, nil, _port, nil, _extra), do: opts
 
-  defp put_listener(opts, name, listen, port, token) do
+  defp put_listener(opts, name, listen, port, token, extra) do
     {ip, port} = listen || {@any, port}
-    opts ++ [{name, [ip: ip, port: port] ++ if(token, do: [token: token], else: [])}]
+    extra = Enum.reject(extra, fn {_, value} -> is_nil(value) end)
+    opts ++ [{name, [ip: ip, port: port] ++ if(token, do: [token: token], else: []) ++ extra}]
   end
 
   # A group with only the options that are set; no group when none is.
