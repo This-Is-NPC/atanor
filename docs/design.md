@@ -217,7 +217,16 @@ only the imports for its granted bindings (§4); there is no ambient network,
 filesystem, environment or arguments, and no inherited stdio. That keeps a
 buggy or over-broad component from reaching outside its grants; it does not
 make an arbitrary component safe to run. Compiled components are cached by
-package id, in memory and on disk. Each request gets a fresh store and
+package id, in memory and on disk. A disk file (`<data_dir>/wasm/<id>-<engine>.cwasm`)
+starts with an HMAC-SHA256 of its name and compiled code, keyed with a random
+secret the node creates on first use in `<data_dir>/wasm.key`, because Wasmtime
+runs deserialized code as native code. The directory is 0700 and the files are
+0600. A file whose MAC does not match (planted, copied from another name, or
+damaged) is a cache miss: the node logs one line, recompiles and overwrites it
+(`source: :recompiled`, [telemetry.md](telemetry.md)). The key lives beside the
+directory and outlives restarts, so a restart still loads from disk; whoever can
+write `<data_dir>` itself can replace the key, and that access already owns the
+node. Each request gets a fresh store and
 instance under the limits of §9. The limits contain faults and runaway
 guests; they are not an attacker boundary. The package holds the component
 bytes (§5.1); `Atanor.Wasm.build/2` compiles and links it when the node

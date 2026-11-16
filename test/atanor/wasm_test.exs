@@ -383,6 +383,30 @@ defmodule Atanor.WasmTest do
       assert_receive {:telemetry, [:atanor, :wasm, :load], _, %{source: :disk}}
     end
 
+    test "a file with a plain SHA-256 and no node key is recompiled", %{dir: dir} do
+      start_and_stop(dir)
+      assert_receive {:telemetry, [:atanor, :wasm, :load], _, %{source: :compiled}}
+      [file] = Path.wildcard(Path.join([dir, "wasm", "*.cwasm"]))
+      <<_mac::binary-size(32), payload::binary>> = File.read!(file)
+      File.write!(file, [:crypto.hash(:sha256, payload), payload])
+
+      start_and_stop(dir)
+      assert_receive {:telemetry, [:atanor, :wasm, :load], _, %{source: :recompiled}}
+
+      start_and_stop(dir)
+      assert_receive {:telemetry, [:atanor, :wasm, :load], _, %{source: :disk}}
+    end
+
+    test "the cache and its key are private to the node", %{dir: dir} do
+      start_and_stop(dir)
+      [file] = Path.wildcard(Path.join([dir, "wasm", "*.cwasm"]))
+      mode = fn path -> Bitwise.band(File.stat!(path).mode, 0o777) end
+
+      assert mode.(Path.join(dir, "wasm")) == 0o700
+      assert mode.(file) == 0o600
+      assert mode.(Path.join(dir, "wasm.key")) == 0o600
+    end
+
     test "native counters are readable" do
       %{compiled_components: before} = Atanor.Wasm.Stats.read()
       start([{"hello", "hello", []}])
