@@ -215,6 +215,49 @@ runs the worker's callback on the owner and sends back the answer.
    rm -r /tmp/atanor-demo
    ```
 
+## What happens when a node joins
+
+A cell that is awake stays on its node: a new node would get only new and idle
+cells. So after a node joins, every node moves the cells it serves whose preferred
+node (the node that would wake them now) is another one. This is on by default and
+needs nothing from you.
+
+- **When.** Each node waits `start_delay_ms` (30 s) after the last change of the
+  members. A node that joins and leaves inside that time moves nothing.
+- **Which and how fast.** Cells awake here that the new node prefers, coldest first,
+  one at a time, at most `max_moves_per_s` (5) a second per node. A move pauses
+  that cell for the time of a hibernate and a wake; its callers wait and then go to
+  the new node. About a third of the cells go to a third node: with 3,000 awake cells
+  on two nodes each moves about 500, so about 100 s after the delay (inferred from the
+  rate, not measured).
+- **What stays.** A cell with a call in flight when its turn comes is tried again a
+  few times and, if still busy, left for another round. A cell that moved is not moved back
+  while the members stay the same, and a hot cell that the
+  [hot-cell loop](how-to-place-hot-cells.md) placed is left where it is.
+- **Watch it.** `GET /runtime` on the admin API has a `rebalance` section: the phase
+  (`waiting`, `running`, `done`), the cells still to move and the ones moved and failed.
+  The events are in [telemetry.md](telemetry.md#rebalance-on-join).
+
+  ```sh
+  curl -s -H "authorization: Bearer $TOKEN" $NODE:4001/runtime | jq .rebalance
+  ```
+
+Tune it in the instance options, or by environment for the daemon:
+
+```elixir
+{Atanor, name: MyApp.Atanor, store: store, rebalance: [max_moves_per_s: 2, start_delay_ms: 60_000]}
+```
+
+| Option | Variable | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | `ATANOR_REBALANCE` | `true` | `false` keeps awake cells where they are, as before. |
+| `max_moves_per_s` | `ATANOR_REBALANCE_MAX_MOVES_PER_S` | 5 | From 1 to 20, per node. Lower it if moves slow your callers. |
+| `start_delay_ms` | `ATANOR_REBALANCE_START_DELAY_MS` | 30000 | How long the members must stay unchanged. Raise it for rolling restarts. |
+
+Why these defaults are in [design §8.1](design.md#81-finding-the-owner). If a rolling
+restart moves cells you would rather leave, raise `start_delay_ms` above the time
+between two restarts, or turn it off and let cells go where they wake.
+
 ## Keep the cookie and the distribution ports private
 
 The Erlang cookie is a root password for every node: whoever has it and can

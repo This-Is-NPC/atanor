@@ -2001,6 +2001,63 @@ where the early takeover of a lost node's cell starts (§8.10).
 
 An owner other than this node gets the call forwarded.
 
+#### Rebalance on join
+
+The preferred node is rendezvous hashing over the members, and it decides only
+where a cell wakes: "node join changes the preferred node only for future wakes"
+(Alambique §8). A cell that is awake stays where it is, and a busy one is
+forwarded to its old owner for as long as it is called, since every call
+refreshes its idleness. Without more, a node that joins would receive only new and
+dormant cells. `Atanor.Rebalance` (on by default, `rebalance: [...]`) moves the
+others.
+
+Each node does it for the cells it serves, so one cell has one decider, as in
+§8.15. A change of the members, or of this node being ready, starts a plan that
+waits `start_delay_ms` (30 s). A change during the wait or the plan starts it
+again, so a node that joins and leaves quickly moves nothing. The plan lists, with
+`Alambique.cells/2`, the cells awake here whose preferred node is another one, coldest first
+(`last_used`), and moves one at a time with `Atanor.HotCells.move/4` (which tells
+the other nodes and gates the callers while the cell moves), at most
+`max_moves_per_s` (5) a second. Before each move it looks again: the cell must
+still be awake, its preferred node must still be another, that node must not be
+blocked by the failure detector, and `Alambique.load/2` must say that no call is
+waiting on it (`pending` is 0 and it is not waking). A busy cell waits for the
+next steps and, if it stays busy, for the next round: a round runs five seconds
+after the last, twelve at most, and the plan ends with the first round that finds
+nothing.
+
+**Defaults.** They are a starting point, not a measurement. `start_delay_ms` 30 s is
+longer than the registry's refresh (3 s) and the detector's settling, so a node that
+is still starting or flapping moves nothing, and shorter than most rolling restarts'
+gap, so the cluster rebalances between two restarts. `max_moves_per_s` 5 keeps one cell
+in motion at a time and costs a node a few percent of a core; a node of 10,000
+awake cells gives a third of them away in about 11 minutes. It is capped at 20 because
+the plan steps once per `1000 / max_moves_per_s` ms.
+
+**No loops.** A plan hands a cell out once while the membership stays (`attempted`
+in `Atanor.Rebalance.Plan`): a move that failed is not repeated, and a cell that
+came back to this node is not chased. The cells that `Atanor.HotCells.pinned/1`
+names are not touched: the hot ones the loop tracks, those that moved in the last
+`residence_ms` (the loop broadcasts every move it runs, so every node knows
+them) and those moving now. A cell moved by pressure, or by another node's
+rebalance, is therefore not moved back. **Precedence:** the hot-cell loop wins.
+The rebalance moves go through the same path as the loop's, so they
+count in its residence time, cooldown and cap: while a rebalance runs, the loop's
+node cooldown (30 s) can delay a hot cell's move by up to that long. The server of
+the placement runs when either is on, because it also holds the callers of a cell that moves.
+
+**What it does not do.** It does not retry a failed move until the membership
+changes, it does not look at the load of the nodes (only at where a cell is
+preferred), and a cell that is called without a pause is left where it is, and keeps
+being forwarded. A node that drains stops: the drain hands its cells off (§8.11).
+
+`test/atanor/rebalance_plan_test.exs` checks the plan as properties over random
+joins and leaves, with failed moves, cells that come back, busy cells and nodes that lag in
+their view of the members. `test/cluster/rebalance_test.exs` adds a third node to two that
+serve 90 cells under continuous writes, and checks that every cell the new node prefers
+moves to it, that no acknowledged write is lost or repeated, and that nothing moves
+afterwards.
+
 ### 8.2 Running the call there
 
 The call is sent with `:erpc` to `Dispatch.remote/9` with plain data only:

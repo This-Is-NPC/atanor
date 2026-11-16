@@ -166,6 +166,10 @@ single writer.
   for it (rendezvous hashing), not necessarily where you moved it. The loop moves
   it again if it is hot again after `residence_ms`. A tagged node is the way to
   make a cell stay: its hot cells are moved there every time.
+- The [rebalance on join](how-to-run-a-cluster.md#what-happens-when-a-node-joins)
+  does not undo a move of this loop: it leaves alone the cells that are hot or that
+  moved within `residence_ms`. Its own moves count in the residence time and the
+  node cooldown, so a hot cell can wait up to `node_cooldown_ms` while it runs.
 - A node only gives away cells when its CPU is high. A hot cell on an idle node
   is left alone: there is nothing to gain.
 
