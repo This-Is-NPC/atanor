@@ -199,6 +199,10 @@ defmodule Atanor.LoadRunTest do
 
     assert r["fresh_never_failed"]["resets"] == []
 
+    # --no-confirm (the exploration round): no confirmation repeat, so no reset after the failing step
+    assert r["no_confirm"]["steps"] == [["ramp", "ok", false, false], ["ramp", "fail", false, false]]
+    assert r["no_confirm"]["resets"] == []
+
     assert r["runtime_garbage"]["record"]["runtime"] == :null
     assert r["runtime_garbage"]["record"]["status"] == "ok"
 

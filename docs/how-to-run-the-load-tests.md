@@ -275,6 +275,64 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
    The report is `ATANOR_LOAD_OUT/report.md`: per scenario and measure, the steps, the cost per unit at the
    approved step, the criterion that stopped the ramp and the command to reproduce it.
 
+## The exploration round
+
+**The question:** how do I find the defects of the product or the harness before the official round, so that the
+official round runs once?
+
+The exploration round is unofficial. Its goal is findings, not numbers: nothing it measures is reported.
+The official round (the steps above, on the fixed build) runs once, only when the exploration is clean on all 10
+measures (`http-native`, `http-wasm`, `http-wasm-jobs`, `ws` and `cells`, each in scenarios A and B). The swap is
+explored too, once per scenario, but it is not one of the 10.
+
+**How the steps are chosen.** Each measure runs only the steps near and above its ceiling, the `approved` value of
+a previous round: 75%, 100%, 125% and 150% of it, 75 s per step, no bisection (`--refine 0`) and no confirmation
+repeat (`--no-confirm`). The ramp stops at the first failing step, as always, so a measure that fails at 125%
+does not run 150%. The ceilings are an input: the `SCENARIO_MEASURE.summary.json` files of the previous round (the
+official one, or the last exploration, whose `approved` is null because it does not confirm: pass
+`--ceiling MEASURE=N` then). Nothing is hardcoded. The swap has no ramp: it runs once at the `http-wasm-jobs`
+ceiling.
+
+**Run it**, once per scenario, after `mise run load:up` has built the images. `--from` is the previous round's
+results directory; `--dry-run` prints the commands without running them.
+
+```sh
+ATANOR_LOAD_SCENARIO=A mise run load:explore -- --from load/results/PREVIOUS --dry-run
+ATANOR_LOAD_SCENARIO=A mise run load:explore -- --from load/results/PREVIOUS
+ATANOR_LOAD_SCENARIO=B mise run load:explore -- --from load/results/PREVIOUS
+```
+
+The task resets the node and the store before each measure, runs `scripts/load-run MEASURE --steps ... --step-s 75
+--refine 0 --no-confirm`, and the swap last (`--rate CEILING`). To redo one measure after a fix, name it:
+`mise run load:explore -- --from DIR --measures ws`. Other options: `--ceiling MEASURE=N`, `--factors`,
+`--step-s`, `--out`, and load-run options after `--`. A measure that exits 1 does not stop the others; the task
+exits 1 when any did. Results go to `load/results/explore-STAMP-SCENARIO`; they are never mixed with the official
+round's directory.
+
+**Time budget: 1.5 h for both scenarios.** Per step: 75 s of load, at least 60 s of quiet-host wait
+(`--quiet-window`) and about 10 s of sampling and judging; a failing step is followed by a reset of the node
+(about 1 min, an estimate) before the next measure. A measure that fails at 125% runs 3 steps: about 7.5 min. One
+that holds 150% runs 4: about 10 min. Ten measures take 75 to 100 min, and the two swaps (quiet wait, warm-up,
+overlap and settle of about 2.5 min each) add about 5 min: typically 80 min, at most about 105 min. These are
+estimates from the harness's timings, not measurements. If the host is slow to go quiet, fit the budget by
+dropping the 75% step for the measures whose previous ceiling is solid (`--factors 1,1.25,1.5`), which saves
+about 2.4 min each.
+
+**Clean or a finding.** A measure is clean when every step is `ok` or a failure that is a result of the node:
+a failed criterion (p99, memory, descriptors) or 503 answers, each with `Retry-After`. Anything else is a finding:
+
+- a step INVALID (any cause in the table of [how a step is judged](#how-a-step-is-judged)), `host busy` included
+  when the host was quiet;
+- a crash of the harness, of the generator or of a script;
+- a node that stopped (`node OOM-killed`, `node exited`, `node restarted`, `node container gone`);
+- a 5xx other than a 503 with `Retry-After`, or an error that is not a measured saturation;
+- a ramp that fails below the previous ceiling by more than 25%, or a swap that loses or duplicates a write;
+- any behavior of the harness that you did not expect (a wrong number, a missing file, a hang).
+
+**Findings first.** Each finding becomes a fix before anything else. After a fix, only the affected measure's
+exploration is redone (`--measures`), in the scenario where it appeared; the others keep their result unless the
+fix touches them. When all 10 measures are clean, run the official round once.
+
 ## Smoke test
 
 To check the harness without loading anything, run each measure for a few seconds at a low value:

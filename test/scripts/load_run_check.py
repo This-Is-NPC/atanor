@@ -84,7 +84,7 @@ def new_round(name):
     os.makedirs(out)
     args = argparse.Namespace(out=out, measure=measure[0], step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1e9, min_available_gb=0.0,
                               sample_s=0.05, quiet_window=0.0, quiet_max_wait=5.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
-                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0)
+                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, no_confirm=False, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0)
     pid = os.getpid()
     info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"id": "store-id", "ip": "127.0.0.1", "pid": pid},
             "lb": {"pid": pid}, "admin": "http://127.0.0.1:1"}
@@ -195,7 +195,7 @@ def ramp_scenario(name, dies_at, before=None):
 
 results["ramp"] = ramp_scenario("ramp", dies_at=2)
 # After a failing step the refine and confirm steps run on a fresh node (a stubbed reset); ramp steps and a clean confirmation do not.
-def fresh_scenario(name, slow_call):
+def fresh_scenario(name, slow_call, no_confirm=False, refine=2):
     container()
     resets, runs = [], []
 
@@ -210,7 +210,7 @@ def fresh_scenario(name, slow_call):
     m.load_env = lambda *a: resets.append(a[0]) or (info if a[0] == "info" else "")
     m.Round.run_generators = generators
     try:
-        args.measure, args.steps, args.refine = "http-native", "10,20", 2
+        args.measure, args.steps, args.refine, args.no_confirm = "http-native", "10,20", refine, no_confirm
         summary = m.ramp(round_, args)
     finally:
         m.load_env, m.Round.run_generators = real_load_env, real_generators
@@ -224,6 +224,7 @@ def fresh_scenario(name, slow_call):
 
 results["fresh_after_fail"] = fresh_scenario("fresh_after_fail", slow_call=2)
 results["fresh_never_failed"] = fresh_scenario("fresh_never_failed", slow_call=0)
+results["no_confirm"] = fresh_scenario("no_confirm", slow_call=2, no_confirm=True, refine=0)
 
 # A stall of the lab is judged on the generator's lag and on one jump of the node's CPU throttling against its usual growth.
 def throttled(*values):

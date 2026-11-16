@@ -913,7 +913,7 @@ def ramp(round_, args):
                 break
         good = lo
     confirmed = None
-    if good is not None and not stopped and not node_stopped:
+    if good is not None and not stopped and not node_stopped and not args.no_confirm:
         r = round_.step(good, "confirm", fresh=failed is not None)
         steps.append(r)
         confirmed = r["status"] == "ok"
@@ -1021,6 +1021,7 @@ def main():
     add("--max", type=float, help="last value to try (default: no limit that a failure would not reach: http 20000, ws 60000, cells 100000)")
     add("--steps", help="explicit values, comma separated; replaces --start/--factor/--max")
     add("--refine", type=int, default=env("REFINE", 3, int), help="bisections between the last good and the failing step (ATANOR_LOAD_REFINE, 3)")
+    add("--no-confirm", action="store_true", help="skip the confirmation repeat of the best good value (the exploration round)")
     add("--p99-ms", type=float, default=env("P99_MS", 250), help="p99 above this fails a step (ATANOR_LOAD_P99_MS, 250)")
     add("--max-refused-pct", type=float, default=env("MAX_REFUSED_PCT", 1), help="503 answers (with or without Retry-After) above this share of all answers fail a step of every measure but swap (ATANOR_LOAD_MAX_REFUSED_PCT, 1)")
     add("--memory-pct",type=float, default=env("MEMORY_PCT", 90), help="working set (memory.current - inactive_file, as the node measures it) at this share of the scenario memory fails ws and cells steps (ATANOR_LOAD_MEMORY_PCT, 90)")
