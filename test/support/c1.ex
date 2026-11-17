@@ -12,7 +12,8 @@ defmodule Atanor.Test.C1 do
   alias AtanorTestkit.Cluster
 
   # The handler ran on the node whose cell process committed the transaction, and acknowledged requests
-  # for one cell do not overlap in time across nodes, except for the window of a takeover (design §8.13):
+  # for one cell do not overlap in time across nodes, except for the window of a takeover (design §8.13),
+  # whether by `take_over` or by an `acquire` of a lease that expired under store faults:
   # a handler that started on the owner before the takeover ends its write through the new owner, and a
   # node that was not told it lost the cell starts no handler more than `routing.owner_check_ms` after
   # the takeover. The data properties are not relaxed for any cell.
