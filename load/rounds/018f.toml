@@ -14,7 +14,7 @@ backing = "disk"
 http_max_connections = 40000   # above the highest ws step (30000)
 
 [judging.host_memory]
-min_available_gb = 1.0
+min_available_gib = 1.0
 
 # Fixed ladders; http-wasm keeps the default ramp.
 [measures.http-native.steps]

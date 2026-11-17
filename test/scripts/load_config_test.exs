@@ -10,16 +10,10 @@ defmodule Atanor.LoadConfigTest do
     {:ok, dir: dir}
   end
 
-  test "the round files are valid and the defaults are today's", %{dir: dir} do
+  test "the round files are valid and example.toml holds the defaults", %{dir: dir} do
     {out, status} = System.cmd("python3", ["-I", "test/scripts/load_config_check.py", dir], stderr_to_stdout: true)
     assert status == 0, out
     r = out |> String.split("\n", trim: true) |> List.last() |> :json.decode()
-
-    # every default equals the default of load-run's arguments (52 compared), and so do its ramps, measures and scale loads
-    assert r["mismatch"] == %{}
-    assert r["checked"] == 52
-    assert r["ramps"] == r["ramps_of_load_run"] |> Map.new(fn {k, [a, b]} -> {k, [a / 1, b / 1]} end)
-    assert r["units_match"] and r["scale_loads_match"]
 
     # example.toml is the defaults, key for key
     assert r["example_is_default"]
@@ -47,7 +41,7 @@ defmodule Atanor.LoadConfigTest do
              o["scale"]["join"]["enabled"]
 
     assert o["scale_run_on"] == ["A"]
-    assert o["store"] == "disk" and o["min_available_gb"] == 1.0 and o["max_connections"] == 40000
+    assert o["store"] == "disk" and o["min_available_gib"] == 1.0 and o["max_connections"] == 40000
 
     # the hash is stable (the spelling of a value does not matter) and changes with a value
     assert r["hash"] == %{"stable" => true, "changes" => true, "length" => 64}
@@ -174,6 +168,37 @@ defmodule Atanor.LoadConfigTest do
     assert r["toml_round_trip"] == [true, true, true, true, true]
     assert r["env_scale_no_nodes"] == [false, "1"]
     assert r["env_cap"] == ["", "40000"]
+  end
+
+  test "the names shared with Alambique, host.timeout_s and the judging of one measure", %{dir: dir} do
+    {out, status} = System.cmd("python3", ["-I", "test/scripts/load_config_check.py", dir], stderr_to_stdout: true)
+    assert status == 0, out
+    r = out |> String.split("\n", trim: true) |> List.last() |> :json.decode()
+
+    n = r["renames"]
+    assert n["data_tmpfs"] == ["256m", "1g"] and n["env_tmpfs"] == ["256m", "1g"]
+    assert n["timeout_s"] == 172_800.0 and n["min_available_gib"] == 6.0
+    assert n["old_node_tmpfs"] == ["scenarios.A.node_tmpfs: unknown key (did you mean 'data_tmpfs'?)"]
+
+    assert n["old_min_available_gb"] == [
+             "judging.host_memory.min_available_gb: unknown key (did you mean 'min_available_gib'?)"
+           ]
+
+    assert n["timeout_bad"] == ["host.timeout_s: 0 is out of range, expected > 0"]
+
+    # [measures.M.judging.RULE] holds only what is given, is merged for that measure only and enters its hash
+    m = r["measure_judging"]
+    assert m["override"] == %{"p99" => %{"max_ms" => 400.0}, "refused" => %{"enabled" => false}, "stall_repeats" => 2}
+    assert m["others"] == %{} and m["general"] == %{"enabled" => true, "max_ms" => 250.0}
+    assert m["merged_ws"] == [%{"enabled" => true, "max_ms" => 400.0}, %{"enabled" => false, "max_pct" => 1.0}, 2]
+    assert m["merged_cells"] == %{"enabled" => true, "max_ms" => 250.0}
+    assert m["hash_ws_changes"] and m["hash_cells_same"] and m["hash_swap_same"] and m["round_trip"]
+
+    assert m["bad"] == [
+             "measures.ws.judging.p99.max_ms: -1 is out of range, expected > 0",
+             "measures.ws.judging.p99.max: unknown key (did you mean 'max_ms'?)",
+             "measures.ws.judging.nope: unknown key, expected one of stall_repeats, errors, p99, refused, memory, fds, delivery, store_fill, store_stall, generator_lag, throttle, host_load, host_busy, generator_swap, host_swap, host_memory"
+           ]
   end
 
   test "--env prints the lab's ATANOR_LOAD_* lines of a scenario, with the store of a measure", %{dir: dir} do

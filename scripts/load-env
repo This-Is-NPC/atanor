@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# The environment of the load tests: up | latency | deploy | rtt | check-swap | info | add-node | swap | reset | down. Settings: ATANOR_LOAD_*
-# (docs/how-to-run-the-load-tests.md). Safe to rerun; touches only the project atanor-cluster
-# and the container atanor-load-tc, by id or exact name.
+# The environment of the load tests: [--config FILE [--scenario S]] up | latency | deploy | rtt | check-swap | info | add-node | swap | reset | down.
+# The settings are those of the round config (ATANOR_LOAD_CONFIG, or --config FILE); docs/how-to-run-the-load-tests.md. Safe to rerun;
+# touches only the project atanor-cluster and the container atanor-load-tc, by id or exact name.
 #
-#   up       scenario A or B: build, start one node (ATANOR_LOAD_NODES: that many; cgroup limits, data in tmpfs) with the store
-#            (tmpfs, or the host's disk with ATANOR_LOAD_STORE_DISK=1; 25 ms added per trip), deploy the native, the plain WASM and the scoreboard worker
+#   up       the scenario's lab: build, start its nodes (cgroup limits, data in tmpfs) with the store (tmpfs, or the host's disk
+#            with store.backing = "disk"; store.latency_ms added per trip), deploy the native, the plain WASM and the scoreboard worker
 #   latency  (re)apply the added store latency, and print the round trip from the node to the store
 #   deploy   deploy the native worker (cluster/load), the plain WASM worker (examples/load-plain) and the scoreboard (WASM) to the node
 #   rtt      print the round trip from the node to the store in ms (median of three); empty when unknown
@@ -16,6 +16,17 @@
 #   reset    down, then up: a new node and a new store with empty data (the next step starts from nothing)
 #   down     remove the containers, network and volumes
 set -euo pipefail
+rest=()
+while (($#)); do   # --config FILE and --scenario S, wherever they are (`mise run load:up -- --config FILE` appends them)
+  case $1 in
+    --config | --scenario)
+      [[ $# -ge 2 ]] || { echo "$1 takes a value" >&2; exit 2; }
+      if [[ $1 == --config ]]; then export ATANOR_LOAD_CONFIG=$2; else export ATANOR_LOAD_SCENARIO=$2; fi
+      shift 2 ;;
+    *) rest+=("$1"); shift ;;
+  esac
+done
+set -- ${rest[@]+"${rest[@]}"}
 source "$(dirname "$0")/load-common"
 
 TC=atanor-load-tc

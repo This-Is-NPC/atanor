@@ -93,13 +93,22 @@ def new_round(name):
     return m.Round(args, info), args
 
 
+def case_dir(args):
+    """Where the steps of the measure of `args` are written: OUT/SCENARIO/MEASURE."""
+    return os.path.join(args.out, "A", args.measure)
+
+
+def step_files(args):
+    return sorted(f for f in os.listdir(case_dir(args)) if f.endswith(".json") and "summary" not in f)
+
+
 def scenario(name, during=lambda: None, error=None, before=None, info=None):
     container(**(before or {}))
     hook.update(during=during, error=error)
     round_, _ = new_round(name)
     round_.info.update(info or {})
     record = round_.step(10, "ramp")
-    return {"record": record, "files": sorted(os.listdir(round_.args.out))}
+    return {"record": record, "files": sorted(os.listdir(case_dir(round_.args)))}
 
 
 results = {}
@@ -218,7 +227,7 @@ def ramp_scenario(name, dies_at, before=None):
     round_, args = new_round(name)
     args.steps, args.refine = "10,20,40", 2
     summary = m.ramp(round_, args)
-    return {"summary": summary, "generator_runs": len(calls), "files": sorted(f for f in os.listdir(args.out) if f.endswith(".json"))}
+    return {"summary": summary, "generator_runs": len(calls), "files": step_files(args)}
 
 
 results["ramp"] = ramp_scenario("ramp", dies_at=2)
@@ -242,11 +251,11 @@ def fresh_scenario(name, slow_call, no_confirm=False, refine=2):
         summary = m.ramp(round_, args)
     finally:
         m.load_env, m.Round.run_generators = real_load_env, real_generators
-    steps = []
-    for file in sorted(f for f in os.listdir(args.out) if f.endswith(".json") and "summary" not in f):
-        with open(os.path.join(args.out, file)) as handle:
-            record = json.load(handle)
-        steps.append([record["phase"], record["status"], record["fresh_node"], record["reset_s"] is not None])
+    records = []
+    for file in step_files(args):
+        with open(os.path.join(case_dir(args), file)) as handle:
+            records.append(json.load(handle))
+    steps = [[r["phase"], r["status"], r["fresh_node"], r["reset_s"] is not None] for r in sorted(records, key=lambda r: r["step"])]  # in the order they ran
     return {"steps": steps, "resets": resets, "approved": summary["approved"]}
 
 
@@ -290,8 +299,8 @@ def stall_scenario(name, lags, **options):
         summary = m.ramp(round_, args)
     finally:
         m.Round.run_generators = real
-    files = sorted(f for f in os.listdir(args.out) if f.endswith(".json") and "summary" not in f)
-    with open(os.path.join(args.out, files[0])) as handle:
+    files = step_files(args)
+    with open(os.path.join(case_dir(args), files[0])) as handle:
         first = json.load(handle)
     return {"runs": runs, "files": files, "summary": summary, "first": first}
 
@@ -363,10 +372,9 @@ def store_stall_scenario(name, logs, off=False):
         summary = m.ramp(round_, args)
     finally:
         m.Round.run_generators, m.node_log_since = real
-    files = sorted(f for f in os.listdir(args.out) if f.endswith(".json") and "summary" not in f)
-    with open(os.path.join(args.out, files[0])) as handle:
+    with open(os.path.join(case_dir(args), step_files(args)[0])) as handle:
         first = json.load(handle)
-    return {"runs": runs, "summary": summary, "first": {k: first[k] for k in ("status", "valid", "stop_reason", "store_stall", "first_attempt", "notes")}}
+    return {"runs": runs, "summary": summary, "first": {k: first[k] for k in ("status", "valid", "stop_reason", "criteria", "store_stall", "first_attempt", "notes")}}
 
 
 results["store_stall_once"] = store_stall_scenario("store_stall_once", [BURST, ""])
@@ -434,7 +442,7 @@ with open(stub, "w") as file:
 os.chmod(stub, os.stat(stub).st_mode | stat.S_IXUSR)
 m.Sampler.take = lambda self: memory_sample(time.time(), 650, 256)
 swap_round, swap_args = new_round("swap")
-swap_args.rate, swap_args.trigger, swap_args.swap_workers = 10, "sigterm", 1
+swap_args.measure, swap_args.rate, swap_args.trigger, swap_args.swap_workers = "swap", 10, "sigterm", 1
 swap_args.swap_warmup = swap_args.swap_overlap = swap_args.swap_settle = 1
 swap_args.swap_timeout = 30
 swap_summary = m.swap(swap_round, swap_args, swap_round.info)
@@ -442,7 +450,7 @@ results["swap_command"] = m.swap_command(swap_args, 10, "out")[:2]
 results["exit_status"] = {"swap_ok": m.exit_status("swap", swap_summary), "swap_fail": m.exit_status("swap", {"status": "fail", "invalid": None}),
                           "swap_invalid": m.exit_status("swap", {"status": "invalid", "invalid": "no result"}),
                           "ramp_ok": m.exit_status("ws", {"invalid": None, "stopped_by": "p99"}), "ramp_invalid": m.exit_status("ws", {"invalid": "delivery 80%"})}
-with open(os.path.join(swap_args.out, "A_swap_01-swap-10.json")) as file:
+with open(os.path.join(case_dir(swap_args), "step-10.json")) as file:
     swap_record = json.load(file)
 results["swap"] = {k: swap_record[k] for k in ("status", "valid", "stop_reason")} | {"service_max_mb": swap_record["memory"]["service_max_mb"],
                                                                                     "limit_mb": swap_record["memory"]["limit_mb"],
@@ -588,7 +596,7 @@ results["stall_repeats"] = {"two": stall_scenario("stall_repeats_two", [242, 242
 def case_args(name, config_hash="h1", skip=True, **over):
     """The arguments of a step of the config round, in a results directory of their own."""
     round_, args = new_round(name)
-    vars(args).update({"nested": True, "config_hash": config_hash, "skip_done": skip, "scenario": "A", "measure": "http-native", "steps": None, "start": 10, "max": 40,
+    vars(args).update({"config_hash": config_hash, "skip_done": skip, "scenario": "A", "measure": "http-native", "steps": None, "start": 10, "max": 40,
                        "factor": 2, "refine": 2, "ws_interval": 30.0, **over})
     return round_.info, args
 
@@ -665,8 +673,7 @@ scale_round.step(998, "confirm")
 results["layout"] = {"files": files_of(args.out), "measure": scale_record["measure"], "load": scale_record["load"], "config_hash": scale_record["config_hash"],
                      "join": os.path.relpath(m.join_base(args, "A", 600), args.out), "join_float": os.path.relpath(m.join_base(args, "A", 600.0), args.out),
                      "summary": os.path.relpath(m.result_file(args, "A", "ws", "summary"), args.out),
-                     "baseline": os.path.relpath(m.result_file(args, "A", "cells", "baseline"), args.out),
-                     "flat_summary": os.path.relpath(m.result_file(argparse.Namespace(out=args.out), "A", "ws", "summary"), args.out)}
+                     "baseline": os.path.relpath(m.result_file(args, "A", "cells", "baseline"), args.out)}
 
 # The swap in the layout: its rate is the approved one of http-wasm-jobs, and a done swap is not run again.
 swap_info, swap_args = case_args("swap_nested", rate=None, trigger="sigterm", swap_workers=1, swap_warmup=1, swap_overlap=1, swap_settle=1, swap_timeout=30)
@@ -699,7 +706,7 @@ official = m.config_defaults(lc.load_config(f"{repo}/load/rounds/018f.toml"), "s
 results["config_defaults"] = {"p99_off": math.isinf(given["p99_ms"]), "p99_on": m.config_defaults(lc.load_config(), "cells", "A", "c.toml")["p99_ms"], "delivery": given["delivery"],
                               "judge_errors": given["judge_errors"], "stall_ms": given["max_store_stall_ms"], "host_off": math.isinf(given["host_load_max"]),
                               "quiet_window": given["quiet_window"], "min_gb": given["min_available_gb"], "timeout": given["step_timeout"], "no_warmup": given["no_warmup"],
-                              "repeats": given["stall_repeats"], "steps": given["steps"], "nested": given["nested"], "hash": len(given["config_hash"]),
+                              "repeats": given["stall_repeats"], "steps": given["steps"], "hash": len(given["config_hash"]),
                               "command": given["command"], "scale": [official["ceilings"], official["factors"], official["max_nodes"], official["load_plans"]["http-native"]["values"],
                                                                       official["steps"] if "steps" in official else "none"]}
 

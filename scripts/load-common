@@ -1,23 +1,17 @@
 # Shared settings of the load-test scripts; sourced, not run. The load tests use the container
 # cluster of scripts/cluster-* (project atanor-cluster, every container named atanor-cluster-*)
-# with one node (the nodes find each other through the store, so there is no peer list); see docs/how-to-run-the-load-tests.md for every ATANOR_LOAD_* setting.
+# with one node (the nodes find each other through the store, so there is no peer list); see docs/how-to-run-the-load-tests.md.
 # cluster-common is sourced last: it reads ATANOR_CLUSTER_TMPFS to choose the compose files, so every compose call of the caller
 # (`add-node` starts node 2 and 3 itself) gets the tmpfs of the first node.
+#
+# Every setting comes from the round config, through `load_config.py --env`. The environment carries only the internal plumbing
+# between scripts/load, scripts/load-run and these scripts: ATANOR_LOAD_CONFIG (the round config), ATANOR_LOAD_SCENARIO, ATANOR_LOAD_MEASURE
+# (its store overrides) and ATANOR_LOAD_NODES (the scale measure starts its own nodes).
 
+[[ -n ${ATANOR_LOAD_CONFIG:-} ]] || { echo "ATANOR_LOAD_CONFIG must name the round config (mise run load -- --config FILE starts a round)" >&2; exit 1; }
 LOAD_SCENARIO=${ATANOR_LOAD_SCENARIO:-A}
-# With ATANOR_LOAD_CONFIG (a round config, `mise run load`) the lab's settings come from that file for this scenario and, for its
-# store, ATANOR_LOAD_MEASURE; they replace the ATANOR_LOAD_* of the environment that they name.
-if [[ -n ${ATANOR_LOAD_CONFIG:-} ]]; then
-  config_env=$("$(dirname "${BASH_SOURCE[0]}")/load_config.py" --env "$ATANOR_LOAD_CONFIG" "$LOAD_SCENARIO" ${ATANOR_LOAD_MEASURE:+"$ATANOR_LOAD_MEASURE"}) || exit 1
-  eval "$config_env"
-fi
-# Scenario A: 1 CPU and 512 MB. Scenario B: 2 CPUs and 2 GB. Override with ATANOR_LOAD_CPUS and _MEMORY.
-# The node's data dir (tmpfs) is sized for the scenario: its disk budget is a share of it, and a 256 MB one made B's disk reclaim put cells to sleep.
-case $LOAD_SCENARIO in
-  A) cpus=1; memory=512m; tmpfs=256m ;;
-  B) cpus=2; memory=2g; tmpfs=1g ;;
-  *) echo "ATANOR_LOAD_SCENARIO must be A or B" >&2; exit 1 ;;
-esac
+config_env=$("$(dirname "${BASH_SOURCE[0]}")/load_config.py" --env "$ATANOR_LOAD_CONFIG" "$LOAD_SCENARIO" ${ATANOR_LOAD_MEASURE:+"$ATANOR_LOAD_MEASURE"}) || exit 1
+eval "$config_env"
 # Bytes of a docker size such as 512m, 2g or 768M (k, m, g; a bare number is bytes).
 size_bytes() {
   awk -v s="$1" 'BEGIN { s = tolower(s); sub(/b$/, "", s); u = substr(s, length(s));
@@ -27,18 +21,16 @@ size_bytes() {
     printf "%d", s * m }'
 }
 
-LOAD_CPUS=${ATANOR_LOAD_CPUS:-$cpus}
-LOAD_MEMORY=${ATANOR_LOAD_MEMORY:-$memory}
-LOAD_STORE_LATENCY_MS=${ATANOR_LOAD_STORE_LATENCY_MS:-25}   # added to every trip to the store
-LOAD_TMPFS_SIZE=${ATANOR_LOAD_TMPFS_SIZE:-$tmpfs}           # the node's data dir (A 256m, B 1g); its limit is the scenario memory plus this
-LOAD_STORE_TMPFS_SIZE=${ATANOR_LOAD_STORE_TMPFS_SIZE:-1g}   # the store's data; its limit is its memory plus this
-# ATANOR_LOAD_STORE_DISK=1 keeps the node's data in tmpfs and puts the store's data on the host's disk (for a step that fills
-# the store's tmpfs). Set it the same way for every load command, as with every ATANOR_LOAD_* setting.
-LOAD_STORE_DISK=${ATANOR_LOAD_STORE_DISK:-0}
-[[ $LOAD_STORE_DISK == 0 || $LOAD_STORE_DISK == 1 ]] || { echo "ATANOR_LOAD_STORE_DISK must be 0 or 1" >&2; exit 1; }
+LOAD_CPUS=$ATANOR_LOAD_CPUS
+LOAD_MEMORY=$ATANOR_LOAD_MEMORY
+LOAD_STORE_LATENCY_MS=$ATANOR_LOAD_STORE_LATENCY_MS   # added to every trip to the store
+LOAD_TMPFS_SIZE=$ATANOR_LOAD_TMPFS_SIZE               # the node's data dir (scenarios.S.data_tmpfs); its limit is the scenario memory plus this
+LOAD_STORE_TMPFS_SIZE=$ATANOR_LOAD_STORE_TMPFS_SIZE   # the store's data; its limit is its memory plus this
+# store.backing = "disk" keeps the node's data in tmpfs and puts the store's data on the host's disk (for a step that fills the store's tmpfs).
+LOAD_STORE_DISK=$ATANOR_LOAD_STORE_DISK
 [[ $LOAD_STORE_DISK == 0 ]] || LOAD_STORE_TMPFS_SIZE=0
 
-# The cluster settings of the scenario: one node (ATANOR_LOAD_NODES for the scale measure), data in tmpfs, a balancer that is not the limit.
+# The cluster settings of the scenario: the scenario's nodes (the scale measure sets ATANOR_LOAD_NODES), data in tmpfs, a balancer that is not the limit.
 LOAD_NODES=${ATANOR_LOAD_NODES:-1}
 [[ $LOAD_NODES =~ ^([1-9]|10)$ ]] || { echo "ATANOR_LOAD_NODES must be 1 to 10" >&2; exit 1; }
 export ATANOR_CLUSTER_NODES=$LOAD_NODES ATANOR_CLUSTER_TMPFS=1 ATANOR_CLUSTER_STORE_DISK=$LOAD_STORE_DISK
@@ -48,16 +40,15 @@ export ATANOR_CLUSTER_IMAGE=atanor-cluster-load:local
 # A tmpfs counts against its container's memory limit. It is a lab artifact, so the limit is the scenario
 # memory plus the tmpfs. The node's own memory limit is the scenario memory (ATANOR_CLUSTER_MEMORY_LIMIT), so its gate and
 # the harness criterion measure the same working set (tmpfs included) against the same limit.
-LOAD_STORE_MEMORY=${ATANOR_LOAD_STORE_MEMORY:-2g}
+LOAD_STORE_MEMORY=$ATANOR_LOAD_STORE_MEMORY
 LOAD_MEMORY_BYTES=$(size_bytes "$LOAD_MEMORY") && tmpfs_bytes=$(size_bytes "$LOAD_TMPFS_SIZE") \
   && store_memory_bytes=$(size_bytes "$LOAD_STORE_MEMORY") && store_tmpfs_bytes=$(size_bytes "$LOAD_STORE_TMPFS_SIZE") \
-  || { echo "ATANOR_LOAD_MEMORY, _TMPFS_SIZE, _STORE_MEMORY and _STORE_TMPFS_SIZE must be sizes (use k, m or g)" >&2; exit 1; }
+  || { echo "the memory and tmpfs sizes of the round config must be sizes (use k, m or g)" >&2; exit 1; }
 export ATANOR_CLUSTER_NODE_CPUS=$LOAD_CPUS ATANOR_CLUSTER_NODE_MEMORY=$((LOAD_MEMORY_BYTES + tmpfs_bytes))
 export ATANOR_CLUSTER_MEMORY_LIMIT=$LOAD_MEMORY_BYTES
-# The node's http.max_connections (empty: its default, 16384). The ws measure needs it above its highest step; scripts/load-run checks.
-[[ -z ${ATANOR_LOAD_HTTP_MAX_CONNECTIONS:-} || $ATANOR_LOAD_HTTP_MAX_CONNECTIONS =~ ^[1-9][0-9]*$ ]] || { echo "ATANOR_LOAD_HTTP_MAX_CONNECTIONS must be a whole number" >&2; exit 1; }
-export ATANOR_CLUSTER_HTTP_MAX_CONNECTIONS=${ATANOR_LOAD_HTTP_MAX_CONNECTIONS:-}
+# The node's http.max_connections (empty: its default, 16384). The ws measure needs it above its highest step; the config check refuses a plan that is not.
+export ATANOR_CLUSTER_HTTP_MAX_CONNECTIONS=$ATANOR_LOAD_HTTP_MAX_CONNECTIONS
 export ATANOR_CLUSTER_TMPFS_SIZE=$LOAD_TMPFS_SIZE ATANOR_CLUSTER_STORE_TMPFS_SIZE=$LOAD_STORE_TMPFS_SIZE
-export ATANOR_CLUSTER_STORE_CPUS=${ATANOR_LOAD_STORE_CPUS:-2} ATANOR_CLUSTER_STORE_MEMORY=$((store_memory_bytes + store_tmpfs_bytes))
-export ATANOR_CLUSTER_LB_CPUS=${ATANOR_LOAD_LB_CPUS:-2} ATANOR_CLUSTER_LB_MEMORY=${ATANOR_LOAD_LB_MEMORY:-512m}
+export ATANOR_CLUSTER_STORE_CPUS=$ATANOR_LOAD_STORE_CPUS ATANOR_CLUSTER_STORE_MEMORY=$((store_memory_bytes + store_tmpfs_bytes))
+export ATANOR_CLUSTER_LB_CPUS=$ATANOR_LOAD_LB_CPUS ATANOR_CLUSTER_LB_MEMORY=$ATANOR_LOAD_LB_MEMORY
 source "$(dirname "${BASH_SOURCE[0]}")/cluster-common"

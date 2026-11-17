@@ -5,8 +5,8 @@
   load_config.py --defaults       print the built-in defaults
   load_config.py --env FILE SCENARIO [MEASURE]   print the ATANOR_LOAD_* lines of the lab of a scenario (and the store of a measure)
 
-The defaults equal today's defaults of scripts/load-run, load-explore and load-common. The layout is documented key by key in
-load/rounds/example.toml. As a module: load_config(path) -> dict, resolve(raw) -> dict, plan(config, measure, scenario) -> dict,
+The defaults live here and nowhere else. The layout is documented key by key in load/rounds/example.toml. As a module:
+load_config(path) -> dict, resolve(raw) -> dict, plan(config, measure, scenario) -> dict, judging_of(config, measure) -> dict,
 config_hash(config) -> str, case_hash(config, scenario, measure) -> str, case_list(config) -> [(scenario, measure)], plan_values,
 env_lines, dump_toml; ConfigError.problems lists every problem found.
 """
@@ -156,7 +156,8 @@ def store_override():
 
 def measure_table(name):
     run_on = Leaf("list", [], item="str", choices=SCENARIOS)
-    common = {"run_on": run_on, "store": store_override(), "variant": Map((), lambda _: None, "variant")}  # reserved: [measures.M.variant.V.store] and .steps; no measure has variants yet
+    common = {"run_on": run_on, "store": store_override(), "judging": Table(judging_children(sparse=True), sparse=True),
+              "variant": Map((), lambda _: None, "variant")}  # reserved: [measures.M.variant.V.store] and .steps; no measure has variants yet
     if name in ("swap", "scale"):
         return Table(common)
     start, maximum = RAMPS[name]
@@ -165,7 +166,7 @@ def measure_table(name):
 
 
 def scenario_table(cpus, memory, tmpfs):
-    return Table({"cpus": Leaf("float", float(cpus), lo=0, open_lo=True), "memory": Leaf("size", memory), "node_tmpfs": Leaf("size", tmpfs),
+    return Table({"cpus": Leaf("float", float(cpus), lo=0, open_lo=True), "memory": Leaf("size", memory), "data_tmpfs": Leaf("size", tmpfs),
                   "nodes": Leaf("int", 1, lo=1, hi=10)})
 
 
@@ -181,9 +182,31 @@ def share(default):
     return Leaf("float", float(default), lo=0, hi=1, open_lo=True)
 
 
-def criterion(**limits):
+def criterion(sparse=False, **limits):
     """A criterion: `enabled` and its limits."""
-    return Table({"enabled": Leaf("bool", True), **limits})
+    return Table({"enabled": Leaf("bool", True), **limits}, sparse)
+
+
+def judging_children(sparse=False):
+    """The rules of [judging]; sparse: the same keys as an override for one measure (only what is given is kept)."""
+    return {
+        "stall_repeats": Leaf("int", 1, lo=0),
+        "errors": criterion(sparse),
+        "p99": criterion(sparse, max_ms=positive(250)),
+        "refused": criterion(sparse, max_pct=pct(1)),
+        "memory": criterion(sparse, max_pct=pct(90)),
+        "fds": criterion(sparse, max_pct=pct(90)),
+        "delivery": criterion(sparse, min_ratio=share(0.95)),
+        "store_fill": criterion(sparse, max_tmpfs_pct=pct(90), max_disk_pct=pct(90)),
+        "store_stall": criterion(sparse, min_ms=positive(1000), min_requests=Leaf("int", 10, lo=1), window_s=positive(5), fail_on_repeat=Leaf("bool", True)),
+        "generator_lag": criterion(sparse, max_ms=positive(50)),
+        "throttle": criterion(sparse, max_jump_ms=positive(5000), jump_factor=positive(5)),
+        "host_load": criterion(sparse, max=positive(1), quiet_window_s=positive(60), quiet_max_wait_s=positive(1800)),
+        "host_busy": criterion(sparse, max_share=share(0.85)),
+        "generator_swap": criterion(sparse, max_mb=positive(16)),
+        "host_swap": criterion(sparse, max_growth_mb=positive(256)),
+        "host_memory": criterion(sparse, min_available_gib=positive(6)),
+    }
 
 
 SCHEMA = Table({
@@ -195,31 +218,14 @@ SCHEMA = Table({
         "timeout_s": Leaf("float", 0.0, lo=0),
     }),
     "output": Table({"dir": Leaf("str", ""), "name": Leaf("str", "")}),
-    "host": Table({"ssh": Leaf("str", ""), "repo": Leaf("str", ""), "results": Leaf("str", "")}),
+    "host": Table({"ssh": Leaf("str", ""), "repo": Leaf("str", ""), "results": Leaf("str", ""), "timeout_s": positive(172800)}),
     "scenarios": Map(SCENARIOS, lambda key: scenario_table(1, "512m", "256m") if key == "A" else scenario_table(2, "2g", "1g"), "scenario", fill=True),
     "store": Table({"backing": Leaf("str", "tmpfs", choices=("tmpfs", "disk")), "tmpfs_size": Leaf("size", "1g"), "memory": Leaf("size", "2g"),
                     "cpus": positive(2), "latency_ms": Leaf("float", 25.0, lo=0)}),
     "balancer": Table({"cpus": positive(2), "memory": Leaf("size", "512m")}),
     "node": Table({"http_max_connections": Leaf("int", 0, lo=0)}),
     "measures": Map(MEASURES, measure_table, "measure", fill=True),
-    "judging": Table({
-        "stall_repeats": Leaf("int", 1, lo=0),
-        "errors": criterion(),
-        "p99": criterion(max_ms=positive(250)),
-        "refused": criterion(max_pct=pct(1)),
-        "memory": criterion(max_pct=pct(90)),
-        "fds": criterion(max_pct=pct(90)),
-        "delivery": criterion(min_ratio=share(0.95)),
-        "store_fill": criterion(max_tmpfs_pct=pct(90), max_disk_pct=pct(90)),
-        "store_stall": criterion(min_ms=positive(1000), min_requests=Leaf("int", 10, lo=1), window_s=positive(5), fail_on_repeat=Leaf("bool", True)),
-        "generator_lag": criterion(max_ms=positive(50)),
-        "throttle": criterion(max_jump_ms=positive(5000), jump_factor=positive(5)),
-        "host_load": criterion(max=positive(1), quiet_window_s=positive(60), quiet_max_wait_s=positive(1800)),
-        "host_busy": criterion(max_share=share(0.85)),
-        "generator_swap": criterion(max_mb=positive(16)),
-        "host_swap": criterion(max_growth_mb=positive(256)),
-        "host_memory": criterion(min_available_gb=positive(6)),
-    }),
+    "judging": Table(judging_children()),
     "generator": Table({"rate_per_proc": positive(600), "conns_per_rate": positive(0.5), "timeout_s": positive(10), "grace_s": Leaf("float", 30.0, lo=0),
                         "sample_s": positive(5)}),
     "workload": Table({"write_ratio": Leaf("float", 0.5, lo=0, hi=1), "cells": Leaf("int", 64, lo=1), "warmup": Leaf("bool", True),
@@ -469,12 +475,18 @@ def store_of(config, measure=None):
     return {**config["store"], **(config["measures"][measure]["store"] if measure else {})}
 
 
+def judging_of(config, measure=None):
+    """The [judging] rules for a measure: `measures.<measure>.judging` overrides the keys it gives, rule by rule."""
+    given = config["measures"][measure]["judging"] if measure else {}
+    return {name: {**rule, **given[name]} if isinstance(rule, dict) and name in given else given.get(name, rule) for name, rule in config["judging"].items()}
+
+
 def case_config(config, scenario, measure):
     """What affects the results of a case, and nothing else: the scenario, the store (with the measure's override), the balancer, the node,
-    the judging, the generator, the workload, the measure's plan and, for the swap and the scale, their sections. Not `output`, `host`
-    or `round` (the other measures' plans and the timeouts do not change what a step measures)."""
+    the judging (with the measure's overrides), the generator, the workload, the measure's plan and, for the swap and the scale, their
+    sections. Not `output`, `host` or `round` (the other measures' plans and the timeouts do not change what a step measures)."""
     case = {"scenario": scenario, "scenario_settings": config["scenarios"][scenario], "store": store_of(config, measure), "balancer": config["balancer"],
-            "node": config["node"], "judging": config["judging"], "generator": config["generator"], "workload": config["workload"], "measure": measure}
+            "node": config["node"], "judging": judging_of(config, measure), "generator": config["generator"], "workload": config["workload"], "measure": measure}
     if measure in RAMP_MEASURES:
         case["plan"] = plan(config, measure, scenario)
     elif measure == "swap":
@@ -494,7 +506,7 @@ def env_lines(config, scenario, measure=None):
     """{ATANOR_LOAD_NAME: value} of the lab of a scenario, with the store of a measure. The scale measure sets its own number of nodes."""
     scenario_settings, store, balancer = config["scenarios"][scenario], store_of(config, measure), config["balancer"]
     cap = config["node"]["http_max_connections"]
-    lines = {"CPUS": f"{scenario_settings['cpus']:g}", "MEMORY": scenario_settings["memory"], "TMPFS_SIZE": scenario_settings["node_tmpfs"],
+    lines = {"CPUS": f"{scenario_settings['cpus']:g}", "MEMORY": scenario_settings["memory"], "TMPFS_SIZE": scenario_settings["data_tmpfs"],
              "STORE_DISK": "1" if store["backing"] == "disk" else "0", "STORE_TMPFS_SIZE": store["tmpfs_size"], "STORE_MEMORY": store["memory"],
              "STORE_CPUS": f"{store['cpus']:g}", "STORE_LATENCY_MS": f"{store['latency_ms']:g}", "LB_CPUS": f"{balancer['cpus']:g}", "LB_MEMORY": balancer["memory"],
              "HTTP_MAX_CONNECTIONS": str(cap) if cap else ""}

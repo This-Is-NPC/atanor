@@ -1,7 +1,10 @@
-# A load round, every key at its built-in default (the behaviour of scripts/load-run today).
+# A load round, every key at its built-in default (scripts/load_config.py holds the defaults, and the only copy of them).
 # A round file needs only the keys it changes; the rest keeps the default shown here.
-# Check a file without starting anything: scripts/load_config.py --check FILE
-# Run it: mise run load -- --config FILE [--skip-done|--no-skip-done] [--dry-run]   (--dry-run prints the plan and starts nothing)
+# Check a file without starting anything: mise run load -- --config FILE --dry-run   (prints the plan and starts nothing)
+# Print the resolved config and its hash: mise run load:config-check -- --check FILE
+# Run it: mise run load -- --config FILE [--skip-done|--no-skip-done]
+# Run it on the host of [host]: mise run load -- --config FILE --remote, then --status and --fetch (the file must be committed)
+# The names of the sections that Alambique's round format shares (scenarios, judging, host, output) mean the same there.
 
 [round]
 scenarios = ["A"]   # scenarios to run, in order: A (1 CPU, 512 MB) and/or B (2 CPUs, 2 GB)
@@ -15,21 +18,22 @@ dir = ""    # results directory; "" is load/results/<name or time stamp>
 name = ""   # round name for the default directory and the report (letters, digits, . _ -)
 
 [host]
-ssh = ""       # ssh target that runs the round; "" runs it on this machine
+ssh = ""       # ssh target for --remote, --status and --fetch; without those flags the round runs on this machine
 repo = ""      # path of the repository clone on the target (required with ssh)
-results = ""   # directory for the results on the target; "" is the default under repo
+results = ""   # results directory on the target; "" is load/results/<output.name> under repo
+timeout_s = 172800.0   # seconds after which the detached remote round is killed (48 hours)
 
 # The scenarios: the node's limits. Each key of a table overrides one default.
 [scenarios.A]
 cpus = 1.0           # CPU limit of a node
 memory = "512m"      # memory limit of a node (k, m or g)
-node_tmpfs = "256m"  # size of the node's data tmpfs
+data_tmpfs = "256m"  # size of the node's data tmpfs
 nodes = 1            # nodes behind the balancer, 1 to 10 (the scale measure sets its own)
 
 [scenarios.B]
 cpus = 2.0
 memory = "2g"
-node_tmpfs = "1g"
+data_tmpfs = "1g"
 nodes = 1
 
 [store]
@@ -52,6 +56,8 @@ http_max_connections = 0   # http.max_connections of a node; 0 keeps the node's 
 # `run_on` limits the measure to some scenarios ([] means every scenario of the round).
 # `per_scenario.A` or `.B` overrides any key of `steps` for that scenario (see the commented example below).
 # `[measures.M.store]` overrides backing, tmpfs_size and latency_ms of [store] for that measure only (it then gets its own lab); it is empty here.
+# `[measures.M.judging.RULE]` overrides any key of `[judging.RULE]` (and `[measures.M.judging] stall_repeats`) for that measure only; it is empty here,
+# for example: [measures.ws.judging.p99] with enabled = false
 [measures.http-native]
 run_on = []
 [measures.http-native.steps]
@@ -200,7 +206,7 @@ max_growth_mb = 256.0
 
 [judging.host_memory]   # the round stops when the host's MemAvailable is below this
 enabled = true
-min_available_gb = 6.0
+min_available_gib = 6.0   # GiB (MemAvailable)
 
 [generator]
 rate_per_proc = 600.0   # req/s one generator process takes
