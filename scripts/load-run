@@ -425,6 +425,7 @@ class Sampler(threading.Thread):
         sample["fds"] = fds(self.info["node"]["id"])
         if self.spread:  # the scale measure: where the requests and the cells are
             sample["spread"] = spread_sample(self.info)
+            sample["node_runtimes"], sample["node_keys"] = node_runtimes(self.info, 3), node_cgroup_keys(self.info)  # every node's own /runtime and throttling
         if self.info.get("store_backing") == "disk":
             sample["store_disk"] = store_disk(self.info["store"]["id"])
         counters = s3_counters(self.info["store"]["ip"])
@@ -539,23 +540,114 @@ def series(samples):
                 "oom_kill": (cgroup.get("events") or {}).get("oom_kill"),
                 "store_memory_current": store.get("memory_current"), "store_shmem": store.get("shmem"), "store_limit": store.get("limit"),
                 "store_s3_errors": s.get("s3_errors"), "store_breaker_open": breaker_open(runtime),
-                "node_throttled_ms": None if node.get("throttled_s") is None else round(node["throttled_s"] * 1000)}
+                "node_throttled_ms": None if node.get("throttled_s") is None else round(node["throttled_s"] * 1000),
+                "disk_used": admission.get("disk_used_bytes"), "nodes": node_entries(s)}
     return [entry(s) for s in samples]
+
+
+def node_cgroup_keys(info):
+    """{node name: the key of its cgroup in a sample}: `node` for the first node, `extraN` for the others (as `lab_dirs` names them)."""
+    keys, extra = {}, 0
+    for n in info.get("nodes") or []:
+        if n["id"] == info["node"]["id"]:
+            keys[n["name"]] = "node"
+        else:
+            extra += 1
+            keys[n["name"]] = f"extra{extra}"
+    return keys
+
+
+def node_entries(sample):
+    """{node: {"throttled_ms", "in_flight"}} of every node of a cluster in this sample (None: unknown); None outside the scale measure."""
+    reads = sample.get("node_runtimes")
+    if reads is None:
+        return None
+    out = {}
+    for name, key in sample["node_keys"].items():
+        throttled = (sample.get(key) or {}).get("throttled_s")
+        runtime = reads.get(name, (None, None))[0] or {}
+        out[name] = {"throttled_ms": None if throttled is None else round(throttled * 1000), "in_flight": (runtime.get("admission") or {}).get("in_flight")}
+    return out
+
+
+def per_node_summary(samples):
+    """Per node of a cluster over a step: the node's CPU throttling (`throttled_ms`: growth, and `throttled_jump_ms`: the largest between two samples),
+    the most requests in flight (`in_flight_max`), the refusals it counted (`refused`) and the samples in which its /runtime did not answer
+    (`runtime_failed`, with the last `runtime_error`). None outside the scale measure."""
+    seen = [s for s in samples if s.get("node_runtimes") is not None]
+    if not seen:
+        return None
+    out = {}
+    for name in seen[-1]["node_keys"]:
+        key = seen[-1]["node_keys"][name]
+        throttled = [t for t in ((s.get(key) or {}).get("throttled_s") for s in seen) if t is not None]
+        reads = [s["node_runtimes"].get(name, (None, "no reading")) for s in seen]
+        admissions = [r["admission"] for r, _ in reads if isinstance((r or {}).get("admission"), dict)]
+        out[name] = {"throttled_ms": round((throttled[-1] - throttled[0]) * 1000) if throttled else None,
+                     "throttled_jump_ms": round(max((b - a for a, b in zip(throttled, throttled[1:])), default=0) * 1000) if throttled else None,
+                     "in_flight_max": max((a.get("in_flight") or 0 for a in admissions), default=None), "refused": refused_delta(admissions),
+                     "runtime_failed": sum(1 for r, _ in reads if r is None), "runtime_error": next((e for _, e in reversed(reads) if e), None)}
+    return out
+
+
+def refused_delta(admissions):
+    """{cause: refusals counted between the first and the last of `admissions` (a node's runtime.admission, one per sample)}, for the causes
+    the node reports: a cause it does not count is absent, not 0."""
+    if not admissions:
+        return {}
+    first, last = admissions[0].get("refused") or {}, admissions[-1].get("refused") or {}
+    return {k: v - (first.get(k) or 0) for k, v in last.items() if isinstance(v, int)}
 
 
 REFUSED_KEYS = ("memory", "in_flight", "disk", "wake_gate", "awake_limit", "busy", "disk_full", "queue_timeout", "worker_queue", "nested_calls")
 
 
 def admission_summary(samples):
-    """The thresholds the node judged against and the refusals counted during the step (last sample minus first); None without /runtime."""
+    """The thresholds the node judged against and the refusals counted during the step (last sample minus first, every cause the node reports;
+    `refused_unreported` lists the known causes it does not); the disk use against its budget, which is all the node exposes of the disk
+    reclaim; None without /runtime."""
     seen = [s["runtime"]["admission"] for s in samples if isinstance((s.get("runtime") or {}).get("admission"), dict)]
     if not seen:
         return None
-    first, last = seen[0], seen[-1]
-    delta = {k: (last.get("refused") or {}).get(k, 0) - (first.get("refused") or {}).get(k, 0) for k in REFUSED_KEYS}
-    return {"refused": delta, "refusing_seen": any(a.get("refusing") or a.get("disk_refusing") for a in seen),
+    last = seen[-1]
+    disk = [a["disk_used_bytes"] for a in seen if isinstance(a.get("disk_used_bytes"), int)]
+    budget = last.get("disk_budget_bytes")
+    delta = refused_delta(seen)
+    return {"refused": delta, "refused_unreported": [k for k in REFUSED_KEYS if k not in delta], "refusing_seen": any(a.get("refusing") or a.get("disk_refusing") for a in seen),
             "in_flight_max": max((a.get("in_flight") or 0 for a in seen), default=None), "working_set_max_bytes": max((a.get("working_set_bytes") or 0 for a in seen), default=None),
+            "disk_used_start_bytes": disk[0] if disk else None, "disk_used_max_bytes": max(disk) if disk else None,
+            "disk_used_max_pct_of_budget": round(100 * max(disk) / budget, 1) if disk and budget else None,
             **{k: last.get(k) for k in ("limit_bytes", "refuse_at_bytes", "max_in_flight", "disk_budget_bytes")}}
+
+
+def eviction_evidence(awake_start, awake_end, admission):
+    """What tells why cells went to sleep during a step. The node counts no hibernation by cause (the awake budget's and the disk reclaim's are
+    telemetry events only, not in /runtime), so this is the evidence around them: the cells awake at the start and the end of the step, and the
+    disk use against its budget (the reclaim starts at `disk.evict_fraction` of it, 0.7 by default). None of it is a count."""
+    admission = admission or {}
+    change = None if awake_start is None or awake_end is None else awake_end - awake_start
+    return {"counter_in_runtime": False, "cells_awake_start": awake_start, "cells_awake_end": awake_end, "cells_awake_change": change,
+            "disk_used_max_pct_of_budget": admission.get("disk_used_max_pct_of_budget"), "disk_budget_bytes": admission.get("disk_budget_bytes")}
+
+
+def refusals_503(statuses, samples):
+    """The 503 answers of a step against the refusals the nodes counted (every node of a cluster, summed): `answers_503`, `by_cause` (the
+    growth of each counter), `attributed` (their sum) and `unattributed` (503 answers no counter grew for; the counters count calls, so they
+    may exceed the answers). None without any /runtime reading; `by_cause` is then not known and nothing is attributed."""
+    answers = statuses.get("503 retry-after", 0) + statuses.get("503 no retry-after", 0)
+    per_node = [{n: s["node_runtimes"][n][0] for n in s["node_runtimes"]} for s in samples if s.get("node_runtimes") is not None]
+    if per_node:
+        deltas = [refused_delta([r["admission"] for r in (reads.get(n) for reads in per_node) if isinstance((r or {}).get("admission"), dict)]) for n in per_node[-1]]
+    else:
+        deltas = [refused_delta([s["runtime"]["admission"] for s in samples if isinstance((s.get("runtime") or {}).get("admission"), dict)])]
+    by_cause = {}
+    for delta in deltas:
+        for cause, n in delta.items():
+            by_cause[cause] = by_cause.get(cause, 0) + n
+    if not by_cause:
+        return None
+    attributed = sum(by_cause.values())
+    return {"answers_503": answers, "by_cause": by_cause, "attributed": attributed, "unattributed": max(answers - attributed, 0)}
 
 
 def judge_store(store, max_pct, max_disk_pct=90):
@@ -867,6 +959,7 @@ class Round:
         self.args, self.info, self.index = args, info, 0
         self.scenario = info["scenario"]
         self.stem = stem  # the scale measure: its step files and records are of "scale", whatever load the step runs
+        self.awake_start = None  # the cells awake when the step began
         self.tag = f"s{int(time.time()) % 100000}"  # one name space per run: the cells of a smaller step stay hot in a larger one
 
     def target(self):
@@ -989,6 +1082,7 @@ class Round:
         if any(s and (s.get("gone") or not s["running"]) for s in node_before.values()):  # nothing to measure; the nodes do not restart
             return self.record(value, phase, None, None, None, "invalid", "node not running at step start", valid=False, dead="node not running at step start")
         sampler = Sampler(info, a.sample_s, spread=bool(self.stem))
+        self.awake_start = cells_awake(info)
         s3_before = s3_counters(info["store"]["ip"])
         sampler.samples.append(sampler.take())
         sampler.start()
@@ -1018,7 +1112,7 @@ class Round:
                   "value": value, "duration_s": a.step_s, "store_latency_ms": info["store_latency_ms"], "store_backing": info.get("store_backing", "tmpfs"), "command": a.command,
                   "http_max_connections": http_max_connections(), "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
-                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "store": None, "cells_awake": None, "store_rtt_ms": None, "opening": None,
+                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "per_node": None, "refusals": None, "evictions": None, "store": None, "cells_awake": None, "store_rtt_ms": None, "opening": None,
                   "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "node_stopped": bool(dead), "notes": [], "first_attempt": None, "diagnostics": list(diagnostics)}
         if merged is None:
             return record
@@ -1043,6 +1137,14 @@ class Round:
                                  "release_lag_p99_ms": None if merged["release_lag_p99"] is None else round(merged["release_lag_p99"], 1), "cpu_cores": usage["cpu"]["generator_cores"]},
                       cells_awake=None if dead else cells_awake(self.info), store_rtt_ms=None if dead else store_rtt(),
                       distribution=distribution(samples, [n["name"] for n in info.get("nodes") or []]))
+        record["per_node"] = per_node_summary(samples)
+        record["refusals"] = refusals_503(merged["statuses"], samples)
+        record["evictions"] = eviction_evidence(self.awake_start, record["cells_awake"], record["admission"])
+        refusals, answers_503 = record["refusals"], refused_of(merged["statuses"])[1]
+        if refusals is None and answers_503:
+            record["notes"].append(f"{answers_503} 503 answers not attributed: no /runtime reading")
+        elif refusals and refusals["unattributed"]:
+            record["notes"].append(f"{refusals['unattributed']} of {refusals['answers_503']} 503 answers not attributed: no refusal counter of the node grew for them")
         if record["store_rtt_ms"] is None:
             record["notes"].append("store rtt not measured" + (": the node stopped" if dead else ""))
         if record["cells_awake"] is None:

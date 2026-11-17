@@ -119,18 +119,29 @@ defmodule Atanor.LoadRunTest do
     assert record["admission"]["refuse_at_bytes"] == 400 * 1_048_576
     assert record["admission"]["refusing_seen"] == true
 
-    assert record["admission"]["refused"] == %{
-             "memory" => 10 * (n - 1),
-             "in_flight" => n - 1,
-             "disk" => 0,
-             "queue_timeout" => 0,
-             "worker_queue" => 0,
-             "nested_calls" => 0,
-             "wake_gate" => 0,
-             "awake_limit" => 0,
-             "busy" => 0,
-             "disk_full" => 0
+    # only the causes the node reports are counted; the others are listed as unreported, not shown as 0
+    assert record["admission"]["refused"] == %{"memory" => 10 * (n - 1), "in_flight" => n - 1, "disk" => 0}
+
+    assert record["admission"]["refused_unreported"] ==
+             ~w(wake_gate awake_limit busy disk_full queue_timeout worker_queue nested_calls)
+
+    # 503 answers are set against every counter the node grew: 10 answers, wake_gate 6 and busy 1 counted, 3 unattributed
+    refusals = r["refusals"]["attributed"]
+
+    assert refusals["refusals"] == %{
+             "answers_503" => 10,
+             "by_cause" => %{"wake_gate" => 6, "busy" => 1, "memory" => 0},
+             "attributed" => 7,
+             "unattributed" => 3
            }
+
+    assert "3 of 10 503 answers not attributed: no refusal counter of the node grew for them" in refusals["notes"]
+    assert refusals["admission"]["disk_used_max_pct_of_budget"] == 50.0
+    assert refusals["evictions"]["counter_in_runtime"] == false
+    assert r["refusals"]["no_runtime"]["refusals"] == :null
+    assert "10 503 answers not attributed: no /runtime reading" in r["refusals"]["no_runtime"]["notes"]
+    assert r["refusals"]["all_counted"]["refusals"]["unattributed"] == 0
+    refute Enum.any?(r["refusals"]["all_counted"]["notes"], &(&1 =~ "not attributed"))
 
     assert record["store"]["tmpfs_max_pct"] == 50.0
     assert record["store"]["limit_mb"] == 1280.0
