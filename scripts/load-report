@@ -14,8 +14,8 @@ import sys
 
 
 def result_files(directory):
-    """The result files of a directory: the flat layout (`SCENARIO_MEASURE_NN-PHASE-VALUE.json`, `*.summary.json`, `*.baseline.json`, all in
-    DIR) and the layout of `mise run load` (`SCENARIO/MEASURE[/VARIANT]/step-VALUE[-N].json`, `summary.json`, `baseline.json`)."""
+    """The result files of a directory: the layout of `mise run load` (`SCENARIO/MEASURE[/VARIANT]/step-VALUE[-N].json`, `summary.json`,
+    `baseline.json`) and, for old results, the flat layout (`SCENARIO_MEASURE_NN-PHASE-VALUE.json`, `*.summary.json`, `*.baseline.json`, all in DIR)."""
     flat = glob.glob(os.path.join(directory, "*.json"))
     nested = [p for depth in (3, 4) for p in glob.glob(os.path.join(directory, *["*"] * (depth - 1), "*.json"))
               if re.fullmatch(r"step-[^/]*\.json|summary\.json|baseline\.json", os.path.basename(p))]
@@ -217,7 +217,7 @@ def report(directory):
                         + ("; the round ended there: the node stopped" if summary.get("node_stopped") else "")
                         + (f"; confirmation repeat: {'passed' if summary.get('confirmed') else 'failed'}" if summary.get("confirmed") is not None else ""), ""]
             command = summary["command"] if summary else mine[0]["command"]
-            out += ["Reproduce:", "", "```sh", *([] if command.startswith("mise run load -- ") else [f"ATANOR_LOAD_SCENARIO={scenario} mise run load:up"]), command, "```", ""]
+            out += ["Reproduce:", "", "```sh", command if command.startswith("mise run load -- ") else f"# run by a task that no longer exists: {command}", "```", ""]
     return "\n".join(out)
 
 

@@ -168,14 +168,21 @@ def make_args(out, **over):
                   max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0, no_warmup=False, rate_per_proc=600.0, conns_per_rate=0.5, write_ratio=0.5, cells=64, worker="native", cell_period=10.0,
                   cells_conns=64, ws_interval=30.0, max_nodes=3, loads="http-native", scale_factor=1.25, ceilings="", factors="0.75,1,1.25,1.5", no_join=True, join_rate=None,
                   join_factor=1.5, join_warmup_s=0.3, join_observe_s=1.2, join_node_wait_s=0.2, join_node_timeout_s=10.0, join_sample_s=0.05, spread_tol_pct=25.0,
-                  spread_hold=3, spread_min_cells=10)
+                  spread_hold=3, spread_min_cells=10, scenario="A")
     values.update(over)
     os.makedirs(out, exist_ok=True)
     return argparse.Namespace(**values)
 
 
 def files_of(out):
-    return sorted(f for f in os.listdir(out) if f.endswith(".json"))
+    """The JSON files under `out` (OUT/SCENARIO/MEASURE[/VARIANT]/step-VALUE.json ...), relative, in the order of the steps."""
+    found = [os.path.relpath(os.path.join(d, f), out) for d, _, names in os.walk(out) for f in names if f.endswith(".json")]
+
+    def order(path):
+        with open(os.path.join(out, path)) as handle:
+            return (json.load(handle).get("step") or 0, path)
+
+    return sorted(found, key=order)
 
 
 results = {}
@@ -243,7 +250,7 @@ def run_scale(name, busy_at=None, **over):
     lab.update(busy_at=busy_at, cells_mode="rebalance", runtime={}, resets=[])
     args = make_args(out, **over)
     summary = m.scale(args)
-    m.write_json(os.path.join(out, "A_scale.summary.json"), {**summary, "scenario": "A", "measure": "scale", "command": "test"})  # what main() writes
+    m.write_json(m.result_file(args, "A", "scale", "summary"), {**summary, "scenario": "A", "measure": "scale", "command": "test"})  # what main() writes
     return summary, out
 
 
@@ -252,7 +259,7 @@ results["ramp"] = {"ceilings": {k: {str(n): v for n, v in c.items()} for k, c in
                    "gain": {str(n): g for n, g in summary["gain"]["http-native"].items()}, "largest_fit": summary["largest_fit"], "invalid": summary["invalid"],
                    "advice": summary["advice"], "join_note": summary["join_note"], "approved": [c["approved"] for c in summary["configs"]],
                    "confirmed": [c["confirmed"] for c in summary["configs"]], "stopped_by": [c["stopped_by"] for c in summary["configs"]],
-                   "distribution": summary["configs"][1]["distribution"], "files": [f for f in files_of(out) if "scale-http-native-n3" in f][:2],
+                   "distribution": summary["configs"][1]["distribution"], "files": [f for f in files_of(out) if "http-native-n3" in f][:2],
                    "records": []}
 for file in files_of(out):
     with open(os.path.join(out, file)) as handle:
@@ -269,7 +276,7 @@ results["max_nodes"] = {"resets": sorted(set(lab["resets"])), "configs": [[c["lo
 
 # The host over its limit at 3 nodes: that step is INVALID, the larger ones are not run and the largest that fit is recorded.
 summary, out = run_scale("invalid", steps="50,100,200", busy_at=3, no_join=True)
-step3 = [json.load(open(os.path.join(out, f))) for f in files_of(out) if "scale-http-native-n3" in f and "summary" not in f]
+step3 = [json.load(open(os.path.join(out, f))) for f in files_of(out) if "http-native-n3" in f and "summary" not in f]
 results["invalid"] = {"invalid": summary["invalid"], "invalids": summary["invalids"], "largest_fit": summary["largest_fit"], "advice": summary["advice"],
                       "statuses": [s["status"] for s in step3], "valid": [s["valid"] for s in step3], "ceilings": sorted(summary["ceilings"]["http-native"]),
                       "exit": m.exit_status("scale", summary), "join_note": summary["join_note"]}
@@ -286,7 +293,7 @@ results["invalid_one"] = {"largest_fit": summary["largest_fit"], "configs": [c["
 summary, out = run_scale("explore", ceilings="http-native:1=100,http-native:2=200", factors="0.5,1,1.5", refine=0, no_confirm=True, max_nodes=3)
 results["explore"] = {"configs": [[c["nodes"], c.get("good"), c.get("approved"), c.get("skipped")] for c in summary["configs"]],
                       "gain": {str(n): g["gain"] for n, g in summary["gain"]["http-native"].items()},
-                      "steps": sorted(f.split("_", 2)[2] for f in files_of(out) if "scale-http-native-n2" in f)}
+                      "steps": [os.path.basename(f) for f in files_of(out) if "http-native-n2" in f]}
 
 # The cells load runs through the same machinery.
 summary, out = run_scale("cells", loads="cells", steps="50,100,200", max_nodes=2)
@@ -302,7 +309,7 @@ m.Round.run_generators = lambda self, value, sampler: (running("n2", Running=Fal
 record = dying_round.step(10, "ramp")
 m.Round.run_generators = real_run
 results["node_dies"] = {"status": record["status"], "reason": record["stop_reason"], "node_stopped": record["node_stopped"], "nodes": record["nodes"], "measure": record["measure"],
-                        "diagnostics": len(record["diagnostics"]), "files": [f for f in os.listdir(dying.out) if f.endswith(".node.log")]}
+                        "diagnostics": len(record["diagnostics"]), "files": [f for f in os.listdir(dying_round.case_dir()) if f.endswith(".node.log")]}
 
 
 # The join: the load runs at a fixed rate on one node, node 2 starts, and the time until the requests and the cells are spread is measured.
@@ -325,7 +332,7 @@ results["window_series"] = m.window_series(reads, 10.0)
 results["join"] = {"status": record["status"], "windows": [w["nodes"] for w in record["windows"]], "requests_spread_s": window["requests_spread_s"], "cells_spread_s": window["cells_spread_s"],
                    "ready_s": window["ready_s"], "requests_share_end": window["request_share_end"], "cells_share_end": window["cells_share_end"],
                    "rebalance": window["rebalance"], "errors_before": record["windows"][0]["backend"]["hrsp_5xx"], "generator": record["generator"]["status_503"],
-                   "file": [f for f in files_of(out) if "scale-join" in f and not f.endswith(".runtime.json")], "notes": record["notes"], "since_ready": window["requests_spread_since_ready_s"]}
+                   "file": [f for f in files_of(out) if "join" in f and not f.endswith(".runtime.json")], "notes": record["notes"], "since_ready": window["requests_spread_since_ready_s"]}
 record, _ = run_join("join_none", mode="none")
 window = record["windows"][1]
 results["join_no_rebalance"] = {"status": record["status"], "requests_spread": window["requests_spread_s"] is not None, "cells_spread_s": window["cells_spread_s"],
@@ -409,8 +416,8 @@ window, first = record["windows"][1], record["windows"][0]
 results["join_end"] = {"status": record["status"], "observed": window["rebalance_observed"], "end": window["rebalance"], "first": [first["rebalance"], first["rebalance_observed"]],
                        "failures": [first["runtime_failures"], window["runtime_failures"]],
                        "silent_samples": sorted({tuple(s["runtime_errors"]) for s in window["samples"]}), "diagnostics": sorted(record["diagnostics"]),
-                       "files": sorted(f for f in os.listdir(out) if "scale-join" in f and not f.endswith("join-2000.json")),
-                       "runtime_window_2": json.load(open(os.path.join(out, "A_scale-join_01-join-2000.window-2.runtime.json")))}
+                       "files": sorted(f for f in os.listdir(os.path.join(out, "A", "scale", "join")) if f != "step-2000.json"),
+                       "runtime_window_2": json.load(open(os.path.join(out, "A", "scale", "join", "step-2000.window-2.runtime.json")))}
 # A join whose nodes report another disk budget says so, and keeps the budgets of the last window.
 lab["by_ip"] = lambda ip, reader: {"admission": {"disk_budget_bytes": (100 if ip.endswith(".1") else 200) * MB}}
 record, _ = run_join("join_budgets")

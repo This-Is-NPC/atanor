@@ -61,7 +61,7 @@ defmodule Atanor.LoadScaleTest do
     assert Enum.all?(ramp["stopped_by"], &(&1 =~ "p99"))
     assert Enum.all?(ramp["records"], &match?(["scale", "http-native", _, _, _], &1))
     assert Enum.map(ramp["records"], &Enum.at(&1, 2)) |> Enum.uniq() == [1, 2, 3]
-    assert ramp["files"] == ["A_scale-http-native-n3_01-ramp-195.json", "A_scale-http-native-n3_02-ramp-244.json"]
+    assert ramp["files"] == ["A/scale/http-native-n3/step-195.json", "A/scale/http-native-n3/step-244.json"]
     assert ramp["distribution"]["requests"] |> Map.keys() |> Enum.sort() == ["node-1", "node-2"]
     assert ramp["distribution"]["request_deviation"] == 0.0
 
@@ -98,7 +98,7 @@ defmodule Atanor.LoadScaleTest do
            ]
 
     assert explore["gain"] == %{"1" => 1.0, "2" => 2.0}
-    assert explore["steps"] == ["01-ramp-100.json", "02-ramp-200.json", "03-ramp-300.json"]
+    assert explore["steps"] == ["step-100.json", "step-200.json", "step-300.json"]
 
     # the cells load goes through the same machinery
     assert r["cells"]["loads"] == ["cells"] and r["cells"]["approved"] == [100, 195]
@@ -108,7 +108,7 @@ defmodule Atanor.LoadScaleTest do
     assert dies["status"] == "fail" and dies["node_stopped"] == true
     assert dies["reason"] == "node-2: node OOM-killed"
     assert dies["nodes"] == 3 and dies["measure"] == "scale" and dies["diagnostics"] == 3
-    assert dies["files"] == ["A_scale-http-native-n3_01-ramp-10.node.log"]
+    assert dies["files"] == ["step-10.node.log"]
 
     # the join: node 2 starts under the load; the requests spread as soon as it is in rotation, the cells when they move
     join = r["join"]
@@ -154,7 +154,7 @@ defmodule Atanor.LoadScaleTest do
     assert saturated["invalid"] =~ ~r/^host saturated: [\d.]+ busy cores > 1.6 \(20% of 8 cores\)$/
     assert saturated["largest_fit"] == 1
     assert join["errors_before"] > 0 and join["generator"] == 10
-    assert join["file"] == ["A_scale-join_01-join-2000.json"] and join["notes"] == []
+    assert join["file"] == ["A/scale/join/step-2000.json"] and join["notes"] == []
 
     # without a rebalance the cells never spread, and no field of it is needed; with no cells reading everything about them is null
     none = r["join_no_rebalance"]
@@ -241,16 +241,16 @@ defmodule Atanor.LoadScaleTest do
     assert end_["silent_samples"] == [[], ["node-2"]]
 
     assert end_["diagnostics"] == [
-             "A_scale-join_01-join-2000.node-1.node-state.txt",
-             "A_scale-join_01-join-2000.node-1.node.log",
-             "A_scale-join_01-join-2000.node-2.node-state.txt",
-             "A_scale-join_01-join-2000.node-2.node.log",
-             "A_scale-join_01-join-2000.store.log"
+             "step-2000.node-1.node-state.txt",
+             "step-2000.node-1.node.log",
+             "step-2000.node-2.node-state.txt",
+             "step-2000.node-2.node.log",
+             "step-2000.store.log"
            ]
 
     assert Enum.all?(end_["diagnostics"], &(&1 in end_["files"]))
-    assert "A_scale-join_01-join-2000.window-1.runtime.json" in end_["files"]
-    assert "A_scale-join_01-join-2000.window-2.runtime.json" in end_["files"]
+    assert "step-2000.window-1.runtime.json" in end_["files"]
+    assert "step-2000.window-2.runtime.json" in end_["files"]
     assert end_["runtime_window_2"]["node-2"] == %{"error" => "TimeoutError: timed out"}
     assert end_["runtime_window_2"]["node-1"]["rebalance"]["total"]["moved"] > 0
 

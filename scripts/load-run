@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run one load measure as a ramp of steps against the scenario started by `mise run load:up`.
+"""Run one load measure as a ramp of steps against the lab of its scenario. Called by `mise run load` (scripts/load); every setting comes
+from the round config.
 
-  load-run MEASURE [--out DIR] [--step-s S] [--start N] [--factor F] [--max N] [--steps N,N,...]
-                   [--refine K] [--write-ratio W] [--cells N] [--rate R] ...   (every option: --help)
+  load-run MEASURE --config FILE [--scenario S] [--skip-done | --no-skip-done] [--deadline EPOCH]
 
 MEASURE is one of
   http-native  requests per second to the native worker, reads and writes in cells      (stop: p99, 5xx, refused, errors)
@@ -13,20 +13,20 @@ MEASURE is one of
   swap         replace the node by another under load at the last approved http-wasm-jobs rate (stop: loss, duplication, errors)
   scale        the http-native and the cells ramps on 1, 2 and 3 nodes behind the load balancer (the ceiling of each, the gain over 1 node,
                the requests and awake cells per node), then a join: the 2nd and 3rd node start under a fixed rate and the time until the
-               load spreads is measured (--max-nodes caps the nodes; every ramp rule above applies; docs/how-to-run-the-load-tests.md)
+               load spreads is measured (every ramp rule above applies; docs/how-to-run-the-load-tests.md)
 
-A step runs the generator (scripts/load-gen, one process per ~600 req/s) for --step-s seconds, samples the
-node's cgroup, the host and the store every --sample-s seconds, and writes one JSON file, atomically.
-Before every step the harness waits for a quiet host (net load below --host-load-max for --quiet-window; after
---quiet-max-wait the measure stops "host busy"). Order of the verdicts of a step: host load too high, or its busy cores over --max-busy-share of its cores (INVALID, the round stops), a criterion broken (the step
-fails), swap in a measured container or generator swap growing over --max-generator-swap-mb, or host swap growing over
---max-host-swap-growth-mb (INVALID), the store's tmpfs over --max-store-tmpfs-pct (default 90%) of its size at any sample (with ATANOR_LOAD_STORE_DISK=1 the store's filesystem over --max-store-disk-pct instead; INVALID: a full
-store answers S3 500s, which measure the lab; it wins over a criterion, so a p99 or 5xx failure on a full store is not
-the node's), a stall (the generator's own release lag p99 over --max-lag-ms, so a slow node that backs the generator up is not one, or a jump of the node's CPU throttling over --max-throttle-jump-ms and 5x the median, or on a failing step --store-stall-requests node-to-store requests of --max-store-stall-ms or more within 5 s in the node log: INVALID, `stall:`; the step is repeated once, and when the repeat stalls too the round stops, except a store that stalls in both
-attempts: the step then fails, `store:`), delivery under 95% of the plan (INVALID, the round stops: the generator or the host, not the node). A node
-that stopped is judged first and still records the store's tmpfs share. The host swap used is only recorded. A container that may swap refuses the run before the first step.
-After the first failing step the ramp refines between the last good value and the failing one (--refine
-bisections, each on a fresh node and store), then repeats the best good step once to confirm it, also fresh. Environment: ATANOR_LOAD_* give defaults.
+A step runs the generator (scripts/load-gen, one process per ~600 req/s) for the plan's duration_s, samples the node's cgroup, the host and
+the store every generator.sample_s seconds, and writes one JSON file, atomically. Before every step the harness waits for a quiet host
+(judging.host_load). Order of the verdicts of a step (the rules are the [judging] keys of the config, with the measure's overrides): host load
+too high, or its busy cores over judging.host_busy (INVALID, the round stops), a criterion broken (the step fails), swap in a measured
+container or generator or host swap growing over its limit (INVALID), the store's tmpfs (or disk) over judging.store_fill (INVALID: a full
+store answers S3 500s, which measure the lab; it wins over a criterion), a stall (generator lag, node CPU throttling, or on a failing step slow
+node-to-store requests in the node log: INVALID, `stall:`; the step is repeated judging.stall_repeats times, and when the repeat stalls too the round
+stops, except a store that stalls in both attempts: the step then fails, `store:`, with the criteria that made it fail), delivery under
+judging.delivery (INVALID, the round stops: the generator or the host, not the node). A node that stopped is judged first and still records
+the store's tmpfs share. The host swap used is only recorded. A container that may swap refuses the run before the first step.
+After the first failing step the ramp refines between the last good value and the failing one (`refine` bisections, each on a fresh node and
+store), then repeats the best good step once to confirm it, also fresh.
 
 Exit status: 1 when a step ended INVALID (the lab, not the node: there is no verdict) and, for swap, which is a single
 check and not a ramp, also when it failed; 0 when the measure recorded a verdict, a failed step or a stopped node included.
@@ -62,15 +62,11 @@ LOG_CAP_BYTES = 5 * 1048576
 TICK_S, STALL_S = 0.1, 1.0  # the stall ticker: its period and the overshoot that is recorded
 
 
-def env(name, default, cast=float):
-    return cast(os.environ.get(f"ATANOR_LOAD_{name}", default))
-
-
-DEFAULT_HTTP_MAX_CONNECTIONS = 16_384  # the node's http.max_connections when ATANOR_LOAD_HTTP_MAX_CONNECTIONS is unset (lib/atanor/config.ex)
+DEFAULT_HTTP_MAX_CONNECTIONS = 16_384  # the node's http.max_connections when node.http_max_connections is 0 (lib/atanor/config.ex)
 
 
 def http_max_connections():
-    """The cap on HTTP connections the nodes of the lab were configured with (scripts/load-common passes it on)."""
+    """The cap on HTTP connections the nodes of the lab were configured with (main sets it from the config, for the lab's scripts too)."""
     return int(os.environ.get("ATANOR_LOAD_HTTP_MAX_CONNECTIONS") or DEFAULT_HTTP_MAX_CONNECTIONS)
 
 
@@ -92,10 +88,6 @@ class RoundStop(Exception):
     """round.timeout_s passed: the round stops, and what is done stays for --skip-done."""
 
 
-def nested(args):
-    return bool(getattr(args, "nested", False))
-
-
 def check_deadline(args):
     deadline = getattr(args, "deadline", None)
     if deadline and time.time() > deadline:
@@ -107,16 +99,14 @@ def number_text(value):
 
 
 def result_file(args, scenario, measure, name):
-    """Where a measure keeps its `summary` or `baseline`: OUT/SCENARIO/MEASURE/NAME.json, or OUT/SCENARIO_MEASURE.NAME.json in the flat layout."""
-    if nested(args):
-        return os.path.join(args.out, scenario, measure, f"{name}.json")
-    return os.path.join(args.out, f"{scenario}_{measure}.{name}.json")
+    """Where a measure keeps its `summary` or `baseline`: OUT/SCENARIO/MEASURE/NAME.json."""
+    return os.path.join(args.out, scenario, measure, f"{name}.json")
 
 
 def reuse(args, path):
     """The record of the step file at `path` when the step is done and need not run again (--skip-done): same `config_hash` and not INVALID.
     None when there is none or it must run again; a file of another config stops the round (the orchestrator checks that before any container)."""
-    if not (nested(args) and getattr(args, "skip_done", False) and os.path.exists(path)):
+    if not (getattr(args, "skip_done", False) and os.path.exists(path)):
         return None
     try:
         with open(path) as file:
@@ -1200,7 +1190,8 @@ class Round:
             record["first_attempt"] = {k: first[k] for k in ("status", "stop_reason", "latency_ms", "generator", "series", "store_stall")}
             record["notes"].append(f"first attempt INVALID, repeated {'once' if repeats == 1 else f'up to {repeats} times'}: {first['stop_reason']}")
         if first and getattr(a, "store_fail_on_repeat", True) and store_stalled(first) and store_stalled(record):  # the store stalls at this load every time: its limit, so this step fails
-            record = {**record, "valid": True, "status": "fail", "stop_reason": "store: stalled at this step twice, " + record["stop_reason"].removeprefix("stall: store stalled, ")}
+            detail = record["stop_reason"].removeprefix("stall: store stalled, ")  # the criteria that made the step fail stay in the reason
+            record = {**record, "valid": True, "status": "fail", "stop_reason": f"store: stalled at this step twice ({detail}); failed on: {'; '.join(record['criteria'])}"}
         write_json(path, record)
         say(f"{a.measure} {value} {UNITS[a.measure]}: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")
             + f"; planned {record['planned']}, achieved {record['achieved']}, p99 {record['latency_ms']['p99']} ms"
@@ -1228,11 +1219,9 @@ class Round:
 
     def base(self, value, phase):
         """The step file without its extension; the diagnostics of the step are `base.node.log` and so on."""
-        if nested(self.args):
-            repetition = self.attempts[value]
-            os.makedirs(self.case_dir(), exist_ok=True)
-            return os.path.join(self.case_dir(), f"step-{number_text(value)}" + (f"-{repetition}" if repetition > 1 else ""))
-        return os.path.join(self.args.out, f"{self.scenario}_{self.stem or self.args.measure}_{self.index:02d}-{phase}-{value}")
+        repetition = self.attempts[value]
+        os.makedirs(self.case_dir(), exist_ok=True)
+        return os.path.join(self.case_dir(), f"step-{number_text(value)}" + (f"-{repetition}" if repetition > 1 else ""))
 
     def node_stop(self, value, phase, before):
         """(reason, diagnostics files) when a node died, restarted or was OOM-killed since `before` ({id: state}); else (None, []).
@@ -1287,7 +1276,7 @@ class Round:
                   "http_max_connections": http_max_connections(), "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
                   "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "per_node": None, "statuses_503_by_reason": {}, "refusals": None, "evictions": None, "store_stall": None, "store": None, "cells_awake": None, "store_rtt_ms": None, "opening": None,
-                  "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "node_stopped": bool(dead), "notes": [], "first_attempt": None, "diagnostics": list(diagnostics),
+                  "valid": valid, "status": status, "stop_reason": reason, "criteria": [], "started_at": began, "node_stopped": bool(dead), "notes": [], "first_attempt": None, "diagnostics": list(diagnostics),
                   "config_hash": getattr(a, "config_hash", None)}
         if merged is None:
             return record
@@ -1357,6 +1346,7 @@ class Round:
         fd_max, fd_limit = usage["fds"]["max"], usage["fds"]["limit"]
         if a.measure == "ws" and fd_max and fd_limit and fd_max >= a.fd_pct / 100 * fd_limit:
             criteria.append(f"file descriptors {fd_max} of {fd_limit}")
+        record["criteria"] = list(criteria)
         full = judge_store(record["store"], a.max_store_tmpfs_pct, a.max_store_disk_pct)
         if dead:  # before any invalid judgement: a node that stopped is the result
             if full:
@@ -1410,10 +1400,9 @@ def ramp_values(args):
 def ws_cap_problem(highest, cap, fd_limit):
     """Why a ws ramp up to `highest` connections would measure the node's connection cap or its descriptor limit, or None."""
     if highest >= cap:
-        return (f"the highest step, {highest} connections, reaches the node's http.max_connections {cap}: set ATANOR_LOAD_HTTP_MAX_CONNECTIONS above it, "
-                "then load:down and load:up again")
+        return (f"the highest step, {highest} connections, reaches the node's http.max_connections {cap}: set node.http_max_connections of the round config above it")
     if fd_limit and cap >= fd_limit:
-        return f"the node's http.max_connections {cap} is not below its descriptor limit {fd_limit}: lower ATANOR_LOAD_HTTP_MAX_CONNECTIONS"
+        return f"the node's http.max_connections {cap} is not below its descriptor limit {fd_limit}: lower node.http_max_connections of the round config"
     return None
 
 
@@ -1483,20 +1472,15 @@ def exit_status(measure, summary):
 
 def swap(round_, args, info):
     rate = args.rate
-    if not rate and nested(args):
+    if not rate:
         found = result_file(args, round_.scenario, "http-wasm-jobs", "summary")
         rate = json.load(open(found)).get("approved") if os.path.exists(found) else None
-    elif not rate:
-        for name in sorted(os.listdir(args.out), reverse=True):
-            if name.endswith("_http-wasm-jobs.summary.json"):
-                rate = json.load(open(os.path.join(args.out, name))).get("approved")
-                break
     if not rate:
-        sys.exit("swap needs swap.rate (--rate): no approved http-wasm-jobs step in " + args.out)
+        sys.exit("swap needs swap.rate: no approved http-wasm-jobs step in " + args.out)
     check_deadline(args)
     round_.index += 1
     round_.attempts[rate] = 1
-    done = reuse(args, round_.base(rate, "swap") + ".json") if nested(args) else None
+    done = reuse(args, round_.base(rate, "swap") + ".json")
     if done:
         say(f"swap at {rate} req/s: {done['status']}, done before (config_hash {done['config_hash'][:8]})")
         return {"approved": rate if done["status"] == "ok" else None, "confirmed": None, "stopped_by": done["stop_reason"],
@@ -1509,7 +1493,8 @@ def swap(round_, args, info):
     sampler = Sampler(info, args.sample_s)
     sampler.start()
     began = time.time()
-    home = round_.case_dir() if nested(args) else args.out
+    home = round_.case_dir()
+    os.makedirs(home, exist_ok=True)
     run_dir = os.path.join(home, f"swap-{int(began)}")
     command = swap_command(args, rate, run_dir)
     process = subprocess.Popen(command, stdout=open(f"{home}/swap-{int(began)}.log", "w"), stderr=subprocess.STDOUT)
@@ -1559,7 +1544,7 @@ def swap(round_, args, info):
     if not result:
         record["status"] = "invalid"
     record["config_hash"] = getattr(args, "config_hash", None)
-    write_json(round_.base(rate, "swap") + ".json" if nested(args) else os.path.join(args.out, f"{round_.scenario}_swap_01-swap-{rate}.json"), record)
+    write_json(round_.base(rate, "swap") + ".json", record)
     say(f"swap at {rate} req/s: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")
         + f"; swap {record['swap']['a_exit_s']} s, p99 peak {p99_peak} ms")
     return {"approved": rate if record["status"] == "ok" else None, "confirmed": None, "stopped_by": record["stop_reason"],
@@ -1576,7 +1561,7 @@ class LabError(Exception):
 
 
 def parse_ceilings(text):
-    """{(load, nodes): ceiling} from "http-native:1=400,cells:2=9000" (the exploration round passes the ceilings of an earlier one)."""
+    """{(load, nodes): ceiling} from "http-native:1=400,cells:2=9000" (the `scale.ceilings` of the config)."""
     found = {}
     for item in filter(None, (text or "").split(",")):
         key, _, value = item.partition("=")
@@ -1627,7 +1612,7 @@ def scale_config(args, load, nodes, previous, given):
 
 
 def ceiling_of(config):
-    """The ceiling a configuration reached: the approved value, else (no confirmation: the exploration) the best step that passed."""
+    """The ceiling a configuration reached: the approved value, else (no confirmation: kind ceiling) the best step that passed."""
     return config.get("approved") if config.get("approved") is not None else config.get("good")
 
 
@@ -1758,16 +1743,14 @@ def join_host_load(samples, events, sample_s):
 
 
 def join_base(args, scenario, rate):
-    """The join's file without its extension: OUT/SCENARIO/scale/join/step-RATE, or OUT/SCENARIO_scale-join_01-join-RATE in the flat layout."""
-    if nested(args):
-        return os.path.join(args.out, scenario, "scale", "join", f"step-{number_text(rate)}")
-    return os.path.join(args.out, f"{scenario}_scale-join_01-join-{rate}")
+    """The join's file without its extension: OUT/SCENARIO/scale/join/step-RATE."""
+    return os.path.join(args.out, scenario, "scale", "join", f"step-{number_text(rate)}")
 
 
 def join(args, rate, nodes_max):
     """Starts one node under the load at `rate`, then adds node 2 up to `nodes_max`, one per --join-observe-s, and measures when the load spreads."""
     check_deadline(args)
-    done = reuse(args, join_base(args, args.scenario, rate) + ".json") if nested(args) else None
+    done = reuse(args, join_base(args, args.scenario, rate) + ".json")
     if done:
         say(f"scale join at {rate} req/s: {done['status']}, done before (config_hash {done['config_hash'][:8]})")
         return done
@@ -1908,13 +1891,14 @@ def scale(args):
 
 def config_defaults(config, measure, scenario, path):
     """The defaults of the arguments of `measure` in `scenario` from a round config. A criterion that is off gets a limit nothing reaches."""
-    j, g, w, sw = config["judging"], config["generator"], config["workload"], config["swap"]
+    j, g, w, sw = load_config.judging_of(config, measure), config["generator"], config["workload"], config["swap"]
     off = float("inf")
     limit = lambda name, key, none=off: j[name][key] if j[name]["enabled"] else none
     stall, scale = j["store_stall"], load_config.scale_of(config, scenario)
     join, spread = config["scale"]["join"], config["scale"]["spread"]
     found = {
-        "out": load_config.output_dir(config, ROOT), "command": f"mise run load -- --config {path}", "nested": True,
+        "out": load_config.output_dir(config, ROOT), "command": f"mise run load -- --config {path}",
+        "step_s": 0.0, "factor": 2.0, "start": None, "max": None, "steps": None, "refine": 0, "no_confirm": False,  # the ramp measures set their own below
         "config_hash": load_config.case_hash(config, scenario, measure), "step_timeout": config["round"]["step_timeout_s"],
         "p99_ms": limit("p99", "max_ms"), "max_refused_pct": limit("refused", "max_pct"), "memory_pct": limit("memory", "max_pct"), "fd_pct": limit("fds", "max_pct"),
         "delivery": limit("delivery", "min_ratio", 0.0), "judge_errors": j["errors"]["enabled"], "stall_repeats": j["stall_repeats"],
@@ -1924,7 +1908,7 @@ def config_defaults(config, measure, scenario, path):
         "max_store_tmpfs_pct": limit("store_fill", "max_tmpfs_pct"), "max_lag_ms": limit("generator_lag", "max_ms"),
         "max_throttle_jump_ms": limit("throttle", "max_jump_ms"), "max_store_stall_ms": limit("store_stall", "min_ms", 0.0),
         "store_stall_requests": stall["min_requests"], "store_fail_on_repeat": stall["fail_on_repeat"],
-        "min_available_gb": limit("host_memory", "min_available_gb", 0.0),
+        "min_available_gb": limit("host_memory", "min_available_gib", 0.0),
         "sample_s": g["sample_s"], "timeout": g["timeout_s"], "gen_grace": g["grace_s"], "rate_per_proc": g["rate_per_proc"], "conns_per_rate": g["conns_per_rate"],
         "write_ratio": w["write_ratio"], "cells": w["cells"], "no_warmup": not w["warmup"], "cell_period": w["cell_period_s"], "cells_conns": w["cells_conns"],
         "open_rate": w["open_rate"], "ws_interval": w["ws_interval_s"], "worker": w["worker"],
@@ -1948,84 +1932,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("measure", choices=list(UNITS))
     add = parser.add_argument
-    add("--out", default=os.environ.get("ATANOR_LOAD_OUT", f"{ROOT}/load/results/{time.strftime('%Y%m%d-%H%M%S')}"), help="results directory (ATANOR_LOAD_OUT)")
-    add("--step-s", type=float, default=env("STEP_S", 180), help="seconds of load per step (ATANOR_LOAD_STEP_S, 180)")
-    add("--start", type=float, help="first value of the ramp (http: 25 req/s, ws: 100 connections, cells: 100)")
-    add("--factor", type=float, default=env("FACTOR", 2), help="growth between steps (ATANOR_LOAD_FACTOR, 2)")
-    add("--max", type=float, help="last value to try (default: no limit that a failure would not reach: http 20000, ws 60000, cells 100000)")
-    add("--steps", help="explicit values, comma separated; replaces --start/--factor/--max")
-    add("--refine", type=int, default=env("REFINE", 3, int), help="bisections between the last good and the failing step (ATANOR_LOAD_REFINE, 3)")
-    add("--no-confirm", action="store_true", help="skip the confirmation repeat of the best good value (the exploration round)")
-    add("--p99-ms", type=float, default=env("P99_MS", 250), help="p99 above this fails a step (ATANOR_LOAD_P99_MS, 250)")
-    add("--max-refused-pct", type=float, default=env("MAX_REFUSED_PCT", 1), help="503 answers (with or without Retry-After) above this share of all answers fail a step of every measure but swap (ATANOR_LOAD_MAX_REFUSED_PCT, 1)")
-    add("--memory-pct",type=float, default=env("MEMORY_PCT", 90), help="working set (memory.current - inactive_file, as the node measures it) at this share of the scenario memory fails ws and cells steps (ATANOR_LOAD_MEMORY_PCT, 90)")
-    add("--fd-pct", type=float, default=env("FD_PCT", 90), help="open descriptors at this share of the limit fail a ws step (ATANOR_LOAD_FD_PCT, 90)")
-    add("--delivery", type=float, default=env("DELIVERY", 0.95), help="achieved/planned below this makes a step INVALID (ATANOR_LOAD_DELIVERY, 0.95)")
-    add("--host-load-max", type=float, default=env("HOST_LOAD_MAX", 1), help="net host load (busy cores minus the test's own): a step waits until it stays below this for --quiet-window, and a step whose mean exceeds it is INVALID and stops the round (ATANOR_LOAD_HOST_LOAD_MAX, 1)")
-    add("--max-busy-share", type=float, default=env("MAX_BUSY_SHARE", 0.85), help="mean busy cores of the host above this share of its cores make a step INVALID: the generator, balancer, store and nodes share the host, so the node is not the limit (ATANOR_LOAD_MAX_BUSY_SHARE, 0.85)")
-    add("--quiet-window", type=float, default=env("QUIET_WINDOW", 60), help="seconds the net host load must stay below --host-load-max before each step (ATANOR_LOAD_QUIET_WINDOW, 60)")
-    add("--quiet-max-wait", type=float, default=env("QUIET_MAX_WAIT", 1800), help="seconds to wait for that quiet window; then the measure stops with 'host busy' (ATANOR_LOAD_QUIET_MAX_WAIT, 1800)")
-    add("--max-generator-swap-mb", type=float, default=env("MAX_GENERATOR_SWAP_MB", 16), help="VmSwap of the load generators growing by more than this in a step makes it INVALID (ATANOR_LOAD_MAX_GENERATOR_SWAP_MB, 16)")
-    add("--max-host-swap-growth-mb", type=float, default=env("MAX_HOST_SWAP_GROWTH_MB", 256), help="host swap used growing by more than this during a step (largest sample minus the start) makes it INVALID; the level is only recorded (ATANOR_LOAD_MAX_HOST_SWAP_GROWTH_MB, 256)")
-    add("--max-store-disk-pct", type=float, default=env("MAX_STORE_DISK_PCT", 90), help="with ATANOR_LOAD_STORE_DISK=1: the store's filesystem above this share used at any sample makes a step INVALID (ATANOR_LOAD_MAX_STORE_DISK_PCT, 90)")
-    add("--max-store-tmpfs-pct", type=float, default=env("MAX_STORE_TMPFS_PCT", 90), help="the store's tmpfs above this share of its size at any sample makes a step INVALID, before the criteria (ATANOR_LOAD_MAX_STORE_TMPFS_PCT, 90)")
-    add("--max-lag-ms", type=float, default=env("MAX_LAG_MS", 50), help="generator release lag p99 (how late the generator itself queued requests) above this makes a step INVALID ('stall:'), repeated once (ATANOR_LOAD_MAX_LAG_MS, 50)")
-    add("--max-throttle-jump-ms", type=float, default=env("MAX_THROTTLE_JUMP_MS", 5000), help="growth of the node's CPU throttling between two samples above this and above 5 times the median growth makes a step INVALID ('stall:'), repeated once (ATANOR_LOAD_MAX_THROTTLE_JUMP_MS, 5000)")
-    add("--max-store-stall-ms", type=float, default=env("MAX_STORE_STALL_MS", 1000), help="a failing step whose node log shows --store-stall-requests or more node-to-store requests of this many ms or more within 5 s is INVALID ('stall:'), repeated once; 0 turns it off (ATANOR_LOAD_MAX_STORE_STALL_MS, 1000)")
-    add("--store-stall-requests", type=int, default=env("STORE_STALL_REQUESTS", 10, int), help="how many slow store requests within 5 s make a store stall (ATANOR_LOAD_STORE_STALL_REQUESTS, 10)")
-    add("--min-available-gb", type=float, default=env("MIN_AVAILABLE_GB", 6), help="host MemAvailable below this stops the round (ATANOR_LOAD_MIN_AVAILABLE_GB, 6)")
-    add("--sample-s", type=float, default=env("SAMPLE_S", 5), help="seconds between samples (ATANOR_LOAD_SAMPLE_S, 5)")
-    add("--timeout", type=float, default=env("TIMEOUT", 10), help="seconds before a request counts as unanswered")
-    add("--gen-grace", type=float, default=30, help="seconds the generator may take beyond the step")
-    add("--rate-per-proc", type=float, default=env("RATE_PER_PROC", 600), help="req/s one generator process takes (ATANOR_LOAD_RATE_PER_PROC, 600)")
-    add("--conns-per-rate", type=float, default=0.5, help="http: keep-alive connections per req/s")
-    add("--write-ratio", type=float, default=env("WRITE_RATIO", 0.5), help="http: share of writes (ATANOR_LOAD_WRITE_RATIO, 0.5)")
-    add("--no-warmup", action="store_true", default=bool(env("NO_WARMUP", 0, int)), help="http: do not write every cell once before the steady load (ATANOR_LOAD_NO_WARMUP=1); the first step of a fresh node then judges the cold wakes too")
-    add("--cells", type=int, default=env("CELLS", 64, int), help="http: cells the requests spread over (ATANOR_LOAD_CELLS, 64)")
-    add("--worker", choices=["native", "wasm"], default="native", help="ws and cells: the worker to use (native)")
-    add("--cell-period", type=float, default=env("CELL_PERIOD", 10), help="cells: seconds between the writes to one cell (ATANOR_LOAD_CELL_PERIOD, 10)")
-    add("--cells-conns", type=int, default=env("CELLS_CONNS", 64, int), help="cells: keep-alive connections")
-    add("--open-rate", type=float, default=env("OPEN_RATE", 100), help="ws, cells: sockets opened or cells touched per second (ATANOR_LOAD_OPEN_RATE, 100)")
-    add("--ws-interval", type=float, default=env("WS_INTERVAL", 30), help="ws: seconds between the messages of a socket (ATANOR_LOAD_WS_INTERVAL, 30)")
-    add("--rate", type=float, help="swap: requests per second (default: the approved http-wasm-jobs rate in --out)")
-    add("--trigger", choices=["sigterm", "api"], default="sigterm")
-    add("--swap-workers", type=int, default=12)
-    add("--swap-warmup", type=float, default=env("SWAP_WARMUP", 25))
-    add("--swap-overlap", type=float, default=env("SWAP_OVERLAP", 5))
-    add("--swap-settle", type=float, default=env("SWAP_SETTLE", 30))
-    add("--swap-timeout", type=float, default=900)
-    add("--max-nodes", type=int, default=env("MAX_NODES", 3, int), help="scale: the most nodes to run, 1 to 10 (ATANOR_LOAD_MAX_NODES, 3); a configuration whose step is INVALID (the host over its limit) stops the larger ones: rerun with the largest that fit")
-    add("--loads", default="http-native,cells", help="scale: the loads to ramp on every configuration (http-native,cells)")
-    add("--scale-factor", type=float, default=env("SCALE_FACTOR", 1.25), help="scale: growth between the steps of 2 or more nodes, which start at the ceiling of one node fewer (ATANOR_LOAD_SCALE_FACTOR, 1.25)")
-    add("--ceilings", default="", help="scale: ceilings of an earlier round, LOAD:NODES=N,... : each ramp then runs the --factors steps of its ceiling (the exploration round)")
-    add("--factors", default="0.75,1,1.25,1.5", help="scale: the steps of --ceilings as fractions of each ceiling")
-    add("--no-join", action="store_true", help="scale: skip the join step")
-    add("--join-rate", type=float, help="scale: requests per second of the join step (default: --join-factor times the 1-node http-native ceiling)")
-    add("--join-factor", type=float, default=env("JOIN_FACTOR", 1.5), help="scale: the join rate as a multiple of the 1-node ceiling (ATANOR_LOAD_JOIN_FACTOR, 1.5)")
-    add("--join-warmup-s", type=float, default=env("JOIN_WARMUP_S", 30), help="scale: seconds of load on one node before the first join (ATANOR_LOAD_JOIN_WARMUP_S, 30)")
-    add("--join-observe-s", type=float, default=env("JOIN_OBSERVE_S", 120), help="scale: seconds from the start of a node to the start of the next one, and after the last (ATANOR_LOAD_JOIN_OBSERVE_S, 120)")
-    add("--join-node-wait-s", type=float, default=env("JOIN_NODE_WAIT_S", 90), help="scale: seconds the load budgets for a node to start, per join (ATANOR_LOAD_JOIN_NODE_WAIT_S, 90)")
-    add("--join-node-timeout-s", type=float, default=env("JOIN_NODE_TIMEOUT_S", 300), help="scale: seconds before a node that does not become ready makes the join INVALID (ATANOR_LOAD_JOIN_NODE_TIMEOUT_S, 300)")
-    add("--join-sample-s", type=float, default=env("JOIN_SAMPLE_S", 2), help="scale: seconds between the readings of the balancer and the admin API during the join (ATANOR_LOAD_JOIN_SAMPLE_S, 2)")
-    add("--spread-tol-pct", type=float, default=env("SPREAD_TOL_PCT", 25), help="scale: a node's share is spread when within this percent of 1/N (ATANOR_LOAD_SPREAD_TOL_PCT, 25)")
-    add("--spread-hold", type=int, default=env("SPREAD_HOLD", 3, int), help="scale: consecutive readings that must be within the tolerance (ATANOR_LOAD_SPREAD_HOLD, 3)")
-    add("--spread-min-cells", type=int, default=env("SPREAD_MIN_CELLS", 10, int), help="scale: awake cells below this in all are too few to judge a spread (ATANOR_LOAD_SPREAD_MIN_CELLS, 10)")
-    add("--config", help="round config (TOML, scripts/load_config.py): its values are the defaults, its layout and hashes the results'; use `mise run load` for a whole round")
-    add("--scenario", help="--config: the scenario to run (default: the first of round.scenarios)")
-    add("--skip-done", action=argparse.BooleanOptionalAction, default=True, help="--config: reuse a step whose file has the same config_hash and is not INVALID (default)")
-    add("--deadline", type=float, help="--config: epoch seconds at which the round stops (round.timeout_s)")
-    args = parser.parse_args()
-    if args.config:
-        config = load_config.load_config(args.config)
-        args.scenario = args.scenario or config["round"]["scenarios"][0]
-        parser.set_defaults(**config_defaults(config, args.measure, args.scenario, args.config))
-        args = parser.parse_args()
-        args.scenario = args.scenario or config["round"]["scenarios"][0]
-        os.environ.update(ATANOR_LOAD_CONFIG=os.path.abspath(args.config), ATANOR_LOAD_SCENARIO=args.scenario, ATANOR_LOAD_MEASURE=args.measure)
-        os.environ["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"] = load_config.env_lines(config, args.scenario, args.measure)["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"]
-    args.start = args.start or RAMPS.get(args.measure, (0, 0))[0] or None
-    args.max = args.max or RAMPS.get(args.measure, (0, 0))[1] or None
-    args.command = args.command if args.config else "mise run load:" + args.measure + " -- " + " ".join(sys.argv[2:])
+    add("--config", required=True, help="the round config (TOML, scripts/load_config.py): every setting of the measure comes from it")
+    add("--scenario", help="the scenario to run (default: the first of round.scenarios)")
+    add("--skip-done", action=argparse.BooleanOptionalAction, default=True, help="reuse a step whose file has the same config_hash and is not INVALID (default)")
+    add("--deadline", type=float, help="epoch seconds at which the round stops (round.timeout_s)")
+    given = parser.parse_args()
+    config = load_config.load_config(given.config)
+    scenario = given.scenario or config["round"]["scenarios"][0]
+    args = argparse.Namespace(**{**config_defaults(config, given.measure, scenario, given.config), **vars(given), "scenario": scenario})
+    # Internal plumbing: load-env and load-common read the lab's settings from the config through these.
+    os.environ.update(ATANOR_LOAD_CONFIG=os.path.abspath(args.config), ATANOR_LOAD_SCENARIO=scenario, ATANOR_LOAD_MEASURE=args.measure,
+                      ATANOR_LOAD_HTTP_MAX_CONNECTIONS=load_config.env_lines(config, scenario, args.measure)["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"])
     try:
         execute(args)
     except RoundStop as stop:
@@ -2042,8 +1959,8 @@ def execute(args):
         caps_sum, warning = cpu_caps(args.max_nodes, json.loads(load_env("limits")), CORES)
         if warning:
             say(f"warning: {warning}")
-        scenario = os.environ.get("ATANOR_LOAD_SCENARIO", "A")
-        say(f"scale on scenario {scenario}, up to {args.max_nodes} nodes, {args.step_s:g} s per step, results in {args.out}")
+        scenario = args.scenario
+        say(f"scale on scenario {scenario}, up to {args.max_nodes} nodes, results in {args.out}")
         summary = scale(args)
         summary.update(scenario=scenario, measure="scale", command=args.command, cpu_caps_sum=caps_sum, host_cores=CORES, cpu_caps_warning=warning,
                        config_hash=getattr(args, "config_hash", None))

@@ -258,49 +258,17 @@ description = "Roll the cluster's nodes onto a rebuilt image one at a time: buil
 run = "scripts/cluster-roll"
 
 [tasks.load]
-description = "Run a load round from a config file: validate it, then per scenario start the lab, run each measure, write the report and remove the lab (arguments: --config FILE [--skip-done|--no-skip-done] [--dry-run]; results in OUT/SCENARIO/MEASURE/step-VALUE.json; layout in load/rounds/example.toml, guide in docs/how-to-run-the-load-tests.md)"
+description = "The load test: run a round from a config file (--config FILE [--skip-done|--no-skip-done] [--dry-run]), or on the host of host.ssh (--remote, then --status and --fetch); results in OUT/SCENARIO/MEASURE/step-VALUE.json; layout in load/rounds/example.toml, guide in docs/how-to-run-the-load-tests.md"
 run = "scripts/load"
 
 [tasks."load:up"]
-description = "Start the load-test scenario: one node with cgroup limits (env: ATANOR_LOAD_SCENARIO=A 1 CPU/512 MB or B 2 CPUs/2 GB), data and store in tmpfs, 25 ms added per store trip, the native, the plain WASM and the scoreboard workers deployed (see docs/how-to-run-the-load-tests.md)"
+description = "Start the lab of one scenario of a round config, for a manual look (arguments: --config FILE [--scenario S]; `mise run load` does it itself): one node with cgroup limits, data and store in tmpfs, the native, the plain WASM and the scoreboard workers deployed"
 depends = ["build:scoreboard", "build:load-plain"]
 run = "scripts/load-env up"
 
 [tasks."load:down"]
-description = "Remove the load-test containers, network and volumes (project atanor-cluster, container atanor-load-tc)"
+description = "Remove the load-test containers, network and volumes (project atanor-cluster, container atanor-load-tc; arguments: --config FILE, as load:up)"
 run = "scripts/load-env down"
-
-[tasks."load:http-native"]
-description = "Ramp requests per second to the native worker until p99 > 250 ms, 503 answers over 1% of all answers, any other 5xx, or an error (arguments: --step-s, --start, --steps, ...; --help lists all)"
-run = "scripts/load-run http-native"
-
-[tasks."load:http-wasm"]
-description = "Ramp requests per second to the plain WASM worker (the twin of the native one) until p99 > 250 ms, 503 answers over 1% of all answers, any other 5xx, or an error (same arguments as load:http-native)"
-run = "scripts/load-run http-wasm"
-
-[tasks."load:http-wasm-jobs"]
-description = "Ramp requests per second to the scoreboard (WASM app, a ranking job per write) until p99 > 250 ms, 503 answers over 1% of all answers, any other 5xx, or an error (same arguments as load:http-native); its approved rate is the swap's"
-run = "scripts/load-run http-wasm-jobs"
-
-[tasks."load:ws"]
-description = "Ramp open idle WebSocket connections with sparse messages until memory reaches 90% or the file descriptors run out (arguments: --worker native|wasm, --ws-interval, ...)"
-run = "scripts/load-run ws"
-
-[tasks."load:cells"]
-description = "Ramp the cells kept hot at the same time until memory reaches 90% or p99 > 250 ms (arguments: --cell-period, --worker native|wasm, ...)"
-run = "scripts/load-run cells"
-
-[tasks."load:swap"]
-description = "Replace the node by another under load at the last approved http-wasm-jobs rate and report the swap duration and p99 peak (arguments: --rate, --trigger sigterm|api, ...); run it last: the old node is removed"
-run = "scripts/load-run swap"
-
-[tasks."load:scale"]
-description = "Ramp the http-native and cells loads on 1, 2 and 3 nodes behind the balancer (ceiling of each, gain over 1 node, requests and awake cells per node), then start the 2nd and 3rd node under a fixed rate and measure the time until the load spreads (arguments: --max-nodes, --loads, --join-rate, --no-join, ...; run load:up once before; docs/how-to-run-the-load-tests.md)"
-run = "scripts/load-run scale"
-
-[tasks."load:explore"]
-description = "Exploration round of one scenario, before the official round: each ramp measure runs only the steps at 75%, 100%, 125% and 150% of the ceiling in --from DIR (75 s each, no refine, no confirm), then the swap at the http-wasm-jobs ceiling; scale joins when DIR has its summary (arguments: --from DIR, --ceiling MEASURE=N, --measures, --factors, --step-s, --dry-run; docs/how-to-run-the-load-tests.md)"
-run = "scripts/load-explore"
 
 [tasks."load:config-check"]
 description = "Validate a load round file and print its resolved config and hash, or every problem (argument: --check FILE, e.g. --check load/rounds/018f.toml; layout in load/rounds/example.toml)"
