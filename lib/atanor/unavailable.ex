@@ -13,6 +13,7 @@ defmodule Atanor.Unavailable do
     :draining,
     :held_elsewhere,
     :fenced,
+    :owner_unknown,
     :overloaded,
     :deployment_unavailable,
     :store_unavailable

@@ -10,6 +10,19 @@ defmodule Atanor.UnavailableTest do
     assert Unavailable.cause({:error, :timeout}) == nil
   end
 
+  test "a lease read that failed names its failure, not a fence" do
+    unknown = &Atanor.Dispatch.unknown_owner/1
+
+    assert unknown.(:timeout) == :owner_unknown
+    assert unknown.({:error, :boom}) == :owner_unknown
+    assert unknown.(:store_unavailable) == :store_unavailable
+    assert unknown.({:store, :econnrefused}) == :store_unavailable
+    assert unknown.(:overloaded) == :overloaded
+    assert unknown.(:busy) == :overloaded
+    assert :owner_unknown in Unavailable.reasons()
+    refute :fenced in Enum.map([:timeout, :boom, {:x, 1}], unknown)
+  end
+
   test "names the availability reasons of cell and routing errors" do
     for {error, reason} <- [
           {:no_quorum, :no_quorum},
