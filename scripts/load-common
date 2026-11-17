@@ -5,6 +5,12 @@
 # (`add-node` starts node 2 and 3 itself) gets the tmpfs of the first node.
 
 LOAD_SCENARIO=${ATANOR_LOAD_SCENARIO:-A}
+# With ATANOR_LOAD_CONFIG (a round config, `mise run load`) the lab's settings come from that file for this scenario and, for its
+# store, ATANOR_LOAD_MEASURE; they replace the ATANOR_LOAD_* of the environment that they name.
+if [[ -n ${ATANOR_LOAD_CONFIG:-} ]]; then
+  config_env=$("$(dirname "${BASH_SOURCE[0]}")/load_config.py" --env "$ATANOR_LOAD_CONFIG" "$LOAD_SCENARIO" ${ATANOR_LOAD_MEASURE:+"$ATANOR_LOAD_MEASURE"}) || exit 1
+  eval "$config_env"
+fi
 # Scenario A: 1 CPU and 512 MB. Scenario B: 2 CPUs and 2 GB. Override with ATANOR_LOAD_CPUS and _MEMORY.
 # The node's data dir (tmpfs) is sized for the scenario: its disk budget is a share of it, and a 256 MB one made B's disk reclaim put cells to sleep.
 case $LOAD_SCENARIO in

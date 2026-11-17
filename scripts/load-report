@@ -9,23 +9,36 @@ import argparse
 import glob
 import json
 import os
+import re
 import sys
+
+
+def result_files(directory):
+    """The result files of a directory: the flat layout (`SCENARIO_MEASURE_NN-PHASE-VALUE.json`, `*.summary.json`, `*.baseline.json`, all in
+    DIR) and the layout of `mise run load` (`SCENARIO/MEASURE[/VARIANT]/step-VALUE[-N].json`, `summary.json`, `baseline.json`)."""
+    flat = glob.glob(os.path.join(directory, "*.json"))
+    nested = [p for depth in (3, 4) for p in glob.glob(os.path.join(directory, *["*"] * (depth - 1), "*.json"))
+              if re.fullmatch(r"step-[^/]*\.json|summary\.json|baseline\.json", os.path.basename(p))]
+    return sorted(flat) + sorted(nested)
 
 
 def load(directory):
     steps, baselines, summaries, joins = [], {}, {}, []
-    for path in sorted(glob.glob(os.path.join(directory, "*.json"))):
+    for path in result_files(directory):
         with open(path) as file:
             document = json.load(file)
         name = os.path.basename(path)
+        if not isinstance(document, dict):
+            continue
         if document.get("schema") == "atanor-load-join-1":
             joins.append(document)
-        elif name.endswith(".baseline.json"):
+        elif name.endswith("baseline.json"):
             baselines[(document["scenario"], document["measure"])] = document
-        elif name.endswith(".summary.json"):
+        elif name.endswith("summary.json"):
             summaries[(document["scenario"], document["measure"])] = document
         elif document.get("schema") == "atanor-load-step-1":
             steps.append(document)
+    steps.sort(key=lambda s: s.get("step") or 0)  # the nested layout names files by value, not by order
     return steps, baselines, summaries, joins
 
 
@@ -203,7 +216,8 @@ def report(directory):
                 out += [f"Ramp stopped by: **{stop}**" + (f" (invalid: {summary['invalid']})" if summary.get("invalid") and summary.get("stopped_by") else "")
                         + ("; the round ended there: the node stopped" if summary.get("node_stopped") else "")
                         + (f"; confirmation repeat: {'passed' if summary.get('confirmed') else 'failed'}" if summary.get("confirmed") is not None else ""), ""]
-            out += ["Reproduce:", "", "```sh", f"ATANOR_LOAD_SCENARIO={scenario} mise run load:up", summary["command"] if summary else mine[0]["command"], "```", ""]
+            command = summary["command"] if summary else mine[0]["command"]
+            out += ["Reproduce:", "", "```sh", *([] if command.startswith("mise run load -- ") else [f"ATANOR_LOAD_SCENARIO={scenario} mise run load:up"]), command, "```", ""]
     return "\n".join(out)
 
 

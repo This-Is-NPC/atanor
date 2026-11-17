@@ -7,6 +7,7 @@ import argparse
 import importlib.machinery
 import importlib.util
 import json
+import math
 import os
 import stat
 import sys
@@ -75,6 +76,7 @@ def run_generators(self, value, sampler):
     return [dict(DOCUMENT)]
 
 
+real_run_generators = m.Round.run_generators
 m.Round.run_generators = run_generators
 real_take = m.Sampler.take
 
@@ -272,7 +274,7 @@ results["judge_stall"] = {
 
 
 # A stalled step is repeated once; a repeat that stalls again is INVALID and ends the round.
-def stall_scenario(name, lags):
+def stall_scenario(name, lags, **options):
     container()
     runs = []
 
@@ -282,6 +284,7 @@ def stall_scenario(name, lags):
 
     real = m.Round.run_generators
     round_, args = new_round(name)
+    vars(args).update(options)
     m.Round.run_generators = generators
     try:
         summary = m.ramp(round_, args)
@@ -575,4 +578,177 @@ m.CORES = real_cores
 results["ws_cap"] = [m.ws_cap_problem(51200, 16384, None), m.ws_cap_problem(100, 16384, None), m.ws_cap_problem(51200, 70000, 65536), m.ws_cap_problem(51200, 70000, 1048576)]
 results["max_connections"] = [m.http_max_connections(), m.os.environ.update(ATANOR_LOAD_HTTP_MAX_CONNECTIONS="70000") or m.http_max_connections()]
 m.os.environ.pop("ATANOR_LOAD_HTTP_MAX_CONNECTIONS")
+
+# ---- a round of a config file: the layout, the config_hash, --skip-done, the plan kinds, the stall repeats and the timeout of a generator ----
+lc = m.load_config
+results["stall_repeats"] = {"two": stall_scenario("stall_repeats_two", [242, 242, 1], stall_repeats=2)["runs"],
+                            "none": stall_scenario("stall_repeats_none", [242], stall_repeats=0)["runs"]}
+
+
+def case_args(name, config_hash="h1", skip=True, **over):
+    """The arguments of a step of the config round, in a results directory of their own."""
+    round_, args = new_round(name)
+    vars(args).update({"nested": True, "config_hash": config_hash, "skip_done": skip, "scenario": "A", "measure": "http-native", "steps": None, "start": 10, "max": 40,
+                       "factor": 2, "refine": 2, "ws_interval": 30.0, **over})
+    return round_.info, args
+
+
+def run_case(info, args, slow_from, runs):
+    """The ramp of `args` with a stub generator that is slow from `slow_from` on (a failing p99); `runs` collects the values that ran."""
+    def generators(self, value, sampler):
+        runs.append(value)
+        return [{**DOCUMENT, "statuses": {"200": 10}, "hist": {"9000" if value >= slow_from else "5": 10}}]
+
+    real, text = (m.Round.run_generators, m.load_env), json.dumps(info)  # the reset empties `info` before it reads it again
+    m.Round.run_generators, m.load_env = generators, lambda *a: text if a[0] == "info" else ""
+    container()
+    try:
+        return m.ramp(m.Round(args, info), args)
+    finally:
+        m.Round.run_generators, m.load_env = real
+
+
+def files_of(out):
+    return sorted(os.path.relpath(os.path.join(d, f), out) for d, _, names in os.walk(out) for f in names if f.endswith(".json") and not f.startswith("."))
+
+
+def read_json(*parts):
+    with open(os.path.join(*parts)) as handle:
+        return json.load(handle)
+
+
+# The bisection: 10 and 20 pass, 40 fails, the refinement tries 30 (fails) and 25 (passes), and the confirmation of 25 is repetition 2.
+info, args = case_args("bisect")
+runs = []
+summary = run_case(info, args, 30, runs)
+bisect_files = files_of(args.out)
+results["bisect"] = {"runs": runs, "files": bisect_files, "summary": {k: summary[k] for k in ("good", "approved", "confirmed", "first_failure")},
+                     "phases": {f: [read_json(args.out, f)["phase"], read_json(args.out, f)["status"], read_json(args.out, f)["config_hash"]] for f in bisect_files},
+                     "fresh": [read_json(args.out, "A", "http-native", f)["fresh_node"] for f in ("step-40.json", "step-30.json", "step-25.json", "step-25-2.json")]}
+# The ceiling kind is a ladder of fractions of a ceiling, refined and confirmed as configured.
+with open(os.path.join(work, "ceiling.toml"), "w") as handle:
+    handle.write("[measures.http-native.steps]\nkind = \"ceiling\"\nceiling = 400\nrefine = 1\n")
+ceiling_steps = m.config_defaults(lc.load_config(os.path.join(work, "ceiling.toml")), "http-native", "A", "c.toml")["steps"]
+info, args = case_args("ceiling", refine=1, steps=ceiling_steps)
+runs = []
+summary = run_case(info, args, 500, runs)
+results["ceiling"] = {"steps": ceiling_steps, "runs": runs, "files": files_of(args.out), "good": summary["good"], "approved": summary["approved"]}
+
+# --skip-done: a done step is not run again and its result decides the ramp; an INVALID one runs again; another config's file stops the round.
+info, args = case_args("skip", refine=0, steps="10,20,40")
+first_runs, again, third, fourth, other, forced = [], [], [], [], [], []
+first = run_case(info, args, 40, first_runs)
+second = run_case(info, args, 10, again)  # every step would be slow now, so any run would change the verdict
+step_dir = os.path.join(args.out, "A", "http-native")
+os.remove(os.path.join(step_dir, "step-20-2.json"))
+third_summary = run_case(info, args, 40, third)
+invalid = read_json(step_dir, "step-40.json")
+invalid.update(status="invalid", valid=False, stop_reason="host busy")
+m.write_json(os.path.join(step_dir, "step-40.json"), invalid)
+fourth_summary = run_case(info, args, 40, fourth)
+try:
+    run_case(info, argparse.Namespace(**{**vars(args), "config_hash": "h2"}), 40, other)
+    refused = None
+except SystemExit as error:
+    refused = str(error.code)
+fifth = argparse.Namespace(**{**vars(args), "skip_done": False})
+rerun_summary = run_case(info, fifth, 40, forced)
+results["skip_done"] = {"first": first_runs, "again": again, "same_summary": first == second == third_summary == fourth_summary == rerun_summary,
+                        "third": third, "invalid_reran": fourth, "refused": refused, "refused_ran": other, "no_skip": forced, "files": files_of(args.out),
+                        "approved": first["approved"], "hash_in_file": read_json(step_dir, "step-20-2.json")["config_hash"]}
+
+# The layout: the node count is the variant of the scale measure, the join and the summaries have their own place.
+info, args = case_args("layout")
+scale_round = m.Round(args, info, stem="scale-http-native-n2")
+scale_record = scale_round.step(998, "ramp")
+scale_round.step(998, "confirm")
+results["layout"] = {"files": files_of(args.out), "measure": scale_record["measure"], "load": scale_record["load"], "config_hash": scale_record["config_hash"],
+                     "join": os.path.relpath(m.join_base(args, "A", 600), args.out), "join_float": os.path.relpath(m.join_base(args, "A", 600.0), args.out),
+                     "summary": os.path.relpath(m.result_file(args, "A", "ws", "summary"), args.out),
+                     "baseline": os.path.relpath(m.result_file(args, "A", "cells", "baseline"), args.out),
+                     "flat_summary": os.path.relpath(m.result_file(argparse.Namespace(out=args.out), "A", "ws", "summary"), args.out)}
+
+# The swap in the layout: its rate is the approved one of http-wasm-jobs, and a done swap is not run again.
+swap_info, swap_args = case_args("swap_nested", rate=None, trigger="sigterm", swap_workers=1, swap_warmup=1, swap_overlap=1, swap_settle=1, swap_timeout=30)
+swap_args.measure = "swap"
+m.write_json(m.result_file(swap_args, "A", "http-wasm-jobs", "summary"), {"approved": 10})
+swapped = m.swap(m.Round(swap_args, swap_info), swap_args, swap_info)
+swap_dir = os.path.join(swap_args.out, "A", "swap")
+before = sorted(os.listdir(swap_dir))
+swapped_again = m.swap(m.Round(swap_args, swap_info), swap_args, swap_info)
+results["swap_nested"] = {"first": swapped["status"], "again": swapped_again["status"], "approved": [swapped["approved"], swapped_again["approved"]],
+                          "files": [f for f in before if f.startswith("step-")], "same_files": before == sorted(os.listdir(swap_dir)),
+                          "hash": read_json(swap_dir, "step-10.json")["config_hash"]}
+
+# The round's timeout stops the ramp before its next step.
+info, args = case_args("deadline", deadline=time.time() - 1)
+try:
+    m.Round(args, info).step(10, "ramp")
+    stop = None
+except m.RoundStop as error:
+    stop = str(error)
+results["deadline"] = [stop, os.path.exists(os.path.join(args.out, "A"))]
+
+# What the config says reaches the arguments: a criterion that is off gets a limit nothing reaches.
+with open(os.path.join(work, "args.toml"), "w") as handle:
+    handle.write("[round]\nmeasures = [\"cells\"]\nstep_timeout_s = 123\n[judging]\nstall_repeats = 3\n[judging.p99]\nenabled = false\n[judging.delivery]\nenabled = false\n"
+                 "[judging.errors]\nenabled = false\n[judging.store_stall]\nenabled = false\n[judging.host_load]\nenabled = false\n[judging.host_memory]\nenabled = false\n"
+                 "[workload]\nwarmup = false\n[measures.cells.steps]\nkind = \"ceiling\"\nceiling = 400\nduration_s = 50\n")
+given = m.config_defaults(lc.load_config(os.path.join(work, "args.toml")), "cells", "A", "c.toml")
+official = m.config_defaults(lc.load_config(f"{repo}/load/rounds/018f.toml"), "scale", "A", "o.toml")
+results["config_defaults"] = {"p99_off": math.isinf(given["p99_ms"]), "p99_on": m.config_defaults(lc.load_config(), "cells", "A", "c.toml")["p99_ms"], "delivery": given["delivery"],
+                              "judge_errors": given["judge_errors"], "stall_ms": given["max_store_stall_ms"], "host_off": math.isinf(given["host_load_max"]),
+                              "quiet_window": given["quiet_window"], "min_gb": given["min_available_gb"], "timeout": given["step_timeout"], "no_warmup": given["no_warmup"],
+                              "repeats": given["stall_repeats"], "steps": given["steps"], "nested": given["nested"], "hash": len(given["config_hash"]),
+                              "command": given["command"], "scale": [official["ceilings"], official["factors"], official["max_nodes"], official["load_plans"]["http-native"]["values"],
+                                                                      official["steps"] if "steps" in official else "none"]}
+
+
+def errors_scenario(name, judged):
+    real = m.Round.run_generators
+    m.Round.run_generators = lambda self, value, sampler: [{**DOCUMENT, "statuses": {"200": 9, "500": 1}, "hist": {"5": 10}}]
+    container()
+    info, args = case_args(name, judge_errors=judged)
+    try:
+        record = m.Round(args, info).step(10, "ramp")
+    finally:
+        m.Round.run_generators = real
+    return [record["status"], record["stop_reason"]]
+
+
+results["errors"] = [errors_scenario("errors_on", True), errors_scenario("errors_off", False)]
+
+# A generator runs under `timeout`: one that outlives step_timeout_s is killed and the step is INVALID (timeout); a good one is not touched,
+# and its CPU is read from the generator, not from `timeout`.
+with open(os.path.join(fake, "load-gen"), "w") as handle:
+    handle.write("#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --out ] && out=$2; shift; done\n[ -e \"$FAKE_DIR/gen-sleep\" ] && sleep 30\n"
+                 "echo '{\"statuses\": {\"200\": 10}, \"hist\": {\"5\": 10}, \"max_ms\": 1.0, \"planned\": 10, \"sent\": 10, \"completed\": 10, \"cpu_s\": 0.1, \"lag_ms\": {\"p99\": 1}, \"opened\": 10}' > \"$out\"\n")
+os.chmod(os.path.join(fake, "load-gen"), 0o755)
+
+
+def generator_scenario(name, sleeps, limit):
+    flag = os.path.join(fake, "gen-sleep")
+    if sleeps:
+        open(flag, "w").close()
+    elif os.path.exists(flag):
+        os.remove(flag)
+    container()
+    info, args = case_args(name, step_timeout=limit)
+    seen, original = [], m.generator_pid
+    m.generator_pid = lambda wrapper: seen.append((wrapper.pid, original(wrapper))) or seen[-1][1]
+    began = time.time()
+    real = m.Round.run_generators
+    m.Round.run_generators = real_run_generators
+    try:
+        record = m.Round(args, info).step(10, "ramp")
+    finally:
+        m.Round.run_generators, m.generator_pid = real, original
+        if os.path.exists(flag):
+            os.remove(flag)
+    return {"status": record["status"], "valid": record["valid"], "stop_reason": record["stop_reason"], "seconds": round(time.time() - began),
+            "child_pid_read": bool(seen) and seen[0][0] != seen[0][1]}
+
+
+results["generator_timeout"] = generator_scenario("gen_timeout", True, 1)
+results["generator_ok"] = generator_scenario("gen_ok", False, 30)
 print(json.dumps(results))
