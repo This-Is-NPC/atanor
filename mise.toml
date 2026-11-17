@@ -298,6 +298,10 @@ run = "scripts/load-run scale"
 description = "Exploration round of one scenario, before the official round: each ramp measure runs only the steps at 75%, 100%, 125% and 150% of the ceiling in --from DIR (75 s each, no refine, no confirm), then the swap at the http-wasm-jobs ceiling; scale joins when DIR has its summary (arguments: --from DIR, --ceiling MEASURE=N, --measures, --factors, --step-s, --dry-run; docs/how-to-run-the-load-tests.md)"
 run = "scripts/load-explore"
 
+[tasks."load:config-check"]
+description = "Validate a load round file and print its resolved config and hash, or every problem (argument: --check FILE, e.g. --check load/rounds/018f.toml; layout in load/rounds/example.toml)"
+run = "scripts/load_config.py"
+
 [tasks."load:report"]
 description = "Write report.md of a results directory (argument: DIR, e.g. load/results/STAMP): steps, cost per unit and the criterion that stopped each ramp"
 run = "scripts/load-report"

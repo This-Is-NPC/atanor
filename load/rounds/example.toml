@@ -1,0 +1,233 @@
+# A load round, every key at its built-in default (the behaviour of scripts/load-run today).
+# A round file needs only the keys it changes; the rest keeps the default shown here.
+# Check a file without starting anything: scripts/load_config.py --check FILE
+
+[round]
+scenarios = ["A"]   # scenarios to run, in order: A (1 CPU, 512 MB) and/or B (2 CPUs, 2 GB)
+measures = ["http-native", "http-wasm", "http-wasm-jobs", "ws", "cells", "swap"]   # measures to run for each scenario, in order; scale may be added
+
+[output]
+dir = ""    # results directory; "" is load/results/<name or time stamp>
+name = ""   # round name for the default directory and the report (letters, digits, . _ -)
+
+[host]
+ssh = ""       # ssh target that runs the round; "" runs it on this machine
+repo = ""      # path of the repository clone on the target (required with ssh)
+results = ""   # directory for the results on the target; "" is the default under repo
+
+# The scenarios: the node's limits. Each key of a table overrides one default.
+[scenarios.A]
+cpus = 1.0           # CPU limit of a node
+memory = "512m"      # memory limit of a node (k, m or g)
+node_tmpfs = "256m"  # size of the node's data tmpfs
+nodes = 1            # nodes behind the balancer, 1 to 10 (the scale measure sets its own)
+
+[scenarios.B]
+cpus = 2.0
+memory = "2g"
+node_tmpfs = "1g"
+nodes = 1
+
+[store]
+backing = "tmpfs"   # tmpfs, or disk for the host's disk (when a step fills the store's tmpfs)
+tmpfs_size = "1g"   # size of the store's tmpfs (ignored on disk)
+memory = "2g"       # memory limit of the store, besides its tmpfs
+cpus = 2.0          # CPU limit of the store
+latency_ms = 25.0   # delay added to every trip from a node to the store; 0 adds none
+
+[balancer]
+cpus = 2.0         # CPU limit of the load balancer
+memory = "512m"    # memory limit of the load balancer
+
+[node]
+http_max_connections = 0   # http.max_connections of a node; 0 keeps the node's default (16384); ws steps need it above the highest step
+
+# The step plan of each measure. `kind = "bisect"` grows from start by factor up to max, and after the first failure bisects
+# `refine` times between the last good and the failing step. `kind = "ladder"` runs the fixed `values` (strictly growing) instead.
+# `run_on` limits the measure to some scenarios ([] means every scenario of the round).
+# `per_scenario.A` or `.B` overrides any key of `steps` for that scenario (see the commented example below).
+[measures.http-native]
+run_on = []
+[measures.http-native.steps]
+kind = "bisect"     # bisect or ladder
+values = []         # ladder: the steps (req/s for http, connections for ws, cells for cells)
+start = 25.0        # bisect: first step
+factor = 2.0        # bisect: growth between steps (> 1)
+max = 20000.0       # bisect: last step to try
+duration_s = 180.0  # seconds of load per step
+refine = 3          # bisections after the first failing step; 0 skips them
+confirm = true      # repeat the best good step once on a fresh node to confirm it
+# [measures.http-native.per_scenario.B]
+# kind = "ladder"
+# values = [1125, 1500, 1875, 2250]
+
+[measures.http-wasm]
+run_on = []
+[measures.http-wasm.steps]
+kind = "bisect"
+values = []
+start = 25.0
+factor = 2.0
+max = 20000.0
+duration_s = 180.0
+refine = 3
+confirm = true
+
+[measures.http-wasm-jobs]
+run_on = []
+[measures.http-wasm-jobs.steps]
+kind = "bisect"
+values = []
+start = 25.0
+factor = 2.0
+max = 20000.0
+duration_s = 180.0
+refine = 3
+confirm = true
+
+[measures.ws]
+run_on = []
+[measures.ws.steps]
+kind = "bisect"
+values = []
+start = 100.0
+factor = 2.0
+max = 60000.0
+duration_s = 180.0
+refine = 3
+confirm = true
+
+[measures.cells]
+run_on = []
+[measures.cells.steps]
+kind = "bisect"
+values = []
+start = 100.0
+factor = 2.0
+max = 100000.0
+duration_s = 180.0
+refine = 3
+confirm = true
+
+[measures.swap]
+run_on = []   # the swap and the scale measure have no steps plan: see [swap] and [scale]
+
+[measures.scale]
+run_on = []
+
+# The judging criteria. A criterion that is off (enabled = false) is not judged. A limit is exclusive: a step fails or is INVALID
+# when it goes above it (below it, for a minimum).
+[judging]
+stall_repeats = 1   # a step INVALID by a stall is repeated this many times before the round stops
+
+[judging.p99]       # FAIL: p99 latency, every measure but ws
+enabled = true
+max_ms = 250.0
+
+[judging.refused]   # FAIL: share of 503 answers among all answers, every measure but swap
+enabled = true
+max_pct = 1.0
+
+[judging.memory]    # FAIL: working set share of the scenario memory, ws and cells
+enabled = true
+max_pct = 90.0
+
+[judging.fds]       # FAIL: open descriptors share of the limit, ws
+enabled = true
+max_pct = 90.0
+
+[judging.delivery]  # INVALID: achieved over planned, the generator or the host, not the node
+enabled = true
+min_ratio = 0.95
+
+[judging.store_fill]  # INVALID: the store's tmpfs (or, on disk, its filesystem) share used at any sample
+enabled = true
+max_tmpfs_pct = 90.0
+max_disk_pct = 90.0
+
+[judging.store_stall]  # INVALID `stall:`, only on a step that would fail: the node log shows slow node-to-store requests
+enabled = true
+min_ms = 1000.0        # a request this slow or slower is a slow one
+min_requests = 10      # this many slow requests within window_s make a stall
+window_s = 5.0
+fail_on_repeat = true  # a store that stalls in both attempts of a step fails it (`store:`) instead of stopping the round
+
+[judging.generator_lag]  # INVALID `stall:`: the generator's own release lag p99
+enabled = true
+max_ms = 50.0
+
+[judging.throttle]    # INVALID `stall:`: growth of the node's CPU throttling between two samples
+enabled = true
+max_jump_ms = 5000.0
+jump_factor = 5.0     # and also this many times the median growth
+
+[judging.host_load]   # the foreign load of the host: a step waits for it, and a step whose mean exceeds it is INVALID
+enabled = true
+max = 1.0             # net busy cores (busy cores minus the test's own)
+quiet_window_s = 60.0       # seconds the load must stay below max before each step
+quiet_max_wait_s = 1800.0   # seconds to wait for that; then the measure stops "host busy"
+
+[judging.host_busy]   # INVALID: mean busy cores of the host over this share of its cores
+enabled = true
+max_share = 0.85
+
+[judging.generator_swap]   # INVALID: growth of the generators' VmSwap in a step
+enabled = true
+max_mb = 16.0
+
+[judging.host_swap]   # INVALID: growth of the host's swap used during a step
+enabled = true
+max_growth_mb = 256.0
+
+[judging.host_memory]   # the round stops when the host's MemAvailable is below this
+enabled = true
+min_available_gb = 6.0
+
+[generator]
+rate_per_proc = 600.0   # req/s one generator process takes
+conns_per_rate = 0.5    # http: keep-alive connections per req/s
+timeout_s = 10.0        # seconds before a request counts as unanswered
+grace_s = 30.0          # seconds the generator may take beyond the step
+sample_s = 5.0          # seconds between samples of the node, store and host
+
+[workload]
+write_ratio = 0.5       # http: share of writes
+cells = 64              # http: cells the requests spread over
+warmup = true           # http: write every cell once before the steady load
+cell_period_s = 10.0    # cells: seconds between the writes to one cell
+cells_conns = 64        # cells: keep-alive connections
+open_rate = 100.0       # ws, cells: sockets opened or cells touched per second
+ws_interval_s = 30.0    # ws: seconds between the messages of a socket
+worker = "native"       # ws and cells: native or wasm
+
+[swap]
+rate = 0.0          # req/s under which the node is replaced; 0 is the approved http-wasm-jobs rate of the results directory
+trigger = "sigterm" # sigterm or api
+workers = 12        # generator workers
+warmup_s = 25.0     # seconds of load before the swap
+overlap_s = 5.0     # seconds both nodes run
+settle_s = 30.0     # seconds of load after the swap
+timeout_s = 900.0   # seconds before the swap run is abandoned
+
+[scale]
+max_nodes = 3                  # the most nodes to run, 1 to 10
+loads = ["http-native", "cells"]   # loads to ramp on every configuration
+factor = 1.25                  # growth between the steps of 2 or more nodes, which start at the ceiling of one node fewer
+ceiling_factors = [0.75, 1.0, 1.25, 1.5]   # steps as fractions of a ceiling given in [scale.ceilings]
+# [scale.ceilings]  # ceilings of an earlier round, LOAD:NODES = N: each ramp then runs ceiling_factors times its ceiling
+# "http-native:1" = 600
+
+[scale.join]          # the 2nd and later nodes start under a fixed rate; the time until the load spreads is measured
+enabled = true
+rate = 0.0            # req/s of the join; 0 is factor times the 1-node http-native ceiling
+factor = 1.5
+warmup_s = 30.0       # seconds of load on one node before the first join
+observe_s = 120.0     # seconds from the start of a node to the start of the next one, and after the last
+node_wait_s = 90.0    # seconds the load budgets for a node to start, per join
+node_timeout_s = 300.0   # seconds before a node that does not become ready makes the join INVALID
+sample_s = 2.0        # seconds between the readings of the balancer and the admin API
+
+[scale.spread]        # when the load counts as spread
+tol_pct = 25.0        # a node's share is spread when within this percent of 1/N
+hold = 3              # consecutive readings that must be within the tolerance
+min_cells = 10        # awake cells below this in all are too few to judge
