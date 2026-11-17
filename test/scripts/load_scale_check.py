@@ -164,7 +164,7 @@ lab["silent"] = set()
 def make_args(out, **over):
     values = dict(out=out, measure="scale", step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1.0, min_available_gb=0.0, sample_s=0.05, quiet_window=0.0,
                   quiet_max_wait=2.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0, max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0,
-                  max_lag_ms=50.0, max_throttle_jump_ms=5000.0, max_busy_share=0.85, command="test", steps=None, start=None, max=None, factor=2, refine=0, no_confirm=False,
+                  max_lag_ms=50.0, max_throttle_jump_ms=5000.0, max_store_stall_ms=1000.0, store_stall_requests=10, max_busy_share=0.85, command="test", steps=None, start=None, max=None, factor=2, refine=0, no_confirm=False,
                   max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0, no_warmup=False, rate_per_proc=600.0, conns_per_rate=0.5, write_ratio=0.5, cells=64, worker="native", cell_period=10.0,
                   cells_conns=64, ws_interval=30.0, max_nodes=3, loads="http-native", scale_factor=1.25, ceilings="", factors="0.75,1,1.25,1.5", no_join=True, join_rate=None,
                   join_factor=1.5, join_warmup_s=0.3, join_observe_s=1.2, join_node_wait_s=0.2, join_node_timeout_s=10.0, join_sample_s=0.05, spread_tol_pct=25.0,
@@ -359,18 +359,47 @@ def two_node_cgroup(directory):
             "throttled_s": 0.0 if directory == "d1" else tick["n"] * 0.01, "cpu_limit": 1.0, "swap_current": 0}
 
 
-real_cgroup, real_dirs, real_get = m.cgroup_sample, m.lab_dirs, m.Round.run_generators
-m.cgroup_sample, m.lab_dirs = two_node_cgroup, lambda info: {"node": "d1", "store": "s", "lb": "l", "extra1": "d2"}
-m.Round.run_generators = lambda self, value, sampler: (time.sleep(0.3), [dict(DOCUMENT, statuses={"200": 90, "503 retry-after": 10})])[1]
-lab.update(by_ip=by_ip, runtime={}, silent=set(), busy_at=None, force_busy=False, nodes=2)
-two = info_of(2)
-two_args = make_args(os.path.join(work, "two"), measure="http-native", steps="10")
-real_awake, m.cells_awake = m.cells_awake, lambda info: 7
-two_record = m.Round(two_args, two, stem="scale-http-native-n2").step(10, "ramp")
-m.cgroup_sample, m.lab_dirs, m.Round.run_generators, m.cells_awake = real_cgroup, real_dirs, real_get, real_awake
-lab["by_ip"] = None
+def two_node_step(name, reader, reasons=None):
+    """One step on two stub nodes whose /runtime is `reader(ip, kind)`; the generator saw `reasons` of its 503 answers (by body reason)."""
+    real_cgroup, real_dirs, real_get = m.cgroup_sample, m.lab_dirs, m.Round.run_generators
+    m.cgroup_sample, m.lab_dirs = two_node_cgroup, lambda info: {"node": "d1", "store": "s", "lb": "l", "extra1": "d2"}
+    m.Round.run_generators = lambda self, value, sampler: (time.sleep(0.3), [dict(DOCUMENT, statuses={"200": 90, "503 retry-after": 10}, reasons_503=reasons or {})])[1]
+    lab.update(by_ip=reader, runtime={}, silent=set(), busy_at=None, force_busy=False, nodes=2)
+    two_args = make_args(os.path.join(work, name), measure="http-native", steps="10")
+    real_awake, m.cells_awake = m.cells_awake, lambda info: 7
+    try:
+        return m.Round(two_args, info_of(2), stem="scale-http-native-n2").step(10, "ramp")
+    finally:
+        m.cgroup_sample, m.lab_dirs, m.Round.run_generators, m.cells_awake = real_cgroup, real_dirs, real_get, real_awake
+        lab["by_ip"] = None
+
+
+two_record = two_node_step("two", by_ip)
 results["two_nodes"] = {"per_node": two_record["per_node"], "refusals": two_record["refusals"], "notes": two_record["notes"], "evictions": two_record["evictions"],
                         "series_nodes": sorted(two_record["series"][-1]["nodes"]), "disk": two_record["admission"]["disk_used_max_pct_of_budget"]}
+
+# The counters a newer node adds: `refused.unavailable` (a refusal cause, so those 503 answers are attributed), `unavailable_by_reason` and the
+# top-level `wakes`, each as growth over the step. Node 2 reports none of them (null, not 0) and has another disk budget (a note).
+counts_new = {}
+
+
+def by_ip_new(ip, reader):
+    counts_new[ip, reader] = counts_new.get((ip, reader), 0) + 1
+    first = counts_new[ip, reader] == 1
+    if ip.endswith(".2"):
+        return {"admission": {"in_flight": 0, "refused": {"busy": 0}, "disk_used_bytes": 10 * MB, "disk_budget_bytes": 200 * MB}}
+    return {"admission": {"in_flight": 0, "refused": {"unavailable": 0 if first else 3}, "unavailable_by_reason": {"store_unavailable": 0 if first else 2, "breaker_open": 0 if first else 1},
+                          "disk_used_bytes": 10 * MB, "disk_budget_bytes": 100 * MB}, "wakes": 5 if first else 12}
+
+
+new_record = two_node_step("two_new", by_ip_new, reasons={"unavailable/store_unavailable": 7, "overloaded/busy": 3})
+results["two_nodes_new"] = {"per_node": new_record["per_node"], "refusals": new_record["refusals"], "notes": new_record["notes"], "wakes": new_record["evictions"]["wakes"],
+                            "unavailable_by_reason": new_record["admission"]["unavailable_by_reason"], "by_reason": new_record["statuses_503_by_reason"],
+                            "unreported": new_record["admission"]["refused_unreported"]}
+same_record = two_node_step("two_same", lambda ip, reader: {"admission": {"in_flight": 0, "refused": {}, "disk_budget_bytes": 100 * MB}})
+results["two_nodes_same_budget"] = {"notes": same_record["notes"], "wakes": same_record["evictions"]["wakes"], "by_reason": same_record["statuses_503_by_reason"],
+                                    "unavailable_by_reason": same_record["admission"]["unavailable_by_reason"],
+                                    "per_node": {n: (p["wakes"], p["unavailable_by_reason"]) for n, p in same_record["per_node"].items()}}
 
 # The rebalance of a window is read mid-plan (`rebalance_observed`) and at the window's end (`rebalance`): the end sees later moves. A node whose
 # /runtime did not answer is named with the error. An ok join keeps every node's state and log, the store's, and the /runtime of each window.
@@ -382,6 +411,13 @@ results["join_end"] = {"status": record["status"], "observed": window["rebalance
                        "silent_samples": sorted({tuple(s["runtime_errors"]) for s in window["samples"]}), "diagnostics": sorted(record["diagnostics"]),
                        "files": sorted(f for f in os.listdir(out) if "scale-join" in f and not f.endswith("join-2000.json")),
                        "runtime_window_2": json.load(open(os.path.join(out, "A_scale-join_01-join-2000.window-2.runtime.json")))}
+# A join whose nodes report another disk budget says so, and keeps the budgets of the last window.
+lab["by_ip"] = lambda ip, reader: {"admission": {"disk_budget_bytes": (100 if ip.endswith(".1") else 200) * MB}}
+record, _ = run_join("join_budgets")
+lab["by_ip"] = None
+results["join_budgets"] = {"status": record["status"], "budgets": record["disk_budget_bytes"], "notes": record["notes"]}
+record, _ = run_join("join_no_budgets")
+results["join_no_budgets"] = {"budgets": record["disk_budget_bytes"], "notes": record["notes"]}
 real_cluster = m.fresh_cluster
 m.fresh_cluster = lambda nodes: (_ for _ in ()).throw(m.LabError("the lab did not start with 1 nodes"))
 record, _ = run_join("join_lab")
