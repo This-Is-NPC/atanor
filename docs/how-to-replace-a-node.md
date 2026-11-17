@@ -238,8 +238,8 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
 
 The four runs above had no unknown outcome because the store answered in under a
 millisecond. With the store 25 ms away (load scenario A, one CPU and 512 MB per
-node, 12 rooms, 750 requests per second), `mise run load:swap`
-(`scripts/cluster-swap-run`) on Alambique 0.6.1 left 22 to 36 requests with no
+node, 12 rooms, 750 requests per second), the swap measure of the load test
+(`mise run load -- --config FILE`, which runs `scripts/cluster-swap-run`) on Alambique 0.6.1 left 22 to 36 requests with no
 answer in 4 of 4 swaps, always from the same 4 of the 12 rooms. They were client
 timeouts at 10 s, not resets, and no acknowledged write was lost or duplicated.
 
@@ -266,9 +266,21 @@ per cell; [design §8.11](design.md#811-draining-and-stopping-gracefully)), so B
 restores a short chain.
 
 The same swap on Alambique 0.9.0, with the 5 s wait deadline (scenario A, fresh
-stack for each run, `mise run load:up`, then `ATANOR_LOAD_SCENARIO=A
-ATANOR_LOAD_STORE_TMPFS_SIZE=2g mise run load:swap -- --rate 750`). No request
-went unanswered and none had an unknown outcome, in any run:
+stack for each run, a round file `swap-750.toml` and `mise run load -- --config
+swap-750.toml --no-skip-done`). No request went unanswered and none had an
+unknown outcome, in any run:
+
+```toml
+[round]
+cases = ["A/swap"]
+[output]
+name = "swap-750"
+[store]
+tmpfs_size = "2g"
+[swap]
+rate = 750
+```
+
 
 | Run | No answer | Unknown outcome | Lost | Duplicated | 503 `held_elsewhere` | 503 `queue_timeout` | p99 | p99 of the swap phase | Slow wakes of B | Drain of A |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
