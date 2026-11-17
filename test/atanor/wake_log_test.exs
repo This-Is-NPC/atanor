@@ -3,7 +3,9 @@ defmodule Atanor.WakeLogTest do
 
   import ExUnit.CaptureLog
 
-  alias Atanor.WakeLog
+  alias Atanor.{Cell, RuntimeSample, WakeLog}
+  alias Atanor.Test.{Await, Manifests}
+  alias AtanorTestkit.Node
 
   defp wake(ms, cell \\ "rooms.a"),
     do: WakeLog.handle([:alambique, :cell, :wake], %{duration: ms * 1_000_000}, %{cell: cell, result: :ok}, nil)
@@ -23,6 +25,20 @@ defmodule Atanor.WakeLogTest do
     # capture_log sees the log of every test running beside this one, so the cell is this test's own.
     log = capture_log(fn -> wake(999, "rooms.faster") end)
     refute log =~ "rooms.faster"
+  end
+
+  describe "wakes" do
+    # The event carries no instance, so the nodes of other tests in this VM can count too: only a rise is certain.
+    test "a cell woken on the node is counted in the runtime sample" do
+      node = Node.start(workers: [Manifests.jobs("jobs")])
+      on_exit(fn -> Node.stop(node) end)
+      wakes = fn -> RuntimeSample.sample(node.name, System.tmp_dir!()).wakes end
+      before = wakes.()
+      assert is_integer(before)
+
+      assert {:ok, _} = Cell.query(node.name, {"jobs", "wake-count"}, "SELECT 1")
+      Await.until(fn -> wakes.() > before end)
+    end
   end
 
   test "attaching twice keeps one handler" do

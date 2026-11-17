@@ -25,6 +25,7 @@ defmodule Atanor.RuntimeSample do
       top_memory: top(infos, :memory),
       cgroup: cgroup(cgroup_dir),
       admission: Atanor.Admission.stats(name),
+      wakes: Atanor.Admission.wakes(name),
       pressure: Atanor.Pressure.stats(name),
       wasm: wasm(),
       store: Atanor.Overview.store_breakers(name)
