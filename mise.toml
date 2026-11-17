@@ -257,6 +257,10 @@ run = "scripts/cluster-swap-run"
 description = "Roll the cluster's nodes onto a rebuilt image one at a time: build|roll (used by cluster:chaos-run rollout-restart)"
 run = "scripts/cluster-roll"
 
+[tasks.load]
+description = "Run a load round from a config file: validate it, then per scenario start the lab, run each measure, write the report and remove the lab (arguments: --config FILE [--skip-done|--no-skip-done] [--dry-run]; results in OUT/SCENARIO/MEASURE/step-VALUE.json; layout in load/rounds/example.toml, guide in docs/how-to-run-the-load-tests.md)"
+run = "scripts/load"
+
 [tasks."load:up"]
 description = "Start the load-test scenario: one node with cgroup limits (env: ATANOR_LOAD_SCENARIO=A 1 CPU/512 MB or B 2 CPUs/2 GB), data and store in tmpfs, 25 ms added per store trip, the native, the plain WASM and the scoreboard workers deployed (see docs/how-to-run-the-load-tests.md)"
 depends = ["build:scoreboard", "build:load-plain"]

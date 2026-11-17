@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Run a load round from a config file: load --config FILE [--skip-done | --no-skip-done] [--dry-run]
+
+The file is validated first (scripts/load_config.py; every problem is listed and nothing starts). The round runs `round.cases` in order,
+or each scenario of `round.scenarios` with its `round.measures` (a measure with `run_on` only on those scenarios). Per scenario it starts
+the lab (`load:up`, with the scenario's settings; a measure with its own `[measures.M.store]` gets its own), runs each measure with
+scripts/load-run on a fresh node and store, writes the report (`load:report`) and removes the lab at the end (`load:down`).
+
+Results: OUT/SCENARIO/MEASURE[/VARIANT]/step-VALUE[-REPETITION].json and summary.json, and the resolved config as OUT/config.toml.
+--skip-done (the default) does not run again a step whose file has the same config_hash and is not INVALID, and reuses its result; a
+step file of another config refuses the round. --no-skip-done runs every step and overwrites the files. --dry-run prints the plan
+and exits without starting anything.
+
+Exit status: 0 when every measure recorded a verdict; 1 when a measure ended INVALID or the round was stopped (round.timeout_s); 2 when
+the config is refused.
+"""
+import argparse
+import glob
+import json
+import os
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+sys.dont_write_bytecode = True  # no scripts/__pycache__
+import load_config  # noqa: E402
+
+
+def describe(config, scenario, measure):
+    """What a case runs: its kind, the values of its first pass, the most steps it can run and the seconds a step of it takes."""
+    if measure in load_config.RAMP_MEASURES:
+        p = load_config.plan(config, measure, scenario)
+        values = load_config.plan_values(p)
+        extra = p["refine"] + (1 if p["confirm"] else 0)
+        return {"kind": p["kind"], "values": values, "max_steps": len(values) + extra, "extra": f"{p['refine']} refine, {'1' if p['confirm'] else 'no'} confirm",
+                "step_s": p["duration_s"], "unit": load_config.UNITS[measure]}
+    if measure == "swap":
+        swap = config["swap"]
+        return {"kind": "swap", "values": [swap["rate"]] if swap["rate"] else [], "max_steps": 1, "extra": "", "unit": load_config.UNITS[measure],
+                "step_s": swap["warmup_s"] + swap["overlap_s"] + swap["settle_s"]}
+    scale = load_config.scale_of(config, scenario)
+    configs = len(scale["loads"]) * scale["max_nodes"]
+    return {"kind": "scale", "values": [], "max_steps": None, "extra": f"{', '.join(scale['loads'])} on 1 to {scale['max_nodes']} nodes ({configs} configurations)"
+            + (", then the join" if config["scale"]["join"]["enabled"] and scale["max_nodes"] > 1 else ""), "step_s": None, "unit": load_config.UNITS[measure]}
+
+
+def build_plan(config, out):
+    """One entry per case, in the order they run: where it writes, its hash and its lab (`env`; `own_lab`: its store differs from its scenario's)."""
+    plan = []
+    for scenario, measure in load_config.case_list(config):
+        env = load_config.env_lines(config, scenario, measure)
+        plan.append({"scenario": scenario, "measure": measure, "name": f"{scenario}/{measure}", "dir": os.path.join(out, scenario, measure),
+                     "hash": load_config.case_hash(config, scenario, measure), "env": env,
+                     "own_lab": lab_of(env) != lab_of(load_config.env_lines(config, scenario)),
+                     **describe(config, scenario, measure)})
+    return plan
+
+
+def lab_of(env):
+    """The settings that make a lab: the lines of `env_lines` but the number of nodes, which the scale measure sets itself."""
+    return tuple(sorted((k, v) for k, v in env.items() if k != "ATANOR_LOAD_NODES"))
+
+
+def conflicts(plan):
+    """The step files of a case's directory made by another config: their `config_hash` is not the case's."""
+    found = []
+    for case in plan:
+        for path in sorted(glob.glob(os.path.join(case["dir"], "step-*.json")) + glob.glob(os.path.join(case["dir"], "*", "step-*.json"))):
+            try:
+                with open(path) as file:
+                    other = json.load(file).get("config_hash")
+            except (OSError, ValueError):
+                other = None
+            if other != case["hash"]:
+                found.append(path)
+    return found
+
+
+def show(plan, config, out, path, skip_done):
+    timeout = config["round"]["timeout_s"]
+    print(f"Round {path}: {len(plan)} cases, results in {out}")
+    print(f"  skip-done {'on' if skip_done else 'off'}; each generator process is killed after {config['round']['step_timeout_s']:g} s (round.step_timeout_s); "
+          + (f"the round stops after {timeout:g} s (round.timeout_s)" if timeout else "no round timeout"))
+    if config["host"]["ssh"]:
+        print("  note: host.ssh is not used yet, the round runs on this machine")
+    for i, case in enumerate(plan, 1):
+        values = f"{case['kind']}, values {', '.join(str(v) for v in case['values'])}" if case["values"] else case["kind"]
+        steps = "" if case["max_steps"] is None else f"; at most {case['max_steps']} steps ({case['extra']})" if case["extra"] else f"; {case['max_steps']} step"
+        per = "" if case["step_s"] is None else f", {case['step_s']:g} s each"
+        print(f"{i:3}. {case['name']:<18} {values} {case['unit']}{steps}{per}" + ("" if case["max_steps"] is not None else f"; {case['extra']}"))
+        print(f"       lab    scenario {case['scenario']}" + ("; its own load:up (store of the measure differs)" if case["own_lab"] else ""))
+        print(f"       output {os.path.relpath(case['dir'], out)}/")
+        print(f"       hash   {case['hash']}")
+
+
+class Round:
+    """The lab and the processes of a round, run through `run` (a stub in the tests)."""
+
+    def __init__(self, config, plan, out, config_path, args):
+        self.config, self.plan, self.out, self.config_path, self.args = config, plan, out, config_path, args
+        timeout = config["round"]["timeout_s"]
+        self.deadline = time.time() + timeout if timeout else None
+        self.lab, self.dirty, self.results = None, False, []
+
+    def env(self, case):
+        return {**os.environ, "ATANOR_LOAD_CONFIG": self.config_path, "ATANOR_LOAD_SCENARIO": case["scenario"], "ATANOR_LOAD_MEASURE": case["measure"]}
+
+    def run(self, argv, env):
+        print("+ " + " ".join(argv), flush=True)
+        return subprocess.run(argv, env=env).returncode
+
+    def prepare(self, case):
+        """The lab of the case: started for the first one, replaced when its settings change, else made fresh (reset) after a measure."""
+        key = (case["scenario"], lab_of(case["env"]))
+        env = self.env(case)
+        if self.lab is None:
+            status = self.run(["mise", "run", "load:up"], env)
+        elif self.lab != key:
+            self.run(["mise", "run", "load:down"], env)
+            status = self.run(["mise", "run", "load:up"], env)
+        elif self.dirty and case["measure"] != "scale":  # the scale measure starts its own nodes
+            status = self.run([f"{HERE}/load-env", "reset"], env)
+        else:
+            status = 0
+        self.lab, self.dirty = key, False
+        return status
+
+    def report(self):
+        if self.results:
+            self.run([f"{HERE}/load-report", self.out], {**os.environ})
+
+    def execute(self):
+        """Runs the cases in order; the exit status of the round."""
+        previous, status = None, 0
+        try:
+            for case in self.plan:
+                if self.deadline and time.time() > self.deadline:
+                    print(f"STOP: round.timeout_s passed; {case['name']} and the cases after it did not run", flush=True)
+                    return 1
+                if previous and previous != case["scenario"]:
+                    self.report()
+                previous = case["scenario"]
+                if self.prepare(case):
+                    print(f"STOP: the lab of {case['name']} did not start", flush=True)
+                    return 1
+                argv = [f"{HERE}/load-run", case["measure"], "--config", self.config_path, "--scenario", case["scenario"],
+                        "--skip-done" if self.args.skip_done else "--no-skip-done"] + (["--deadline", str(self.deadline)] if self.deadline else [])
+                code = self.run(argv, self.env(case))
+                self.dirty = True
+                self.results.append((case["name"], code))
+                if code == 3:
+                    print(f"STOP: round.timeout_s passed during {case['name']}; what is done stays for --skip-done", flush=True)
+                    return 1
+                if code not in (0, 1):
+                    print(f"STOP: {case['name']} exited {code}", flush=True)
+                    return 1
+                status = status or code
+            return status
+        finally:
+            self.report()
+            if self.lab is not None:
+                self.run(["mise", "run", "load:down"], self.env(self.plan[0]))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--config", required=True, metavar="FILE", help="the round config (see load/rounds/example.toml)")
+    parser.add_argument("--skip-done", action=argparse.BooleanOptionalAction, default=True,
+                        help="do not run again a step whose file has the same config_hash and is not INVALID (default)")
+    parser.add_argument("--dry-run", action="store_true", help="print the plan and exit without starting anything")
+    args = parser.parse_args(argv)
+    try:
+        config = load_config.load_config(args.config)
+    except load_config.ConfigError as error:
+        print(error, file=sys.stderr)
+        return 2
+    out = load_config.output_dir(config, ROOT)
+    plan = build_plan(config, out)
+    if args.skip_done and (other := conflicts(plan)):
+        print(f"refusing the round: {len(other)} step files in {out} were made by another config (their config_hash differs from the case's):", file=sys.stderr)
+        print("".join(f"  {os.path.relpath(p, out)}\n" for p in other[:10]) + ("  ...\n" if len(other) > 10 else "")
+              + "use another output.dir or output.name, or --no-skip-done to run them again and overwrite them", file=sys.stderr)
+        return 2
+    if args.dry_run:
+        show(plan, config, out, args.config, args.skip_done)
+        return 0
+    os.makedirs(out, exist_ok=True)
+    config_path = os.path.join(out, "config.toml")
+    resolved = {**config, "output": {**config["output"], "dir": out}}
+    with open(f"{config_path}.tmp", "w") as file:
+        file.write(load_config.dump_toml(resolved))
+    os.replace(f"{config_path}.tmp", config_path)
+    show(plan, config, out, config_path, args.skip_done)
+    sys.stdout.flush()
+    return Round(config, plan, out, config_path, args).execute()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
