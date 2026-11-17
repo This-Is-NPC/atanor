@@ -352,6 +352,94 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
    The report is `ATANOR_LOAD_OUT/report.md`: per scenario and measure, the steps, the cost per unit at the
    approved step, the criterion that stopped the ramp and the command to reproduce it.
 
+## Run a round from a config file
+
+One command runs a whole round from a TOML file: scenarios, measures, step plans, criteria, store,
+timeouts and output directory are all keys of the file. [load/rounds/example.toml](../load/rounds/example.toml)
+lists every key at its default, with a comment; [load/rounds/018f.toml](../load/rounds/018f.toml) is the
+official round 018f. A file needs only the keys it changes. The `load:*` tasks and the `ATANOR_LOAD_*`
+settings above still work and are unchanged.
+
+```sh
+mise run load -- --config load/rounds/018f.toml --dry-run
+mise run load -- --config load/rounds/018f.toml
+```
+
+| Option | Effect |
+|---|---|
+| `--config FILE` | The round file. It is validated first: a wrong key, type or range, or a plan that cannot run, refuses the round with every problem listed, before any container starts. |
+| `--dry-run` | Prints the plan and exits: the cases in order, the values of each plan and its most steps, the seconds per step, the output directory of each case and its `config_hash`. It starts nothing and writes nothing. |
+| `--skip-done` (default) | Does not run again a step whose file has the same `config_hash` and is not INVALID, and uses its result for the ramp's decisions. A step file of another config refuses the round. |
+| `--no-skip-done` | Runs every step and overwrites its file. |
+
+The dry run of the official round starts like this:
+
+```text
+Round load/rounds/018f.toml: 13 cases, results in .../load/results/018f
+  skip-done on; each generator process is killed after 600 s (round.step_timeout_s); no round timeout
+  1. A/http-native      ladder, values 490, 650, 810, 975 req/s; at most 8 steps (3 refine, 1 confirm), 180 s each
+       lab    scenario A
+       output A/http-native/
+       hash   54fc3a5d2debb3a79e5d039f705c0cb17474a4feff0aa78a1ce007d4f6ae28c5
+```
+
+**What runs.** The cases are `round.cases` when it is set (a list like `["A/http-native", "B/ws"]`, run in
+that order; not with `run_on`), else each scenario of `round.scenarios` with the `round.measures` in
+order, a measure with `run_on` only on those scenarios. For each scenario the task starts the lab
+(`load:up`, with the settings of the file for that scenario), runs the measures with `scripts/load-run`,
+each after the first on a fresh node and store, writes the report (`load:report`) and, at the end,
+removes the lab (`load:down`), also after a failure. A measure with its own `[measures.NAME.store]`
+(`backing`, `tmpfs_size`, `latency_ms`) gets a lab of its own, and the next measure goes back to the
+scenario's. A measure that ends INVALID does not stop the others, and the round exits 1.
+
+**Plans.** `kind = "bisect"` grows from `start` by `factor` up to `max` and refines; `"ladder"` runs
+`values`; `"ceiling"` runs a ladder of `factors` times `ceiling` (the exploration of a ceiling found by an
+earlier round); `refine` and `confirm` apply to all three. The scale measure takes `ceilings` and
+`ceiling_factors` per scenario with `[scale.per_scenario.A]`. Criteria are `[judging.*]`: each has
+`enabled` and its limits, and `[judging.errors]` is the criterion that a 5xx answer other than a 503
+refusal, or an error, fails a step.
+
+**Timeouts.** Every load generator process runs under `timeout --kill-after=10s`, killed after
+`round.step_timeout_s` (default 600 s). A step whose generator was killed is INVALID, reason
+`timeout`. The file is refused when `step_timeout_s` is below a plan's `duration_s` plus
+`generator.grace_s` (or the join of the scale measure). `round.timeout_s` (default 0, none) bounds the
+whole round: when it passes, the round stops (`STOP`, exit 1), and what is done stays for `--skip-done`.
+The reset of the node and the store and the wait for a quiet host are not under `step_timeout_s`.
+Alambique uses the same keys but defaults `round.step_timeout_s` to 1800, because its generator runs inside
+the driver; Atanor's 600 covers only the separate generator processes. The table
+`[measures.NAME.variant.V.store]` (and `.steps`) is reserved for variants and is refused for now: no
+Atanor measure has one.
+
+**Results.** Under the output directory (`output.dir`, else `load/results/` plus `output.name` or a
+time stamp):
+
+```text
+config.toml                                  the resolved config of the round
+SCENARIO/MEASURE/step-VALUE.json             one step
+SCENARIO/MEASURE/step-VALUE-2.json           the confirmation of a value that was already measured
+SCENARIO/MEASURE/summary.json                the verdict of the measure
+SCENARIO/MEASURE/baseline.json               the idle node, before the load
+SCENARIO/scale/http-native-n2/step-998.json  scale: the load and the node count are the variant
+SCENARIO/scale/join/step-RATE.json           the join
+report.md                                    written by load:report
+```
+
+Each step file has its `phase` (`ramp`, `refine`, `confirm`) and the `config_hash` of its case; a stall
+repeat keeps its `first_attempt` inside the same file. The hash is the hash of the resolved config
+restricted to what affects the case: the scenario, the store with the measure's override, the balancer,
+the node, the judging, the generator, the workload, the measure's plan and, for the swap and the scale
+measure, their sections. It leaves out `output`, `host`, `round` and the other measures' plans, so a
+change to one measure leaves the done steps of the others valid. `mise run load:report -- DIR` reads
+this layout, and still the flat layout of the older results.
+
+**Rerun after a stop.** Run the same command again: the steps that have a file with the same hash are
+reused, and the round goes on from the first step that has none, or that was INVALID. Changing a key that
+affects a case changes its hash, and the next run refuses until you set another `output.name` or pass
+`--no-skip-done`.
+
+Not covered yet: running the round on another host (`[host]` is read but not used) and the single task
+that replaces the `load:*` ones.
+
 ## The scale measure
 
 **The question:** how much more does a cluster of 2 or 3 nodes hold than one node, how evenly do the nodes share
