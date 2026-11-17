@@ -415,6 +415,213 @@ defmodule Atanor.LoadRunTest do
     assert length(start["files"]) == 1
   end
 
+  test "a round of a config file: the layout, the hash, --skip-done, the plan kinds, the timeouts", %{dir: dir} do
+    {out, 0} = System.cmd("python3", ["-I", "test/scripts/load_run_check.py", dir], stderr_to_stdout: true)
+    r = out |> String.split("\n", trim: true) |> List.last() |> :json.decode()
+    step = fn n -> "A/http-native/step-#{n}.json" end
+
+    # bisect: 10 and 20 pass, 40 fails, the refinement tries 30 (fails) and 25 (passes); the confirmation of the measured 25 is repetition 2.
+    # Each file has the phase and the hash of the case; refine and confirm run on a fresh node.
+    b = r["bisect"]
+    assert b["runs"] == [10, 20, 40, 30, 25, 25]
+    assert b["files"] == Enum.sort(Enum.map([10, 20, 40, 30, 25, "25-2"], step))
+    assert b["summary"] == %{"good" => 25, "approved" => 25, "confirmed" => true, "first_failure" => 40}
+
+    assert b["phases"][step.(10)] == ["ramp", "ok", "h1"]
+    assert b["phases"][step.(40)] == ["ramp", "fail", "h1"]
+    assert b["phases"][step.(30)] == ["refine", "fail", "h1"]
+    assert b["phases"][step.("25-2")] == ["confirm", "ok", "h1"]
+    assert b["fresh"] == [false, true, true, true]
+
+    # ceiling: a ladder of 0.75, 1, 1.25 and 1.5 times 400, refined once and confirmed
+    c = r["ceiling"]
+    assert c["steps"] == "300,400,500,600"
+    assert c["runs"] == [300, 400, 500, 450, 450]
+    assert c["good"] == 450 and c["approved"] == 450
+    assert step.("450-2") in c["files"] and step.(300) in c["files"]
+
+    # --skip-done: a second run runs nothing and reaches the same verdict (the generator would now fail every step); a deleted
+    # confirmation is the only step run again; an INVALID step runs again; a file of another config refuses; --no-skip-done runs all
+    s = r["skip_done"]
+    assert s["first"] == [10, 20, 40, 20] and s["again"] == []
+    assert s["same_summary"] and s["approved"] == 20 and s["hash_in_file"] == "h1"
+    assert s["third"] == [20] and s["invalid_reran"] == [40]
+    assert s["refused"] =~ "step-10.json was made by another config (config_hash differs)" and s["refused_ran"] == []
+    assert s["no_skip"] == [10, 20, 40, 20]
+    assert s["files"] == Enum.sort(Enum.map([10, 20, 40, "20-2"], step))
+
+    # the layout: the load and the node count are the variant of the scale measure; the join, the summary and the baseline have their place
+    l = r["layout"]
+    assert l["files"] == ["A/scale/http-native-n2/step-998-2.json", "A/scale/http-native-n2/step-998.json"]
+    assert l["measure"] == "scale" and l["load"] == "http-native" and l["config_hash"] == "h1"
+    assert l["join"] == "A/scale/join/step-600" and l["join_float"] == "A/scale/join/step-600"
+    assert l["summary"] == "A/ws/summary.json" and l["baseline"] == "A/cells/baseline.json"
+    assert l["flat_summary"] == "A_ws.summary.json"
+
+    # the swap takes the approved rate of http-wasm-jobs from the layout, and a done swap is not run again
+    w = r["swap_nested"]
+    assert w["first"] == "ok" and w["again"] == "ok" and w["approved"] == [10, 10]
+    assert w["files"] == ["step-10.json"] and w["same_files"] and w["hash"] == "h1"
+
+    # the round's timeout stops before the next step, and nothing was written
+    assert r["deadline"] == ["round.timeout_s passed", false]
+
+    # what the config says reaches the arguments; a criterion that is off gets a limit nothing reaches
+    d = r["config_defaults"]
+    assert d["p99_off"] and d["p99_on"] == 250.0 and d["delivery"] == 0.0 and d["judge_errors"] == false
+    assert d["stall_ms"] == 0.0 and d["host_off"] and d["quiet_window"] == 0.0 and d["min_gb"] == 0.0
+    assert d["timeout"] == 123.0 and d["no_warmup"] and d["repeats"] == 3 and d["steps"] == "300,400,500,600"
+    assert d["nested"] and d["hash"] == 64 and d["command"] == "mise run load -- --config c.toml"
+
+    assert d["scale"] == [
+             "http-native:1=600,http-native:2=840,cells:1=470,cells:2=750",
+             "1,1.5",
+             2,
+             [490, 650, 810, 975],
+             "none"
+           ]
+
+    assert r["stall_repeats"] == %{"two" => [10, 10, 10, 20, 20], "none" => [10]}
+
+    # the criterion "5xx or error fails a step" is on by default and can be turned off
+    assert r["errors"] == [["fail", "errors: 500 x1"], ["ok", :null]]
+
+    # a generator that outlives step_timeout_s is killed by `timeout`: INVALID, and the CPU is read from the generator, not from `timeout`
+    t = r["generator_timeout"]
+    assert t["status"] == "invalid" and t["valid"] == false
+    assert t["stop_reason"] == "timeout: a generator was killed after 1 s (round.step_timeout_s)"
+    assert t["seconds"] <= 5 and t["child_pid_read"]
+    assert r["generator_ok"]["status"] == "ok" and r["generator_ok"]["stop_reason"] == :null
+  end
+
+  test "mise run load: the plan, the lab per scenario, the refusals and the timeout of the round", %{dir: dir} do
+    {out, 0} = System.cmd("python3", ["-I", "test/scripts/load_round_check.py", dir], stderr_to_stdout: true)
+    r = out |> String.split("\n", trim: true) |> List.last() |> :json.decode()
+
+    # --dry-run prints the plan of the official round and starts and writes nothing
+    d = r["dry_run"]
+    assert d["status"] == 0 and d["hashes"] and d["calls"] == false and d["results_dir"] == false
+    assert d["text"] =~ "13 cases, results in REPO/load/results/018f"
+    assert d["text"] =~ "each generator process is killed after 600 s (round.step_timeout_s); no round timeout"
+
+    assert d["text"] =~
+             "A/http-native      ladder, values 490, 650, 810, 975 req/s; at most 8 steps (3 refine, 1 confirm), 180 s each"
+
+    assert d["text"] =~ "A/http-wasm        bisect, values 25, 50, 100,"
+    assert d["text"] =~ "B/ws               ladder, values 15000, 20000, 25000, 30000 connections"
+    assert d["text"] =~ "A/scale            scale"
+    assert d["text"] =~ "output A/scale/"
+
+    # an invalid config lists every problem and starts nothing
+    i = r["invalid"]
+    assert i["status"] == 2 and i["calls"] == [] and i["out_made"] == false
+    assert i["stderr"] =~ "judging.p99.max_ms: -1 is out of range"
+    assert i["stderr"] =~ "nope: unknown key"
+    assert i["stderr"] =~ "round.step_timeout_s: 10 s is below 210 s"
+
+    # the lab is started per scenario, each later measure runs on a fresh lab, and the report follows its scenario
+    t = r["two"]
+    assert t["status"] == 0 and t["config_toml"]
+
+    assert t["calls"] == [
+             "mise run load:up",
+             "load-run http-native --config OUT/config.toml --scenario A --skip-done",
+             "env A http-native",
+             "load-env reset",
+             "load-run swap --config OUT/config.toml --scenario A --skip-done",
+             "env A swap",
+             "load-report OUT",
+             "mise run load:down",
+             "mise run load:up",
+             "load-run http-native --config OUT/config.toml --scenario B --skip-done",
+             "env B http-native",
+             "load-env reset",
+             "load-run swap --config OUT/config.toml --scenario B --skip-done",
+             "env B swap",
+             "load-report OUT",
+             "mise run load:down"
+           ]
+
+    # a measure with its own store gets its own lab; the next one goes back to the scenario's
+    assert r["own_lab"]["calls"] == [
+             "mise run load:up",
+             "mise run load:down",
+             "mise run load:up",
+             "mise run load:down",
+             "mise run load:up",
+             "load-report OUT",
+             "mise run load:down"
+           ]
+
+    # the scale measure starts its own nodes: no reset before it
+    assert r["scale"]["calls"] == ["mise run load:up", "load-env reset", "load-report OUT", "mise run load:down"]
+
+    # INVALID (exit 1) does not stop the other measures but makes the round's status 1; exit 3 (the round's timeout) stops it
+    assert r["exits"]["invalid"] == [1, 2]
+    assert r["exits"]["stopped"] == [1, 1, true, ["load-report OUT", "mise run load:down"]]
+
+    # --skip-done: a step file of another config refuses the round before any container; the same config runs; --no-skip-done overwrites
+    h = r["hash"]
+    assert [status, calls, stderr] = h["refused"]
+    assert status == 2 and calls == []
+    assert stderr =~ "1 step files in OUT were made by another config"
+    assert stderr =~ "A/http-native/step-10.json"
+    assert h["forced"] == [0, ["A --no-skip-done"]]
+    assert h["same_hash_runs"] == [0, 1] and h["skip_flag"]
+
+    # the timeout of the round: the case that passes it ends, the next one does not start, the lab is removed
+    s = r["round_timeout"]
+    assert s["status"] == 1 and s["runs"] == 1 and s["deadline_passed"] and s["stdout"]
+    assert s["calls"] == ["mise run load:up", "load-report OUT", "mise run load:down"]
+
+    # a lab that does not start ends the round, and the lab is removed
+    assert r["lab_fails"] == %{"status" => 1, "runs" => 0, "calls" => ["mise run load:up", "mise run load:down"]}
+  end
+
+  test "mise run load refuses a missing config and prints --help", %{dir: dir} do
+    {out, status} =
+      System.cmd("python3", ["-I", "scripts/load", "--config", Path.join(dir, "absent.toml"), "--dry-run"],
+        stderr_to_stdout: true
+      )
+
+    assert status == 2
+    assert out =~ "cannot read the file: No such file or directory"
+
+    {out, 0} = System.cmd("python3", ["-I", "scripts/load", "--help"], stderr_to_stdout: true)
+    assert out =~ "--skip-done" and out =~ "--dry-run" and out =~ "step-VALUE[-REPETITION].json"
+  end
+
+  test "load-env takes the lab's settings from the round config for a scenario and a measure", %{dir: dir} do
+    File.write!(
+      Path.join(dir, "round.toml"),
+      "[store]\nlatency_ms = 7\n[measures.ws.store]\nbacking = \"disk\"\n[node]\nhttp_max_connections = 99999\n[scenarios.B]\nnodes = 2\n"
+    )
+
+    env = fn scenario, measure ->
+      script =
+        "source scripts/load-common; echo \"$LOAD_SCENARIO $LOAD_CPUS $LOAD_MEMORY $LOAD_STORE_LATENCY_MS $LOAD_STORE_DISK $LOAD_NODES $ATANOR_CLUSTER_HTTP_MAX_CONNECTIONS\""
+
+      {out, 0} =
+        System.cmd("bash", ["-c", script],
+          env: [
+            {"ATANOR_LOAD_CONFIG", Path.join(dir, "round.toml")},
+            {"ATANOR_LOAD_SCENARIO", scenario},
+            {"ATANOR_LOAD_MEASURE", measure},
+            {"ATANOR_LOAD_CPUS", "9"},
+            {"ATANOR_LOAD_NODES", nil}
+          ],
+          stderr_to_stdout: true
+        )
+
+      String.trim(out)
+    end
+
+    # the config replaces the ATANOR_LOAD_* it names (ATANOR_LOAD_CPUS=9 here); the store of a measure follows its override
+    assert env.("A", "http-native") == "A 1 512m 7 0 1 99999"
+    assert env.("A", "ws") == "A 1 512m 7 1 1 99999"
+    assert env.("B", "cells") == "B 2 2g 7 0 2 99999"
+  end
+
   test "a stall of the harness's own ticker next to an open breaker marks a stop of the whole VM", %{dir: dir} do
     {out, 0} = System.cmd("python3", ["-I", "test/scripts/load_run_check.py", dir], stderr_to_stdout: true)
     r = out |> String.split("\n", trim: true) |> List.last() |> :json.decode()
