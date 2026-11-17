@@ -22,6 +22,7 @@ the `cell` (`{namespace, key}`), so the dashboards of the three questions
 | Cells hibernated to stay under `awake: [max_bytes:]` (Alambique's) | `[:alambique, :admission, :evict]` (`bytes`: memory of the awake cells after it; `cell`, `max_bytes`); documented in Alambique's `docs/telemetry.md` |
 | Reads from replicas (Alambique's, design §19) | `[:alambique, :replica, :read]` (`source`: `:replica` or `:owner`, and `reason` for the owner), `:build`, `:refresh`, `:stop`; documented in Alambique's `docs/telemetry.md` |
 | Disk use of `data_dir` against its budget | `[:atanor, :disk, :sample]`, `[:atanor, :disk, :reclaim]` |
+| Cells hibernated because the working set passed `memory: [hibernate_fraction:]` | `[:atanor, :memory, :pressure]` |
 | Ephemeral channels | `[:atanor, :channel, :publish]`, `[:atanor, :channel, :rejected]`, `[:atanor, :channel, :dropped]` |
 | TCP, TLS, WebSockets, alarms | `[:atanor, :tcp, ...]`, `[:atanor, :tls, ...]`, `[:atanor, :ws, ...]`, `[:atanor, :alarm, ...]` |
 | Jobs and bulk operations | `[:atanor, :job, ...]`, `[:atanor, :sweep, ...]` |
@@ -162,6 +163,18 @@ Emitted by the disk monitor of a node that has a disk budget (design §4.4,
 | --- | --- | --- |
 | `[:atanor, :disk, :sample]` | `used_bytes` (the files under `data_dir`), `budget_bytes` | `instance`, `level`: `:ok`, `:reclaim` (the use is at `evict_fraction` of the budget or above, until 5 points below) or `:refuse` (at `refuse_fraction`: the ingress answers 503 `overloaded`, counted by `[:atanor, :http, :reject]` with reason `:disk`). Every `disk: [sample_ms:]`, every second or less while the level is not `:ok` |
 | `[:atanor, :disk, :reclaim]` | `candidates` (idle cells chosen for their `-wal` size), `hibernated` (the ones that went to sleep) | `instance`. One per sample at `:reclaim` or `:refuse` |
+
+## Memory pressure events
+
+Emitted by a node that has a memory limit while its working set is at `memory: [hibernate_fraction:]` of
+the limit or more (design §4.3,
+[configuration](configuration.md#cells-limits-memory-and-store-requests)).
+
+| Event | Measurements | Metadata |
+| --- | --- | --- |
+| `[:atanor, :memory, :pressure]` | `working_set_bytes` (the sample that started the batch), `candidates` (idle cells chosen, at most `hibernate_batch`, least recently used first), `hibernated` (the ones that went to sleep; a cell with a call in flight is skipped) | `instance`. One per `memory: [hibernate_interval_ms:]` while the working set stays at the mark or above |
+
+`GET /runtime` returns the total as `pressure: {hibernated, hibernate_at_bytes}` (`null` when the node does not watch its working set).
 
 ## WASM events
 

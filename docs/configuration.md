@@ -266,6 +266,22 @@ The derived `max_wakes` (at most 14) times 16 requests is at most 224, inside
 that pool. A node with no memory limit keeps `max_wakes: 256`, which can ask for
 more than the pool holds; the extra requests wait for a connection.
 
+**Hibernating under pressure.** The awake-cells ceiling counts only what
+Alambique knows (page cache, schema, statements); a cell also costs memory it
+does not count (the files in tmpfs, BEAM processes). So the node watches the
+working set itself, the one admission uses. At
+`memory: [hibernate_fraction: 0.75]` of the limit it hibernates idle cells,
+least recently used first, `memory: [hibernate_batch: 32]` at most every
+`memory: [hibernate_interval_ms: 1_000]`, until the working set is below the
+mark. A cell with a call in flight is skipped. The refuse mark comes after it,
+so the node refuses only when this is not enough. `hibernate_fraction` must be
+above 0 and below `refuse_fraction` (below 1 when that is `nil`); `nil` turns it
+off, as does a node with no limit. Unset, a `refuse_fraction` below 0.833 pulls
+it down to 90% of it. Hibernated cells wake at their next call, so a node whose
+working set stays at the mark trades memory for wakes. The count is `pressure`
+in `GET /runtime` and `[:atanor, :memory, :pressure]`
+([telemetry](telemetry.md)).
+
 **Refusing requests before the node dies.** The ingress refuses with 503
 `overloaded` and `Retry-After`, before it reads the route, the token or the
 body, when either gate is closed:

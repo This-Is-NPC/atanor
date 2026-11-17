@@ -802,6 +802,8 @@ the node, so a container with a limit needs no option:
 | `memory: [cgroup_path:]` | `/sys/fs/cgroup/memory.max` | the cgroup v2 file read when `limit_bytes` is `nil`: a byte count, or `max` for no limit |
 | `memory: [wake_fraction:]` | 0.5 | share of the headroom between the refuse mark and the limit that the wakes in flight may fill, a number above 0 and at most 1; derives `awake: [max_wakes:]` and `restore: [max_inflight_bytes:]` unless given (below) |
 | `memory: [refuse_fraction:]` | 0.85 | the ingress refuses with 503 while the working set is at least this share of the limit (§7.1, Admission); `nil` turns it off |
+| `memory: [hibernate_fraction:]` | 0.75 (90% of `refuse_fraction` when that is below 0.833) | the node hibernates idle cells while the working set is at least this share of the limit; above 0 and below `refuse_fraction`; `nil` turns it off (below) |
+| `memory: [hibernate_batch:]`, `[hibernate_interval_ms:]` | 32, 1 000 | cells hibernated per round, and the time between rounds |
 | `memory: [sample_ms:]` | 100 | how often the working set is sampled |
 | `memory: [current_path:]`, `[stat_path:]` | `/sys/fs/cgroup/memory.current`, `memory.stat` | the cgroup v2 files of the working set |
 
@@ -833,6 +835,28 @@ more memory rather than a larger fraction. A load of 650 cells per node on a
 512 MiB node with tmpfs (measured: the working set reached the refuse mark at
 488 cells, with 244 MiB of cache under a ceiling of 256 MiB) is the case this
 ceiling is for.
+
+*What happens as memory fills.* `max_bytes` counts the page cache, schema and
+statements Alambique holds, not what else a cell costs (about 0.6 MiB of working
+set in that run: tmpfs data, BEAM processes), so it can stay unbound while the
+node fills: 525 small cells reached 453 to 480 MB against a refuse mark of 456
+MB with nothing hibernated, and once admission refused nothing freed memory. The
+node now escalates on the working set (`Atanor.Memory.working_set/1`, the value
+admission samples):
+
+1. Below `hibernate_fraction` (0.75): nothing.
+2. At the pressure mark: `Atanor.Pressure` hibernates up to `hibernate_batch`
+   idle cells, least recently used first, every `hibernate_interval_ms`, by
+   the path the disk reclaim uses (`Atanor.Disk.hibernate/2`: a cell with a call
+   in flight is skipped). One batch per interval, because the memory of a
+   hibernated cell returns asynchronously: the next sample decides whether
+   another batch is needed.
+3. At the refuse mark (0.85): admission refuses with 503 `overloaded`. The
+   pressure rounds go on, so a node that refuses gets out of it as the cells go
+   to sleep.
+
+Each round emits `[:atanor, :memory, :pressure]`; the total is `pressure` in
+`GET /runtime`. The test is `test/atanor/pressure_test.exs`.
 The load harness sets `ATANOR_MEMORY_LIMIT` to the scenario memory (`ATANOR_CLUSTER_MEMORY_LIMIT`) while the container limit adds the tmpfs, so the gates see the scenario's machine.
 *Memory of the wakes.* A wake restores the state of a cell from the store, and
 a store that fails makes it worse: an upload that fails stops the cell, and every
@@ -3378,7 +3402,7 @@ JSON; `GET` unless the table says otherwise:
 | `POST /tokens`, `GET /tokens`, `GET /tokens/:id`, `POST /tokens/:id/revoke`, `GET /audit` | scoped tokens and the audit log, `cluster:admin` (§10.2.1) |
 | `/deployments` | for every node, what it applied for each worker: `head`, `applied`, `serving` and `error` (`{:code_mismatch, ...}`, a route not allowed, ...) |
 | `/routes` | this node's HTTP routes and TCP listeners with their ports |
-| `/runtime` | what this node's memory is made of, for finding what grows (it also returns `admission`, the counters of `Atanor.Admission.stats/1` (§7.1), and `store`, the breaker of each store location as `/health` shows it): `:erlang.memory()` by type, process, port and run queue counts, the 5 biggest ETS tables, the 10 processes with the longest message queue and the 10 largest (pid, name, initial call, current function), the cgroup v2 `memory.current`, `memory.max`, `memory.stat` (anon, file, shmem, sock, slab, kernel_stack, inactive_file, active_file) and `memory.events` (oom, oom_kill), read next to `:memory` `:cgroup_path` (null when a file is missing; `memory_max` is null for `max`), and the native Wasm gauges (§14). One bounded scan of at most 100,000 processes; this node only |
+| `/runtime` | what this node's memory is made of, for finding what grows (it also returns `admission`, the counters of `Atanor.Admission.stats/1` (§7.1), `pressure`, the cells hibernated under memory pressure (§4.3), and `store`, the breaker of each store location as `/health` shows it): `:erlang.memory()` by type, process, port and run queue counts, the 5 biggest ETS tables, the 10 processes with the longest message queue and the 10 largest (pid, name, initial call, current function), the cgroup v2 `memory.current`, `memory.max`, `memory.stat` (anon, file, shmem, sock, slab, kernel_stack, inactive_file, active_file) and `memory.events` (oom, oom_kill), read next to `:memory` `:cgroup_path` (null when a file is missing; `memory_max` is null for `max`), and the native Wasm gauges (§14). One bounded scan of at most 100,000 processes; this node only |
 | `POST /auth/keys/flush` | drops this node's cached OIDC discovery documents and keys, `cluster:admin` (§7.5); answers `node` and `flushed`, the issuers dropped |
 | `POST /listeners/:name/reload-tls` | reloads the certificate files of one TLS listener (§7.3); 404 `unknown_listener`, 409 `no_tls`, 422 `reload_failed` (the previous certificate keeps serving) |
 | `/cells` | for every node, the number of live cells; with `?node=NAME` one page of that node's cells (`limit` 1 to `:admin`'s `max_limit`, 1,000, default `default_limit`, 100, and `after=<cell id>` from the previous page's `next`) |
