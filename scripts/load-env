@@ -37,6 +37,9 @@ store_rtt() {
   printf '%s\n' "${times[@]}" | sort -n | sed -n "$(((${#times[@]} + 1) / 2))p" | awk '{printf "%.1f", $1 * 1000}'
 }
 
+# Whether the store's latency is above 0 (it may be fractional in a round config).
+added_latency() { awk -v m="$LOAD_STORE_LATENCY_MS" 'BEGIN { exit !(m > 0) }'; }
+
 # Run `tc qdisc ARGS` in the store container's network namespace. A failure (no qdisc to delete) is
 # ignored: the round-trip check in latency() judges the result.
 tc_store() {
@@ -55,11 +58,11 @@ latency() {
   # Clear the qdisc of an earlier run first, so "before" is the bare round trip and a rerun passes.
   tc_store "$store" del dev eth0 root
   before=$(store_rtt "$node")
-  [[ $LOAD_STORE_LATENCY_MS -le 0 ]] || tc_store "$store" add dev eth0 root netem delay "${LOAD_STORE_LATENCY_MS}ms"
+  ! added_latency || tc_store "$store" add dev eth0 root netem delay "${LOAD_STORE_LATENCY_MS}ms"
   after=$(store_rtt "$node")
   [[ -n $before && -n $after ]] || { echo "the store round trip could not be measured (before: '${before}', after: '${after}')" >&2; exit 1; }
   echo "store round trip from the node, on a reused connection: ${before} ms -> ${after} ms (added latency ${LOAD_STORE_LATENCY_MS} ms)"
-  if [[ $LOAD_STORE_LATENCY_MS -gt 0 ]]; then
+  if added_latency; then
     awk -v b="$before" -v a="$after" -v m="$LOAD_STORE_LATENCY_MS" 'BEGIN { exit !(a - b >= m * 0.8) }' \
       || { echo "the added latency is not visible" >&2; exit 1; }
   fi

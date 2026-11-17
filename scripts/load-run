@@ -47,6 +47,11 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+sys.dont_write_bytecode = True  # no scripts/__pycache__
+import load_config  # noqa: E402  (the tables, the plans and the layout of the round config live there)
+from load_config import RAMPS, SCALE_LOADS, UNITS, steps_of  # noqa: E402,F401
+
 SCHEMA = "atanor-load-step-1"
 BUCKET = 10
 SIDE_TIMEOUT_S = 30  # a side measurement of a node at its limits may hang
@@ -55,7 +60,6 @@ CORES = os.cpu_count()
 OK_STATUSES = {"200", "201", "message answered", "503 retry-after", "reconnected"}
 LOG_CAP_BYTES = 5 * 1048576
 TICK_S, STALL_S = 0.1, 1.0  # the stall ticker: its period and the overshoot that is recorded
-UNITS = {"http-native": "req/s", "http-wasm": "req/s", "http-wasm-jobs": "req/s", "ws": "connections", "cells": "cells", "swap": "req/s", "scale": "req/s or cells"}
 
 
 def env(name, default, cast=float):
@@ -75,10 +79,53 @@ def say(message):
 
 
 def write_json(path, document):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     temporary = f"{path}.tmp"
     with open(temporary, "w") as file:
         json.dump(document, file, indent=1)
     os.replace(temporary, path)
+
+
+# ---- the layout of the results of a config round: OUT/SCENARIO/MEASURE[/VARIANT]/step-VALUE[-REPETITION].json ----
+
+class RoundStop(Exception):
+    """round.timeout_s passed: the round stops, and what is done stays for --skip-done."""
+
+
+def nested(args):
+    return bool(getattr(args, "nested", False))
+
+
+def check_deadline(args):
+    deadline = getattr(args, "deadline", None)
+    if deadline and time.time() > deadline:
+        raise RoundStop("round.timeout_s passed")
+
+
+def number_text(value):
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def result_file(args, scenario, measure, name):
+    """Where a measure keeps its `summary` or `baseline`: OUT/SCENARIO/MEASURE/NAME.json, or OUT/SCENARIO_MEASURE.NAME.json in the flat layout."""
+    if nested(args):
+        return os.path.join(args.out, scenario, measure, f"{name}.json")
+    return os.path.join(args.out, f"{scenario}_{measure}.{name}.json")
+
+
+def reuse(args, path):
+    """The record of the step file at `path` when the step is done and need not run again (--skip-done): same `config_hash` and not INVALID.
+    None when there is none or it must run again; a file of another config stops the round (the orchestrator checks that before any container)."""
+    if not (nested(args) and getattr(args, "skip_done", False) and os.path.exists(path)):
+        return None
+    try:
+        with open(path) as file:
+            old = json.load(file)
+    except (OSError, ValueError):
+        return None
+    if old.get("config_hash") != args.config_hash:
+        sys.exit(f"{path} was made by another config (config_hash differs): use another output.dir, or --no-skip-done to run it again and overwrite it")
+    return None if old.get("status") == "invalid" or old.get("valid") is False else old
 
 
 # ---- reading the machine -------------------------------------------------------------------------------
@@ -1031,10 +1078,31 @@ def percentile(hist, p, max_ms):
 
 # ---- one step ------------------------------------------------------------------------------------------
 
+class GeneratorTimeout(Exception):
+    """A generator ran past round.step_timeout_s and was killed: the step is INVALID."""
+
+
+def generator_pid(wrapper):
+    """The pid of the generator that `timeout` (process `wrapper`) runs, so that its CPU and swap are counted as the generator's;
+    the wrapper's own pid when the child does not show up."""
+    for _ in range(20):
+        try:
+            children = read(f"/proc/{wrapper.pid}/task/{wrapper.pid}/children").split()
+        except OSError:
+            return wrapper.pid
+        if children:
+            return int(children[0])
+        if wrapper.poll() is not None:
+            break
+        time.sleep(0.1)
+    return wrapper.pid
+
+
 class Round:
     def __init__(self, args, info, stem=None):
         self.args, self.info, self.index = args, info, 0
         self.scenario = info["scenario"]
+        self.attempts = {}  # value -> how many steps of that value this round ran: a confirmation of a measured value is repetition 2
         self.stem = stem  # the scale measure: its step files and records are of "scale", whatever load the step runs
         self.awake_start = None  # the cells awake when the step began
         self.tag = f"s{int(time.time()) % 100000}"  # one name space per run: the cells of a smaller step stay hot in a larger one
@@ -1064,13 +1132,18 @@ class Round:
                  "--open-rate", str(a.open_rate), "--interval", str(a.ws_interval)]]
 
     def run_generators(self, value, sampler):
+        """Runs the generator processes of a step and returns their documents. With `step_timeout` (the config round) each runs under
+        `timeout`, which kills it that many seconds after the start (10 s later for good): the step is then INVALID, `timeout`."""
+        limit = getattr(self.args, "step_timeout", None)
         commands, procs, outs = self.gen_commands(value), [], []
+        os.makedirs(self.args.out, exist_ok=True)
         for i, command in enumerate(commands):
             out = os.path.join(self.args.out, f".gen-{os.getpid()}-{i}.json")
             outs.append(out)
-            procs.append(subprocess.Popen([*command, "--out", out], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True))
-        sampler.pids = [p.pid for p in procs]
-        deadline = time.time() + self.args.step_s + self.args.gen_grace + value / max(self.args.open_rate, 1) * (self.args.measure in ("ws", "cells"))
+            wrapped = ["timeout", "--kill-after=10s", f"{limit:g}s"] if limit else []
+            procs.append(subprocess.Popen([*wrapped, *command, "--out", out], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True))
+        sampler.pids = [generator_pid(p) for p in procs] if limit else [p.pid for p in procs]
+        deadline = time.time() + (limit + 15 if limit else self.args.step_s + self.args.gen_grace + value / max(self.args.open_rate, 1) * (self.args.measure in ("ws", "cells")))
         cpu = [0.0] * len(procs)
         try:
             while any(p.poll() is None for p in procs):
@@ -1081,6 +1154,8 @@ class Round:
                 time.sleep(0.5)
             documents = []
             for p, out in zip(procs, outs):
+                if limit and p.returncode in (124, 137):  # timeout's status when it killed the command (137: after --kill-after)
+                    raise GeneratorTimeout(f"timeout: a generator was killed after {limit:g} s (round.step_timeout_s)")
                 if p.returncode:
                     raise RuntimeError(f"load-gen failed: {p.stderr.read()[-500:]}")
                 with open(out) as file:
@@ -1106,17 +1181,26 @@ class Round:
 
     def step(self, value, phase, fresh=False):
         a = self.args
+        check_deadline(a)
         self.index += 1
+        self.attempts[value] = self.attempts.get(value, 0) + 1
+        path = self.base(value, phase) + ".json"
+        done = reuse(a, path)
+        if done:
+            say(f"{a.measure} {value} {UNITS[a.measure]}: {done['status']}, done before (config_hash {done['config_hash'][:8]}) -> {os.path.relpath(path, a.out)}")
+            return done
         record = self.run_once(value, phase, fresh)
-        if (record["stop_reason"] or "").startswith("stall:"):  # a stall fails a step by chance: once more, then the INVALID path
-            first = record
-            say(f"{a.measure} {value} {UNITS[a.measure]}: {first['stop_reason']}; repeating the step once")
+        first, repeats = None, getattr(a, "stall_repeats", 1)
+        for _ in range(repeats):
+            if not (record["stop_reason"] or "").startswith("stall:"):  # a stall fails a step by chance: once more, then the INVALID path
+                break
+            first = first or record
+            say(f"{a.measure} {value} {UNITS[a.measure]}: {record['stop_reason']}; repeating the step")
             record = self.run_once(value, phase, fresh)
             record["first_attempt"] = {k: first[k] for k in ("status", "stop_reason", "latency_ms", "generator", "series", "store_stall")}
-            record["notes"].append(f"first attempt INVALID, repeated once: {first['stop_reason']}")
-            if store_stalled(first) and store_stalled(record):  # the store stalls at this load every time: its limit, so this step fails
-                record = {**record, "valid": True, "status": "fail", "stop_reason": "store: stalled at this step twice, " + record["stop_reason"].removeprefix("stall: store stalled, ")}
-        path = self.base(value, phase) + ".json"
+            record["notes"].append(f"first attempt INVALID, repeated {'once' if repeats == 1 else f'up to {repeats} times'}: {first['stop_reason']}")
+        if first and getattr(a, "store_fail_on_repeat", True) and store_stalled(first) and store_stalled(record):  # the store stalls at this load every time: its limit, so this step fails
+            record = {**record, "valid": True, "status": "fail", "stop_reason": "store: stalled at this step twice, " + record["stop_reason"].removeprefix("stall: store stalled, ")}
         write_json(path, record)
         say(f"{a.measure} {value} {UNITS[a.measure]}: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")
             + f"; planned {record['planned']}, achieved {record['achieved']}, p99 {record['latency_ms']['p99']} ms"
@@ -1137,7 +1221,17 @@ class Round:
         record["fresh_node"], record["reset_s"] = fresh, reset_s
         return record
 
+    def case_dir(self):
+        """OUT/SCENARIO/MEASURE[/VARIANT]: the scale measure's steps are of "scale", the node count and the load are the variant."""
+        measure, _, variant = self.stem.partition("-") if self.stem else (self.args.measure, "", "")
+        return os.path.join(self.args.out, self.scenario, *(p for p in (measure, variant) if p))
+
     def base(self, value, phase):
+        """The step file without its extension; the diagnostics of the step are `base.node.log` and so on."""
+        if nested(self.args):
+            repetition = self.attempts[value]
+            os.makedirs(self.case_dir(), exist_ok=True)
+            return os.path.join(self.case_dir(), f"step-{number_text(value)}" + (f"-{repetition}" if repetition > 1 else ""))
         return os.path.join(self.args.out, f"{self.scenario}_{self.stem or self.args.measure}_{self.index:02d}-{phase}-{value}")
 
     def node_stop(self, value, phase, before):
@@ -1174,7 +1268,7 @@ class Round:
             dead, files = self.node_stop(value, phase, node_before)
             if dead:  # the node broke under the load: a stop of the node, not of the runner
                 return self.record(value, phase, None, None, None, "fail", f"{dead} (generator: {error})", began=began, diagnostics=files, dead=dead)
-            return self.record(value, phase, None, None, None, "invalid", f"generator: {error}", valid=False)
+            return self.record(value, phase, None, None, None, "invalid", str(error) if isinstance(error, GeneratorTimeout) else f"generator: {error}", valid=False)
         samples = sampler.finish()
         s3_after = s3_counters(info["store"]["ip"])
         dead, files = self.node_stop(value, phase, node_before)
@@ -1193,7 +1287,8 @@ class Round:
                   "http_max_connections": http_max_connections(), "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
                   "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "per_node": None, "statuses_503_by_reason": {}, "refusals": None, "evictions": None, "store_stall": None, "store": None, "cells_awake": None, "store_rtt_ms": None, "opening": None,
-                  "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "node_stopped": bool(dead), "notes": [], "first_attempt": None, "diagnostics": list(diagnostics)}
+                  "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "node_stopped": bool(dead), "notes": [], "first_attempt": None, "diagnostics": list(diagnostics),
+                  "config_hash": getattr(a, "config_hash", None)}
         if merged is None:
             return record
         usage = summarize(samples, sampler_cpu(gens), self.info["memory_limit_bytes"])
@@ -1252,7 +1347,7 @@ class Round:
         if a.measure != "ws" and p99 is not None and p99 > a.p99_ms:
             criteria.append(f"p99 {p99} ms > {a.p99_ms:g} ms")
         bad = {k: n for k, n in errors.items() if k != "message answered"}
-        if bad and a.measure != "ws":
+        if bad and a.measure != "ws" and getattr(a, "judge_errors", True):
             criteria.append("errors: " + ", ".join(f"{k} x{n}" for k, n in sorted(bad.items())))
         if a.measure == "ws" and (merged.get("failed") or merged.get("dropped")):
             criteria.append(f"connections failed {merged.get('failed', 0)}, dropped {merged.get('dropped', 0)}")
@@ -1388,14 +1483,24 @@ def exit_status(measure, summary):
 
 def swap(round_, args, info):
     rate = args.rate
-    if not rate:
+    if not rate and nested(args):
+        found = result_file(args, round_.scenario, "http-wasm-jobs", "summary")
+        rate = json.load(open(found)).get("approved") if os.path.exists(found) else None
+    elif not rate:
         for name in sorted(os.listdir(args.out), reverse=True):
             if name.endswith("_http-wasm-jobs.summary.json"):
                 rate = json.load(open(os.path.join(args.out, name))).get("approved")
                 break
     if not rate:
-        sys.exit("swap needs --rate: no approved http-wasm-jobs step in " + args.out)
+        sys.exit("swap needs swap.rate (--rate): no approved http-wasm-jobs step in " + args.out)
+    check_deadline(args)
     round_.index += 1
+    round_.attempts[rate] = 1
+    done = reuse(args, round_.base(rate, "swap") + ".json") if nested(args) else None
+    if done:
+        say(f"swap at {rate} req/s: {done['status']}, done before (config_hash {done['config_hash'][:8]})")
+        return {"approved": rate if done["status"] == "ok" else None, "confirmed": None, "stopped_by": done["stop_reason"],
+                "invalid": None, "status": done["status"]}
     quiet, load = wait_quiet(args, info)
     if not quiet:  # the swap is judged on its own checks, but it does not start on a busy host
         reason = busy_reason(load, args)
@@ -1404,9 +1509,10 @@ def swap(round_, args, info):
     sampler = Sampler(info, args.sample_s)
     sampler.start()
     began = time.time()
-    run_dir = os.path.join(args.out, f"swap-{int(began)}")
+    home = round_.case_dir() if nested(args) else args.out
+    run_dir = os.path.join(home, f"swap-{int(began)}")
     command = swap_command(args, rate, run_dir)
-    process = subprocess.Popen(command, stdout=open(f"{args.out}/swap-{int(began)}.log", "w"), stderr=subprocess.STDOUT)
+    process = subprocess.Popen(command, stdout=open(f"{home}/swap-{int(began)}.log", "w"), stderr=subprocess.STDOUT)
     sampler.pids = [process.pid]
     try:
         process.wait(args.swap_timeout)
@@ -1452,7 +1558,8 @@ def swap(round_, args, info):
         record.update(valid=False, status="invalid", stop_reason=swapped or full)
     if not result:
         record["status"] = "invalid"
-    write_json(os.path.join(args.out, f"{round_.scenario}_swap_01-swap-{rate}.json"), record)
+    record["config_hash"] = getattr(args, "config_hash", None)
+    write_json(round_.base(rate, "swap") + ".json" if nested(args) else os.path.join(args.out, f"{round_.scenario}_swap_01-swap-{rate}.json"), record)
     say(f"swap at {rate} req/s: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")
         + f"; swap {record['swap']['a_exit_s']} s, p99 peak {p99_peak} ms")
     return {"approved": rate if record["status"] == "ok" else None, "confirmed": None, "stopped_by": record["stop_reason"],
@@ -1461,8 +1568,6 @@ def swap(round_, args, info):
 
 # ---- the scale measure ---------------------------------------------------------------------------------
 
-RAMPS = {"http-native": (25, 20000), "http-wasm": (25, 20000), "http-wasm-jobs": (25, 20000), "ws": (100, 60000), "cells": (100, 100000), "swap": (0, 0), "scale": (0, 0)}
-SCALE_LOADS = ("http-native", "http-wasm", "http-wasm-jobs", "cells")
 JOIN_SCHEMA = "atanor-load-join-1"
 
 
@@ -1478,16 +1583,6 @@ def parse_ceilings(text):
         load, _, nodes = key.partition(":")
         found[(load, int(nodes))] = int(float(value))
     return found
-
-
-def steps_of(ceiling, factors):
-    """The values of a ramp as fractions of a ceiling: rounded, at least 1, repeats dropped."""
-    out = []
-    for factor in factors:
-        value = max(1, int(ceiling * factor + 0.5))
-        if not out or out[-1] != value:
-            out.append(value)
-    return out
 
 
 def fresh_cluster(nodes):
@@ -1511,6 +1606,10 @@ def scale_config(args, load, nodes, previous, given):
     a = copy.copy(args)
     a.measure, a.steps = load, args.steps if nodes == 1 else None
     a.start, a.max, a.factor = args.start or RAMPS[load][0], args.max or RAMPS[load][1], args.factor
+    plan = (getattr(args, "load_plans", None) or {}).get(load)
+    if plan:  # a config round: the ramp of the load as the config plans it for the scenario
+        a.step_s, a.refine, a.no_confirm, a.start, a.max, a.factor = plan["duration_s"], plan["refine"], not plan["confirm"], plan["start"], plan["max"], plan["factor"]
+        a.steps = ",".join(str(v) for v in load_config.plan_values(plan)) if nodes == 1 and plan["kind"] != "bisect" else None
     if given:
         if (load, nodes) not in given:
             return {"load": load, "nodes": nodes, "approved": None, "good": None, "invalid": None, "skipped": f"no ceiling for {load} on {nodes} nodes in --ceilings"}
@@ -1658,9 +1757,21 @@ def join_host_load(samples, events, sample_s):
     return mean([n[1] for n in loads]), mean([n[0] for n in loads])
 
 
+def join_base(args, scenario, rate):
+    """The join's file without its extension: OUT/SCENARIO/scale/join/step-RATE, or OUT/SCENARIO_scale-join_01-join-RATE in the flat layout."""
+    if nested(args):
+        return os.path.join(args.out, scenario, "scale", "join", f"step-{number_text(rate)}")
+    return os.path.join(args.out, f"{scenario}_scale-join_01-join-{rate}")
+
+
 def join(args, rate, nodes_max):
     """Starts one node under the load at `rate`, then adds node 2 up to `nodes_max`, one per --join-observe-s, and measures when the load spreads."""
-    record = {"schema": JOIN_SCHEMA, "measure": "scale", "phase": "join", "unit": "req/s", "rate": rate, "nodes_max": nodes_max, "command": args.command,
+    check_deadline(args)
+    done = reuse(args, join_base(args, args.scenario, rate) + ".json") if nested(args) else None
+    if done:
+        say(f"scale join at {rate} req/s: {done['status']}, done before (config_hash {done['config_hash'][:8]})")
+        return done
+    record = {"schema": JOIN_SCHEMA, "measure": "scale", "phase": "join", "unit": "req/s", "rate": rate, "nodes_max": nodes_max, "command": args.command, "config_hash": getattr(args, "config_hash", None),
               "tolerance_pct": args.spread_tol_pct, "hold_samples": args.spread_hold, "sample_s": args.join_sample_s, "windows": [], "generator": None,
               "host": {}, "valid": True, "status": "ok", "stop_reason": None, "notes": [], "diagnostics": [], "started_at": time.time()}
     try:
@@ -1683,7 +1794,8 @@ def join(args, rate, nodes_max):
     sampler.start()
     poller.start()
     outcome, events, failure = {}, [], None
-    base = os.path.join(args.out, f"{info['scenario']}_scale-join_01-join-{rate}")
+    base = join_base(args, info["scenario"], rate)
+    os.makedirs(os.path.dirname(base), exist_ok=True)
 
     def window_end(nodes):
         """The /runtime of every node at the end of the window of `nodes` nodes, kept in `base.window-N.runtime.json`; the reads."""
@@ -1745,7 +1857,7 @@ def join(args, rate, nodes_max):
     reason = contaminated or failure or (f"generator: {outcome['error']}" if outcome.get("error") else None)
     if reason:
         record.update(valid=False, status="invalid", stop_reason=reason)
-    path = os.path.join(args.out, f"{info['scenario']}_scale-join_01-join-{rate}.json")
+    path = f"{base}.json"
     write_json(path, record)
     spread = [(w["nodes"], w["requests_spread_s"], w["cells_spread_s"]) for w in record["windows"] if w["nodes"] > 1]
     say(f"scale join at {rate} req/s: {record['status']}" + (f" ({reason})" if reason else "") + f"; spread (nodes, requests s, cells s): {spread} -> {os.path.basename(path)}")
@@ -1792,6 +1904,44 @@ def scale(args):
     return {"approved": None, "confirmed": None, "stopped_by": None, "invalid": invalids[0]["reason"] if invalids else None, "invalids": invalids,
             "max_nodes": args.max_nodes, "largest_fit": fit, "advice": advice, "cpu_cores_host": CORES, "ceilings": ceilings, "gain": gains,
             "configs": configs, "join": None if joined is None else {k: joined[k] for k in ("status", "stop_reason", "rate", "windows", "generator")}, "join_note": note}
+
+
+def config_defaults(config, measure, scenario, path):
+    """The defaults of the arguments of `measure` in `scenario` from a round config. A criterion that is off gets a limit nothing reaches."""
+    j, g, w, sw = config["judging"], config["generator"], config["workload"], config["swap"]
+    off = float("inf")
+    limit = lambda name, key, none=off: j[name][key] if j[name]["enabled"] else none
+    stall, scale = j["store_stall"], load_config.scale_of(config, scenario)
+    join, spread = config["scale"]["join"], config["scale"]["spread"]
+    found = {
+        "out": load_config.output_dir(config, ROOT), "command": f"mise run load -- --config {path}", "nested": True,
+        "config_hash": load_config.case_hash(config, scenario, measure), "step_timeout": config["round"]["step_timeout_s"],
+        "p99_ms": limit("p99", "max_ms"), "max_refused_pct": limit("refused", "max_pct"), "memory_pct": limit("memory", "max_pct"), "fd_pct": limit("fds", "max_pct"),
+        "delivery": limit("delivery", "min_ratio", 0.0), "judge_errors": j["errors"]["enabled"], "stall_repeats": j["stall_repeats"],
+        "host_load_max": limit("host_load", "max"), "quiet_window": limit("host_load", "quiet_window_s", 0.0), "quiet_max_wait": j["host_load"]["quiet_max_wait_s"],
+        "max_busy_share": limit("host_busy", "max_share"), "max_generator_swap_mb": limit("generator_swap", "max_mb"),
+        "max_host_swap_growth_mb": limit("host_swap", "max_growth_mb"), "max_store_disk_pct": limit("store_fill", "max_disk_pct"),
+        "max_store_tmpfs_pct": limit("store_fill", "max_tmpfs_pct"), "max_lag_ms": limit("generator_lag", "max_ms"),
+        "max_throttle_jump_ms": limit("throttle", "max_jump_ms"), "max_store_stall_ms": limit("store_stall", "min_ms", 0.0),
+        "store_stall_requests": stall["min_requests"], "store_fail_on_repeat": stall["fail_on_repeat"],
+        "min_available_gb": limit("host_memory", "min_available_gb", 0.0),
+        "sample_s": g["sample_s"], "timeout": g["timeout_s"], "gen_grace": g["grace_s"], "rate_per_proc": g["rate_per_proc"], "conns_per_rate": g["conns_per_rate"],
+        "write_ratio": w["write_ratio"], "cells": w["cells"], "no_warmup": not w["warmup"], "cell_period": w["cell_period_s"], "cells_conns": w["cells_conns"],
+        "open_rate": w["open_rate"], "ws_interval": w["ws_interval_s"], "worker": w["worker"],
+        "rate": sw["rate"] or None, "trigger": sw["trigger"], "swap_workers": sw["workers"], "swap_warmup": sw["warmup_s"], "swap_overlap": sw["overlap_s"],
+        "swap_settle": sw["settle_s"], "swap_timeout": sw["timeout_s"],
+        "max_nodes": config["scale"]["max_nodes"], "loads": ",".join(config["scale"]["loads"]), "scale_factor": config["scale"]["factor"],
+        "ceilings": ",".join(f"{k}={v}" for k, v in scale["ceilings"].items()), "factors": ",".join(f"{f:g}" for f in scale["ceiling_factors"]),
+        "no_join": not join["enabled"], "join_rate": join["rate"] or None, "join_factor": join["factor"], "join_warmup_s": join["warmup_s"],
+        "join_observe_s": join["observe_s"], "join_node_wait_s": join["node_wait_s"], "join_node_timeout_s": join["node_timeout_s"], "join_sample_s": join["sample_s"],
+        "spread_tol_pct": spread["tol_pct"], "spread_hold": spread["hold"], "spread_min_cells": spread["min_cells"],
+        "load_plans": {load: load_config.plan(config, load, scenario) for load in config["scale"]["loads"]},
+    }
+    if measure in load_config.RAMP_MEASURES:
+        p = load_config.plan(config, measure, scenario)
+        found.update(step_s=p["duration_s"], factor=p["factor"], start=p["start"], max=p["max"], refine=p["refine"], no_confirm=not p["confirm"],
+                     steps=",".join(str(v) for v in load_config.plan_values(p)) if p["kind"] != "bisect" else None)
+    return found
 
 
 def main():
@@ -1860,10 +2010,31 @@ def main():
     add("--spread-tol-pct", type=float, default=env("SPREAD_TOL_PCT", 25), help="scale: a node's share is spread when within this percent of 1/N (ATANOR_LOAD_SPREAD_TOL_PCT, 25)")
     add("--spread-hold", type=int, default=env("SPREAD_HOLD", 3, int), help="scale: consecutive readings that must be within the tolerance (ATANOR_LOAD_SPREAD_HOLD, 3)")
     add("--spread-min-cells", type=int, default=env("SPREAD_MIN_CELLS", 10, int), help="scale: awake cells below this in all are too few to judge a spread (ATANOR_LOAD_SPREAD_MIN_CELLS, 10)")
+    add("--config", help="round config (TOML, scripts/load_config.py): its values are the defaults, its layout and hashes the results'; use `mise run load` for a whole round")
+    add("--scenario", help="--config: the scenario to run (default: the first of round.scenarios)")
+    add("--skip-done", action=argparse.BooleanOptionalAction, default=True, help="--config: reuse a step whose file has the same config_hash and is not INVALID (default)")
+    add("--deadline", type=float, help="--config: epoch seconds at which the round stops (round.timeout_s)")
     args = parser.parse_args()
-    args.start = args.start or RAMPS[args.measure][0] or None
-    args.max = args.max or RAMPS[args.measure][1] or None
-    args.command = "mise run load:" + args.measure + " -- " + " ".join(sys.argv[2:])
+    if args.config:
+        config = load_config.load_config(args.config)
+        args.scenario = args.scenario or config["round"]["scenarios"][0]
+        parser.set_defaults(**config_defaults(config, args.measure, args.scenario, args.config))
+        args = parser.parse_args()
+        args.scenario = args.scenario or config["round"]["scenarios"][0]
+        os.environ.update(ATANOR_LOAD_CONFIG=os.path.abspath(args.config), ATANOR_LOAD_SCENARIO=args.scenario, ATANOR_LOAD_MEASURE=args.measure)
+        os.environ["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"] = load_config.env_lines(config, args.scenario, args.measure)["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"]
+    args.start = args.start or RAMPS.get(args.measure, (0, 0))[0] or None
+    args.max = args.max or RAMPS.get(args.measure, (0, 0))[1] or None
+    args.command = args.command if args.config else "mise run load:" + args.measure + " -- " + " ".join(sys.argv[2:])
+    try:
+        execute(args)
+    except RoundStop as stop:
+        say(f"STOP: {stop}")
+        sys.exit(3)
+
+
+def execute(args):
+    """Runs the measure of `args` and exits with its status."""
     os.makedirs(args.out, exist_ok=True)
     if args.measure == "scale":
         if not 1 <= args.max_nodes <= 10:
@@ -1874,8 +2045,9 @@ def main():
         scenario = os.environ.get("ATANOR_LOAD_SCENARIO", "A")
         say(f"scale on scenario {scenario}, up to {args.max_nodes} nodes, {args.step_s:g} s per step, results in {args.out}")
         summary = scale(args)
-        summary.update(scenario=scenario, measure="scale", command=args.command, cpu_caps_sum=caps_sum, host_cores=CORES, cpu_caps_warning=warning)
-        write_json(os.path.join(args.out, f"{scenario}_scale.summary.json"), summary)
+        summary.update(scenario=scenario, measure="scale", command=args.command, cpu_caps_sum=caps_sum, host_cores=CORES, cpu_caps_warning=warning,
+                       config_hash=getattr(args, "config_hash", None))
+        write_json(result_file(args, scenario, "scale", "summary"), summary)
         say(f"summary: {json.dumps(summary)}")
         sys.exit(exit_status("scale", summary))
     try:
@@ -1893,12 +2065,12 @@ def main():
     # Idle reference before any load: the fixed cost.
     idle = Sampler(info, 1)
     first = idle.take()
-    write_json(os.path.join(args.out, f"{info['scenario']}_{args.measure}.baseline.json"),
+    write_json(result_file(args, info["scenario"], args.measure, "baseline"),
                {"scenario": info["scenario"], "measure": args.measure, "service_mb": round((first["node"]["memory_current"] - first["node"].get("inactive_file", 0)) / 1048576, 1),
                 "tmpfs_mb": round(first["node"]["shmem"] / 1048576, 1), "fds": first["fds"][0] if first["fds"] else None})
     summary = swap(round_, args, info) if args.measure == "swap" else ramp(round_, args)
-    summary.update(scenario=info["scenario"], measure=args.measure, command=args.command)
-    write_json(os.path.join(args.out, f"{info['scenario']}_{args.measure}.summary.json"), summary)
+    summary.update(scenario=info["scenario"], measure=args.measure, command=args.command, config_hash=getattr(args, "config_hash", None))
+    write_json(result_file(args, info["scenario"], args.measure, "summary"), summary)
     say(f"summary: {json.dumps(summary)}")
     sys.exit(exit_status(args.measure, summary))
 
