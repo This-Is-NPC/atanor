@@ -193,7 +193,7 @@ defmodule Atanor.Dispatch do
           case ownership(env.instance, id) do
             :owned -> local(env, cell, call, false)
             {:lost, reason} when reason in [:held_elsewhere, :draining] -> Unavailable.error(env.instance, reason)
-            _ -> if Atanor.Admission.expired?(), do: Cell.queue_timeout(), else: {:error, {:unavailable, :fenced}}
+            lost -> if Atanor.Admission.expired?(), do: Cell.queue_timeout(), else: refused(lost)
           end
         end
 
@@ -201,6 +201,10 @@ defmodule Atanor.Dispatch do
         local(env, cell, call, false)
     end
   end
+
+  # A real fence (`:lost`), or a lease that could not be read, which names the failure (`ownership/2`).
+  defp refused(:lost), do: {:error, {:unavailable, :fenced}}
+  defp refused({:unknown, reason}), do: {:error, {:unavailable, reason}}
 
   @doc """
   Runs a `{:ws_local, frame, state}` call here, on the node of the socket, without
@@ -422,7 +426,7 @@ defmodule Atanor.Dispatch do
   # does not stop the cell, as in Alambique.
   defp current?(instance, id), do: ownership(instance, id) == :owned
 
-  # `:lost` is a definite answer: the lease or the router says another node serves the cell. `:unknown`
+  # `:lost` is a definite answer: the lease or the router says another node serves the cell. `{:unknown, reason}`
   # is any other failure of the read (a timeout, an overloaded cell); it stops a new handler but not one
   # that is running. `{:lost, reason}` is a lost cell that is `:held_elsewhere` (a node outside the cluster holds its lease) or `:draining` (this node hands its cells off).
   defp ownership(instance, id) do
@@ -468,11 +472,17 @@ defmodule Atanor.Dispatch do
               _ -> :lost
             end
 
-          {:error, _} ->
-            :unknown
+          {:error, reason} ->
+            {:unknown, unknown_owner(reason)}
         end
     end
   end
+
+  # What a failed lease read says: its availability reason (`:store_unavailable`, `:overloaded`, ...),
+  # `:owner_unknown` when it names none.
+  @doc false
+  @spec unknown_owner(term) :: atom
+  def unknown_owner(reason), do: Unavailable.reason(reason) || :owner_unknown
 
   defp owns(instance, cell) do
     alambique = Registry.config(instance).alambique
