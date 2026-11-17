@@ -165,7 +165,7 @@ def make_args(out, **over):
     values = dict(out=out, measure="scale", step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1.0, min_available_gb=0.0, sample_s=0.05, quiet_window=0.0,
                   quiet_max_wait=2.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0, max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0,
                   max_lag_ms=50.0, max_throttle_jump_ms=5000.0, max_busy_share=0.85, command="test", steps=None, start=None, max=None, factor=2, refine=0, no_confirm=False,
-                  max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0, rate_per_proc=600.0, conns_per_rate=0.5, write_ratio=0.5, cells=64, worker="native", cell_period=10.0,
+                  max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0, no_warmup=False, rate_per_proc=600.0, conns_per_rate=0.5, write_ratio=0.5, cells=64, worker="native", cell_period=10.0,
                   cells_conns=64, ws_interval=30.0, max_nodes=3, loads="http-native", scale_factor=1.25, ceilings="", factors="0.75,1,1.25,1.5", no_join=True, join_rate=None,
                   join_factor=1.5, join_warmup_s=0.3, join_observe_s=1.2, join_node_wait_s=0.2, join_node_timeout_s=10.0, join_sample_s=0.05, spread_tol_pct=25.0,
                   spread_hold=3, spread_min_cells=10)

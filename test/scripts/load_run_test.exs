@@ -30,6 +30,12 @@ defmodule Atanor.LoadRunTest do
              hold["opening"]["latency_ms"]["p99"] > 250
 
     assert hold["statuses"] == %{"200" => 15, "503 retry-after" => 5} and hold["http_max_connections"] == 16_384
+
+    # http: the warm-up is the opening, reported apart; the step is judged on the steady part. The generators warm up unless told not to.
+    warm = r["http_warmup"]["record"]
+    assert warm["status"] == "ok" and warm["latency_ms"]["p99"] < 10
+    assert warm["opening"]["refused"] == 5 and warm["opening"]["latency_ms"]["p99"] > 250
+    assert r["warmup_commands"] == %{"on" => true, "open_rate" => "100.0", "off" => false, "cells" => false}
     refused = r["cells_hold_refused"]["record"]
     assert refused["status"] == "fail" and refused["stop_reason"] =~ "refused 50.0%"
     assert refused["opening"]["refused"] == 0

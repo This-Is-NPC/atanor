@@ -220,6 +220,17 @@ a burst of cold starts) does not fail a ramp that the hold passes. In the step f
 than 503 still fail a step, wherever they happen. In the generator's document the opening is `opening`, with its
 statuses and histogram; `load-run` subtracts it from the totals to get the hold.
 
+### The warm-up of the http measures
+
+The first step of a fresh node woke its cells at the load rate: with the same 25 ms per store trip, B at 450 req/s had a
+p99 of 244.5 ms against 55 ms at 600. An http step (`http-native`, `http-wasm`, `http-wasm-jobs`; not `swap`, and not the
+join of the scale measure) therefore starts like a `cells` step: each of its `--cells` cells is written once, at `--open-rate`
+(100 cells/s), then the generator rests `--settle` (2 s) before the steady load of `--step-s` seconds. The warm-up is the
+`opening` of the step file, with the figures of [the opening](#the-opening-of-the-cells-measure) (`planned`, `answers`, `refused`,
+`refused_pct`, `latency_ms`), and p99 and the refused share are judged on the steady part alone, as for cells. Errors other than 503
+still fail a step wherever they happen. `statuses`, `achieved_rate` and `useful_rate` count the warm-up too (64 writes against
+tens of thousands of requests). `--no-warmup` (`ATANOR_LOAD_NO_WARMUP=1`) goes back to judging the cold wakes with the rest.
+
 ### The connection cap of the ws measure
 
 The node holds at most `http.max_connections` connections (16384 by default, plus its 10 acceptors, so 16390;
@@ -266,6 +277,7 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_MAX_LAG_MS` | 50 | Generator release lag p99 above which a step is invalid (`stall:`) and repeated once. |
 | `ATANOR_LOAD_MAX_THROTTLE_JUMP_MS` | 5000 | Growth of the node's CPU throttling between two samples above which, and above 5 times the median growth, a step is invalid (`stall:`) and repeated once. |
 | `ATANOR_LOAD_WRITE_RATIO`, `_CELLS` | 0.5, 64 | http: share of writes, cells the requests spread over. |
+| `ATANOR_LOAD_NO_WARMUP` | 0 | `1`: an http step does not write each cell once before the steady load ([the warm-up](#the-warm-up-of-the-http-measures)). |
 | `ATANOR_LOAD_CELL_PERIOD` | 10 | cells: seconds between the writes to one cell. |
 | `ATANOR_LOAD_OPEN_RATE`, `_WS_INTERVAL` | 100, 30 | Sockets opened or cells touched per second; seconds between messages of a socket (the node closes a silent socket after 60 s). |
 | `ATANOR_LOAD_NODES` | 1 | Nodes `load-env up` starts (1 to 10); `load:scale` sets it itself. |

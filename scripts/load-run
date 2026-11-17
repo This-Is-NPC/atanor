@@ -978,7 +978,8 @@ class Round:
             procs = max(1, math.ceil(value / a.rate_per_proc))
             conns = max(16, min(1024, math.ceil(value * a.conns_per_rate / procs)))
             return [[f"{HERE}/load-gen", "http", *common, "--kind", kind, "--rate", str(value / procs), "--duration", str(a.step_s),
-                     "--cells", str(a.cells), "--write-ratio", str(a.write_ratio), "--conns", str(conns), "--seed", str(i + 1)] for i in range(procs)]
+                     "--cells", str(a.cells), "--write-ratio", str(a.write_ratio), "--conns", str(conns), "--seed", str(i + 1),
+                     *([] if a.no_warmup else ["--warmup", "--open-rate", str(a.open_rate)])] for i in range(procs)]
         if a.measure == "cells":
             return [[f"{HERE}/load-gen", "cells", *common, "--kind", kind, "--cells", str(value), "--period", str(a.cell_period),
                      "--duration", str(a.step_s), "--open-rate", str(a.open_rate), "--conns", str(a.cells_conns)]]
@@ -1586,7 +1587,7 @@ def join(args, rate, nodes_max):
     if not quiet:
         return {**record, "valid": False, "status": "invalid", "stop_reason": busy_reason(load, args), "host": {"net_load_last": load}}
     jargs = copy.copy(args)
-    jargs.measure = "http-native"
+    jargs.measure, jargs.no_warmup = "http-native", True  # the join measures the overload from the first request
     jargs.step_s = args.join_warmup_s + (nodes_max - 1) * (args.join_observe_s + args.join_node_wait_s) + args.join_observe_s
     round_ = Round(jargs, info, stem="scale-join")
     sampler, poller = Sampler(info, args.sample_s), SpreadPoller(info, args.join_sample_s)
@@ -1734,6 +1735,7 @@ def main():
     add("--rate-per-proc", type=float, default=env("RATE_PER_PROC", 600), help="req/s one generator process takes (ATANOR_LOAD_RATE_PER_PROC, 600)")
     add("--conns-per-rate", type=float, default=0.5, help="http: keep-alive connections per req/s")
     add("--write-ratio", type=float, default=env("WRITE_RATIO", 0.5), help="http: share of writes (ATANOR_LOAD_WRITE_RATIO, 0.5)")
+    add("--no-warmup", action="store_true", default=bool(env("NO_WARMUP", 0, int)), help="http: do not write every cell once before the steady load (ATANOR_LOAD_NO_WARMUP=1); the first step of a fresh node then judges the cold wakes too")
     add("--cells", type=int, default=env("CELLS", 64, int), help="http: cells the requests spread over (ATANOR_LOAD_CELLS, 64)")
     add("--worker", choices=["native", "wasm"], default="native", help="ws and cells: the worker to use (native)")
     add("--cell-period", type=float, default=env("CELL_PERIOD", 10), help="cells: seconds between the writes to one cell (ATANOR_LOAD_CELL_PERIOD, 10)")
