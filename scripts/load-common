@@ -5,9 +5,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/cluster-common"
 
 LOAD_SCENARIO=${ATANOR_LOAD_SCENARIO:-A}
 # Scenario A: 1 CPU and 512 MB. Scenario B: 2 CPUs and 2 GB. Override with ATANOR_LOAD_CPUS and _MEMORY.
+# The node's data dir (tmpfs) is sized for the scenario: its disk budget is a share of it, and a 256 MB one made B's disk reclaim put cells to sleep.
 case $LOAD_SCENARIO in
-  A) cpus=1; memory=512m ;;
-  B) cpus=2; memory=2g ;;
+  A) cpus=1; memory=512m; tmpfs=256m ;;
+  B) cpus=2; memory=2g; tmpfs=1g ;;
   *) echo "ATANOR_LOAD_SCENARIO must be A or B" >&2; exit 1 ;;
 esac
 # Bytes of a docker size such as 512m, 2g or 768M (k, m, g; a bare number is bytes).
@@ -22,7 +23,7 @@ size_bytes() {
 LOAD_CPUS=${ATANOR_LOAD_CPUS:-$cpus}
 LOAD_MEMORY=${ATANOR_LOAD_MEMORY:-$memory}
 LOAD_STORE_LATENCY_MS=${ATANOR_LOAD_STORE_LATENCY_MS:-25}   # added to every trip to the store
-LOAD_TMPFS_SIZE=${ATANOR_LOAD_TMPFS_SIZE:-256m}             # the node's data dir; its limit is the scenario memory plus this
+LOAD_TMPFS_SIZE=${ATANOR_LOAD_TMPFS_SIZE:-$tmpfs}           # the node's data dir (A 256m, B 1g); its limit is the scenario memory plus this
 LOAD_STORE_TMPFS_SIZE=${ATANOR_LOAD_STORE_TMPFS_SIZE:-1g}   # the store's data; its limit is its memory plus this
 # ATANOR_LOAD_STORE_DISK=1 keeps the node's data in tmpfs and puts the store's data on the host's disk (for a step that fills
 # the store's tmpfs). Set it the same way for every load command, as with every ATANOR_LOAD_* setting.
