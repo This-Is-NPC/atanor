@@ -129,7 +129,7 @@ defmodule Atanor.LoadRunTest do
     assert record["admission"]["refused"] == %{"memory" => 10 * (n - 1), "in_flight" => n - 1, "disk" => 0}
 
     assert record["admission"]["refused_unreported"] ==
-             ~w(wake_gate awake_limit busy disk_full queue_timeout worker_queue nested_calls)
+             ~w(wake_gate awake_limit busy disk_full queue_timeout worker_queue nested_calls unavailable)
 
     # 503 answers are set against every counter the node grew: 10 answers, wake_gate 6 and busy 1 counted, 3 unattributed
     refusals = r["refusals"]["attributed"]
@@ -151,6 +151,20 @@ defmodule Atanor.LoadRunTest do
     assert "10 503 answers not attributed: no /runtime reading" in r["refusals"]["no_runtime"]["notes"]
     assert r["refusals"]["all_counted"]["refusals"]["unattributed"] == 0
     refute Enum.any?(r["refusals"]["all_counted"]["notes"], &(&1 =~ "not attributed"))
+
+    # an older node reports none of the newer counters: null, not 0; the 503 reasons come from the generator
+    assert refusals["evictions"]["wakes"] == :null
+    assert refusals["admission"]["unavailable_by_reason"] == :null
+    assert refusals["statuses_503_by_reason"] == %{}
+
+    # a newer node: `unavailable` is a refusal cause (those 503 answers are attributed), its reasons and the wakes are the growth over the step
+    newer = r["refusals"]["newer"]
+    assert newer["refusals"]["by_cause"] == %{"unavailable" => 7, "busy" => 1}
+    assert newer["refusals"]["attributed"] == 8 and newer["refusals"]["unattributed"] == 2
+    assert newer["admission"]["unavailable_by_reason"] == %{"store_unavailable" => 3, "breaker_open" => 0}
+    assert newer["admission"]["refused_unreported"] |> Enum.member?("unavailable") == false
+    assert newer["evictions"]["wakes"] == 15
+    assert newer["statuses_503_by_reason"] == %{"unavailable/store_unavailable" => 7, "overloaded/busy" => 3}
 
     assert record["store"]["tmpfs_max_pct"] == 50.0
     assert record["store"]["limit_mb"] == 1280.0
@@ -336,6 +350,41 @@ defmodule Atanor.LoadRunTest do
 
     assert r["lag_old_generator"]["generator"]["release_lag_p99_ms"] == :null
 
+    # a burst of slow node-to-store requests in the log of a failing step is a store stall: INVALID, repeated once, the evidence in the step file
+    once = r["store_stall_once"]
+    assert once["runs"] == [10, 10]
+    assert %{"status" => "fail", "valid" => true, "stop_reason" => "p99 " <> _, "store_stall" => :null} = once["first"]
+    first = once["first"]["first_attempt"]
+    assert first["status"] == "invalid"
+
+    assert first["stop_reason"] ==
+             "stall: store stalled, 12 node-to-store requests took >= 1000 ms within 5 s (slowest 1061 ms)"
+
+    assert %{"slow_requests" => 12, "window_requests" => 12, "stalled" => true, "max_ms" => 1061} = first["store_stall"]
+
+    twice = r["store_stall_twice"]
+    assert twice["runs"] == [10, 10]
+    assert twice["summary"]["invalid"] =~ "stall: store stalled, 12 node-to-store requests"
+    assert twice["first"]["status"] == "invalid" and twice["first"]["store_stall"]["stalled"]
+    assert twice["first"]["first_attempt"]["stop_reason"] =~ "store stalled"
+
+    # not a stall: slow requests spread over time, a few, under the limit, or the check off; the step fails on p99 as before and is not repeated
+    for name <- ["store_slow_spread", "store_few_slow", "store_fast", "store_stall_off"] do
+      kept = r[name]
+      assert kept["runs"] == [10], name
+      assert %{"status" => "fail", "stop_reason" => "p99 " <> _, "first_attempt" => :null} = kept["first"], name
+    end
+
+    assert %{"slow_requests" => 12, "window_requests" => 1, "stalled" => false} =
+             r["store_slow_spread"]["first"]["store_stall"]
+
+    assert %{"slow_requests" => 2, "window_requests" => 2, "stalled" => false} =
+             r["store_few_slow"]["first"]["store_stall"]
+
+    assert r["store_fast"]["first"]["store_stall"] == :null
+    assert r["store_stall_off"]["first"]["store_stall"] == :null
+    assert r["store_stall_pure"] == %{"off" => :null, "none" => :null, "judge_none" => :null}
+
     # 503s over 1% of the answers fail a step (a criterion, not INVALID); 0.5% and exactly 1% pass; the useful rate leaves the 503s out
     refused = r["refused"]
 
@@ -446,6 +495,15 @@ defmodule Atanor.LoadRunTest do
       # scenario B's data dir is 1 GB by default (A's is 256 MB), so its disk budget does not put cells to sleep before the memory does
       assert {[node, _, scenario, node_limit], 0} = limits([{"ATANOR_LOAD_SCENARIO", "B"}])
       assert {node, scenario, node_limit} == {"#{(2048 + 1024) * mib}", "#{2048 * mib}", "#{2048 * mib}"}
+    end
+
+    test "every compose call of load-env (add-node starts nodes 2 and 3) uses the tmpfs layout of node 1" do
+      script = ~s(source scripts/load-common; printf '%s\\n' "${compose_files[@]}")
+      {out, 0} = System.cmd("bash", ["-c", script], env: [{"ATANOR_CLUSTER_TMPFS", ""}])
+      assert out =~ "cluster/compose.tmpfs.yml"
+
+      {out, 0} = System.cmd("bash", ["-c", script], env: [{"ATANOR_LOAD_STORE_DISK", "1"}])
+      assert out =~ "cluster/compose.tmpfs.yml" and out =~ "cluster/compose.store-disk.yml"
     end
 
     test "a size that is not a size is refused" do

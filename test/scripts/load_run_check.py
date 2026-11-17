@@ -84,7 +84,7 @@ def new_round(name):
     os.makedirs(out)
     args = argparse.Namespace(out=out, measure=measure[0], step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1e9, min_available_gb=0.0,
                               sample_s=0.05, quiet_window=0.0, quiet_max_wait=5.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
-                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, max_busy_share=1e9, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, no_confirm=False, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0, no_warmup=False, rate_per_proc=600.0, conns_per_rate=0.5, write_ratio=0.5, cells=64, worker="native", cell_period=10.0, cells_conns=64)
+                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, max_store_stall_ms=1000.0, store_stall_requests=10, max_busy_share=1e9, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, no_confirm=False, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0, no_warmup=False, rate_per_proc=600.0, conns_per_rate=0.5, write_ratio=0.5, cells=64, worker="native", cell_period=10.0, cells_conns=64)
     pid = os.getpid()
     info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"id": "store-id", "ip": "127.0.0.1", "pid": pid},
             "lb": {"pid": pid}, "admin": "http://127.0.0.1:1"}
@@ -335,9 +335,50 @@ results["refused"] = {
     "one_pct": refused_scenario("refused_one", {"200": 198, "503 retry-after": 2}),
 }
 
+def slow_log(*stamps, ms=1061):
+    """A node log with one slow store request at each time of day in `stamps` and an unrelated line."""
+    return "03:42:20.822 [info] atanor: ready\n" + "".join(f"{s} [warning] atanor: HTTP request PUT store:8333 took {ms} ms\n" for s in stamps)
+
+
+BURST = slow_log(*(f"03:46:42.{900 + i:03d}" for i in range(12)))
+SPREAD = slow_log(*(f"03:{10 + i}:00.000" for i in range(12)))
+# A failing step whose node log shows a burst of slow store requests is INVALID ("stall:") and repeated once; a repeat that stalls too ends the
+# round; a slow store spread over time, a few slow requests, requests under the limit and the check turned off leave the verdict (fail) as it was.
+def store_stall_scenario(name, logs, off=False):
+    container()
+    runs = []
+
+    def generators(self, value, sampler):
+        runs.append(value)
+        return [{**DOCUMENT, "statuses": {"200": 10}, "hist": {"9000": 10}}]
+
+    real = m.Round.run_generators, m.node_log_since
+    round_, args = new_round(name)
+    args.measure, args.max_store_stall_ms = "http-native", 0 if off else 1000.0
+    m.Round.run_generators, m.node_log_since = generators, lambda node, since: logs[min(len(runs), len(logs)) - 1]
+    try:
+        summary = m.ramp(round_, args)
+    finally:
+        m.Round.run_generators, m.node_log_since = real
+    files = sorted(f for f in os.listdir(args.out) if f.endswith(".json") and "summary" not in f)
+    with open(os.path.join(args.out, files[0])) as handle:
+        first = json.load(handle)
+    return {"runs": runs, "summary": summary, "first": {k: first[k] for k in ("status", "valid", "stop_reason", "store_stall", "first_attempt", "notes")}}
+
+
+results["store_stall_once"] = store_stall_scenario("store_stall_once", [BURST, ""])
+results["store_stall_twice"] = store_stall_scenario("store_stall_twice", [BURST, BURST])
+results["store_slow_spread"] = store_stall_scenario("store_slow_spread", [SPREAD])
+results["store_few_slow"] = store_stall_scenario("store_few_slow", [slow_log("03:46:42.900", "03:46:42.901")])
+results["store_fast"] = store_stall_scenario("store_fast", [slow_log("03:46:42.900", ms=999)])
+results["store_stall_off"] = store_stall_scenario("store_stall_off", [BURST], off=True)
+results["store_stall_pure"] = {"off": m.store_stall(BURST, 0, 10), "none": m.store_stall("", 1000, 10), "judge_none": m.judge_store_stall(None)}
+
+
 # The 503 answers of a step are set against the refusal counters the node grew (all its causes); what no counter explains is counted and noted.
-def refusal_scenario(name, grown, statuses=None):
-    """The node's /runtime shows `grown` refusals after its first reading (None: no /runtime); the generator answers 10 503s of 100."""
+def refusal_scenario(name, grown, statuses=None, newer=False, reasons=None):
+    """The node's /runtime shows `grown` refusals after its first reading (None: no /runtime); the generator answers 10 503s of 100.
+    `newer`: the node also reports `unavailable_by_reason` and `wakes` (3 after its first reading); `reasons` the generator's 503 reasons."""
     seen = []
 
     def runtime(info, path, timeout):
@@ -347,22 +388,25 @@ def refusal_scenario(name, grown, statuses=None):
         counted = {k: (v if len(seen) > 1 else 0) for k, v in grown.items()}
         # The memory pressure hibernated 4 cells after the first reading.
         pressure = {"hibernated": 7 if len(seen) > 1 else 3, "hibernate_at_bytes": 384 * MB}
-        return {"admission": {"in_flight": 3, "refused": counted, "disk_used_bytes": 50 * MB, "disk_budget_bytes": 100 * MB}, "pressure": pressure}
+        more = {"wakes": 20 if len(seen) > 1 else 5} if newer else {}
+        more_admission = {"unavailable_by_reason": {"store_unavailable": 4 if len(seen) > 1 else 1, "breaker_open": 2}} if newer else {}
+        return {"admission": {"in_flight": 3, "refused": counted, "disk_used_bytes": 50 * MB, "disk_budget_bytes": 100 * MB, **more_admission}, "pressure": pressure, **more}
 
     real, real_admin = m.Round.run_generators, m.admin_json
     m.admin_json = runtime
-    m.Round.run_generators = lambda self, value, sampler: [{**DOCUMENT, "statuses": statuses or {"200": 90, "503 retry-after": 10}, "hist": {"5": 100}, "planned": 100, "sent": 100, "completed": 100, "opened": 100}]
+    m.Round.run_generators = lambda self, value, sampler: [{**DOCUMENT, "statuses": statuses or {"200": 90, "503 retry-after": 10}, "hist": {"5": 100}, "planned": 100, "sent": 100, "completed": 100, "opened": 100, "reasons_503": reasons or {}}]
     measure[0] = "http-native"
     try:
         record = scenario(name)["record"]
     finally:
         measure[0] = "ws"
         m.Round.run_generators, m.admin_json = real, real_admin
-    return {k: record[k] for k in ("refusals", "notes", "admission", "evictions")}
+    return {k: record[k] for k in ("refusals", "notes", "admission", "evictions", "statuses_503_by_reason")}
 
 
 results["refusals"] = {"attributed": refusal_scenario("refusals_some", {"memory": 0, "wake_gate": 6, "busy": 1}),
-                       "all_counted": refusal_scenario("refusals_all", {"wake_gate": 10}), "no_runtime": refusal_scenario("refusals_none", None)}
+                       "all_counted": refusal_scenario("refusals_all", {"wake_gate": 10}), "no_runtime": refusal_scenario("refusals_none", None),
+                       "newer": refusal_scenario("refusals_newer", {"unavailable": 7, "busy": 1}, newer=True, reasons={"unavailable/store_unavailable": 7, "overloaded/busy": 3})}
 
 # A step that starts with a dead node is invalid, runs no generator and ends the round.
 results["dead_at_start"] = ramp_scenario("dead_at_start", dies_at=0, before={"running": False, "exit_code": 137})

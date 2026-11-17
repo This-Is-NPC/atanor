@@ -29,6 +29,8 @@ Statuses are counted as "200", "201", "503 retry-after", "503 no retry-after", "
 "error: KIND" (connection refused or reset, timeout, EMFILE, bad answer, or "not completed": a request
 that was due more than --timeout before a connection took it, or was still queued or in flight when the
 drain ended --timeout + 5 s after the last one was due; `completed` counts the requests that got an outcome, errors included, not these).
+The document's `reasons_503` counts the 503 answers by the "error/reason" of their JSON body (for example "overloaded/memory"; "unknown" without one);
+only the bodies of 503 answers are parsed.
 """
 import argparse
 import asyncio
@@ -56,13 +58,16 @@ def request_for(kind, tag, cell, write, n):
 
 class Recorder:
     def __init__(self):
-        self.statuses, self.hist, self.max_ms, self.lags, self.releases = {}, {}, 0.0, [], []
+        self.statuses, self.hist, self.max_ms, self.lags, self.releases, self.reasons = {}, {}, 0.0, [], [], {}
         self.opening = {"statuses": {}, "hist": {}, "max_ms": 0.0}  # the same, for the requests of the opening phase (cells)
 
     def status(self, key, opening=False):
         self.statuses[key] = self.statuses.get(key, 0) + 1
         if opening:
             self.opening["statuses"][key] = self.opening["statuses"].get(key, 0) + 1
+
+    def reason(self, key):
+        self.reasons[key] = self.reasons.get(key, 0) + 1
 
     def latency(self, ms, opening=False):
         bucket = min(int(ms * BUCKET), 10 * 1000 * BUCKET)
@@ -83,8 +88,18 @@ class Recorder:
             values = sorted(values)
             return {"mean": round(sum(values) / len(values), 2), "p99": round(values[int(len(values) * 0.99)], 2), "max": round(values[-1], 2)} if values else {}
 
-        return {**fields, "statuses": self.statuses, "hist": self.hist, "max_ms": round(self.max_ms, 3), "lag_ms": summary(self.lags),
+        return {**fields, "statuses": self.statuses, "reasons_503": self.reasons, "hist": self.hist, "max_ms": round(self.max_ms, 3), "lag_ms": summary(self.lags),
                 "release_lag_ms": summary(self.releases), "cpu_s": round(time.process_time(), 2)}
+
+
+def reason_of(body):
+    """The reason of a 503 from its JSON body, "error/reason" (the node answers {"error": ..., "reason": ...}); "unknown" when it has none."""
+    try:
+        answer = json.loads(body)
+        error, reason = answer.get("error"), answer.get("reason")
+    except (ValueError, AttributeError):
+        return "unknown"
+    return "/".join(str(x) for x in (error, reason) if x) or "unknown"
 
 
 def classify(status, headers):
@@ -106,15 +121,18 @@ async def read_response(reader):
     lines = head.decode("latin-1").split("\r\n")
     status = int(lines[0].split(" ", 2)[1])
     headers = {k.lower(): v for k, _, v in (line.partition(": ") for line in lines[1:] if line)}
+    body = b""
     if "content-length" in headers:
-        await reader.readexactly(int(headers["content-length"]))
+        body = await reader.readexactly(int(headers["content-length"]))
     elif headers.get("transfer-encoding") == "chunked":
         while True:
             size = int((await reader.readline()).strip() or b"0", 16)
-            await reader.readexactly(size + 2)
+            chunk = await reader.readexactly(size + 2)
+            if status == 503:
+                body += chunk[:size]
             if size == 0:
                 break
-    return status, headers
+    return status, headers, body if status == 503 else b""  # only a 503's body is kept, to name its reason
 
 
 async def http_worker(args, queue, recorder, clock):
@@ -135,9 +153,11 @@ async def http_worker(args, queue, recorder, clock):
                 body = b"x" * 32 if method == "POST" else b""
                 recorder.lag(max((clock() - due) * 1000, 0))
                 writer.write(f"{method} {path} HTTP/1.1\r\nhost: {host}\r\ncontent-length: {len(body)}\r\n\r\n".encode() + body)
-                status, headers = await asyncio.wait_for(read_response(reader), args.timeout)
+                status, headers, body = await asyncio.wait_for(read_response(reader), args.timeout)
                 recorder.latency((clock() - due) * 1000, opening)
                 recorder.status(classify(status, headers), opening)
+                if status == 503:
+                    recorder.reason(reason_of(body))
                 if headers.get("connection") == "close":
                     writer.close()
                     writer = None

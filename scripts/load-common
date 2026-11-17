@@ -1,7 +1,8 @@
 # Shared settings of the load-test scripts; sourced, not run. The load tests use the container
 # cluster of scripts/cluster-* (project atanor-cluster, every container named atanor-cluster-*)
 # with one node (the nodes find each other through the store, so there is no peer list); see docs/how-to-run-the-load-tests.md for every ATANOR_LOAD_* setting.
-source "$(dirname "${BASH_SOURCE[0]}")/cluster-common"
+# cluster-common is sourced last: it reads ATANOR_CLUSTER_TMPFS to choose the compose files, so every compose call of the caller
+# (`add-node` starts node 2 and 3 itself) gets the tmpfs of the first node.
 
 LOAD_SCENARIO=${ATANOR_LOAD_SCENARIO:-A}
 # Scenario A: 1 CPU and 512 MB. Scenario B: 2 CPUs and 2 GB. Override with ATANOR_LOAD_CPUS and _MEMORY.
@@ -53,3 +54,4 @@ export ATANOR_CLUSTER_HTTP_MAX_CONNECTIONS=${ATANOR_LOAD_HTTP_MAX_CONNECTIONS:-}
 export ATANOR_CLUSTER_TMPFS_SIZE=$LOAD_TMPFS_SIZE ATANOR_CLUSTER_STORE_TMPFS_SIZE=$LOAD_STORE_TMPFS_SIZE
 export ATANOR_CLUSTER_STORE_CPUS=${ATANOR_LOAD_STORE_CPUS:-2} ATANOR_CLUSTER_STORE_MEMORY=$((store_memory_bytes + store_tmpfs_bytes))
 export ATANOR_CLUSTER_LB_CPUS=${ATANOR_LOAD_LB_CPUS:-2} ATANOR_CLUSTER_LB_MEMORY=${ATANOR_LOAD_LB_MEMORY:-512m}
+source "$(dirname "${BASH_SOURCE[0]}")/cluster-common"

@@ -125,6 +125,69 @@ defmodule Atanor.LoadGenTest do
 
     document = :json.decode(plain)
     assert document["planned"] == 20 and document["opening"] == :null
+    # nothing was refused: no reasons
+    assert document["reasons_503"] == %{}
+  end
+
+  # A 503 is counted by the reason in its JSON body; a body that is not JSON is "unknown". Answers that are not 503 add nothing.
+  test "503 answers are counted by the reason of their body" do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(listen)
+    acceptor = spawn_link(fn -> accept_refusing(listen) end)
+
+    {out, 0} =
+      System.cmd(
+        Path.expand("scripts/load-gen"),
+        ~w(http --host 127.0.0.1 --kind native --cells 3 --rate 8 --duration 1 --conns 1 --timeout 2 --port #{port}),
+        stderr_to_stdout: true
+      )
+
+    Process.unlink(acceptor)
+    Process.exit(acceptor, :kill)
+    :gen_tcp.close(listen)
+
+    document = :json.decode(out)
+    assert document["statuses"] == %{"200" => 2, "503 retry-after" => 4, "503 no retry-after" => 2}
+
+    assert document["reasons_503"] == %{"overloaded/memory" => 2, "unavailable/store_unavailable" => 2, "unknown" => 2}
+  end
+
+  # Requests 0..3 of a connection cycle: 503 memory, 503 chunked store_unavailable, 503 with text, 200.
+  defp accept_refusing(listen) do
+    case :gen_tcp.accept(listen) do
+      {:ok, socket} ->
+        pid = spawn(fn -> answer_refusing(socket, 0) end)
+        :gen_tcp.controlling_process(socket, pid)
+        accept_refusing(listen)
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  defp answer_refusing(socket, n) do
+    with {:ok, _request} <- :gen_tcp.recv(socket, 0) do
+      json = ~s({"error":"overloaded","reason":"memory"})
+      chunked = ~s({"error":"unavailable","reason":"store_unavailable"})
+
+      answer =
+        case rem(n, 4) do
+          0 ->
+            "HTTP/1.1 503 Service Unavailable\r\nretry-after: 1\r\ncontent-length: #{byte_size(json)}\r\n\r\n#{json}"
+
+          1 ->
+            "HTTP/1.1 503 Service Unavailable\r\nretry-after: 1\r\ntransfer-encoding: chunked\r\n\r\n#{Integer.to_string(byte_size(chunked), 16)}\r\n#{chunked}\r\n0\r\n\r\n"
+
+          2 ->
+            "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 4\r\n\r\noops"
+
+          3 ->
+            "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok"
+        end
+
+      :gen_tcp.send(socket, answer)
+      answer_refusing(socket, n + 1)
+    end
   end
 
   defp accept_answering(listen) do

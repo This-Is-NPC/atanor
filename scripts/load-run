@@ -22,7 +22,7 @@ Before every step the harness waits for a quiet host (net load below --host-load
 fails), swap in a measured container or generator swap growing over --max-generator-swap-mb, or host swap growing over
 --max-host-swap-growth-mb (INVALID), the store's tmpfs over --max-store-tmpfs-pct (default 90%) of its size at any sample (with ATANOR_LOAD_STORE_DISK=1 the store's filesystem over --max-store-disk-pct instead; INVALID: a full
 store answers S3 500s, which measure the lab; it wins over a criterion, so a p99 or 5xx failure on a full store is not
-the node's), a stall (the generator's own release lag p99 over --max-lag-ms, so a slow node that backs the generator up is not one, or a jump of the node's CPU throttling over --max-throttle-jump-ms and 5x the median: INVALID, `stall:`; the step is repeated once, and when the repeat stalls too the round stops), delivery under 95% of the plan (INVALID, the round stops: the generator or the host, not the node). A node
+the node's), a stall (the generator's own release lag p99 over --max-lag-ms, so a slow node that backs the generator up is not one, or a jump of the node's CPU throttling over --max-throttle-jump-ms and 5x the median, or on a failing step --store-stall-requests node-to-store requests of --max-store-stall-ms or more within 5 s in the node log: INVALID, `stall:`; the step is repeated once, and when the repeat stalls too the round stops), delivery under 95% of the plan (INVALID, the round stops: the generator or the host, not the node). A node
 that stopped is judged first and still records the store's tmpfs share. The host swap used is only recorded. A container that may swap refuses the run before the first step.
 After the first failing step the ramp refines between the last good value and the failing one (--refine
 bisections, each on a fresh node and store), then repeats the best good step once to confirm it, also fresh. Environment: ATANOR_LOAD_* give defaults.
@@ -586,6 +586,8 @@ def per_node_summary(samples):
         out[name] = {"throttled_ms": round((throttled[-1] - throttled[0]) * 1000) if throttled else None,
                      "throttled_jump_ms": round(max((b - a for a, b in zip(throttled, throttled[1:])), default=0) * 1000) if throttled else None,
                      "in_flight_max": max((a.get("in_flight") or 0 for a in admissions), default=None), "refused": refused_delta(admissions),
+                     "unavailable_by_reason": reasons_delta(admissions), "wakes": counter_growth([(r or {}).get("wakes") for r, _ in reads]),
+                     "disk_budget_bytes": next((a["disk_budget_bytes"] for a in reversed(admissions) if isinstance(a.get("disk_budget_bytes"), int)), None),
                      "runtime_failed": sum(1 for r, _ in reads if r is None), "runtime_error": next((e for _, e in reversed(reads) if e), None)}
     return out
 
@@ -599,7 +601,31 @@ def refused_delta(admissions):
     return {k: v - (first.get(k) or 0) for k, v in last.items() if isinstance(v, int)}
 
 
-REFUSED_KEYS = ("memory", "in_flight", "disk", "wake_gate", "awake_limit", "busy", "disk_full", "queue_timeout", "worker_queue", "nested_calls")
+def reasons_delta(admissions):
+    """{reason: growth between the first and the last of `admissions`} of `unavailable_by_reason` (the 503 `unavailable` answers by reason);
+    None when no admission reports it (an older node)."""
+    seen = [a["unavailable_by_reason"] for a in admissions if isinstance(a.get("unavailable_by_reason"), dict)]
+    if not seen:
+        return None
+    return {k: v - (seen[0].get(k) or 0) for k, v in seen[-1].items() if isinstance(v, int)}
+
+
+def counter_growth(values):
+    """Last minus first of the integers in `values` (a counter of /runtime, one per sample); None when it was never reported."""
+    seen = [v for v in values if isinstance(v, int)]
+    return seen[-1] - seen[0] if seen else None
+
+
+def budget_note(budgets):
+    """A note when the nodes of a cluster do not report the same `disk_budget_bytes` ({node: bytes or None}); None when they agree or none is known:
+    a node with another data dir limit hibernates cells at another point, so the nodes are not comparable."""
+    known = {n: b for n, b in budgets.items() if isinstance(b, int)}
+    if len(set(known.values())) <= 1:
+        return None
+    return "nodes differ in disk_budget_bytes: " + ", ".join(f"{n} {b}" for n, b in sorted(known.items()))
+
+
+REFUSED_KEYS = ("memory", "in_flight", "disk", "wake_gate", "awake_limit", "busy", "disk_full", "queue_timeout", "worker_queue", "nested_calls", "unavailable")
 
 
 def admission_summary(samples):
@@ -613,7 +639,7 @@ def admission_summary(samples):
     disk = [a["disk_used_bytes"] for a in seen if isinstance(a.get("disk_used_bytes"), int)]
     budget = last.get("disk_budget_bytes")
     delta = refused_delta(seen)
-    return {"refused": delta, "refused_unreported": [k for k in REFUSED_KEYS if k not in delta], "refusing_seen": any(a.get("refusing") or a.get("disk_refusing") for a in seen),
+    return {"refused": delta, "unavailable_by_reason": reasons_delta(seen), "refused_unreported": [k for k in REFUSED_KEYS if k not in delta], "refusing_seen": any(a.get("refusing") or a.get("disk_refusing") for a in seen),
             "in_flight_max": max((a.get("in_flight") or 0 for a in seen), default=None), "working_set_max_bytes": max((a.get("working_set_bytes") or 0 for a in seen), default=None),
             "disk_used_start_bytes": disk[0] if disk else None, "disk_used_max_bytes": max(disk) if disk else None,
             "disk_used_max_pct_of_budget": round(100 * max(disk) / budget, 1) if disk and budget else None,
@@ -629,7 +655,7 @@ def eviction_evidence(awake_start, awake_end, admission, samples=()):
     change = None if awake_start is None or awake_end is None else awake_end - awake_start
     seen = [p["hibernated"] for s in samples if isinstance(p := (s.get("runtime") or {}).get("pressure"), dict) and isinstance(p.get("hibernated"), int)]
     return {"counter_in_runtime": False, "cells_awake_start": awake_start, "cells_awake_end": awake_end, "cells_awake_change": change,
-            "pressure_hibernated": seen[-1] - seen[0] if seen else None,
+            "pressure_hibernated": seen[-1] - seen[0] if seen else None, "wakes": counter_growth([(s.get("runtime") or {}).get("wakes") for s in samples]),
             "disk_used_max_pct_of_budget": admission.get("disk_used_max_pct_of_budget"), "disk_budget_bytes": admission.get("disk_budget_bytes")}
 
 
@@ -674,6 +700,46 @@ def judge_stall(lag_p99_ms, entries, max_lag_ms, max_jump_ms):
         jump, typical = max(growth), statistics.median(growth)
         if jump > max_jump_ms and jump > 5 * typical:
             return f"stall: node CPU throttling grew {jump} ms between two samples > {max_jump_ms:g} ms and 5 x the median {typical:g} ms"
+    return None
+
+
+STORE_STALL_WINDOW_S = 5.0
+SLOW_STORE_LINE = re.compile(r"^(\d\d):(\d\d):(\d\d(?:\.\d+)?) .*HTTP request \w+ \S+ took (\d+) ms")
+
+
+def store_stall(log, min_ms, min_requests):
+    """Evidence of a store stall in a node's log: the node-to-store requests that took `min_ms` or more ("HTTP request PUT store:8333 took N ms"),
+    and the most of them within STORE_STALL_WINDOW_S seconds; `stalled` when that is `min_requests` or more. None without a slow request or when
+    `min_ms` is 0 (off). The log's clock is the time of day, so a window across midnight is not joined."""
+    if not min_ms:
+        return None
+    slow = []
+    for line in log.splitlines():
+        found = SLOW_STORE_LINE.match(line)
+        if found and int(found[4]) >= min_ms:
+            slow.append((int(found[1]) * 3600 + int(found[2]) * 60 + float(found[3]), int(found[4])))
+    if not slow:
+        return None
+    times = [t for t, _ in slow]
+    window = max(sum(1 for u in times if t <= u < t + STORE_STALL_WINDOW_S) for t in times)
+    return {"slow_requests": len(slow), "max_ms": max(ms for _, ms in slow), "window_requests": window, "window_s": STORE_STALL_WINDOW_S,
+            "threshold_ms": min_ms, "min_requests": min_requests, "stalled": window >= min_requests}
+
+
+def node_log_since(node, since):
+    """The log of a node container from `since` (epoch seconds); "" when it cannot be read."""
+    try:
+        out = subprocess.run(["docker", "logs", "--since", str(int(since)), node], capture_output=True, timeout=120)
+        return (out.stdout + out.stderr).decode(errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def judge_store_stall(evidence):
+    """The INVALID reason when the store stalled (`store_stall` evidence), else None. A stall fails a step by chance: it measures the lab."""
+    if evidence and evidence["stalled"]:
+        return (f"stall: store stalled, {evidence['window_requests']} node-to-store requests took >= {evidence['threshold_ms']:g} ms within "
+                f"{evidence['window_s']:g} s (slowest {evidence['max_ms']} ms)")
     return None
 
 
@@ -895,8 +961,10 @@ def gain(ceilings):
 # ---- results of the generators -------------------------------------------------------------------------
 
 def merge(documents):
-    out = {"statuses": {}, "hist": {}, "max_ms": 0.0, "planned": 0, "sent": 0, "completed": 0, "cpu_s": 0.0, "lag_p99": 0.0, "release_lag_p99": None}
+    out = {"statuses": {}, "hist": {}, "max_ms": 0.0, "planned": 0, "sent": 0, "completed": 0, "cpu_s": 0.0, "lag_p99": 0.0, "release_lag_p99": None, "reasons_503": {}}
     for d in documents:
+        for key, n in (d.get("reasons_503") or {}).items():
+            out["reasons_503"][key] = out["reasons_503"].get(key, 0) + n
         for key in ("planned", "sent", "completed", "cpu_s"):
             out[key] += d.get(key, 0)
         for key, n in d["statuses"].items():
@@ -1038,7 +1106,7 @@ class Round:
             first = record
             say(f"{a.measure} {value} {UNITS[a.measure]}: {first['stop_reason']}; repeating the step once")
             record = self.run_once(value, phase, fresh)
-            record["first_attempt"] = {k: first[k] for k in ("status", "stop_reason", "latency_ms", "generator", "series")}
+            record["first_attempt"] = {k: first[k] for k in ("status", "stop_reason", "latency_ms", "generator", "series", "store_stall")}
             record["notes"].append(f"first attempt INVALID, repeated once: {first['stop_reason']}")
         path = self.base(value, phase) + ".json"
         write_json(path, record)
@@ -1116,7 +1184,7 @@ class Round:
                   "value": value, "duration_s": a.step_s, "store_latency_ms": info["store_latency_ms"], "store_backing": info.get("store_backing", "tmpfs"), "command": a.command,
                   "http_max_connections": http_max_connections(), "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
-                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "per_node": None, "refusals": None, "evictions": None, "store": None, "cells_awake": None, "store_rtt_ms": None, "opening": None,
+                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "per_node": None, "statuses_503_by_reason": {}, "refusals": None, "evictions": None, "store_stall": None, "store": None, "cells_awake": None, "store_rtt_ms": None, "opening": None,
                   "valid": valid, "status": status, "stop_reason": reason, "started_at": began, "node_stopped": bool(dead), "notes": [], "first_attempt": None, "diagnostics": list(diagnostics)}
         if merged is None:
             return record
@@ -1131,7 +1199,7 @@ class Round:
             record["opening"] = {"planned": opening["planned"], "answers": opening_answers, "refused": opening_refused,
                                  "refused_pct": round(opening_refused * 100 / opening_answers, 1) if opening_answers else None,
                                  "latency_ms": latency_block(opening["hist"], opening["max_ms"])}
-        record.update(statuses=merged["statuses"], cpu=usage["cpu"], memory=usage["memory"], fds=usage["fds"], host=usage["host"], swap_usage=usage["swap_usage"],
+        record.update(statuses=merged["statuses"], statuses_503_by_reason=merged["reasons_503"], cpu=usage["cpu"], memory=usage["memory"], fds=usage["fds"], host=usage["host"], swap_usage=usage["swap_usage"],
                       runtime=runtime_summary(samples), series=series(samples), stalls=stall_summary(samples, sampler.stalls if sampler else []), admission=admission_summary(samples),
                       store=store_summary(samples, info.get("store_tmpfs_bytes"), info.get("store_backing", "tmpfs")),
                       latency_ms=latency_block(judged["hist"], judged["max_ms"]),
@@ -1142,6 +1210,9 @@ class Round:
                       cells_awake=None if dead else cells_awake(self.info), store_rtt_ms=None if dead else store_rtt(),
                       distribution=distribution(samples, [n["name"] for n in info.get("nodes") or []]))
         record["per_node"] = per_node_summary(samples)
+        note = budget_note({n: p["disk_budget_bytes"] for n, p in (record["per_node"] or {}).items()})
+        if note:
+            record["notes"].append(note)
         record["refusals"] = refusals_503(merged["statuses"], samples)
         record["evictions"] = eviction_evidence(self.awake_start, record["cells_awake"], record["admission"], samples)
         refusals, answers_503 = record["refusals"], refused_of(merged["statuses"])[1]
@@ -1205,6 +1276,12 @@ class Round:
         stalled = judge_stall(gen["lag_p99_ms"] if gen["release_lag_p99_ms"] is None else gen["release_lag_p99_ms"], record["series"], a.max_lag_ms, a.max_throttle_jump_ms)
         if stalled:  # before the criteria: a stall fails a step by chance
             return {**record, "valid": False, "status": "invalid", "stop_reason": stalled}
+        if criteria and a.max_store_stall_ms:  # a step that would fail: was it the store? (the log is read only then)
+            found = [e for e in (store_stall(node_log_since(node, began or 0), a.max_store_stall_ms, a.store_stall_requests) for node in node_ids(info)) if e]
+            record["store_stall"] = max(found, key=lambda e: e["window_requests"], default=None)
+            stalled = judge_store_stall(record["store_stall"])
+            if stalled:
+                return {**record, "valid": False, "status": "invalid", "stop_reason": stalled}
         if criteria:
             return {**record, "status": "fail", "stop_reason": "; ".join(criteria)}
         if record["achieved_ratio"] is not None and record["achieved_ratio"] < a.delivery:
@@ -1635,6 +1712,10 @@ def join(args, rate, nodes_max):
         events[-1]["rebalance_observed"] = rebalance_state(node_runtimes(info))  # mid-plan: the plan may run on
     load_thread.join()
     reads = window_end(events[-1]["nodes"] if events else 1)  # the last window ends with the load
+    record["disk_budget_bytes"] = {n: ((runtime or {}).get("admission") or {}).get("disk_budget_bytes") for n, (runtime, _) in reads.items()}
+    note = budget_note(record["disk_budget_bytes"])
+    if note:
+        record["notes"].append(note)
     if events:
         events[-1]["rebalance"] = rebalance_state(reads)
     samples = sampler.finish()
@@ -1645,7 +1726,8 @@ def join(args, rate, nodes_max):
         merged = merge(documents)
         errors = {k: n for k, n in merged["statuses"].items() if k not in OK_STATUSES}
         record["generator"] = {"sent": merged["sent"], "completed": merged["completed"], "statuses": merged["statuses"], "errors": errors,
-                               "status_503": merged["statuses"].get("503 retry-after", 0) + merged["statuses"].get("503 no retry-after", 0)}
+                               "status_503": merged["statuses"].get("503 retry-after", 0) + merged["statuses"].get("503 no retry-after", 0),
+                               "statuses_503_by_reason": merged["reasons_503"]}
     record["windows"] = join_windows(poller, events, args, rate)
     mean, busy = join_host_load(samples, events, args.sample_s)
     record["host"] = {"net_load_mean": mean, "busy_cores_mean": busy, "available_gb_min": round(min(s["host"]["available_gb"] for s in samples), 1)}
@@ -1731,6 +1813,8 @@ def main():
     add("--max-store-tmpfs-pct", type=float, default=env("MAX_STORE_TMPFS_PCT", 90), help="the store's tmpfs above this share of its size at any sample makes a step INVALID, before the criteria (ATANOR_LOAD_MAX_STORE_TMPFS_PCT, 90)")
     add("--max-lag-ms", type=float, default=env("MAX_LAG_MS", 50), help="generator release lag p99 (how late the generator itself queued requests) above this makes a step INVALID ('stall:'), repeated once (ATANOR_LOAD_MAX_LAG_MS, 50)")
     add("--max-throttle-jump-ms", type=float, default=env("MAX_THROTTLE_JUMP_MS", 5000), help="growth of the node's CPU throttling between two samples above this and above 5 times the median growth makes a step INVALID ('stall:'), repeated once (ATANOR_LOAD_MAX_THROTTLE_JUMP_MS, 5000)")
+    add("--max-store-stall-ms", type=float, default=env("MAX_STORE_STALL_MS", 1000), help="a failing step whose node log shows --store-stall-requests or more node-to-store requests of this many ms or more within 5 s is INVALID ('stall:'), repeated once; 0 turns it off (ATANOR_LOAD_MAX_STORE_STALL_MS, 1000)")
+    add("--store-stall-requests", type=int, default=env("STORE_STALL_REQUESTS", 10, int), help="how many slow store requests within 5 s make a store stall (ATANOR_LOAD_STORE_STALL_REQUESTS, 10)")
     add("--min-available-gb", type=float, default=env("MIN_AVAILABLE_GB", 6), help="host MemAvailable below this stops the round (ATANOR_LOAD_MIN_AVAILABLE_GB, 6)")
     add("--sample-s", type=float, default=env("SAMPLE_S", 5), help="seconds between samples (ATANOR_LOAD_SAMPLE_S, 5)")
     add("--timeout", type=float, default=env("TIMEOUT", 10), help="seconds before a request counts as unanswered")

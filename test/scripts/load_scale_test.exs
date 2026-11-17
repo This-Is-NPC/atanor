@@ -191,9 +191,41 @@ defmodule Atanor.LoadScaleTest do
              "cells_awake_change" => 0,
              # the stub nodes report no pressure counter
              "pressure_hibernated" => :null,
+             "wakes" => :null,
              "disk_used_max_pct_of_budget" => 10.0,
              "disk_budget_bytes" => 100 * 1_048_576
            }
+
+    # the counters of a newer node are read when present and null when absent: node 1 reports them, node 2 does not
+    new = r["two_nodes_new"]
+    assert new["wakes"] == 7
+    assert new["unavailable_by_reason"] == %{"store_unavailable" => 2, "breaker_open" => 1}
+    assert new["by_reason"] == %{"unavailable/store_unavailable" => 7, "overloaded/busy" => 3}
+    [one, two_] = [new["per_node"]["node-1"], new["per_node"]["node-2"]]
+    assert one["wakes"] == 7 and one["unavailable_by_reason"] == %{"store_unavailable" => 2, "breaker_open" => 1}
+    assert one["refused"] == %{"unavailable" => 3}
+    assert two_["wakes"] == :null and two_["unavailable_by_reason"] == :null and two_["refused"] == %{"busy" => 0}
+
+    # `unavailable` is a refusal cause: the 503 answers it counted are attributed
+    assert new["refusals"] == %{
+             "answers_503" => 10,
+             "by_cause" => %{"unavailable" => 3, "busy" => 0},
+             "attributed" => 3,
+             "unattributed" => 7
+           }
+
+    # nodes that report another disk budget are named in the step's notes; equal budgets, or none, add no note
+    assert "nodes differ in disk_budget_bytes: node-1 #{100 * 1_048_576}, node-2 #{200 * 1_048_576}" in new["notes"]
+    same = r["two_nodes_same_budget"]
+    refute Enum.any?(same["notes"], &(&1 =~ "disk_budget_bytes"))
+    assert same["wakes"] == :null and same["unavailable_by_reason"] == :null and same["by_reason"] == %{}
+    assert same["per_node"] == %{"node-1" => [:null, :null], "node-2" => [:null, :null]}
+
+    budgets = r["join_budgets"]
+    assert budgets["budgets"] == %{"node-1" => 100 * 1_048_576, "node-2" => 200 * 1_048_576}
+    assert Enum.any?(budgets["notes"], &(&1 =~ "nodes differ in disk_budget_bytes"))
+    assert r["join_no_budgets"]["budgets"] == %{"node-1" => :null, "node-2" => :null}
+    refute Enum.any?(r["join_no_budgets"]["notes"], &(&1 =~ "disk_budget_bytes"))
 
     # the rebalance of a window is read mid-plan and at its end (later moves); a silent node is named with its error; an ok join keeps the evidence
     end_ = r["join_end"]
