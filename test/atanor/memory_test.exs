@@ -183,10 +183,20 @@ defmodule Atanor.MemoryTest do
                wake_fraction: 0.5,
                cgroup_path: "/sys/fs/cgroup/memory.max",
                refuse_fraction: 0.85,
+               hibernate_fraction: 0.75,
+               hibernate_batch: 32,
+               hibernate_interval_ms: 1_000,
                sample_ms: 100,
                current_path: "/sys/fs/cgroup/memory.current",
                stat_path: "/sys/fs/cgroup/memory.stat"
              }
+  end
+
+  test "the pressure mark follows a lower refuse mark unless given" do
+    assert build(refuse_fraction: 0.5).memory.hibernate_fraction == 0.45
+    assert build(refuse_fraction: 0.5, hibernate_fraction: 0.2).memory.hibernate_fraction == 0.2
+    assert build(refuse_fraction: nil).memory.hibernate_fraction == 0.75
+    assert build(hibernate_fraction: nil).memory.hibernate_fraction == nil
   end
 
   test "wrong values are refused at start" do
@@ -204,6 +214,13 @@ defmodule Atanor.MemoryTest do
           [refuse_fraction: 1.5],
           [refuse_fraction: "most"],
           [sample_ms: 0],
+          [hibernate_fraction: 0],
+          [hibernate_fraction: 0.85],
+          [hibernate_fraction: 0.9, refuse_fraction: 0.9],
+          [hibernate_fraction: 1, refuse_fraction: nil],
+          [hibernate_fraction: "most"],
+          [hibernate_batch: 0],
+          [hibernate_interval_ms: 0],
           [current_path: nil],
           [stat_path: 1],
           [size: 1],

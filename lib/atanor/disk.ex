@@ -297,8 +297,9 @@ defmodule Atanor.Disk do
     })
   end
 
+  @doc false
   # Every cell with a process on this node, a page at a time (a waking one has no `last_used` yet).
-  defp awake_cells(alambique) do
+  def awake_cells(alambique) do
     Stream.unfold(:start, fn
       :done ->
         nil
@@ -311,7 +312,9 @@ defmodule Atanor.Disk do
     |> Enum.concat()
   end
 
-  defp hibernate(alambique, id) do
+  @doc false
+  # Hibernates the cell unless a call is in flight (`:skipped`).
+  def hibernate(alambique, id) do
     case Alambique.load(alambique, id) do
       {:ok, %{pending: 0}} -> Alambique.hibernate(alambique, id, timeout: @reclaim_timeout_ms)
       _ -> :skipped

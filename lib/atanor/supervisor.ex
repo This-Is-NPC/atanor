@@ -49,6 +49,7 @@ defmodule Atanor.Supervisor do
         discovery(config) ++
         disk(config) ++
         [
+          {Atanor.Pressure, config},
           # Children stop in reverse order: listeners close, the jobs get `stop.jobs_ms` to finish, the tasks
           # still running are cancelled, then the detector tells the peers that the node leaves, then the
           # cells are handed off, then Alambique stops. The tasks use the tables of the children before them.

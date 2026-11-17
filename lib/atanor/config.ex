@@ -77,6 +77,11 @@ defmodule Atanor.Config do
     wake_fraction: 0.5,
     cgroup_path: "/sys/fs/cgroup/memory.max",
     refuse_fraction: 0.85,
+    # Under pressure (`Atanor.Pressure`): the working set at which idle cells hibernate; unset, 0.75 or
+    # 90% of `refuse_fraction` when that is lower.
+    hibernate_fraction: 0.75,
+    hibernate_batch: 32,
+    hibernate_interval_ms: 1_000,
     sample_ms: 100,
     current_path: "/sys/fs/cgroup/memory.current",
     stat_path: "/sys/fs/cgroup/memory.stat"
@@ -619,6 +624,7 @@ defmodule Atanor.Config do
     check!(Keyword.keyword?(opts), ":memory must be a keyword list")
     check!(Keyword.keys(opts) -- Map.keys(@memory) == [], ":memory has only #{inspect(Map.keys(@memory))}")
     memory = Map.merge(@memory, Map.new(opts))
+    memory = if Keyword.has_key?(opts, :hibernate_fraction), do: memory, else: default_hibernate(memory)
 
     check!(
       is_nil(memory.limit_bytes) or positive_integer?(memory.limit_bytes),
@@ -642,6 +648,20 @@ defmodule Atanor.Config do
       ":memory :refuse_fraction must be nil or a number above #{Atanor.Admission.hysteresis()} and at most 1"
     )
 
+    check!(
+      is_nil(memory.hibernate_fraction) or
+        (is_number(memory.hibernate_fraction) and memory.hibernate_fraction > 0 and
+           memory.hibernate_fraction < (memory.refuse_fraction || 1)),
+      ":memory :hibernate_fraction must be nil or a number above 0 and below :refuse_fraction (below 1 without one)"
+    )
+
+    check!(positive_integer?(memory.hibernate_batch), ":memory :hibernate_batch must be a positive integer")
+
+    check!(
+      positive_integer?(memory.hibernate_interval_ms),
+      ":memory :hibernate_interval_ms must be a positive integer"
+    )
+
     check!(positive_integer?(memory.sample_ms), ":memory :sample_ms must be a positive integer")
 
     for key <- [:cgroup_path, :current_path, :stat_path] do
@@ -650,6 +670,12 @@ defmodule Atanor.Config do
 
     memory
   end
+
+  # A refuse mark below the default pressure mark pulls it down, so an existing setting stays valid.
+  defp default_hibernate(%{refuse_fraction: refuse} = memory) when is_number(refuse) and refuse * 0.9 < 0.75,
+    do: %{memory | hibernate_fraction: refuse * 0.9}
+
+  defp default_hibernate(memory), do: memory
 
   defp disk!(opts, data_dir) do
     opts = opts || []
