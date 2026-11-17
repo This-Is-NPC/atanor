@@ -3,10 +3,12 @@
 
   load_config.py --check FILE     print the resolved config (JSON) and its hash; exit 1 and list every problem when it is invalid
   load_config.py --defaults       print the built-in defaults
+  load_config.py --env FILE SCENARIO [MEASURE]   print the ATANOR_LOAD_* lines of the lab of a scenario (and the store of a measure)
 
 The defaults equal today's defaults of scripts/load-run, load-explore and load-common. The layout is documented key by key in
 load/rounds/example.toml. As a module: load_config(path) -> dict, resolve(raw) -> dict, plan(config, measure, scenario) -> dict,
-config_hash(config) -> str; ConfigError.problems lists every problem found.
+config_hash(config) -> str, case_hash(config, scenario, measure) -> str, case_list(config) -> [(scenario, measure)], plan_values,
+env_lines, dump_toml; ConfigError.problems lists every problem found.
 """
 import argparse
 import copy
@@ -14,8 +16,11 @@ import difflib
 import hashlib
 import json
 import math
+import os
 import re
+import shlex
 import sys
+import time
 import tomllib
 
 SCENARIOS = ("A", "B")
@@ -23,6 +28,8 @@ MEASURES = ("http-native", "http-wasm", "http-wasm-jobs", "ws", "cells", "swap",
 RAMP_MEASURES = ("http-native", "http-wasm", "http-wasm-jobs", "ws", "cells")
 SCALE_LOADS = ("http-native", "http-wasm", "http-wasm-jobs", "cells")
 RAMPS = {"http-native": (25, 20000), "http-wasm": (25, 20000), "http-wasm-jobs": (25, 20000), "ws": (100, 60000), "cells": (100, 100000)}
+UNITS = {"http-native": "req/s", "http-wasm": "req/s", "http-wasm-jobs": "req/s", "ws": "connections", "cells": "cells", "swap": "req/s", "scale": "req/s or cells"}
+FACTORS = [0.75, 1.0, 1.25, 1.5]  # the steps of a ceiling plan, as fractions of its ceiling
 SIZE = re.compile(r"^[0-9]+[kmg]?b?$", re.IGNORECASE)  # as size_bytes of scripts/load-common
 CEILING_KEY = re.compile(r"^([a-z-]+):([0-9]+)$")
 
@@ -125,10 +132,13 @@ def describe(value):
 
 
 def steps_table(start, maximum, sparse=False):
-    """The step plan of a measure: a `ladder` of fixed values, or a `bisect` that grows from `start` by `factor` up to `max`, then refines."""
+    """The step plan of a measure: a `ladder` of fixed values, a `ceiling` ladder of `factors` times `ceiling`, or a `bisect` that grows
+    from `start` by `factor` up to `max`, then refines."""
     return Table({
-        "kind": Leaf("str", "bisect", choices=("ladder", "bisect")),
+        "kind": Leaf("str", "bisect", choices=("ladder", "bisect", "ceiling")),
         "values": Leaf("list", [], item="int", lo=0, open_lo=True, ascending=True),
+        "ceiling": Leaf("int", 0, lo=0),
+        "factors": Leaf("list", list(FACTORS), item="float", lo=0, open_lo=True, nonempty=True),
         "start": Leaf("float", float(start), lo=0, open_lo=True),
         "factor": Leaf("float", 2.0, lo=1, open_lo=True),
         "max": Leaf("float", float(maximum), lo=0, open_lo=True),
@@ -138,12 +148,19 @@ def steps_table(start, maximum, sparse=False):
     }, sparse)
 
 
+def store_override():
+    """The keys of [store] a measure may override for its own runs."""
+    return Table({"backing": Leaf("str", "tmpfs", choices=("tmpfs", "disk")), "tmpfs_size": Leaf("size", "1g"), "latency_ms": Leaf("float", 25.0, lo=0)},
+                 sparse=True)
+
+
 def measure_table(name):
     run_on = Leaf("list", [], item="str", choices=SCENARIOS)
+    common = {"run_on": run_on, "store": store_override(), "variant": Map((), lambda _: None, "variant")}  # reserved: [measures.M.variant.V.store] and .steps; no measure has variants yet
     if name in ("swap", "scale"):
-        return Table({"run_on": run_on})
+        return Table(common)
     start, maximum = RAMPS[name]
-    return Table({"run_on": run_on, "steps": steps_table(start, maximum),
+    return Table({**common, "steps": steps_table(start, maximum),
                   "per_scenario": Map(SCENARIOS, lambda _: steps_table(start, maximum, sparse=True), "scenario")})
 
 
@@ -173,6 +190,9 @@ SCHEMA = Table({
     "round": Table({
         "scenarios": Leaf("list", ["A"], item="str", choices=SCENARIOS, nonempty=True),
         "measures": Leaf("list", ["http-native", "http-wasm", "http-wasm-jobs", "ws", "cells", "swap"], item="str", choices=MEASURES, nonempty=True),
+        "cases": Leaf("list", [], item="str"),
+        "step_timeout_s": positive(600),
+        "timeout_s": Leaf("float", 0.0, lo=0),
     }),
     "output": Table({"dir": Leaf("str", ""), "name": Leaf("str", "")}),
     "host": Table({"ssh": Leaf("str", ""), "repo": Leaf("str", ""), "results": Leaf("str", "")}),
@@ -184,6 +204,7 @@ SCHEMA = Table({
     "measures": Map(MEASURES, measure_table, "measure", fill=True),
     "judging": Table({
         "stall_repeats": Leaf("int", 1, lo=0),
+        "errors": criterion(),
         "p99": criterion(max_ms=positive(250)),
         "refused": criterion(max_pct=pct(1)),
         "memory": criterion(max_pct=pct(90)),
@@ -212,7 +233,10 @@ SCHEMA = Table({
         "loads": Leaf("list", ["http-native", "cells"], item="str", choices=SCALE_LOADS, nonempty=True),
         "factor": Leaf("float", 1.25, lo=1, open_lo=True),
         "ceilings": Map(None, lambda _: Leaf("int", None, lo=0, open_lo=True), "ceiling"),
-        "ceiling_factors": Leaf("list", [0.75, 1.0, 1.25, 1.5], item="float", lo=0, open_lo=True, nonempty=True),
+        "ceiling_factors": Leaf("list", list(FACTORS), item="float", lo=0, open_lo=True, nonempty=True),
+        "per_scenario": Map(SCENARIOS, lambda _: Table({"ceilings": Map(None, lambda _: Leaf("int", None, lo=0, open_lo=True), "ceiling"),
+                                                        "ceiling_factors": Leaf("list", list(FACTORS), item="float", lo=0, open_lo=True, nonempty=True)},
+                                                       sparse=True), "scenario"),
         "join": criterion(rate=Leaf("float", 0.0, lo=0), factor=positive(1.5), warmup_s=Leaf("float", 30.0, lo=0), observe_s=positive(120),
                           node_wait_s=positive(90), node_timeout_s=positive(300), sample_s=positive(2)),
         "spread": Table({"tol_pct": pct(25), "hold": Leaf("int", 3, lo=1), "min_cells": Leaf("int", 10, lo=1)}),
@@ -256,7 +280,8 @@ def merge(node, value, path, problems):
         return out
     for key, given in value.items():
         if node.keys is not None and key not in node.keys:
-            problems.append(f"{path}.{key}: unknown {node.label} {key!r}, expected one of {', '.join(node.keys)}")
+            expected = f"expected one of {', '.join(node.keys)}" if node.keys else f"there is no {node.label} yet"
+            problems.append(f"{path}.{key}: unknown {node.label} {key!r}, {expected}")
         elif node.keys is None and not CEILING_KEY.match(key):
             problems.append(f"{path}.{key}: expected LOAD:NODES, like http-native:2")
         else:
@@ -270,39 +295,134 @@ def plan(config, measure, scenario):
     return {**entry["steps"], **entry["per_scenario"].get(scenario, {})}
 
 
+def steps_of(ceiling, factors):
+    """The values of a ladder as fractions of a ceiling: rounded, at least 1, repeats dropped."""
+    out = []
+    for factor in factors:
+        value = max(1, int(ceiling * factor + 0.5))
+        if not out or out[-1] != value:
+            out.append(value)
+    return out
+
+
+def ramp_values(p):
+    """The values of a bisect plan before any refinement: `start` growing by `factor` up to `max`."""
+    values, v = [], p["start"]
+    while v <= p["max"]:
+        values.append(round(v))
+        v *= p["factor"]
+    return values
+
+
+def plan_values(p):
+    """The values a plan runs before any refinement: the ladder's, the ceiling's fractions, or the bisect's growth."""
+    if p["kind"] == "ladder":
+        return list(p["values"])
+    return steps_of(p["ceiling"], p["factors"]) if p["kind"] == "ceiling" else ramp_values(p)
+
+
+def case_list(config):
+    """[(scenario, measure)] of the round, in the order they run: `round.cases` as given, else each scenario with its measures
+    (a measure with `run_on` only on those scenarios). A malformed case is left out (check_cases reports it)."""
+    cases = config["round"]["cases"]
+    if not cases:
+        entries = config["measures"]
+        return [(s, m) for s in config["round"]["scenarios"] for m in config["round"]["measures"] if not entries[m]["run_on"] or s in entries[m]["run_on"]]
+    parts = [c.split("/") for c in cases]
+    return [(p[0], p[1]) for p in parts if len(p) in (2, 3) and p[0] in SCENARIOS and p[1] in MEASURES]
+
+
+def scale_of(config, scenario):
+    """The [scale] section as it holds in a scenario: the ceilings and their factors of `per_scenario` replace the general ones."""
+    scale = {k: v for k, v in config["scale"].items() if k != "per_scenario"}
+    return {**scale, **config["scale"]["per_scenario"].get(scenario, {})}
+
+
+def join_budget_s(config):
+    """Seconds the load generator of the scale measure's join runs (0 without a join), as load-run budgets it."""
+    scale = config["scale"]
+    join = scale["join"]
+    return 0.0 if not join["enabled"] or scale["max_nodes"] < 2 else join["warmup_s"] + (scale["max_nodes"] - 1) * (join["observe_s"] + join["node_wait_s"]) + join["observe_s"]
+
+
+def generator_budget_s(config, scenario, measure):
+    """(seconds the longest generator process of a case runs, what it is), plus the grace the generator may take; None for the swap."""
+    grace = config["generator"]["grace_s"]
+    if measure in RAMP_MEASURES:
+        return plan(config, measure, scenario)["duration_s"] + grace, f"measures.{measure} duration_s + generator.grace_s"
+    if measure == "scale":
+        loads = [(plan(config, load, scenario)["duration_s"], load) for load in config["scale"]["loads"]]
+        need, what = max([(d, f"measures.{load} duration_s") for d, load in loads] + [(join_budget_s(config), "the join of scale.join")])
+        return need + grace, f"{what} + generator.grace_s"
+    return None
+
+
 def check_plans(config, problems):
-    selected = config["round"]["scenarios"]
-    for measure in config["round"]["measures"]:
+    cases = config["round"]["cases"]
+    pairs = case_list(config)
+    selected = list(dict.fromkeys(s for s, _ in pairs)) if cases else config["round"]["scenarios"]
+    names = "round.cases" if cases else "round.scenarios"
+    cap, timeout = config["node"]["http_max_connections"], config["round"]["step_timeout_s"]
+    for measure in dict.fromkeys(m for _, m in pairs) if cases else config["round"]["measures"]:
         entry = config["measures"][measure]
         base = f"measures.{measure}"
-        for scenario in entry["run_on"]:
+        for scenario in [] if cases else entry["run_on"]:
             if scenario not in selected:
-                problems.append(f"{base}.run_on: scenario {scenario} is not in round.scenarios")
-        if measure not in RAMP_MEASURES:
-            continue
-        for scenario in entry["per_scenario"]:
-            if scenario not in selected:
-                problems.append(f"{base}.per_scenario.{scenario}: scenario {scenario} is not in round.scenarios")
-        for scenario in [s for s in selected if not entry["run_on"] or s in entry["run_on"]]:
+                problems.append(f"{base}.run_on: scenario {scenario} is not in {names}")
+        if measure in RAMP_MEASURES:
+            for scenario in entry["per_scenario"]:
+                if scenario not in selected:
+                    problems.append(f"{base}.per_scenario.{scenario}: scenario {scenario} is not in {names}")
+        for scenario in [s for s, m in pairs if m == measure]:
+            need = generator_budget_s(config, scenario, measure)
+            if need and timeout < need[0]:
+                problems.append(f"round.step_timeout_s: {timeout:g} s is below {need[0]:g} s ({need[1]}) of {scenario}/{measure}")
+            if measure not in RAMP_MEASURES:
+                continue
             p = plan(config, measure, scenario)
             where = f"{base}.per_scenario.{scenario}" if scenario in entry["per_scenario"] else f"{base}.steps"
             if p["kind"] == "ladder" and not p["values"]:
                 problems.append(f"{where}.values: a ladder needs values")
-            if p["kind"] == "bisect":
-                if p["values"]:
-                    problems.append(f"{where}.values: only a ladder uses values; set kind = \"ladder\" or remove them")
-                if p["start"] > p["max"]:
-                    problems.append(f"{where}: start {p['start']:g} is above max {p['max']:g}")
+            if p["kind"] != "ladder" and p["values"]:
+                problems.append(f"{where}.values: only a ladder uses values; set kind = \"ladder\" or remove them")
+            if p["kind"] == "ceiling" and not p["ceiling"]:
+                problems.append(f"{where}.ceiling: a ceiling plan needs the ceiling")
+            if p["kind"] == "bisect" and p["start"] > p["max"]:
+                problems.append(f"{where}: start {p['start']:g} is above max {p['max']:g}")
+            highest = max(plan_values(p), default=0) if measure == "ws" and cap else 0
+            if highest >= cap > 0:
+                problems.append(f"{where}: the highest step, {highest} connections, is not below node.http_max_connections {cap}")
+
+
+def check_cases(config, problems):
+    cases = config["round"]["cases"]
+    for i, text in enumerate(cases):
+        parts, where = text.split("/"), f"round.cases[{i}]"
+        if len(parts) not in (2, 3) or not all(parts):
+            problems.append(f"{where}: expected SCENARIO/MEASURE, like A/http-native")
+            continue
+        if parts[0] not in SCENARIOS:
+            problems.append(f"{where}: unknown scenario {parts[0]!r}, expected one of {', '.join(SCENARIOS)}")
+        if parts[1] not in MEASURES:
+            problems.append(f"{where}: unknown measure {parts[1]!r}, expected one of {', '.join(MEASURES)}")
+        elif len(parts) == 3:
+            problems.append(f"{where}: unknown variant {parts[2]!r}, {parts[1]} has no variants")
+        if cases.index(text) != i:
+            problems.append(f"{where}: {text!r} is listed twice")
+    if cases:
+        problems += [f"round.cases: cannot be used with measures.{m}.run_on; remove one of them" for m in MEASURES if config["measures"][m]["run_on"]]
 
 
 def check_rest(config, problems):
     scale = config["scale"]
-    for key in scale["ceilings"]:
-        load, nodes = CEILING_KEY.match(key).groups()
-        if load not in scale["loads"]:
-            problems.append(f"scale.ceilings.{key}: {load} is not in scale.loads")
-        if not 1 <= int(nodes) <= scale["max_nodes"]:
-            problems.append(f"scale.ceilings.{key}: nodes must be 1 to scale.max_nodes ({scale['max_nodes']})")
+    groups = [("scale.ceilings", scale["ceilings"])] + [(f"scale.per_scenario.{s}.ceilings", o["ceilings"]) for s, o in scale["per_scenario"].items() if "ceilings" in o]
+    for where, ceilings in groups:
+        for key in ceilings:
+            load, nodes = CEILING_KEY.match(key).groups()
+            if load not in scale["loads"]:
+                problems.append(f"{where}.{key}: {load} is not in scale.loads")
+            if not 1 <= int(nodes) <= scale["max_nodes"]:
+                problems.append(f"{where}.{key}: nodes must be 1 to scale.max_nodes ({scale['max_nodes']})")
     host = config["host"]
     if host["ssh"] and not host["repo"]:
         problems.append("host.repo: required when host.ssh is set")
@@ -314,6 +434,7 @@ def resolve(raw):
     """The config of `raw` (a dict as read from TOML) merged over the defaults; ConfigError lists every problem."""
     problems = []
     config = merge(SCHEMA, raw, "", problems)
+    check_cases(config, problems)
     check_plans(config, problems)
     check_rest(config, problems)
     if problems:
@@ -343,12 +464,98 @@ def config_hash(config):
     return hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def store_of(config, measure=None):
+    """The [store] section for a measure: `measures.<measure>.store` overrides the general one."""
+    return {**config["store"], **(config["measures"][measure]["store"] if measure else {})}
+
+
+def case_config(config, scenario, measure):
+    """What affects the results of a case, and nothing else: the scenario, the store (with the measure's override), the balancer, the node,
+    the judging, the generator, the workload, the measure's plan and, for the swap and the scale, their sections. Not `output`, `host`
+    or `round` (the other measures' plans and the timeouts do not change what a step measures)."""
+    case = {"scenario": scenario, "scenario_settings": config["scenarios"][scenario], "store": store_of(config, measure), "balancer": config["balancer"],
+            "node": config["node"], "judging": config["judging"], "generator": config["generator"], "workload": config["workload"], "measure": measure}
+    if measure in RAMP_MEASURES:
+        case["plan"] = plan(config, measure, scenario)
+    elif measure == "swap":
+        case["swap"] = config["swap"]
+    else:
+        case["scale"] = scale_of(config, scenario)
+        case["plans"] = {load: plan(config, load, scenario) for load in config["scale"]["loads"]}
+    return case
+
+
+def case_hash(config, scenario, measure):
+    """The `config_hash` of the step files of a case: the hash of `case_config`."""
+    return config_hash(case_config(config, scenario, measure))
+
+
+def env_lines(config, scenario, measure=None):
+    """{ATANOR_LOAD_NAME: value} of the lab of a scenario, with the store of a measure. The scale measure sets its own number of nodes."""
+    scenario_settings, store, balancer = config["scenarios"][scenario], store_of(config, measure), config["balancer"]
+    cap = config["node"]["http_max_connections"]
+    lines = {"CPUS": f"{scenario_settings['cpus']:g}", "MEMORY": scenario_settings["memory"], "TMPFS_SIZE": scenario_settings["node_tmpfs"],
+             "STORE_DISK": "1" if store["backing"] == "disk" else "0", "STORE_TMPFS_SIZE": store["tmpfs_size"], "STORE_MEMORY": store["memory"],
+             "STORE_CPUS": f"{store['cpus']:g}", "STORE_LATENCY_MS": f"{store['latency_ms']:g}", "LB_CPUS": f"{balancer['cpus']:g}", "LB_MEMORY": balancer["memory"],
+             "HTTP_MAX_CONNECTIONS": str(cap) if cap else ""}
+    if measure != "scale":
+        lines["NODES"] = str(scenario_settings["nodes"])
+    return {f"ATANOR_LOAD_{k}": v for k, v in lines.items()}
+
+
+def output_dir(config, root):
+    """The results directory: `output.dir`, else `load/results/<output.name or a time stamp>` under `root`; absolute."""
+    given = config["output"]["dir"]
+    return os.path.abspath(given or os.path.join(root, "load", "results", config["output"]["name"] or time.strftime("%Y%m%d-%H%M%S")))
+
+
+def toml_key(key):
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else json.dumps(key)
+
+
+def toml_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_value(v) for v in value) + "]"
+    return json.dumps(value) if isinstance(value, str) else repr(value)
+
+
+def dump_toml(config):
+    """`config` (a resolved config) as TOML text that resolves back to the same config."""
+    lines = []
+
+    def table(path, values):
+        scalars = {k: v for k, v in values.items() if not isinstance(v, dict)}
+        if path and scalars:
+            lines.extend(["[" + ".".join(toml_key(k) for k in path) + "]", *(f"{toml_key(k)} = {toml_value(v)}" for k, v in scalars.items()), ""])
+        for key, child in values.items():
+            if isinstance(child, dict):
+                table([*path, key], child)
+
+    table([], config)
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check", metavar="FILE", help="validate FILE and print the resolved config and its hash")
     group.add_argument("--defaults", action="store_true", help="print the built-in defaults")
+    group.add_argument("--env", metavar="FILE", help="print the ATANOR_LOAD_* lines of the lab of SCENARIO, with the store of MEASURE, for a shell to eval")
+    parser.add_argument("target", nargs="*", help="--env: SCENARIO [MEASURE]")
     args = parser.parse_args()
+    if args.env:
+        if not 1 <= len(args.target) <= 2 or args.target[0] not in SCENARIOS or (len(args.target) == 2 and args.target[1] not in MEASURES):
+            parser.error(f"--env takes a scenario ({', '.join(SCENARIOS)}) and optionally a measure ({', '.join(MEASURES)})")
+        try:
+            config = load_config(args.env)
+        except ConfigError as error:
+            print(error, file=sys.stderr)
+            sys.exit(1)
+        for name, value in env_lines(config, *args.target).items():
+            print(f"{name}={shlex.quote(value)}")
+        return
     try:
         config = load_config(args.check)
     except ConfigError as error:

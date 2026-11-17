@@ -1,10 +1,14 @@
 # A load round, every key at its built-in default (the behaviour of scripts/load-run today).
 # A round file needs only the keys it changes; the rest keeps the default shown here.
 # Check a file without starting anything: scripts/load_config.py --check FILE
+# Run it: mise run load -- --config FILE [--skip-done|--no-skip-done] [--dry-run]   (--dry-run prints the plan and starts nothing)
 
 [round]
 scenarios = ["A"]   # scenarios to run, in order: A (1 CPU, 512 MB) and/or B (2 CPUs, 2 GB)
 measures = ["http-native", "http-wasm", "http-wasm-jobs", "ws", "cells", "swap"]   # measures to run for each scenario, in order; scale may be added
+cases = []          # instead of scenarios x measures: "SCENARIO/MEASURE" cases in the order to run, like ["A/http-native", "B/ws"]; not with any run_on
+step_timeout_s = 600.0   # seconds a load generator process of a step may run before it is killed and the step is INVALID (timeout); at least duration_s + generator.grace_s
+timeout_s = 0.0     # seconds after which the whole round stops (what is done stays for --skip-done); 0 is no limit
 
 [output]
 dir = ""    # results directory; "" is load/results/<name or time stamp>
@@ -44,13 +48,17 @@ http_max_connections = 0   # http.max_connections of a node; 0 keeps the node's 
 
 # The step plan of each measure. `kind = "bisect"` grows from start by factor up to max, and after the first failure bisects
 # `refine` times between the last good and the failing step. `kind = "ladder"` runs the fixed `values` (strictly growing) instead.
+# `kind = "ceiling"` runs a ladder of `factors` times `ceiling` (rounded): the exploration of a ceiling found by an earlier round.
 # `run_on` limits the measure to some scenarios ([] means every scenario of the round).
 # `per_scenario.A` or `.B` overrides any key of `steps` for that scenario (see the commented example below).
+# `[measures.M.store]` overrides backing, tmpfs_size and latency_ms of [store] for that measure only (it then gets its own lab); it is empty here.
 [measures.http-native]
 run_on = []
 [measures.http-native.steps]
-kind = "bisect"     # bisect or ladder
+kind = "bisect"     # bisect, ladder or ceiling
 values = []         # ladder: the steps (req/s for http, connections for ws, cells for cells)
+ceiling = 0         # ceiling: the ceiling of an earlier round (0 is not set)
+factors = [0.75, 1.0, 1.25, 1.5]   # ceiling: the steps as fractions of the ceiling
 start = 25.0        # bisect: first step
 factor = 2.0        # bisect: growth between steps (> 1)
 max = 20000.0       # bisect: last step to try
@@ -66,6 +74,8 @@ run_on = []
 [measures.http-wasm.steps]
 kind = "bisect"
 values = []
+ceiling = 0
+factors = [0.75, 1.0, 1.25, 1.5]
 start = 25.0
 factor = 2.0
 max = 20000.0
@@ -78,6 +88,8 @@ run_on = []
 [measures.http-wasm-jobs.steps]
 kind = "bisect"
 values = []
+ceiling = 0
+factors = [0.75, 1.0, 1.25, 1.5]
 start = 25.0
 factor = 2.0
 max = 20000.0
@@ -90,6 +102,8 @@ run_on = []
 [measures.ws.steps]
 kind = "bisect"
 values = []
+ceiling = 0
+factors = [0.75, 1.0, 1.25, 1.5]
 start = 100.0
 factor = 2.0
 max = 60000.0
@@ -102,6 +116,8 @@ run_on = []
 [measures.cells.steps]
 kind = "bisect"
 values = []
+ceiling = 0
+factors = [0.75, 1.0, 1.25, 1.5]
 start = 100.0
 factor = 2.0
 max = 100000.0
@@ -119,6 +135,9 @@ run_on = []
 # when it goes above it (below it, for a minimum).
 [judging]
 stall_repeats = 1   # a step INVALID by a stall is repeated this many times before the round stops
+
+[judging.errors]    # FAIL: any 5xx answer other than a 503 refusal, or any request error (every measure but ws)
+enabled = true
 
 [judging.p99]       # FAIL: p99 latency, every measure but ws
 enabled = true
@@ -216,6 +235,10 @@ factor = 1.25                  # growth between the steps of 2 or more nodes, wh
 ceiling_factors = [0.75, 1.0, 1.25, 1.5]   # steps as fractions of a ceiling given in [scale.ceilings]
 # [scale.ceilings]  # ceilings of an earlier round, LOAD:NODES = N: each ramp then runs ceiling_factors times its ceiling
 # "http-native:1" = 600
+# [scale.per_scenario.B]   # ceilings and ceiling_factors for one scenario, in place of the general ones
+# ceiling_factors = [1.0, 1.5]
+# [scale.per_scenario.B.ceilings]
+# "http-native:1" = 1500
 
 [scale.join]          # the 2nd and later nodes start under a fixed rate; the time until the load spreads is measured
 enabled = true
