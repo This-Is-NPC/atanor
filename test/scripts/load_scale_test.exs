@@ -166,6 +166,33 @@ defmodule Atanor.LoadScaleTest do
     assert missing["status"] == "ok" and missing["requests_spread"] == true
     assert missing["cells_spread_s"] == :null and missing["cells_share_end"] == :null
 
+    # a step on two nodes records every node's throttling, in-flight maximum and refusals; the 503 answers are attributed over both nodes
+    two = r["two_nodes"]
+    assert two["series_nodes"] == ["node-1", "node-2"]
+    [n1, n2] = [two["per_node"]["node-1"], two["per_node"]["node-2"]]
+    assert {n1["in_flight_max"], n2["in_flight_max"]} == {4, 9}
+    assert n1["throttled_ms"] == 0 and n2["throttled_ms"] > 0 and n2["throttled_jump_ms"] > 0
+    assert {n1["refused"]["wake_gate"], n2["refused"]["wake_gate"]} == {3, 4}
+    assert n1["runtime_failed"] == 0 and n1["runtime_error"] == :null
+
+    assert two["refusals"] == %{
+             "answers_503" => 10,
+             "by_cause" => %{"wake_gate" => 7, "busy" => 0},
+             "attributed" => 7,
+             "unattributed" => 3
+           }
+
+    assert "3 of 10 503 answers not attributed: no refusal counter of the node grew for them" in two["notes"]
+
+    assert two["evictions"] == %{
+             "counter_in_runtime" => false,
+             "cells_awake_start" => 7,
+             "cells_awake_end" => 7,
+             "cells_awake_change" => 0,
+             "disk_used_max_pct_of_budget" => 10.0,
+             "disk_budget_bytes" => 100 * 1_048_576
+           }
+
     # the rebalance of a window is read mid-plan and at its end (later moves); a silent node is named with its error; an ok join keeps the evidence
     end_ = r["join_end"]
     assert end_["status"] == "ok"

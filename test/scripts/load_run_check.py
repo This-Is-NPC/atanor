@@ -321,6 +321,33 @@ results["refused"] = {
     "one_pct": refused_scenario("refused_one", {"200": 198, "503 retry-after": 2}),
 }
 
+# The 503 answers of a step are set against the refusal counters the node grew (all its causes); what no counter explains is counted and noted.
+def refusal_scenario(name, grown, statuses=None):
+    """The node's /runtime shows `grown` refusals after its first reading (None: no /runtime); the generator answers 10 503s of 100."""
+    seen = []
+
+    def runtime(info, path, timeout):
+        if path != "/runtime" or grown is None:
+            return None
+        seen.append(1)
+        counted = {k: (v if len(seen) > 1 else 0) for k, v in grown.items()}
+        return {"admission": {"in_flight": 3, "refused": counted, "disk_used_bytes": 50 * MB, "disk_budget_bytes": 100 * MB}}
+
+    real, real_admin = m.Round.run_generators, m.admin_json
+    m.admin_json = runtime
+    m.Round.run_generators = lambda self, value, sampler: [{**DOCUMENT, "statuses": statuses or {"200": 90, "503 retry-after": 10}, "hist": {"5": 100}, "planned": 100, "sent": 100, "completed": 100, "opened": 100}]
+    measure[0] = "http-native"
+    try:
+        record = scenario(name)["record"]
+    finally:
+        measure[0] = "ws"
+        m.Round.run_generators, m.admin_json = real, real_admin
+    return {k: record[k] for k in ("refusals", "notes", "admission", "evictions")}
+
+
+results["refusals"] = {"attributed": refusal_scenario("refusals_some", {"memory": 0, "wake_gate": 6, "busy": 1}),
+                       "all_counted": refusal_scenario("refusals_all", {"wake_gate": 10}), "no_runtime": refusal_scenario("refusals_none", None)}
+
 # A step that starts with a dead node is invalid, runs no generator and ends the round.
 results["dead_at_start"] = ramp_scenario("dead_at_start", dies_at=0, before={"running": False, "exit_code": 137})
 

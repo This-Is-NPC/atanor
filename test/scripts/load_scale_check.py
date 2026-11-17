@@ -143,14 +143,20 @@ def runtime_now():
     return lab["runtime"]() if callable(lab["runtime"]) else lab["runtime"]
 
 
+def runtime_for(info, reader):
+    """/runtime of the node at info["admin"]: lab["by_ip"](ip, reader) when set (nodes that differ), else runtime_now()."""
+    ip = info["admin"].split("//")[1].split(":")[0]
+    return lab["by_ip"](ip, reader) if lab.get("by_ip") else runtime_now()
+
+
 def admin_get(info, path, timeout):
     """/runtime of the stub lab; a node whose address is in lab["silent"] times out."""
     if path != "/runtime":
         return None, "not found"
-    return (None, "TimeoutError: timed out") if info["admin"].split("//")[1].split(":")[0] in lab["silent"] else (runtime_now(), None)
+    return (None, "TimeoutError: timed out") if info["admin"].split("//")[1].split(":")[0] in lab["silent"] else (runtime_for(info, "get"), None)
 
 
-m.admin_json = lambda info, path, timeout: runtime_now() if path == "/runtime" else None
+m.admin_json = lambda info, path, timeout: runtime_for(info, "json") if path == "/runtime" else None
 m.admin_get = admin_get
 lab["silent"] = set()
 
@@ -334,6 +340,38 @@ record, _ = run_join("join_contaminated", busy_at=1, host_load_max=1.0, quiet_ma
 results["join_contaminated"] = {"status": record["status"], "reason": record["stop_reason"]}
 record, _ = run_join("join_saturated", busy_at=1, host_load_max=100.0, max_busy_share=0.2)
 results["join_saturated"] = {"status": record["status"], "valid": record["valid"], "reason": record["stop_reason"], "busy": record["host"]["busy_cores_mean"]}
+# A step on two nodes records every node's CPU throttling, in-flight maximum and refusals (not only node-1's), and attributes the 503 answers
+# to the refusals counted by both nodes: 10 answers, 3 + 4 counted, 3 unattributed. Cells awake at the start are read too.
+counts, tick = {}, {"n": 0}
+
+
+def by_ip(ip, reader):
+    counts[ip, reader] = counts.get((ip, reader), 0) + 1
+    first = counts[ip, reader] == 1
+    node_two = ip.endswith(".2")
+    return {"admission": {"in_flight": 0 if first else (9 if node_two else 4), "refused": {"wake_gate": 0 if first else (4 if node_two else 3), "busy": 0},
+                          "disk_used_bytes": 10 * MB, "disk_budget_bytes": 100 * MB}}
+
+
+def two_node_cgroup(directory):
+    tick["n"] += 1
+    return {"memory_current": 300 * MB, "shmem": 1, "inactive_file": 0, "peak": 300 * MB, "limit": 1280 * MB, "cpu_s": 0.0,
+            "throttled_s": 0.0 if directory == "d1" else tick["n"] * 0.01, "cpu_limit": 1.0, "swap_current": 0}
+
+
+real_cgroup, real_dirs, real_get = m.cgroup_sample, m.lab_dirs, m.Round.run_generators
+m.cgroup_sample, m.lab_dirs = two_node_cgroup, lambda info: {"node": "d1", "store": "s", "lb": "l", "extra1": "d2"}
+m.Round.run_generators = lambda self, value, sampler: (time.sleep(0.3), [dict(DOCUMENT, statuses={"200": 90, "503 retry-after": 10})])[1]
+lab.update(by_ip=by_ip, runtime={}, silent=set(), busy_at=None, force_busy=False, nodes=2)
+two = info_of(2)
+two_args = make_args(os.path.join(work, "two"), measure="http-native", steps="10")
+real_awake, m.cells_awake = m.cells_awake, lambda info: 7
+two_record = m.Round(two_args, two, stem="scale-http-native-n2").step(10, "ramp")
+m.cgroup_sample, m.lab_dirs, m.Round.run_generators, m.cells_awake = real_cgroup, real_dirs, real_get, real_awake
+lab["by_ip"] = None
+results["two_nodes"] = {"per_node": two_record["per_node"], "refusals": two_record["refusals"], "notes": two_record["notes"], "evictions": two_record["evictions"],
+                        "series_nodes": sorted(two_record["series"][-1]["nodes"]), "disk": two_record["admission"]["disk_used_max_pct_of_budget"]}
+
 # The rebalance of a window is read mid-plan (`rebalance_observed`) and at the window's end (`rebalance`): the end sees later moves. A node whose
 # /runtime did not answer is named with the error. An ok join keeps every node's state and log, the store's, and the /runtime of each window.
 moved = iter(range(1, 100_000))

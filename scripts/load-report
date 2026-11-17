@@ -99,13 +99,15 @@ def admission_rows(steps, summary):
         refused = a.get("refused") or {}
         rows.append([label, f"{s['value']:g}", f"{num(refused.get('memory'), 0)} / {num(refused.get('in_flight'), 0)} / {num(refused.get('disk'), 0)}",
                      " / ".join(num(refused.get(k), 0) for k in CALL_REFUSALS),
-                     "yes" if a.get("refusing_seen") else "no", num(a.get("in_flight_max"), 0), num(store.get("disk_max_pct") if store.get("backing") == "disk" else store.get("tmpfs_max_pct")), num(store.get("s3_errors"), 0)])
+                     "yes" if a.get("refusing_seen") else "no", num(a.get("in_flight_max"), 0), num(store.get("disk_max_pct") if store.get("backing") == "disk" else store.get("tmpfs_max_pct")), num(store.get("s3_errors"), 0),
+                     " / ".join(num((s.get("refusals") or {}).get(k), 0) for k in ("answers_503", "attributed", "unattributed")), num(a.get("disk_used_max_pct_of_budget"))])
     return rows
 
 
 CALL_REFUSALS = ("wake_gate", "awake_limit", "busy", "disk_full", "queue_timeout", "worker_queue", "nested_calls")
 ADMISSION_HEADER = ["step", "value", "refused: memory / in-flight / disk",
-                    "refused after admission: wake gate / awake limit / busy / disk full / queue timeout / worker queue / nested calls", "refusing seen", "in-flight max", "store tmpfs / disk max %", "store S3 5xx"]
+                    "refused after admission: wake gate / awake limit / busy / disk full / queue timeout / worker queue / nested calls", "refusing seen", "in-flight max", "store tmpfs / disk max %", "store S3 5xx",
+                    "503 answers / counted by the node / unattributed", "node disk use max % of its budget"]
 
 
 def swap_section(steps):
