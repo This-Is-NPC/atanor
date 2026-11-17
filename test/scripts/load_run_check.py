@@ -84,7 +84,7 @@ def new_round(name):
     os.makedirs(out)
     args = argparse.Namespace(out=out, measure=measure[0], step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1e9, min_available_gb=0.0,
                               sample_s=0.05, quiet_window=0.0, quiet_max_wait=5.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
-                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, max_busy_share=1e9, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, no_confirm=False, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0)
+                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, max_busy_share=1e9, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, no_confirm=False, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0, no_warmup=False, rate_per_proc=600.0, conns_per_rate=0.5, write_ratio=0.5, cells=64, worker="native", cell_period=10.0, cells_conns=64)
     pid = os.getpid()
     info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"id": "store-id", "ip": "127.0.0.1", "pid": pid},
             "lb": {"pid": pid}, "admin": "http://127.0.0.1:1"}
@@ -114,7 +114,21 @@ DOCUMENT["opening"]["hist"] = {"3000": 5, "5": 5}  # the opening is clean and th
 DOCUMENT["opening"]["statuses"] = {"200": 10}
 DOCUMENT["hist"], DOCUMENT["statuses"] = {"3000": 5, "5": 15}, {"200": 15, "503 retry-after": 5}
 results["cells_hold_refused"] = scenario("cells_hold_refused")
+# http: the warm-up (every cell written once, 300 ms, 10 of 20 refused) is the opening; the steady part is fast and clean, so the step passes.
+DOCUMENT = {"statuses": {"200": 15, "503 retry-after": 5}, "hist": {"3000": 10, "5": 10}, "max_ms": 300.0, "planned": 20, "sent": 20, "completed": 20, "cpu_s": 0.1,
+            "lag_ms": {"p99": 1}, "opening": {"planned": 10, "statuses": {"200": 5, "503 retry-after": 5}, "hist": {"3000": 10}, "max_ms": 300.0}}
+measure[0] = "http-native"
+results["http_warmup"] = scenario("http_warmup")
 DOCUMENT, measure[0] = real_document, real_measure
+# The generators of an http step warm up (with --open-rate) unless --no-warmup; a cells step has its own opening.
+cmd_round, cmd_args = new_round("commands")
+cmd_args.measure = "http-native"
+warm = cmd_round.gen_commands(450)[0]
+cmd_args.no_warmup = True
+cold = cmd_round.gen_commands(450)[0]
+cmd_args.measure = "cells"
+results["warmup_commands"] = {"on": "--warmup" in warm, "open_rate": warm[warm.index("--open-rate") + 1] if "--open-rate" in warm else None,
+                              "off": "--warmup" in cold, "cells": "--warmup" in cmd_round.gen_commands(100)[0]}
 # The node is OOM-killed during the step.
 results["oom"] = scenario("oom", during=lambda: container(running=False, oom=True, exit_code=137))
 # The node exits 137 and the generator fails because of it.

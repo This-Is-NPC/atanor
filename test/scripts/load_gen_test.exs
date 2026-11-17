@@ -99,6 +99,34 @@ defmodule Atanor.LoadGenTest do
     assert document["hist"] |> Map.values() |> Enum.sum() == 15
   end
 
+  # --warmup: every cell is written once before the steady load, recorded as the opening; without it nothing changes.
+  test "an http run with --warmup reports the warm-up writes apart from the steady load" do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(listen)
+    acceptor = spawn_link(fn -> accept_answering(listen) end)
+
+    base =
+      ~w(http --host 127.0.0.1 --kind native --cells 5 --rate 10 --duration 2 --settle 0 --open-rate 50 --conns 2 --timeout 2 --port #{port})
+
+    {warm, 0} = System.cmd(Path.expand("scripts/load-gen"), base ++ ["--warmup"], stderr_to_stdout: true)
+    {plain, 0} = System.cmd(Path.expand("scripts/load-gen"), base, stderr_to_stdout: true)
+
+    Process.unlink(acceptor)
+    Process.exit(acceptor, :kill)
+    :gen_tcp.close(listen)
+
+    document = :json.decode(warm)
+    assert document["planned"] == 25
+    assert document["opening"]["planned"] == 5
+    assert document["opening"]["statuses"] == %{"200" => 5}
+    assert document["opening"]["hist"] |> Map.values() |> Enum.sum() == 5
+    assert document["statuses"]["200"] == 25
+    assert document["hist"] |> Map.values() |> Enum.sum() == 25
+
+    document = :json.decode(plain)
+    assert document["planned"] == 20 and document["opening"] == :null
+  end
+
   defp accept_answering(listen) do
     case :gen_tcp.accept(listen) do
       {:ok, socket} ->

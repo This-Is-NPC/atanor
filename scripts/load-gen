@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The load generator of the load tests: one process, open loop, results as one JSON document.
 
-  load-gen http  --host H --port P --kind native|plain|wasm --rate R --duration S [--cells N] [--write-ratio W] [--conns C]
+  load-gen http  --host H --port P --kind native|plain|wasm --rate R --duration S [--cells N] [--write-ratio W] [--conns C] [--warmup]
   load-gen cells --host H --port P --kind native|wasm --cells N --period S --duration S [--conns C]
   load-gen ws    --host H --port P --kind native|wasm --connections N --duration S [--open-rate R] [--interval S]
 
@@ -16,7 +16,8 @@ so a generator that is the limit shows itself.
   http   requests at R per second for S seconds over N cells (a share W of them writes) on C keep-alive
          connections. Native: POST|GET /native/CELL on load.localhost. Plain WASM (examples/load-plain, the twin
          of the native worker): POST|GET /plain/CELL on loadwasm.localhost. WASM (the scoreboard):
-         POST /rooms/ROOM/scores, GET /rooms/ROOM on scoreboard.localhost.
+         POST /rooms/ROOM/scores, GET /rooms/ROOM on scoreboard.localhost. With --warmup each of the N cells is
+         written once first (at --open-rate, then --settle seconds of rest): the opening, recorded apart as in cells.
   cells  every one of N cells is written once (opening, at --open-rate), then each gets one write
          every --period seconds for --duration seconds (the hold): N cells stay hot together. The document's
          `opening` has the statuses, the latency histogram and `max_ms` of the opening's writes alone.
@@ -169,11 +170,17 @@ async def pace(schedule, queue, clock, recorder):
 
 
 def http_schedule(args, start):
+    """(due, method, path, host, opening). With --warmup every cell is written once first, at --open-rate (a cold wake each), recorded as the opening."""
     rng = random.Random(args.seed)
-    n = 0
-    while n < int(args.rate * args.duration):
+    n, steady = 0, start
+    if args.warmup:
+        for cell in range(args.cells):
+            yield (start + cell / args.open_rate, *request_for(args.kind, args.tag, cell, True, n), True)
+            n += 1
+        steady = start + args.cells / args.open_rate + args.settle
+    for i in range(int(args.rate * args.duration)):
         write = rng.random() < args.write_ratio
-        yield (start + n / args.rate, *request_for(args.kind, args.tag, rng.randrange(args.cells), write, n), False)
+        yield (steady + i / args.rate, *request_for(args.kind, args.tag, rng.randrange(args.cells), write, n), False)
         n += 1
 
 
@@ -197,7 +204,7 @@ async def run_http(args):
     queue = asyncio.Queue()
     start = clock() + 0.5
     if args.mode == "http":
-        schedule, planned, window = http_schedule(args, start), int(args.rate * args.duration), args.duration
+        schedule, planned, window = http_schedule(args, start), int(args.rate * args.duration) + args.cells * bool(args.warmup), args.duration
     else:
         schedule, planned = cells_schedule(args, start), args.cells + args.cells * int(args.duration / args.period)
         window = args.duration
@@ -216,7 +223,7 @@ async def run_http(args):
         recorder.status(NOT_COMPLETED)
     completed = answered
     opening = None
-    if args.mode == "cells":  # the opening's own record: the rest of the requests are the hold
+    if args.mode == "cells" or args.warmup:  # the opening's own record: the rest of the requests are the hold
         statuses = recorder.opening["statuses"]
         missing = args.cells - sum(n for k, n in statuses.items() if k != "reconnected")
         if missing > 0:
@@ -330,7 +337,8 @@ def main():
     parser.add_argument("--conns", type=int, default=32, help="keep-alive connections")
     parser.add_argument("--period", type=float, default=10, help="cells: seconds between the writes to one cell")
     parser.add_argument("--open-rate", type=float, default=100, help="cells touched or sockets opened per second")
-    parser.add_argument("--settle", type=float, default=2, help="cells: seconds between the opening and the first round")
+    parser.add_argument("--settle", type=float, default=2, help="cells, and http with --warmup: seconds between the opening and the first request of the hold")
+    parser.add_argument("--warmup", action="store_true", help="http: write every cell once first, at --open-rate, and record those writes apart as `opening`; --duration is the steady load after it")
     parser.add_argument("--connections", type=int, default=100)
     parser.add_argument("--interval", type=float, default=30, help="ws: seconds between the messages of a socket")
     parser.add_argument("--rooms", type=int, default=16, help="ws: rooms the sockets attach to")
