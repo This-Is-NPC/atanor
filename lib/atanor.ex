@@ -331,7 +331,9 @@ defmodule Atanor do
       requests with 503 `overloaded` while the working set of the cgroup is at
       least `refuse_fraction` (0.85; `nil` turns it off) of that limit, and
       resumes 5 points below, and while it refuses a call for a cell with no process on the node
-      (one that would wake it) gets 503 `overloaded` too; `sample_ms` (100) is the sampling period, and
+      (one that would wake it) gets 503 `overloaded` too. Below that, from `hibernate_fraction` (0.75, above 0
+      and below `refuse_fraction`; `nil` turns it off) every `hibernate_interval_ms` (1 000) the node hibernates
+      up to `hibernate_batch` (32) idle cells, the least recently used first; `sample_ms` (100) is the sampling period, and
       `current_path` and `stat_path` (`/sys/fs/cgroup/memory.current` and
       `memory.stat`) are the files it reads.
     * `:disk` - the disk budget of `data_dir` (design §4.4): `max_bytes` (default
