@@ -73,7 +73,8 @@ defmodule Atanor.PressureTest do
     File.write!(current, "800000\n")
     Await.until(fn -> awake(node) == 1 end, 20_000)
     refute Admission.stats(node.name).refusing
-    assert Pressure.stats(node.name).hibernated == 5
+    # A batch is counted when the whole batch returns, so the last cell can be asleep before its count lands.
+    Await.until(fn -> Pressure.stats(node.name).hibernated == 5 end, 20_000)
 
     batches = flush_pressure([])
     assert length(batches) >= 3
