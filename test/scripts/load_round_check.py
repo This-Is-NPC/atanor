@@ -10,6 +10,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 
 sys.dont_write_bytecode = True
@@ -25,6 +26,11 @@ STUBS = {
     "load-report": '#!/bin/sh\necho "load-report $*" >> "$FAKE_LOG"\n',
     "load-run": '#!/bin/sh\necho "load-run $*" >> "$FAKE_LOG"\necho "env $ATANOR_LOAD_SCENARIO $ATANOR_LOAD_MEASURE" >> "$FAKE_LOG"\n'
                 '[ -e "$FAKE_DIR/sleep-$1" ] && sleep 0.6\n[ -e "$FAKE_DIR/exit-$1" ] && exit "$(cat "$FAKE_DIR/exit-$1")"\nexit 0\n',
+    # the remote host: `ssh HOST SCRIPT` answers the check and the status from files, anything else is the start of the round
+    "ssh": '#!/bin/sh\necho "ssh $1 :: $2" >> "$FAKE_LOG"\ncase "$2" in\n  *"git fetch"*) cat "$FAKE_DIR/ssh-check" ;;\n  *"tail -n"*) cat "$FAKE_DIR/ssh-status" ;;\n'
+           '  *) echo started ;;\nesac\n',
+    "rsync": '#!/bin/sh\necho "rsync $*" >> "$FAKE_LOG"\n',
+    "scp": '#!/bin/sh\necho "scp $*" >> "$FAKE_LOG"\n',
 }
 for name, body in STUBS.items():
     path = os.path.join(fake, name)
@@ -131,4 +137,74 @@ results["lab_fails"] = {"status": broken["status"], "runs": len(load_runs(broken
 # the scale measure keeps the lab (it starts its own nodes), and the measures around it reset as usual
 scale = run("scale", "[round]\nmeasures = [\"http-native\", \"scale\", \"cells\"]\n")
 results["scale"] = {"status": scale["status"], "calls": mise(scale)}
+# a case whose steps and summary are all done (same hash, none INVALID) is reused without a lab; the others run on a lab started for them
+HASHES = {m: lc.case_hash(lc.resolve({"round": {"measures": ["http-native", "cells"]}}), "A", m) for m in ("http-native", "cells")}
+
+
+def done_case(measure, step_status="ok", step_hash=None):
+    def setup(out):
+        case = os.path.join(out, "A", measure)
+        os.makedirs(case)
+        for name, document in (("step-10.json", {"config_hash": step_hash or HASHES[measure], "status": step_status, "valid": step_status != "invalid"}),
+                               ("summary.json", {"config_hash": HASHES[measure], "invalid": None})):
+            with open(os.path.join(case, name), "w") as file:
+                json.dump(document, file)
+    return setup
+
+
+both = "[round]\nmeasures = [\"http-native\", \"cells\"]\n"
+all_done = run("all_done", "[round]\nmeasures = [\"http-native\"]\n", setup=done_case("http-native"))
+some_done = run("some_done", both, setup=done_case("http-native"))
+invalid_step = run("invalid_step", "[round]\nmeasures = [\"http-native\"]\n", setup=done_case("http-native", step_status="invalid"))
+forced_done = run("forced_done", "[round]\nmeasures = [\"http-native\"]\n", "--no-skip-done", setup=done_case("http-native"))
+results["done_case"] = {"all_done": [all_done["status"], mise(all_done), len(load_runs(all_done)), "no lab started" in all_done["stdout"]],
+                        "some_done": [some_done["status"], mise(some_done), [c.split(" ")[1] for c in load_runs(some_done)]],
+                        "invalid_step": [mise(invalid_step), len(load_runs(invalid_step))], "no_skip_done": [mise(forced_done), len(load_runs(forced_done))]}
+
+# --remote, --status and --fetch with a stubbed ssh, scp and rsync: nothing remote happens without one of them
+head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+HOST = "name = \"r1\"\n[host]\nssh = \"lab\"\nrepo = \"/srv/atanor\"\nresults = \"/srv/results/r1\"\ntimeout_s = 3600\n"
+
+
+def remote(name, check="", status="", *flags, toml=HOST):
+    for file, text in (("ssh-check", check), ("ssh-status", status)):
+        with open(os.path.join(fake, file), "w") as handle:
+            handle.write(text)
+    return run(name, toml, *flags)
+
+
+def network(result):
+    return [c for c in result["calls"] if c.startswith(("ssh", "scp", "rsync"))]
+
+
+good = f"HEAD={head}\nCONFIG=ok\nRUNNING=no\n"
+started = remote("remote_ok", good, "", "--remote")
+dirty = remote("remote_dirty", f" M lib/a.ex\n?? scratch\n{good}", "", "--remote")
+behind = remote("remote_behind", "HEAD=0123456789abcdef\nCONFIG=ok\nRUNNING=no\n", "", "--remote")
+busy = remote("remote_busy", f"HEAD={head}\nCONFIG=ok\nRUNNING=yes\n", "", "--remote")
+absent = remote("remote_absent", f"HEAD={head}\nCONFIG=missing\nRUNNING=no\n", "", "--remote")
+nohost = remote("remote_nohost", good, "", "--remote", toml="")
+local = remote("remote_local", good, "", toml=HOST + "[round]\nmeasures = [\"http-native\"]\n")
+results["remote"] = {"start": {"status": started["status"], "calls": network(started), "stdout": started["stdout"]},
+                     "dirty": {"status": dirty["status"], "calls": len(network(dirty)), "stderr": dirty["stderr"], "stdout": dirty["stdout"]},
+                     "behind": {"status": behind["status"], "calls": len(network(behind)), "stderr": behind["stderr"], "stdout": behind["stdout"]},
+                     "busy": [busy["status"], len(network(busy)), busy["stderr"]], "absent": [absent["status"], len(network(absent)), absent["stderr"]],
+                     "nohost": [nohost["status"], len(network(nohost)), nohost["stderr"]],
+                     "local_round": {"status": local["status"], "network": network(local), "note": "this run is local" in local["stdout"], "runs": len(load_runs(local))},
+                     "head": head}
+
+# --status: whether the round is alive and the end of its log, without the lines that name a secret
+status_text = "round: running (pid 4242)\nmeasure A/ws step 20\ns3 secret_access_key=abc123\nTOKEN seen\nthe admin key is x\nPassword=1\nlast line\n"
+alive = remote("remote_status", "", status_text, "--status")
+results["status"] = {"status": alive["status"], "stdout": alive["stdout"], "calls": network(alive)}
+
+# --fetch: rsync when there is one, else scp -r; the local directory is the output dir
+fetched = remote("remote_fetch", "", "", "--fetch")
+real_which = ld.shutil.which
+ld.shutil.which = lambda name: None
+try:
+    scp_fetch = remote("remote_fetch_scp", "", "", "--fetch")
+finally:
+    ld.shutil.which = real_which
+results["fetch"] = {"rsync": [fetched["status"], network(fetched)], "scp": [scp_fetch["status"], network(scp_fetch)], "made": os.path.isdir(fetched["out"])}
 print(json.dumps(results))

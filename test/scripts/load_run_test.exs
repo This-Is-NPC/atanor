@@ -285,11 +285,11 @@ defmodule Atanor.LoadRunTest do
       assert Enum.all?(record["diagnostics"], &(&1 in r[name]["files"])), name
     end
 
-    assert File.read!(Path.join([dir, "oom", "A_ws_01-ramp-10.node.log"])) =~ "cannot allocate memory"
-    assert File.read!(Path.join([dir, "oom", "A_ws_01-ramp-10.node-state.txt"])) =~ "\"OOMKilled\": true"
+    assert File.read!(Path.join([dir, "oom", "A", "ws", "step-10.node.log"])) =~ "cannot allocate memory"
+    assert File.read!(Path.join([dir, "oom", "A", "ws", "step-10.node-state.txt"])) =~ "\"OOMKilled\": true"
 
     # the store log is timestamped and loses the lines that name a secret
-    store_log = File.read!(Path.join([dir, "oom", "A_ws_01-ramp-10.store.log"]))
+    store_log = File.read!(Path.join([dir, "oom", "A", "ws", "step-10.store.log"]))
     assert store_log =~ "2026-01-01T00:00:01Z volume growth"
     refute store_log =~ ~r/secret|token|abc123/i
 
@@ -369,8 +369,13 @@ defmodule Atanor.LoadRunTest do
     assert twice["summary"]["first_failure"] == 10
     assert %{"status" => "fail", "valid" => true} = twice["first"]
 
+    # the reason keeps the criterion that made the step fail, and the step file lists the criteria
     assert twice["first"]["stop_reason"] ==
-             "store: stalled at this step twice, 12 node-to-store requests took >= 1000 ms within 5 s (slowest 1061 ms)"
+             "store: stalled at this step twice (12 node-to-store requests took >= 1000 ms within 5 s (slowest 1061 ms)); failed on: p99 900.1 ms > 250 ms"
+
+    assert twice["first"]["criteria"] == ["p99 900.1 ms > 250 ms"]
+    assert twice["first"]["first_attempt"]["stop_reason"] =~ "store stalled"
+    assert once["first"]["criteria"] == ["p99 900.1 ms > 250 ms"]
 
     assert twice["first"]["store_stall"]["stalled"]
     assert twice["first"]["first_attempt"]["stop_reason"] =~ "store stalled"
@@ -456,7 +461,6 @@ defmodule Atanor.LoadRunTest do
     assert l["measure"] == "scale" and l["load"] == "http-native" and l["config_hash"] == "h1"
     assert l["join"] == "A/scale/join/step-600" and l["join_float"] == "A/scale/join/step-600"
     assert l["summary"] == "A/ws/summary.json" and l["baseline"] == "A/cells/baseline.json"
-    assert l["flat_summary"] == "A_ws.summary.json"
 
     # the swap takes the approved rate of http-wasm-jobs from the layout, and a done swap is not run again
     w = r["swap_nested"]
@@ -471,14 +475,14 @@ defmodule Atanor.LoadRunTest do
     assert d["p99_off"] and d["p99_on"] == 250.0 and d["delivery"] == 0.0 and d["judge_errors"] == false
     assert d["stall_ms"] == 0.0 and d["host_off"] and d["quiet_window"] == 0.0 and d["min_gb"] == 0.0
     assert d["timeout"] == 123.0 and d["no_warmup"] and d["repeats"] == 3 and d["steps"] == "300,400,500,600"
-    assert d["nested"] and d["hash"] == 64 and d["command"] == "mise run load -- --config c.toml"
+    assert d["hash"] == 64 and d["command"] == "mise run load -- --config c.toml"
 
     assert d["scale"] == [
              "http-native:1=600,http-native:2=840,cells:1=470,cells:2=750",
              "1,1.5",
              2,
              [490, 650, 810, 975],
-             "none"
+             :null
            ]
 
     assert r["stall_repeats"] == %{"two" => [10, 10, 10, 20, 20], "none" => [10]}
@@ -576,6 +580,96 @@ defmodule Atanor.LoadRunTest do
 
     # a lab that does not start ends the round, and the lab is removed
     assert r["lab_fails"] == %{"status" => 1, "runs" => 0, "calls" => ["mise run load:up", "mise run load:down"]}
+
+    # a case whose steps and summary are all done (same hash, none INVALID) is reused without a lab; an INVALID step or --no-skip-done runs it
+    d = r["done_case"]
+    assert d["all_done"] == [0, ["load-report OUT"], 0, true]
+    assert d["some_done"] == [0, ["mise run load:up", "load-report OUT", "mise run load:down"], ["cells"]]
+    assert d["invalid_step"] == [["mise run load:up", "load-report OUT", "mise run load:down"], 1]
+    assert d["no_skip_done"] == [["mise run load:up", "load-report OUT", "mise run load:down"], 1]
+  end
+
+  test "mise run load --remote, --status and --fetch with a stubbed ssh, scp and rsync", %{dir: dir} do
+    {out, 0} = System.cmd("python3", ["-I", "test/scripts/load_round_check.py", dir], stderr_to_stdout: true)
+    r = out |> String.split("\n", trim: true) |> List.last() |> :json.decode()
+    head = r["remote"]["head"]
+
+    # the checks run on the host first; the round starts there only when the clone is clean and at the local commit
+    s = r["remote"]["start"]
+    assert s["status"] == 0
+    [check, start] = s["calls"]
+
+    assert check =~
+             ~r"^ssh lab :: cd /srv/atanor && git fetch --quiet && git status --porcelain && echo HEAD=\$\(git rev-parse HEAD\) && \(test -f OUT.toml && echo CONFIG=ok"
+
+    assert check =~ "kill -0 $(cat /srv/results/r1/round.pid)"
+
+    assert start =~
+             ~r"^ssh lab :: mkdir -p /srv/results/r1 && cd /srv/atanor && setsid nohup sh -c 'echo \$\$ > /srv/results/r1/round.pid; exec timeout --kill-after=60 3600 mise run load -- --config OUT.toml --out /srv/results/r1 --skip-done' > /srv/results/r1/round.log 2>&1 < /dev/null &"
+
+    assert s["stdout"] =~ "local commit  #{head}" and s["stdout"] =~ "remote commit #{head}"
+    assert s["stdout"] =~ "--status" and s["stdout"] =~ "--fetch" and s["stdout"] =~ "host.timeout_s"
+
+    # a clone with local changes, at another commit, with a round running, or without the config is refused: one ssh call, nothing started
+    dirty = r["remote"]["dirty"]
+    assert dirty["status"] == 2 and dirty["calls"] == 1
+
+    assert dirty["stderr"] =~ "has local changes" and dirty["stderr"] =~ "M lib/a.ex" and
+             dirty["stderr"] =~ "?? scratch"
+
+    behind = r["remote"]["behind"]
+    assert behind["status"] == 2 and behind["calls"] == 1
+    assert behind["stdout"] =~ "local commit  #{head}" and behind["stdout"] =~ "remote commit 0123456789abcdef"
+    assert behind["stderr"] =~ "not at the local commit"
+
+    assert [2, 1, busy] = r["remote"]["busy"]
+    assert busy =~ "a round is already running"
+    assert [2, 1, absent] = r["remote"]["absent"]
+    assert absent =~ "is not in the clone"
+    assert [2, 0, nohost] = r["remote"]["nohost"]
+    assert nohost =~ "host.ssh and host.repo must be set"
+
+    # nothing remote happens without one of the flags: a round with host.ssh set runs here
+    l = r["remote"]["local_round"]
+    assert l["status"] == 0 and l["network"] == [] and l["note"] and l["runs"] == 1
+
+    # --status: alive or not, the end of the log, without the lines that name a secret
+    st = r["status"]
+    assert st["status"] == 0 and length(st["calls"]) == 1
+
+    assert st["stdout"] =~ "round: running (pid 4242)" and st["stdout"] =~ "measure A/ws step 20" and
+             st["stdout"] =~ "last line"
+
+    refute st["stdout"] =~ ~r/secret|token|key|password/i
+
+    # --fetch: rsync of the results directory into the output dir, scp -r without rsync
+    f = r["fetch"]
+    assert f["rsync"] == [0, ["rsync -a lab:/srv/results/r1/ OUT/"]]
+    assert f["scp"] == [0, ["scp -r lab:/srv/results/r1/. OUT/"]]
+    assert f["made"]
+  end
+
+  test "the old entries are gone: one task runs a round, and load-run takes its settings from the config only" do
+    tasks = File.read!("mise.toml")
+
+    for name <- ~w(http-native http-wasm http-wasm-jobs ws cells swap scale explore) do
+      refute tasks =~ ~s([tasks."load:#{name}"]), name
+    end
+
+    for name <- ["load", ~s("load:up"), ~s("load:down"), ~s("load:report"), ~s("load:config-check")] do
+      assert tasks =~ "[tasks.#{name}]", name
+    end
+
+    refute File.exists?("scripts/load-explore")
+    refute File.exists?("test/scripts/load_explore_test.exs")
+
+    # the only ATANOR_LOAD_* left in load-run are the plumbing that scripts/load and load-env read
+    source = File.read!("scripts/load-run")
+    assert Regex.scan(~r/ATANOR_LOAD_(?!CONFIG|SCENARIO|MEASURE|NODES|HTTP_MAX_CONNECTIONS)\w+/, source) == []
+
+    {out, 0} = System.cmd("python3", ["-I", "scripts/load-run", "--help"], stderr_to_stdout: true)
+    assert out =~ "--config" and out =~ "--skip-done"
+    refute out =~ "--step-s" or out =~ "--p99-ms"
   end
 
   test "mise run load refuses a missing config and prints --help", %{dir: dir} do
@@ -648,6 +742,7 @@ defmodule Atanor.LoadRunTest do
 
   describe "load-env rtt" do
     setup %{dir: dir} do
+      File.write!(Path.join(dir, "round.toml"), "")
       docker = Path.join(dir, "docker")
 
       File.write!(docker, """
@@ -662,9 +757,12 @@ defmodule Atanor.LoadRunTest do
       {:ok, path: dir <> ":" <> System.get_env("PATH")}
     end
 
-    test "prints nothing and succeeds when the curl in the node fails", %{path: path} do
+    test "prints nothing and succeeds when the curl in the node fails", %{dir: dir, path: path} do
       {out, status} =
-        System.cmd(Path.expand("scripts/load-env"), ["rtt"], env: [{"PATH", path}], stderr_to_stdout: true)
+        System.cmd(Path.expand("scripts/load-env"), ["rtt"],
+          env: [{"PATH", path}, {"ATANOR_LOAD_CONFIG", Path.join(dir, "round.toml")}],
+          stderr_to_stdout: true
+        )
 
       assert status == 0, out
       assert String.trim(out) == ""
@@ -676,7 +774,7 @@ defmodule Atanor.LoadRunTest do
 
       {out, status} =
         System.cmd(Path.expand("scripts/load-env"), ["rtt"],
-          env: [{"PATH", dir <> ":" <> System.get_env("PATH")}],
+          env: [{"PATH", dir <> ":" <> System.get_env("PATH")}, {"ATANOR_LOAD_CONFIG", Path.join(dir, "round.toml")}],
           stderr_to_stdout: true
         )
 
@@ -686,43 +784,77 @@ defmodule Atanor.LoadRunTest do
   end
 
   describe "load-common memory limits" do
-    defp limits(env) do
+    # `toml` is a round config; the scenario is the internal ATANOR_LOAD_SCENARIO.
+    defp limits(dir, toml, scenario) do
+      File.write!(Path.join(dir, "limits.toml"), toml)
+
       script =
         ~s(source scripts/load-common; echo "$ATANOR_CLUSTER_NODE_MEMORY $ATANOR_CLUSTER_STORE_MEMORY $LOAD_MEMORY_BYTES $ATANOR_CLUSTER_MEMORY_LIMIT")
 
+      env = [{"ATANOR_LOAD_CONFIG", Path.join(dir, "limits.toml")}, {"ATANOR_LOAD_SCENARIO", scenario}]
       {out, status} = System.cmd("bash", ["-c", script], env: env, stderr_to_stdout: true)
       {String.split(String.trim(out)), status}
     end
 
-    test "the container limit is the scenario memory plus the tmpfs, for the node and the store" do
+    test "the container limit is the scenario memory plus the tmpfs, for the node and the store", %{dir: dir} do
       mib = 1_048_576
       node_a = (512 + 256) * mib
       store = (2048 + 1024) * mib
-      assert {[node, st, scenario, node_limit], 0} = limits([{"ATANOR_LOAD_SCENARIO", "A"}])
+      assert {[node, st, scenario, node_limit], 0} = limits(dir, "", "A")
       assert {node, st, scenario} == {"#{node_a}", "#{store}", "#{512 * mib}"}
       # the node's own limit is the scenario memory, not the container limit with the tmpfs
       assert node_limit == "#{512 * mib}"
 
-      assert {[node, _, scenario, _], 0} = limits([{"ATANOR_LOAD_SCENARIO", "B"}, {"ATANOR_LOAD_TMPFS_SIZE", "768m"}])
+      assert {[node, _, scenario, _], 0} = limits(dir, "[scenarios.B]\ndata_tmpfs = \"768m\"\n", "B")
       assert {node, scenario} == {"#{(2048 + 768) * mib}", "#{2048 * mib}"}
 
       # scenario B's data dir is 1 GB by default (A's is 256 MB), so its disk budget does not put cells to sleep before the memory does
-      assert {[node, _, scenario, node_limit], 0} = limits([{"ATANOR_LOAD_SCENARIO", "B"}])
+      assert {[node, _, scenario, node_limit], 0} = limits(dir, "", "B")
       assert {node, scenario, node_limit} == {"#{(2048 + 1024) * mib}", "#{2048 * mib}", "#{2048 * mib}"}
     end
 
-    test "every compose call of load-env (add-node starts nodes 2 and 3) uses the tmpfs layout of node 1" do
+    test "every compose call of load-env (add-node starts nodes 2 and 3) uses the tmpfs layout of node 1", %{dir: dir} do
       script = ~s(source scripts/load-common; printf '%s\\n' "${compose_files[@]}")
-      {out, 0} = System.cmd("bash", ["-c", script], env: [{"ATANOR_CLUSTER_TMPFS", ""}])
+      File.write!(Path.join(dir, "tmpfs.toml"), "")
+
+      {out, 0} =
+        System.cmd("bash", ["-c", script],
+          env: [{"ATANOR_CLUSTER_TMPFS", ""}, {"ATANOR_LOAD_CONFIG", Path.join(dir, "tmpfs.toml")}]
+        )
+
       assert out =~ "cluster/compose.tmpfs.yml"
 
-      {out, 0} = System.cmd("bash", ["-c", script], env: [{"ATANOR_LOAD_STORE_DISK", "1"}])
+      File.write!(Path.join(dir, "disk.toml"), "[store]\nbacking = \"disk\"\n")
+      {out, 0} = System.cmd("bash", ["-c", script], env: [{"ATANOR_LOAD_CONFIG", Path.join(dir, "disk.toml")}])
       assert out =~ "cluster/compose.tmpfs.yml" and out =~ "cluster/compose.store-disk.yml"
     end
 
-    test "a size that is not a size is refused" do
-      assert {parts, 1} = limits([{"ATANOR_LOAD_TMPFS_SIZE", "lots"}])
-      assert Enum.join(parts, " ") =~ "must be sizes"
+    test "a size that is not a size is refused by the config", %{dir: dir} do
+      assert {parts, 1} = limits(dir, "[scenarios.A]\ndata_tmpfs = \"lots\"\n", "A")
+      assert Enum.join(parts, " ") =~ "scenarios.A.data_tmpfs: 'lots' is not a size"
+    end
+
+    test "without a round config the lab's scripts refuse to start" do
+      script = ~s(source scripts/load-common)
+      {out, status} = System.cmd("bash", ["-c", script], env: [{"ATANOR_LOAD_CONFIG", nil}], stderr_to_stdout: true)
+      assert status == 1
+      assert out =~ "ATANOR_LOAD_CONFIG must name the round config"
+    end
+
+    test "the settings of the environment do not change the lab: only the config does", %{dir: dir} do
+      File.write!(Path.join(dir, "env.toml"), "")
+      script = ~s(source scripts/load-common; echo "$LOAD_CPUS $LOAD_STORE_DISK")
+
+      {out, 0} =
+        System.cmd("bash", ["-c", script],
+          env: [
+            {"ATANOR_LOAD_CONFIG", Path.join(dir, "env.toml")},
+            {"ATANOR_LOAD_CPUS", "9"},
+            {"ATANOR_LOAD_STORE_DISK", "1"}
+          ]
+        )
+
+      assert String.trim(out) == "1 0"
     end
   end
 
@@ -811,22 +943,31 @@ defmodule Atanor.LoadRunTest do
     setup %{dir: dir} do
       scripts = Path.join(dir, "scripts")
       File.mkdir_p!(scripts)
-      for name <- ~w(load-env load-common cluster-common), do: File.cp!("scripts/" <> name, Path.join(scripts, name))
-      {:ok, scripts: scripts}
+
+      for name <- ~w(load-env load-common cluster-common load_config.py),
+          do: File.cp!("scripts/" <> name, Path.join(scripts, name))
+
+      File.write!(Path.join(dir, "round.toml"), "[store]\ncpus = 1\n[balancer]\ncpus = 0.5\n")
+      {:ok, scripts: scripts, config: Path.join(dir, "round.toml")}
     end
 
-    test "limits prints the CPU limits of a node, the store and the balancer", %{scripts: scripts} do
-      {out, 0} =
-        System.cmd(Path.join(scripts, "load-env"), ["limits"],
-          env: [{"ATANOR_LOAD_SCENARIO", "B"}, {"ATANOR_LOAD_STORE_CPUS", "1"}, {"ATANOR_LOAD_LB_CPUS", "0.5"}]
-        )
-
+    test "limits prints the CPU limits of a node, the store and the balancer, from --config and --scenario", %{
+      scripts: scripts,
+      config: config
+    } do
+      {out, 0} = System.cmd(Path.join(scripts, "load-env"), ["limits", "--config", config, "--scenario", "B"])
       assert :json.decode(out) == %{"node_cpus" => 2, "store_cpus" => 1, "lb_cpus" => 0.5}
+
+      {out, 0} =
+        System.cmd(Path.join(scripts, "load-env"), ["--scenario", "A", "limits"], env: [{"ATANOR_LOAD_CONFIG", config}])
+
+      assert :json.decode(out)["node_cpus"] == 1
     end
 
     test "the store round trip is the second request of one curl run, on the reused connection", %{
       dir: dir,
-      scripts: scripts
+      scripts: scripts,
+      config: config
     } do
       # a stub docker: `ps` finds a node; `exec ... curl URL URL` answers the connect-heavy first time, then the reused one
       bin = Path.join(dir, "bin")
@@ -844,7 +985,9 @@ defmodule Atanor.LoadRunTest do
       File.chmod!(Path.join(bin, "docker"), 0o755)
 
       {out, 0} =
-        System.cmd(Path.join(scripts, "load-env"), ["rtt"], env: [{"PATH", bin <> ":" <> System.get_env("PATH")}])
+        System.cmd(Path.join(scripts, "load-env"), ["rtt"],
+          env: [{"PATH", bin <> ":" <> System.get_env("PATH")}, {"ATANOR_LOAD_CONFIG", config}]
+        )
 
       assert String.trim(out) == "30.0"
     end
@@ -856,12 +999,18 @@ defmodule Atanor.LoadRunTest do
     test "load-env swap passes the load image to cluster-swap-run; cluster-common leaves it unset", %{dir: dir} do
       scripts = Path.join(dir, "scripts")
       File.mkdir_p!(scripts)
-      for name <- ~w(load-env load-common cluster-common), do: File.cp!("scripts/" <> name, Path.join(scripts, name))
+
+      for name <- ~w(load-env load-common cluster-common load_config.py),
+          do: File.cp!("scripts/" <> name, Path.join(scripts, name))
+
       File.write!(Path.join(scripts, "cluster-swap-run"), "#!/bin/sh\necho \"image=$ATANOR_CLUSTER_IMAGE args=$*\"\n")
       File.chmod!(Path.join(scripts, "cluster-swap-run"), 0o755)
+      File.write!(Path.join(dir, "round.toml"), "")
 
       {out, 0} =
-        System.cmd(Path.join(scripts, "load-env"), ["swap", "--rate", "10"], env: [{"ATANOR_CLUSTER_IMAGE", ""}])
+        System.cmd(Path.join(scripts, "load-env"), ["swap", "--rate", "10"],
+          env: [{"ATANOR_CLUSTER_IMAGE", ""}, {"ATANOR_LOAD_CONFIG", Path.join(dir, "round.toml")}]
+        )
 
       assert String.trim(out) == "image=atanor-cluster-load:local args=--rate 10"
 

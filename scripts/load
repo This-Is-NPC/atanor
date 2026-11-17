@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Run a load round from a config file: load --config FILE [--skip-done | --no-skip-done] [--dry-run]
+"""The load test: run a round from a config file, here or on a remote host.
+
+  load --config FILE [--skip-done | --no-skip-done] [--dry-run]     run the round on this machine
+  load --config FILE --remote [--skip-done | --no-skip-done]        check the clone on host.ssh, then start the round there, detached
+  load --config FILE --status                                       is the remote round alive, and the end of its log
+  load --config FILE --fetch                                        copy the remote results directory to the local output dir
 
 The file is validated first (scripts/load_config.py; every problem is listed and nothing starts). The round runs `round.cases` in order,
 or each scenario of `round.scenarios` with its `round.measures` (a measure with `run_on` only on those scenarios). Per scenario it starts
@@ -7,17 +12,25 @@ the lab (`load:up`, with the scenario's settings; a measure with its own `[measu
 scripts/load-run on a fresh node and store, writes the report (`load:report`) and removes the lab at the end (`load:down`).
 
 Results: OUT/SCENARIO/MEASURE[/VARIANT]/step-VALUE[-REPETITION].json and summary.json, and the resolved config as OUT/config.toml.
---skip-done (the default) does not run again a step whose file has the same config_hash and is not INVALID, and reuses its result; a
-step file of another config refuses the round. --no-skip-done runs every step and overwrites the files. --dry-run prints the plan
-and exits without starting anything.
+--skip-done (the default) does not run again a step whose file has the same config_hash and is not INVALID, and reuses its result; a case
+whose steps and summary are all done is reused without starting a lab. A step file of another config refuses the round. --no-skip-done
+runs every step and overwrites the files. --dry-run prints the plan and exits without starting anything.
+
+--remote needs host.ssh and host.repo, and output.name or output.dir (the same results directory is found again by --status and --fetch).
+It copies nothing: it refuses when the clone on the host has local changes or is not at the local HEAD commit, then starts the round
+under `timeout host.timeout_s`, writing round.pid and round.log in the results directory on the host. Nothing remote happens without
+--remote, --status or --fetch. --out DIR sets the results directory (the host side of --remote).
 
 Exit status: 0 when every measure recorded a verdict; 1 when a measure ended INVALID or the round was stopped (round.timeout_s); 2 when
-the config is refused.
+the config is refused or a remote check fails.
 """
 import argparse
 import glob
 import json
 import os
+import re
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -27,6 +40,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True  # no scripts/__pycache__
 import load_config  # noqa: E402
+
+SECRETS = re.compile(r"token|secret|key|credential|password", re.IGNORECASE)
 
 
 def describe(config, scenario, measure):
@@ -64,19 +79,32 @@ def lab_of(env):
     return tuple(sorted((k, v) for k, v in env.items() if k != "ATANOR_LOAD_NODES"))
 
 
+def step_files(case):
+    return sorted(glob.glob(os.path.join(case["dir"], "step-*.json")) + glob.glob(os.path.join(case["dir"], "*", "step-*.json")))
+
+
+def read_json(path):
+    try:
+        with open(path) as file:
+            document = json.load(file)
+    except (OSError, ValueError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
 def conflicts(plan):
     """The step files of a case's directory made by another config: their `config_hash` is not the case's."""
-    found = []
-    for case in plan:
-        for path in sorted(glob.glob(os.path.join(case["dir"], "step-*.json")) + glob.glob(os.path.join(case["dir"], "*", "step-*.json"))):
-            try:
-                with open(path) as file:
-                    other = json.load(file).get("config_hash")
-            except (OSError, ValueError):
-                other = None
-            if other != case["hash"]:
-                found.append(path)
-    return found
+    return [path for case in plan for path in step_files(case) if (read_json(path) or {}).get("config_hash") != case["hash"]]
+
+
+def case_done(case):
+    """Whether a case needs no lab: its summary and every step file carry the case's hash and none is INVALID."""
+    summary = read_json(os.path.join(case["dir"], "summary.json"))
+    if not summary or summary.get("config_hash") != case["hash"] or summary.get("invalid"):
+        return False
+    files = step_files(case)
+    steps = [read_json(p) or {} for p in files]
+    return bool(files) and all(s.get("config_hash") == case["hash"] and s.get("status") != "invalid" and s.get("valid") is not False for s in steps)
 
 
 def show(plan, config, out, path, skip_done):
@@ -85,7 +113,7 @@ def show(plan, config, out, path, skip_done):
     print(f"  skip-done {'on' if skip_done else 'off'}; each generator process is killed after {config['round']['step_timeout_s']:g} s (round.step_timeout_s); "
           + (f"the round stops after {timeout:g} s (round.timeout_s)" if timeout else "no round timeout"))
     if config["host"]["ssh"]:
-        print("  note: host.ssh is not used yet, the round runs on this machine")
+        print("  note: host.ssh is set, but this run is local; --remote runs it on the host")
     for i, case in enumerate(plan, 1):
         values = f"{case['kind']}, values {', '.join(str(v) for v in case['values'])}" if case["values"] else case["kind"]
         steps = "" if case["max_steps"] is None else f"; at most {case['max_steps']} steps ({case['extra']})" if case["extra"] else f"; {case['max_steps']} step"
@@ -106,6 +134,7 @@ class Round:
         self.lab, self.dirty, self.results = None, False, []
 
     def env(self, case):
+        # Internal plumbing: the children read the round's settings from the config, through these.
         return {**os.environ, "ATANOR_LOAD_CONFIG": self.config_path, "ATANOR_LOAD_SCENARIO": case["scenario"], "ATANOR_LOAD_MEASURE": case["measure"]}
 
     def run(self, argv, env):
@@ -143,6 +172,10 @@ class Round:
                 if previous and previous != case["scenario"]:
                     self.report()
                 previous = case["scenario"]
+                if self.args.skip_done and case_done(case):
+                    print(f"{case['name']}: done before (config_hash {case['hash'][:8]}), no lab started", flush=True)
+                    self.results.append((case["name"], 0))
+                    continue
                 if self.prepare(case):
                     print(f"STOP: the lab of {case['name']} did not start", flush=True)
                     return 1
@@ -165,19 +198,124 @@ class Round:
                 self.run(["mise", "run", "load:down"], self.env(self.plan[0]))
 
 
+# ---- the remote host ---------------------------------------------------------------------------------------
+
+def ssh(host, script):
+    """(exit status, output) of `script` run on `host`."""
+    done = subprocess.run(["ssh", host, script], capture_output=True, text=True)
+    return done.returncode, done.stdout + done.stderr
+
+
+def remote_paths(config, args):
+    """(host, repo, results dir on the host) of a remote command; a string with the problem when the config cannot be used."""
+    host = config["host"]
+    if not host["ssh"] or not host["repo"]:
+        return "host.ssh and host.repo must be set for --remote, --status and --fetch"
+    if not (config["output"]["name"] or config["output"]["dir"] or args.out):
+        return "set output.name (or output.dir): --status and --fetch must find the same results directory"
+    given = args.out or host["results"] or config["output"]["dir"] or os.path.join(host["repo"], "load", "results", config["output"]["name"])
+    return host["ssh"], host["repo"], given
+
+
+def remote_start(config, args):
+    found = remote_paths(config, args)
+    if isinstance(found, str):
+        print(found, file=sys.stderr)
+        return 2
+    host, repo, out = found
+    config_file = args.config
+    local = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    pid = shlex.quote(f"{out}/round.pid")
+    check = (f"cd {shlex.quote(repo)} && git fetch --quiet && git status --porcelain && echo HEAD=$(git rev-parse HEAD) "
+             f"&& (test -f {shlex.quote(config_file)} && echo CONFIG=ok || echo CONFIG=missing) "
+             f"&& (test -f {pid} && kill -0 $(cat {pid}) 2>/dev/null && echo RUNNING=yes || echo RUNNING=no)")
+    status, text = ssh(host, check)
+    lines = text.splitlines()
+    commit = next((line[5:] for line in lines if line.startswith("HEAD=")), None)
+    if status or commit is None:
+        print(f"cannot check the clone on {host}:{repo}:\n{text.strip()}", file=sys.stderr)
+        return 2
+    changes = [line for line in lines if line and not re.match(r"(HEAD|CONFIG|RUNNING)=", line)]
+    print(f"local commit  {local}\nremote commit {commit}")
+    if changes:
+        print(f"refusing: the clone on {host} has local changes:\n" + "\n".join(f"  {line}" for line in changes[:10]), file=sys.stderr)
+        return 2
+    if commit != local:
+        print(f"refusing: the clone on {host} is not at the local commit (update it, or push and fetch the branch there)", file=sys.stderr)
+        return 2
+    if "CONFIG=ok" not in lines:
+        print(f"refusing: {config_file} is not in the clone on {host} (the config must be committed)", file=sys.stderr)
+        return 2
+    if "RUNNING=yes" in lines:
+        print(f"refusing: a round is already running on {host} ({out}/round.pid)", file=sys.stderr)
+        return 2
+    inner = (f"echo $$ > {pid}; exec timeout --kill-after=60 {config['host']['timeout_s']:g} mise run load -- --config {shlex.quote(config_file)} "
+             f"--out {shlex.quote(out)} {'--skip-done' if args.skip_done else '--no-skip-done'}")
+    start = (f"mkdir -p {shlex.quote(out)} && cd {shlex.quote(repo)} && "
+             f"setsid nohup sh -c {shlex.quote(inner)} > {shlex.quote(out + '/round.log')} 2>&1 < /dev/null & sleep 1; echo started")
+    status, text = ssh(host, start)
+    if status:
+        print(f"the round did not start on {host}:\n{text.strip()}", file=sys.stderr)
+        return 2
+    print(f"round started on {host}, results in {out}; the round is killed after {config['host']['timeout_s']:g} s (host.timeout_s)")
+    print(f"  follow it:    mise run load -- --config {config_file} --status")
+    print(f"  copy results: mise run load -- --config {config_file} --fetch")
+    return 0
+
+
+def remote_status(config, args):
+    found = remote_paths(config, args)
+    if isinstance(found, str):
+        print(found, file=sys.stderr)
+        return 2
+    host, _, out = found
+    pid, log = shlex.quote(f"{out}/round.pid"), shlex.quote(f"{out}/round.log")
+    script = (f"if test -f {pid} && kill -0 $(cat {pid}) 2>/dev/null; then echo \"round: running (pid $(cat {pid}))\"; else echo 'round: not running'; fi; "
+              f"tail -n 20 {log} 2>/dev/null")
+    status, text = ssh(host, script)
+    if status:
+        print(f"cannot read the status on {host}:\n{text.strip()}", file=sys.stderr)
+        return 2
+    print("\n".join(line for line in text.splitlines() if not SECRETS.search(line)))
+    return 0
+
+
+def remote_fetch(config, args):
+    found = remote_paths(config, args)
+    if isinstance(found, str):
+        print(found, file=sys.stderr)
+        return 2
+    host, _, remote = found
+    local = load_config.output_dir(config, ROOT)
+    os.makedirs(local, exist_ok=True)
+    argv = ["rsync", "-a", f"{host}:{remote}/", f"{local}/"] if shutil.which("rsync") else ["scp", "-r", f"{host}:{remote}/.", f"{local}/"]
+    print("+ " + " ".join(argv), flush=True)
+    status = subprocess.run(argv).returncode
+    print(f"results of {host}:{remote} copied to {local}" if not status else f"the copy failed ({argv[0]} exited {status})")
+    return 0 if not status else 2
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", required=True, metavar="FILE", help="the round config (see load/rounds/example.toml)")
     parser.add_argument("--skip-done", action=argparse.BooleanOptionalAction, default=True,
                         help="do not run again a step whose file has the same config_hash and is not INVALID (default)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit without starting anything")
+    where = parser.add_mutually_exclusive_group()
+    where.add_argument("--remote", action="store_true", help="start the round on host.ssh, detached, after checking its clone")
+    where.add_argument("--status", action="store_true", help="whether the remote round is alive, and the end of its log")
+    where.add_argument("--fetch", action="store_true", help="copy the remote results directory to the local output dir")
+    parser.add_argument("--out", metavar="DIR", help="results directory instead of output.dir and output.name (the host side of --remote)")
     args = parser.parse_args(argv)
     try:
         config = load_config.load_config(args.config)
     except load_config.ConfigError as error:
         print(error, file=sys.stderr)
         return 2
-    out = load_config.output_dir(config, ROOT)
+    for flag, action in (("remote", remote_start), ("status", remote_status), ("fetch", remote_fetch)):
+        if getattr(args, flag):
+            return action(config, args)
+    out = os.path.abspath(args.out) if args.out else load_config.output_dir(config, ROOT)
     plan = build_plan(config, out)
     if args.skip_done and (other := conflicts(plan)):
         print(f"refusing the round: {len(other)} step files in {out} were made by another config (their config_hash differs from the case's):", file=sys.stderr)
