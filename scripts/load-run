@@ -22,7 +22,8 @@ Before every step the harness waits for a quiet host (net load below --host-load
 fails), swap in a measured container or generator swap growing over --max-generator-swap-mb, or host swap growing over
 --max-host-swap-growth-mb (INVALID), the store's tmpfs over --max-store-tmpfs-pct (default 90%) of its size at any sample (with ATANOR_LOAD_STORE_DISK=1 the store's filesystem over --max-store-disk-pct instead; INVALID: a full
 store answers S3 500s, which measure the lab; it wins over a criterion, so a p99 or 5xx failure on a full store is not
-the node's), a stall (the generator's own release lag p99 over --max-lag-ms, so a slow node that backs the generator up is not one, or a jump of the node's CPU throttling over --max-throttle-jump-ms and 5x the median, or on a failing step --store-stall-requests node-to-store requests of --max-store-stall-ms or more within 5 s in the node log: INVALID, `stall:`; the step is repeated once, and when the repeat stalls too the round stops), delivery under 95% of the plan (INVALID, the round stops: the generator or the host, not the node). A node
+the node's), a stall (the generator's own release lag p99 over --max-lag-ms, so a slow node that backs the generator up is not one, or a jump of the node's CPU throttling over --max-throttle-jump-ms and 5x the median, or on a failing step --store-stall-requests node-to-store requests of --max-store-stall-ms or more within 5 s in the node log: INVALID, `stall:`; the step is repeated once, and when the repeat stalls too the round stops, except a store that stalls in both
+attempts: the step then fails, `store:`), delivery under 95% of the plan (INVALID, the round stops: the generator or the host, not the node). A node
 that stopped is judged first and still records the store's tmpfs share. The host swap used is only recorded. A container that may swap refuses the run before the first step.
 After the first failing step the ramp refines between the last good value and the failing one (--refine
 bisections, each on a fresh node and store), then repeats the best good step once to confirm it, also fresh. Environment: ATANOR_LOAD_* give defaults.
@@ -735,6 +736,11 @@ def node_log_since(node, since):
         return ""
 
 
+def store_stalled(record):
+    """Whether a step attempt was INVALID because the store stalled (`judge_store_stall`)."""
+    return (record["stop_reason"] or "").startswith("stall: store stalled")
+
+
 def judge_store_stall(evidence):
     """The INVALID reason when the store stalled (`store_stall` evidence), else None. A stall fails a step by chance: it measures the lab."""
     if evidence and evidence["stalled"]:
@@ -1108,6 +1114,8 @@ class Round:
             record = self.run_once(value, phase, fresh)
             record["first_attempt"] = {k: first[k] for k in ("status", "stop_reason", "latency_ms", "generator", "series", "store_stall")}
             record["notes"].append(f"first attempt INVALID, repeated once: {first['stop_reason']}")
+            if store_stalled(first) and store_stalled(record):  # the store stalls at this load every time: its limit, so this step fails
+                record = {**record, "valid": True, "status": "fail", "stop_reason": "store: stalled at this step twice, " + record["stop_reason"].removeprefix("stall: store stalled, ")}
         path = self.base(value, phase) + ".json"
         write_json(path, record)
         say(f"{a.measure} {value} {UNITS[a.measure]}: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")

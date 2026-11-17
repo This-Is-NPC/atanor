@@ -342,8 +342,8 @@ def slow_log(*stamps, ms=1061):
 
 BURST = slow_log(*(f"03:46:42.{900 + i:03d}" for i in range(12)))
 SPREAD = slow_log(*(f"03:{10 + i}:00.000" for i in range(12)))
-# A failing step whose node log shows a burst of slow store requests is INVALID ("stall:") and repeated once; a repeat that stalls too ends the
-# round; a slow store spread over time, a few slow requests, requests under the limit and the check turned off leave the verdict (fail) as it was.
+# A failing step whose node log shows a burst of slow store requests is INVALID ("stall:") and repeated once; a repeat that stalls too fails the
+# step on the store ("store:"), valid; a slow store spread over time, a few slow requests, requests under the limit and the check turned off leave the verdict (fail) as it was.
 def store_stall_scenario(name, logs, off=False):
     container()
     runs = []

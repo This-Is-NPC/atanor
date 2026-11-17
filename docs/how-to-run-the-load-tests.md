@@ -139,11 +139,14 @@ and `/proc/meminfo`. Per step, in this order:
    fall within 5 s, the step is INVALID with `stall: store stalled, N node-to-store requests took >= 1000 ms within 5 s
    (slowest M ms)`. The evidence is `store_stall` in the step file (`slow_requests`, `max_ms`, `window_requests`,
    `window_s`, `threshold_ms`, `min_requests`, `stalled`); it is `null` when the log showed no slow request, and a
-   step that passed is not read. A store that is slow all the time is not hidden: the repeat stalls too, so the step stays
-   INVALID, the round stops and the reason says so. Unlike the other
+   step that passed is not read. Unlike the other
    INVALID verdicts, a stall repeats the step once (a fresh node when the step is fresh), so one chance event
    does not stop the round: the first attempt is kept in `first_attempt` of the step file and in `notes`. When
-   the repeat is INVALID too, the usual INVALID path applies: the round stops and `load-run` exits 1.
+   the repeat is INVALID too, the usual INVALID path applies: the round stops and `load-run` exits 1. The
+   exception is a store that stalls in both attempts: it stalls at this load every time, so that is the lab
+   store's limit and not a chance event. The step **fails**, valid, with `store: stalled at this step twice, ...`,
+   so the ramp's ceiling is the step before and the round goes on; the report shows the reason, so a ceiling
+   set by the store is not read as the node's.
 7. **Criteria.** The step fails when any criterion of the table above broke.
 8. **Delivery.** Achieved below 95% of planned: the step is INVALID and the round stops. This is not a
    failure of the node. A saturated node breaks p99 first, so it is a failure, not an invalid step.
@@ -162,7 +165,7 @@ In short, what makes a step INVALID (no verdict on the node):
 | Host saturated | mean busy cores over 85% of the host's cores (`--max-busy-share`) | no, the round stops |
 | Swap | 16 MB generator, 256 MB host growth, any in a measured container | no, the round stops |
 | Store full | 90% of its tmpfs or disk | no, the round stops |
-| Stall | generator release lag p99 over 50 ms, a throttling jump over 5000 ms and 5 times the median, or on a failing step 10 node-to-store requests of 1000 ms or more within 5 s (`--max-lag-ms`, `--max-throttle-jump-ms`, `--max-store-stall-ms`, `--store-stall-requests`) | once; the round stops if the repeat stalls too |
+| Stall | generator release lag p99 over 50 ms, a throttling jump over 5000 ms and 5 times the median, or on a failing step 10 node-to-store requests of 1000 ms or more within 5 s (`--max-lag-ms`, `--max-throttle-jump-ms`, `--max-store-stall-ms`, `--store-stall-requests`) | once; the round stops if the repeat stalls too, except a store that stalls in both: that step fails (`store:`) and the round goes on |
 | Delivery | achieved under 95% of planned | no, the round stops |
 
 The ramp multiplies the value by 2 from a start (`--start`, `--factor`, or `--steps`) until a step fails;
@@ -289,7 +292,7 @@ Every option has a flag (`--help` on `scripts/load-run`) and an environment vari
 | `ATANOR_LOAD_HTTP_MAX_CONNECTIONS` | unset (the node's 16384) | The nodes' `http.max_connections`. The `ws` measure needs it above its highest step ([the connection cap](#the-connection-cap-of-the-ws-measure)). Set it before `load:up`. |
 | `ATANOR_LOAD_MAX_LAG_MS` | 50 | Generator release lag p99 above which a step is invalid (`stall:`) and repeated once. |
 | `ATANOR_LOAD_MAX_THROTTLE_JUMP_MS` | 5000 | Growth of the node's CPU throttling between two samples above which, and above 5 times the median growth, a step is invalid (`stall:`) and repeated once. |
-| `ATANOR_LOAD_MAX_STORE_STALL_MS`, `_STORE_STALL_REQUESTS` | 1000, 10 | Node-to-store request time (ms) that counts as slow, and how many of them within 5 s make a store stall: a failing step is then invalid (`stall:`) and repeated once. 0 turns the check off. |
+| `ATANOR_LOAD_MAX_STORE_STALL_MS`, `_STORE_STALL_REQUESTS` | 1000, 10 | Node-to-store request time (ms) that counts as slow, and how many of them within 5 s make a store stall: a failing step is then invalid (`stall:`) and repeated once, and fails (`store:`) when the store stalls in the repeat too. 0 turns the check off. |
 | `ATANOR_LOAD_WRITE_RATIO`, `_CELLS` | 0.5, 64 | http: share of writes, cells the requests spread over. |
 | `ATANOR_LOAD_NO_WARMUP` | 0 | `1`: an http step does not write each cell once before the steady load ([the warm-up](#the-warm-up-of-the-http-measures)). |
 | `ATANOR_LOAD_CELL_PERIOD` | 10 | cells: seconds between the writes to one cell. |
