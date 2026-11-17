@@ -1339,7 +1339,10 @@ refused above), `awake_limit` (Alambique's `awake` limits, `{:error, :overloaded
 call came, §14.2), `nested_calls` (a call between workers found `max_nested_calls` in flight, §14.2) and
 `queue_timeout` (the request waited past `http.queue_wait_ms`, below); `overloaded` alone is a worker that
 answered 503 itself. A refusal after the ingress emits `[:atanor, :http, :reject]`
-with the same `reason`. The default of 1,024 is generous on
+with the same `reason`. Every 503 the HTTP layer answers is counted once in `refused` of `/runtime`: the
+overload reasons above under their own key, any other (an unavailability of §8.4, `unknown_outcome`, a 503 of
+`auth:`, an `overloaded` with no gate) under `refused.unavailable`, and by reason in
+`admission.unavailable_by_reason` (`overloaded_unattributed` for the last). The default of 1,024 is generous on
 purpose: the memory gate is the guard, this one bounds handlers on a node whose
 limit is large or unknown. In the load VM a node of 1 CPU and 512 MiB was
 killed at 100 req/s native, 50 req/s WASM and 6,400 WebSockets with no
@@ -2255,7 +2258,9 @@ node is not a majority), `owner_unreachable` (the owner is not reachable and not
 confirmed down), `owner_down` (confirmed down but the cell was not taken over),
 `draining` (this node hands its cells off and does not wake the cell),
 `held_elsewhere` (a node outside this cluster holds the cell's lease, with its own `Retry-After`: see below),
-`fenced` (a lease was lost, expired or fenced), `overloaded` (the WASM queue is full),
+`fenced` (a lease was lost, expired or fenced), `owner_unknown` (a node with no peers could not read the
+lease of the cell it is about to run, for a reason that names no other: a lease read that failed for
+the store or for overload reports `store_unavailable` or `overloaded`, never `fenced`), `overloaded` (the WASM queue is full),
 `store_unavailable` (the store did not answer a request that a job's transaction needed, and the
 transaction was rolled back) or `deployment_unavailable` (the node cannot build the pinned
 deployment). A

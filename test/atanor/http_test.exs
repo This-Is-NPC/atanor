@@ -10,6 +10,8 @@ defmodule Atanor.HTTPTest do
     %{node: node}
   end
 
+  def report(_event, _measurements, meta, test), do: send(test, {:reject, meta})
+
   test "answers 404 with a JSON body when there are no routes", %{node: node} do
     for path <- ["/", "/anything/at/all"] do
       resp = Req.get!(node.url <> path, retry: false)
@@ -71,6 +73,38 @@ defmodule Atanor.HTTPTest do
 
       assert resp.status == 503
       assert resp.body == %{"error" => "unavailable", "reason" => "fenced"}
+    end
+
+    test "every 503 is counted once, by reason, under refused.unavailable", %{node: node} do
+      stats = fn -> Atanor.Admission.stats(node.name) end
+      assert %{refused: %{unavailable: 0}, unavailable_by_reason: by_reason} = stats.()
+      assert by_reason == %{}
+
+      for path <- [
+            "/unavailable?reason=owner_unreachable&status=500",
+            "/unavailable?reason=fenced&status=500",
+            "/unavailable?reason=fenced&status=500",
+            "/unavailable?reason=no_quorum&status=500&unknown=1",
+            # `:overloaded` without a cause of its own
+            "/unavailable?reason=overloaded&status=500"
+          ] do
+        assert Req.get!(node.url <> path, retry: false).status == 503
+      end
+
+      assert %{refused: %{unavailable: 5} = refused, unavailable_by_reason: by_reason} = stats.()
+
+      assert by_reason == %{owner_unreachable: 1, fenced: 2, unknown_outcome: 1, overloaded_unattributed: 1}
+      # None of the overload counters moved.
+      assert refused |> Map.delete(:unavailable) |> Map.values() |> Enum.sum() == 0
+    end
+
+    test "a 503 is also reported as [:atanor, :http, :reject]", %{node: node} do
+      ref = make_ref()
+      :telemetry.attach({__MODULE__, ref}, [:atanor, :http, :reject], &__MODULE__.report/4, self())
+      on_exit(fn -> :telemetry.detach({__MODULE__, ref}) end)
+
+      assert Req.get!(node.url <> "/unavailable?reason=owner_down&status=500", retry: false).status == 503
+      assert_receive {:reject, %{reason: :owner_down, status: 503}}
     end
 
     test "a worker crash without a cause is still a 500", %{node: node} do

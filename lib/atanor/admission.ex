@@ -59,7 +59,9 @@ defmodule Atanor.Admission do
   @refused_awake_limit 14
   @refused_busy 15
   @refused_disk_full 16
-  @counters 16
+  @refused_unavailable 17
+  @wakes 18
+  @counters 18
   @deadline {__MODULE__, :deadline}
 
   @doc "The gap, as a fraction of the limit, between the refuse and the resume marks."
@@ -205,6 +207,32 @@ defmodule Atanor.Admission do
   def refuse_call(name, :busy), do: add(name, @refused_busy)
   def refuse_call(name, :disk_full), do: add(name, @refused_disk_full)
 
+  @doc false
+  # Counts a 503 that is not an overload refusal counted above (`stats/1`, `unavailable_by_reason`). Any
+  # reason that is not an atom is `other`, so the map stays small.
+  @spec refuse_unavailable(atom, atom | term) :: :ok
+  def refuse_unavailable(name, reason) do
+    handle = handle(name)
+    key = if is_atom(reason), do: reason, else: :other
+    :atomics.add(handle.counters, @refused_unavailable, 1)
+    :ets.update_counter(handle.reasons, key, 1, {key, 0})
+    :ok
+  end
+
+  @doc false
+  # Counts a cell woken on this node (`wakes/1`). A node that is stopping has no counters left.
+  @spec wake(atom) :: :ok
+  def wake(name) do
+    case :persistent_term.get({__MODULE__, name}, nil) do
+      nil -> :ok
+      handle -> :atomics.add(handle.counters, @wakes, 1)
+    end
+  end
+
+  @doc "The cells woken on this node since it started."
+  @spec wakes(atom) :: non_neg_integer
+  def wakes(name), do: :atomics.get(handle(name).counters, @wakes)
+
   defp add(name, counter) do
     :atomics.add(handle(name).counters, counter, 1)
     :ok
@@ -253,6 +281,8 @@ defmodule Atanor.Admission do
   that would have woken a cell while the memory gate was refusing), `queue_timeout` (waited past
   `http: [queue_wait_ms:]`), `worker_queue` (the WASM queue was full), `nested_calls` (calls between workers
   refused at `max_nested_calls`), `awake_limit` (the awake cells are at their ceiling), `busy` and `disk_full`.
+  Every other 503 the HTTP layer answers is in `refused.unavailable`, and `unavailable_by_reason` has the same
+  count by reason (`owner_unreachable`, `fenced`, `unknown_outcome`, `overloaded_unattributed`, ...).
   """
   @spec stats(atom) :: map
   def stats(name) do
@@ -272,8 +302,10 @@ defmodule Atanor.Admission do
         wake_gate: :atomics.get(counters, @refused_wake),
         awake_limit: :atomics.get(counters, @refused_awake_limit),
         busy: :atomics.get(counters, @refused_busy),
-        disk_full: :atomics.get(counters, @refused_disk_full)
+        disk_full: :atomics.get(counters, @refused_disk_full),
+        unavailable: :atomics.get(counters, @refused_unavailable)
       },
+      unavailable_by_reason: Map.new(:ets.tab2list(handle.reasons)),
       working_set_bytes: if(handle.memory, do: :atomics.get(counters, @working_set)),
       limit_bytes: handle.limit,
       refuse_at_bytes: if(handle.memory, do: trunc(handle.model.refuse_at)),
@@ -302,6 +334,7 @@ defmodule Atanor.Admission do
     handle = %{
       pid: self(),
       table: :ets.new(__MODULE__, [:set, :public, write_concurrency: true]),
+      reasons: :ets.new(__MODULE__, [:set, :public, write_concurrency: true]),
       counters: :atomics.new(@counters, []),
       max_in_flight: config.http.max_in_flight,
       queue_wait_ms: config.http.queue_wait_ms,
