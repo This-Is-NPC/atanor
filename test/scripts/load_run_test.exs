@@ -439,6 +439,10 @@ defmodule Atanor.LoadRunTest do
 
       assert {[node, _, scenario, _], 0} = limits([{"ATANOR_LOAD_SCENARIO", "B"}, {"ATANOR_LOAD_TMPFS_SIZE", "768m"}])
       assert {node, scenario} == {"#{(2048 + 768) * mib}", "#{2048 * mib}"}
+
+      # scenario B's data dir is 1 GB by default (A's is 256 MB), so its disk budget does not put cells to sleep before the memory does
+      assert {[node, _, scenario, node_limit], 0} = limits([{"ATANOR_LOAD_SCENARIO", "B"}])
+      assert {node, scenario, node_limit} == {"#{(2048 + 1024) * mib}", "#{2048 * mib}", "#{2048 * mib}"}
     end
 
     test "a size that is not a size is refused" do
