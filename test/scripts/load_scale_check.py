@@ -49,7 +49,7 @@ spec.loader.exec_module(m)
 m.HERE, m.ROOT, m.CORES = fake, work, 8
 
 lab = {"nodes": 1, "running": False, "busy_at": None, "force_busy": False, "cells_mode": "rebalance", "runtime": {}, "req": {}, "last": None, "seen": {}, "errors": 0,
-       "resets": []}
+       "resets": [], "silent": set()}
 lock = threading.Lock()
 
 
@@ -65,7 +65,7 @@ def current_nodes():
 
 
 def info_of(count):
-    nodes = [{"id": f"n{i}", "name": f"node-{i}", "ip": "127.0.0.1", "pid": os.getpid()} for i in range(1, count + 1)]
+    nodes = [{"id": f"n{i}", "name": f"node-{i}", "ip": f"127.0.0.{i}", "pid": os.getpid()} for i in range(1, count + 1)]
     for node in nodes:
         running(node["id"])
     return {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "store_backing": "tmpfs", "node": nodes[0], "nodes": nodes,
@@ -138,7 +138,21 @@ m.cgroup_dir = lambda pid: work + "/no-cgroup"
 m.cgroup_sample = lambda d: {"memory_current": 300 * MB, "shmem": 1, "inactive_file": 0, "peak": 300 * MB, "limit": 1280 * MB, "cpu_s": 0.0, "throttled_s": 0.0, "cpu_limit": 1.0,
                              "swap_current": 0}
 m.process_cpu, m.fds, m.s3_counters = lambda pid: 0.0, lambda node: None, lambda ip: None
-m.admin_json = lambda info, path, timeout: lab["runtime"] if path == "/runtime" else None
+def runtime_now():
+    """lab["runtime"], or what it returns when it is a function (a /runtime that changes between readings)."""
+    return lab["runtime"]() if callable(lab["runtime"]) else lab["runtime"]
+
+
+def admin_get(info, path, timeout):
+    """/runtime of the stub lab; a node whose address is in lab["silent"] times out."""
+    if path != "/runtime":
+        return None, "not found"
+    return (None, "TimeoutError: timed out") if info["admin"].split("//")[1].split(":")[0] in lab["silent"] else (runtime_now(), None)
+
+
+m.admin_json = lambda info, path, timeout: runtime_now() if path == "/runtime" else None
+m.admin_get = admin_get
+lab["silent"] = set()
 
 
 def make_args(out, **over):
@@ -286,13 +300,13 @@ results["node_dies"] = {"status": record["status"], "reason": record["stop_reaso
 
 
 # The join: the load runs at a fixed rate on one node, node 2 starts, and the time until the requests and the cells are spread is measured.
-def run_join(name, mode="rebalance", runtime=None, busy_at=None, force_busy=False, nodes=2, **over):
+def run_join(name, mode="rebalance", runtime=None, busy_at=None, force_busy=False, nodes=2, silent=(), **over):
     out = os.path.join(work, name)
-    lab.update(busy_at=busy_at, force_busy=force_busy, cells_mode=mode, runtime=runtime if runtime is not None else {})
+    lab.update(busy_at=busy_at, force_busy=force_busy, cells_mode=mode, runtime=runtime if runtime is not None else {}, silent=set(silent))
     try:
         return m.join(make_args(out, **over), RATE, nodes), out
     finally:
-        lab["force_busy"] = False
+        lab.update(force_busy=False, silent=set())
 
 
 record, out = run_join("join", runtime={"rebalance": {"moves": 3, "total": {"moved": 7}}})
@@ -305,7 +319,7 @@ results["window_series"] = m.window_series(reads, 10.0)
 results["join"] = {"status": record["status"], "windows": [w["nodes"] for w in record["windows"]], "requests_spread_s": window["requests_spread_s"], "cells_spread_s": window["cells_spread_s"],
                    "ready_s": window["ready_s"], "requests_share_end": window["request_share_end"], "cells_share_end": window["cells_share_end"],
                    "rebalance": window["rebalance"], "errors_before": record["windows"][0]["backend"]["hrsp_5xx"], "generator": record["generator"]["status_503"],
-                   "file": [f for f in files_of(out) if "scale-join" in f], "notes": record["notes"], "since_ready": window["requests_spread_since_ready_s"]}
+                   "file": [f for f in files_of(out) if "scale-join" in f and not f.endswith(".runtime.json")], "notes": record["notes"], "since_ready": window["requests_spread_since_ready_s"]}
 record, _ = run_join("join_none", mode="none")
 window = record["windows"][1]
 results["join_no_rebalance"] = {"status": record["status"], "requests_spread": window["requests_spread_s"] is not None, "cells_spread_s": window["cells_spread_s"],
@@ -320,6 +334,16 @@ record, _ = run_join("join_contaminated", busy_at=1, host_load_max=1.0, quiet_ma
 results["join_contaminated"] = {"status": record["status"], "reason": record["stop_reason"]}
 record, _ = run_join("join_saturated", busy_at=1, host_load_max=100.0, max_busy_share=0.2)
 results["join_saturated"] = {"status": record["status"], "valid": record["valid"], "reason": record["stop_reason"], "busy": record["host"]["busy_cores_mean"]}
+# The rebalance of a window is read mid-plan (`rebalance_observed`) and at the window's end (`rebalance`): the end sees later moves. A node whose
+# /runtime did not answer is named with the error. An ok join keeps every node's state and log, the store's, and the /runtime of each window.
+moved = iter(range(1, 100_000))
+record, out = run_join("join_end", runtime=lambda: {"rebalance": {"total": {"moved": next(moved)}}}, silent={"127.0.0.2"})
+window, first = record["windows"][1], record["windows"][0]
+results["join_end"] = {"status": record["status"], "observed": window["rebalance_observed"], "end": window["rebalance"], "first": [first["rebalance"], first["rebalance_observed"]],
+                       "failures": [first["runtime_failures"], window["runtime_failures"]],
+                       "silent_samples": sorted({tuple(s["runtime_errors"]) for s in window["samples"]}), "diagnostics": sorted(record["diagnostics"]),
+                       "files": sorted(f for f in os.listdir(out) if "scale-join" in f and not f.endswith("join-2000.json")),
+                       "runtime_window_2": json.load(open(os.path.join(out, "A_scale-join_01-join-2000.window-2.runtime.json")))}
 real_cluster = m.fresh_cluster
 m.fresh_cluster = lambda nodes: (_ for _ in ()).throw(m.LabError("the lab did not start with 1 nodes"))
 record, _ = run_join("join_lab")
