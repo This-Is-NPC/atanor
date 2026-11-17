@@ -192,13 +192,19 @@ def s3_counters(store_ip):
     return trips, traffic, errors
 
 
-def admin_json(info, path, timeout):
-    """The JSON the node's admin API answers at `path`; None on any failure (the node may be dead or saturated)."""
+def admin_get(info, path, timeout):
+    """(the JSON the node's admin API answers at `path`, None) or (None, the error): the node may be dead or saturated."""
     try:
         request = urllib.request.Request(info["admin"] + path, headers={"authorization": "Bearer " + read(f"{ROOT}/cluster/secrets/admin_token").strip()})
-        return json.load(urllib.request.urlopen(request, timeout=timeout))
-    except (OSError, http.client.HTTPException, ValueError):
-        return None
+        return json.load(urllib.request.urlopen(request, timeout=timeout)), None
+    except (OSError, http.client.HTTPException, ValueError) as error:
+        detail = "" if isinstance(error, FileNotFoundError) else getattr(error, "reason", None) or getattr(error, "code", None) or error
+        return None, f"{type(error).__name__}: {detail}"[:200]  # not str(error) for a missing token file: it names the path
+
+
+def admin_json(info, path, timeout):
+    """The JSON the node's admin API answers at `path`; None on any failure."""
+    return admin_get(info, path, timeout)[0]
 
 
 def cells_awake(info):
@@ -356,6 +362,15 @@ def save_store_diagnostics(base, store):
     except (OSError, http.client.HTTPException):
         pass
     return files
+
+
+def save_join_diagnostics(base, info):
+    """What the join leaves for every node, ok or not, as `base.node-N.node-state.txt` and `base.node-N.node.log`, and the store's log and
+    metrics as `base.store.log` and `base.store-metrics.txt` (the nodes and the store are replaced by the next measure); the file names."""
+    files = []
+    for node in info.get("nodes") or []:
+        files += save_node_diagnostics(f"{base}.{node['name']}", node["id"], node_state(node["id"]))
+    return files + save_store_diagnostics(base, info["store"])
 
 
 # ---- sampling during a step ----------------------------------------------------------------------------
@@ -1326,13 +1341,18 @@ def ceiling_of(config):
     return config.get("approved") if config.get("approved") is not None else config.get("good")
 
 
-def rebalance_state(info, timeout=5):
-    """What each node's /runtime says under `rebalance` (the rebalance feature's state); None for a node that does not say."""
+def node_runtimes(info, timeout=5):
+    """{node name: (its /runtime, None) or (None, why it did not answer)} for every node of the cluster."""
     found = {}
     for node in info.get("nodes") or []:
-        runtime = admin_json({"admin": f"http://{node['ip']}:4001"}, "/runtime", timeout)
-        found[node["name"]] = runtime.get("rebalance") if isinstance(runtime, dict) else None
+        runtime, error = admin_get({"admin": f"http://{node['ip']}:4001"}, "/runtime", timeout)
+        found[node["name"]] = (runtime, error) if runtime is None or isinstance(runtime, dict) else (None, "answer is not an object")
     return found
+
+
+def rebalance_state(reads):
+    """What each node's /runtime says under `rebalance` (the rebalance feature's state), from `node_runtimes`; None for a node that does not say."""
+    return {name: runtime.get("rebalance") if runtime else None for name, (runtime, _) in reads.items()}
 
 
 def moved_total(state):
@@ -1347,7 +1367,8 @@ def moved_total(state):
 
 
 class SpreadPoller(threading.Thread):
-    """Reads the balancer's per-node requests, the admin API's cells per node and each node's rebalance state every `period` seconds until stopped."""
+    """Reads the balancer's per-node requests, the admin API's cells per node and each node's rebalance state every `period` seconds until
+    stopped; a node whose /runtime did not answer is named, with the error, in the sample's `runtime_errors`."""
 
     def __init__(self, info, period):
         super().__init__(daemon=True)
@@ -1356,7 +1377,9 @@ class SpreadPoller(threading.Thread):
     def run(self):
         while not self.stop_flag.is_set():
             try:
-                self.samples.append({"t": time.time(), **spread_sample(self.info), "rebalance": rebalance_state(self.info, 2)})
+                reads = node_runtimes(self.info, 2)
+                self.samples.append({"t": time.time(), **spread_sample(self.info), "rebalance": rebalance_state(reads),
+                                     "runtime_errors": {n: error for n, (_, error) in reads.items() if error}})
             except Exception as error:  # a reading is lost, not the join
                 say(f"spread sample failed: {error}")
             self.stop_flag.wait(self.period)
@@ -1374,7 +1397,8 @@ def counter_delta(window):
 
 def window_series(window, t0):
     """One entry per reading of a window: its time from `t0`, the backend 5xx answers and the cells moved since the previous reading
-    (null for the first and for what a reading did not say), and each node's moves so far: 5xx can be matched with moves."""
+    (null for the first and for what a reading did not say), each node's moves so far (5xx can be matched with moves) and `runtime_errors`,
+    the nodes whose /runtime did not answer in that reading, with the error."""
     out, previous = [], None
     for s in window:
         five = (s.get("backend") or {}).get("hrsp_5xx")
@@ -1383,9 +1407,19 @@ def window_series(window, t0):
         before = [v for v in (previous or {}).get("moved", {}).values() if v is not None]
         out.append({"t": round(s["t"] - t0, 1), "moved": moved,
                     "new_5xx": five - previous["five"] if previous and five is not None and previous["five"] is not None else None,
-                    "moved_new": sum(known) - sum(before) if previous and known and before else None})
+                    "moved_new": sum(known) - sum(before) if previous and known and before else None,
+                    "runtime_errors": s.get("runtime_errors") or {}})
         previous = {"five": five, "moved": moved}
     return out
+
+
+def runtime_failures(window):
+    """{node: {"readings": how many readings of the window its /runtime did not answer, "error": the last error}}; {} when all answered."""
+    found = {}
+    for s in window:
+        for node, error in (s.get("runtime_errors") or {}).items():
+            found[node] = {"readings": found.get(node, {}).get("readings", 0) + 1, "error": error}
+    return found
 
 
 def join_windows(poller, events, args, rate):
@@ -1407,7 +1441,8 @@ def join_windows(poller, events, args, rate):
         entry = {"nodes": nodes, "start_s": round(start - samples[0]["t"], 1), "end_s": round(min(end, samples[-1]["t"]) - samples[0]["t"], 1), "backend": counter_delta(window),
                  "requests_spread_s": None, "requests_spread_since_ready_s": None, "cells_spread_s": None, "cells_spread_since_ready_s": None,
                  "cells_in_band_s": None, "request_share_end": None, "cells_share_end": None, "ready_s": None if event is None else event["ready_s"],
-                 "rebalance": None if event is None else event.get("rebalance"), "samples": window_series(window, samples[0]["t"])}
+                 "rebalance": None if event is None else event.get("rebalance"), "rebalance_observed": None if event is None else event.get("rebalance_observed"),
+                 "runtime_failures": runtime_failures(window), "samples": window_series(window, samples[0]["t"])}
         if event is not None:
             first_in_band = spread_time([(s["t"], s["cells"]) for s in window if s.get("cells")], names, tol, 1, min_cells)
             entry["cells_in_band_s"] = None if first_in_band is None else round(first_in_band - start, 1)
@@ -1436,7 +1471,7 @@ def join(args, rate, nodes_max):
     """Starts one node under the load at `rate`, then adds node 2 up to `nodes_max`, one per --join-observe-s, and measures when the load spreads."""
     record = {"schema": JOIN_SCHEMA, "measure": "scale", "phase": "join", "unit": "req/s", "rate": rate, "nodes_max": nodes_max, "command": args.command,
               "tolerance_pct": args.spread_tol_pct, "hold_samples": args.spread_hold, "sample_s": args.join_sample_s, "windows": [], "generator": None,
-              "host": {}, "valid": True, "status": "ok", "stop_reason": None, "notes": [], "started_at": time.time()}
+              "host": {}, "valid": True, "status": "ok", "stop_reason": None, "notes": [], "diagnostics": [], "started_at": time.time()}
     try:
         info = fresh_cluster(1)
     except LabError as error:
@@ -1457,6 +1492,13 @@ def join(args, rate, nodes_max):
     sampler.start()
     poller.start()
     outcome, events, failure = {}, [], None
+    base = os.path.join(args.out, f"{info['scenario']}_scale-join_01-join-{rate}")
+
+    def window_end(nodes):
+        """The /runtime of every node at the end of the window of `nodes` nodes, kept in `base.window-N.runtime.json`; the reads."""
+        reads = node_runtimes(info, 3)
+        write_json(f"{base}.window-{nodes}.runtime.json", {n: runtime if runtime is not None else {"error": error} for n, (runtime, error) in reads.items()})
+        return reads
 
     def drive():
         try:
@@ -1471,6 +1513,9 @@ def join(args, rate, nodes_max):
         if not load_thread.is_alive():
             failure = f"the load ended before node-{nodes} started"
             break
+        reads = window_end(nodes - 1)  # the window of the nodes so far ends when the next one starts
+        if events:
+            events[-1]["rebalance"] = rebalance_state(reads)
         began = time.time()
         try:
             subprocess.run([f"{HERE}/load-env", "add-node", str(nodes)], check=True, capture_output=True, text=True, timeout=args.join_node_timeout_s)
@@ -1481,10 +1526,14 @@ def join(args, rate, nodes_max):
         sampler.refresh()
         events.append({"nodes": nodes, "join_t": began, "ready_t": time.time(), "ready_s": round(time.time() - began, 1)})
         load_thread.join(max(began + args.join_observe_s - time.time(), 0))
-        events[-1]["rebalance"] = rebalance_state(info)
+        events[-1]["rebalance_observed"] = rebalance_state(node_runtimes(info))  # mid-plan: the plan may run on
     load_thread.join()
+    reads = window_end(events[-1]["nodes"] if events else 1)  # the last window ends with the load
+    if events:
+        events[-1]["rebalance"] = rebalance_state(reads)
     samples = sampler.finish()
     poller.finish()
+    record["diagnostics"] = save_join_diagnostics(base, info)
     documents = outcome.get("documents")
     if documents:
         merged = merge(documents)

@@ -370,8 +370,17 @@ requests spread when the node enters the rotation; the cells spread only if cell
 needs the rebalance on join. A cluster without it shows `cells_spread_s: null`, which is a result. Each window
 also records the balancer's counters (requests, 5xx answers, connection and response errors, retries), and the
 generator's totals (503 and errors) for the whole join: the 503 answers of the first window are the overload of
-one node. The join's `rebalance` is what each node's `/runtime` says under `rebalance` at the end of each window;
+one node. The join's `rebalance` is what each node's `/runtime` says under `rebalance` at the end of each window
+(just before the next node starts, or when the load ends), and `rebalance_observed` is the same read `--join-observe-s`
+after the node started, which is mid-plan when the plan is long (a plan of 35 cells showed 12 moved at that moment);
 a field that is missing is null, and the report says so. The file is `SCENARIO_scale-join_01-join-RATE.json`.
+
+An ok join keeps the evidence of a failing step, for every node: `SCENARIO_scale-join_01-join-RATE.node-N.node.log`
+and `.node-N.node-state.txt`, the store's `.store.log` and `.store-metrics.txt` (the lines that name a secret are
+dropped), and, for every window, `.window-N.runtime.json`: the whole `/runtime` of each node of that window when it ended,
+or `{"error": ...}` for a node that did not answer. The step file lists them in `diagnostics`. A reading in which a
+node's `/runtime` did not answer (2 s timeout) is named in the `runtime_errors` of that reading in `samples`, and each window's
+`runtime_failures` counts them per node (`readings`) with the last error.
 
 Each window of the join also records `cells_in_band_s`, the first reading in which the cells were within the
 tolerance (held or not, unlike `cells_spread_s`, which needs `--spread-hold` readings in a row), and `samples`: for

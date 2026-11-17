@@ -132,9 +132,21 @@ defmodule Atanor.LoadScaleTest do
              series["first_window_in_band"] == :null
 
     assert r["window_series"] == [
-             %{"t" => 0.0, "moved" => %{"node-1" => 1, "node-2" => :null}, "new_5xx" => :null, "moved_new" => :null},
-             %{"t" => 2.0, "moved" => %{"node-1" => 4, "node-2" => 2}, "new_5xx" => 3, "moved_new" => 5},
-             %{"t" => 4.0, "moved" => %{}, "new_5xx" => :null, "moved_new" => :null}
+             %{
+               "t" => 0.0,
+               "moved" => %{"node-1" => 1, "node-2" => :null},
+               "new_5xx" => :null,
+               "moved_new" => :null,
+               "runtime_errors" => %{}
+             },
+             %{
+               "t" => 2.0,
+               "moved" => %{"node-1" => 4, "node-2" => 2},
+               "new_5xx" => 3,
+               "moved_new" => 5,
+               "runtime_errors" => %{}
+             },
+             %{"t" => 4.0, "moved" => %{}, "new_5xx" => :null, "moved_new" => :null, "runtime_errors" => %{}}
            ]
 
     # the host's cores run out at 2 nodes: that step is INVALID and the larger ones are not run
@@ -153,6 +165,33 @@ defmodule Atanor.LoadScaleTest do
     missing = r["join_missing_fields"]
     assert missing["status"] == "ok" and missing["requests_spread"] == true
     assert missing["cells_spread_s"] == :null and missing["cells_share_end"] == :null
+
+    # the rebalance of a window is read mid-plan and at its end (later moves); a silent node is named with its error; an ok join keeps the evidence
+    end_ = r["join_end"]
+    assert end_["status"] == "ok"
+    assert end_["observed"]["node-1"]["total"]["moved"] < end_["end"]["node-1"]["total"]["moved"]
+    assert end_["observed"]["node-2"] == :null and end_["end"]["node-2"] == :null
+    assert end_["first"] == [:null, :null]
+
+    assert [first_failures, %{"node-2" => %{"readings" => readings, "error" => "TimeoutError: timed out"}}] =
+             end_["failures"]
+
+    assert first_failures == %{} and readings > 0
+    assert end_["silent_samples"] == [[], ["node-2"]]
+
+    assert end_["diagnostics"] == [
+             "A_scale-join_01-join-2000.node-1.node-state.txt",
+             "A_scale-join_01-join-2000.node-1.node.log",
+             "A_scale-join_01-join-2000.node-2.node-state.txt",
+             "A_scale-join_01-join-2000.node-2.node.log",
+             "A_scale-join_01-join-2000.store.log"
+           ]
+
+    assert Enum.all?(end_["diagnostics"], &(&1 in end_["files"]))
+    assert "A_scale-join_01-join-2000.window-1.runtime.json" in end_["files"]
+    assert "A_scale-join_01-join-2000.window-2.runtime.json" in end_["files"]
+    assert end_["runtime_window_2"]["node-2"] == %{"error" => "TimeoutError: timed out"}
+    assert end_["runtime_window_2"]["node-1"]["rebalance"]["total"]["moved"] > 0
 
     # the same host guards as a step: a busy host, a contaminated one and a lab that does not start are INVALID
     assert r["join_busy"]["status"] == "invalid" and r["join_busy"]["valid"] == false
