@@ -71,7 +71,8 @@ defmodule Atanor.AdmissionTest do
                wake_gate: 0,
                awake_limit: 0,
                busy: 0,
-               disk_full: 0
+               disk_full: 0,
+               unavailable: 0
              }
 
       Enum.each(handlers, &send(&1, :go))

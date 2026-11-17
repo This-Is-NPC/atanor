@@ -47,7 +47,7 @@ the owner, with `forwarded: true`.
 | `[:atanor, :call]` | `duration` (the callback, without routing and without the network) | `worker`, `deployment`, `cell` (`{namespace, key}`, or `nil` when the work has no routing key), `kind`, `node` (the node that ran it), `instance`, `forwarded` (it came from another node), `release` (the node's release id), `result`: `:ok` or `:error`, `reason` (with `:error`: `:crashed`, `:bad_return`, `:bad_response`, `:overloaded`, `{:limit, :timeout \| :memory \| :cpu}`, ...), `status` (HTTP kinds, when a response was sent) |
 | `[:atanor, :forward]` | `duration` (the whole round trip) | `worker`, `deployment`, `cell`, `target` (the node), `result`: `:ok`, `:moved` (it no longer owns the cell), `:rejected` (it cannot run the deployment), `:lost` (the connection failed before the callback started) or `:unknown_outcome` (it started, then the connection failed or the call timed out) |
 | `[:atanor, :cells, :migrate]` | `count` (cells migrated), `errors` (cells whose migration failed) | `namespace`, `node`. Emitted by the node that applied a worker with new or more migrations for the namespace, once it finished migrating its awake cells of it (design §4.1) |
-| `[:atanor, :http, :reject]` | `count` (1) | `reason`: `:no_route`, `:no_handler`, `:payload_too_large`, `:bad_request`, `:bad_host` or `:bad_path` (the last two before any route is looked up), or the reason of a 503 `overloaded`: `:memory` / `:disk` / `:in_flight` (admission control, before anything else), `:wake_gate`, `:awake_limit`, `:busy`, `:disk_full`, `:worker_queue` (the WASM queue was full), `:nested_calls` (a call between workers above `max_nested_calls`) or `:queue_timeout` (a call the node refused after admitting the request, the last because it waited past `http.queue_wait_ms`; design §7.1), `status`, `host`, `worker` (`nil` when no route matched) |
+| `[:atanor, :http, :reject]` | `count` (1) | `reason`: `:no_route`, `:no_handler`, `:payload_too_large`, `:bad_request`, `:bad_host` or `:bad_path` (the last two before any route is looked up), or the reason of a 503 `overloaded`: `:memory` / `:disk` / `:in_flight` (admission control, before anything else), `:wake_gate`, `:awake_limit`, `:busy`, `:disk_full`, `:worker_queue` (the WASM queue was full), `:nested_calls` (a call between workers above `max_nested_calls`) or `:queue_timeout` (a call the node refused after admitting the request, the last because it waited past `http.queue_wait_ms`; design §7.1), or the reason of any other 503 the node answers after admitting the request (`:owner_unreachable`, `:fenced`, `:owner_unknown`, `:store_unavailable`, `:unknown_outcome`, ...; design §8.4), `status`, `host`, `worker` (`nil` when no route matched) |
 
 | `[:atanor, :auth, :reject]` | `count` (1) | `reason` (an atom: `:missing`, `:bad_request`, `:malformed`, `:algorithm`, `:type`, `:no_key`, `:signature`, `:claims`, `:issuer`, `:audience`, `:no_expiry`, `:expired`, `:not_yet_valid`, `:issued_in_future`, `:insufficient_scope`, `:keys_unavailable`), `status` (400, 401, 403 or 503), `host`, `worker`. A request that failed the `auth:` rule of its route and did not reach the worker ([how to protect a route](how-to-protect-a-route-with-oidc.md)). Never carries the token or a claim |
 | `[:atanor, :auth, :fetch]` | `duration` | `issuer`, `kind` (`:discovery` or `:jwks`), `result` (`:ok` or `:error`), `reason` (with `:error`: `:unreachable`, `{:status, code}`, `:invalid_json`, `:too_large`). One fetch of the OIDC discovery document or the JWKS, at most one JWKS fetch per `oidc.min_refresh_ms` per issuer |
@@ -175,6 +175,21 @@ the limit or more (design §4.3,
 | `[:atanor, :memory, :pressure]` | `working_set_bytes` (the sample that started the batch), `candidates` (idle cells chosen, at most `hibernate_batch`, least recently used first), `hibernated` (the ones that went to sleep; a cell with a call in flight is skipped) | `instance`. One per `memory: [hibernate_interval_ms:]` while the working set stays at the mark or above |
 
 `GET /runtime` returns the total as `pressure: {hibernated, hibernate_at_bytes}` (`null` when the node does not watch its working set).
+
+## Counters of `GET /runtime`
+
+* `admission.refused` counts every 503 the HTTP layer answers, once each: `memory`, `disk`, `in_flight`,
+  `queue_timeout`, `worker_queue`, `nested_calls`, `wake_gate`, `awake_limit`, `busy` and `disk_full` for the
+  overload refusals, and `unavailable` for every other 503. A 503 `overloaded` that names no gate counts as
+  `unavailable`.
+* `admission.unavailable_by_reason` splits `refused.unavailable` by the `reason` of the answer: for example
+  `owner_unreachable`, `fenced`, `owner_unknown`, `store_unavailable`, `deployment_unavailable`, `draining`,
+  `unknown_outcome`, `keys_unavailable` (a 503 of an `auth:` route) and `overloaded_unattributed` (an
+  `overloaded` that names no gate). A reason that is not an atom counts as `other`. The sum of its values is
+  `refused.unavailable`. The 503 of the ingress gates and of the call gates is not in it.
+* `wakes` is the number of cells woken on this node since it started, counted from Alambique's
+  `[:alambique, :cell, :wake]` event with `result: :ok`. The event names no instance, so a VM that runs more
+  than one instance counts the wakes of all of them in each.
 
 ## WASM events
 

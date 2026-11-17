@@ -117,9 +117,12 @@ defmodule Atanor.HTTP do
       if challenge, do: put_resp_header(conn, "www-authenticate", challenge), else: conn
 
     conn =
-      if status == 503,
-        do: put_resp_header(conn, "retry-after", Integer.to_string(config.http.retry_after_s)),
-        else: conn
+      if status == 503 do
+        Admission.refuse_unavailable(config.name, reason)
+        put_resp_header(conn, "retry-after", Integer.to_string(config.http.retry_after_s))
+      else
+        conn
+      end
 
     json(conn, status, error || "unauthorized")
   end
@@ -194,35 +197,49 @@ defmodule Atanor.HTTP do
   # A call that the node refused after admitting the request: the reason names the gate (`Atanor.Unavailable.cause/1`).
   defp failure(conn, :overloaded, config) do
     cause = Cell.overload_cause() || :overloaded
-    # `wake_gate` is counted where the wake is refused, once per call (`Atanor.Cell`).
-    if cause in Admission.call_causes() and cause != :wake_gate, do: Admission.refuse_call(config.name, cause)
 
-    :telemetry.execute([:atanor, :http, :reject], %{count: 1}, %{
-      reason: cause,
-      status: 503,
-      host: conn.host,
-      worker: nil
-    })
+    cond do
+      # `wake_gate` is counted where the wake is refused, once per call (`Atanor.Cell`).
+      cause == :wake_gate -> :ok
+      cause in Admission.call_causes() -> Admission.refuse_call(config.name, cause)
+      true -> Admission.refuse_unavailable(config.name, :overloaded_unattributed)
+    end
 
-    unavailable(conn, "overloaded", Atom.to_string(cause), config.http.retry_after_s)
+    reject_503(conn, config, "overloaded", cause)
   end
 
   # A refusal of the node itself before the handler ran (the wake gate, the deadline) names its gate too.
   defp failure(conn, {:unavailable, :overloaded}, config), do: failure(conn, :overloaded, config)
 
-  defp failure(conn, {:unavailable, reason}, config),
-    do: unavailable(conn, "unavailable", reason_name(reason), config.http.retry_after_s)
+  defp failure(conn, {:unavailable, reason}, config) do
+    Admission.refuse_unavailable(config.name, reason)
+    reject_503(conn, config, "unavailable", reason)
+  end
 
   # A configuration error, not unavailability: no `Retry-After`, a repeat fails the same way (design §8.4).
   defp failure(conn, {:foreign_store, _node}, _config),
     do: json(conn, 500, %{error: "foreign_store", reason: "foreign_store"})
 
-  defp failure(conn, :unknown_outcome, config),
-    do: unavailable(conn, "unknown_outcome", "unknown_outcome", config.http.retry_after_s)
+  defp failure(conn, :unknown_outcome, config) do
+    Admission.refuse_unavailable(config.name, :unknown_outcome)
+    reject_503(conn, config, "unknown_outcome", :unknown_outcome)
+  end
 
   defp failure(conn, {:limit, :timeout}, _config), do: json(conn, 504, "timeout")
   defp failure(conn, {:limit, _}, _config), do: json(conn, 500, "limit_exceeded")
   defp failure(conn, _reason, _config), do: json(conn, 500, "internal_error")
+
+  # A 503 after the request was admitted: the event, then the answer.
+  defp reject_503(conn, config, error, reason) do
+    :telemetry.execute([:atanor, :http, :reject], %{count: 1}, %{
+      reason: reason,
+      status: 503,
+      host: conn.host,
+      worker: nil
+    })
+
+    unavailable(conn, error, reason_name(reason), config.http.retry_after_s)
+  end
 
   defp unavailable(conn, error, reason, retry_after_s) do
     conn
