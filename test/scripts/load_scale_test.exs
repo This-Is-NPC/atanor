@@ -189,6 +189,8 @@ defmodule Atanor.LoadScaleTest do
              "cells_awake_start" => 7,
              "cells_awake_end" => 7,
              "cells_awake_change" => 0,
+             # the stub nodes report no pressure counter
+             "pressure_hibernated" => :null,
              "disk_used_max_pct_of_budget" => 10.0,
              "disk_budget_bytes" => 100 * 1_048_576
            }
