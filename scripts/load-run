@@ -620,13 +620,16 @@ def admission_summary(samples):
             **{k: last.get(k) for k in ("limit_bytes", "refuse_at_bytes", "max_in_flight", "disk_budget_bytes")}}
 
 
-def eviction_evidence(awake_start, awake_end, admission):
-    """What tells why cells went to sleep during a step. The node counts no hibernation by cause (the awake budget's and the disk reclaim's are
-    telemetry events only, not in /runtime), so this is the evidence around them: the cells awake at the start and the end of the step, and the
-    disk use against its budget (the reclaim starts at `disk.evict_fraction` of it, 0.7 by default). None of it is a count."""
+def eviction_evidence(awake_start, awake_end, admission, samples=()):
+    """What tells why cells went to sleep during a step. The node counts only the hibernations under memory pressure (`pressure.hibernated` in
+    /runtime: `pressure_hibernated` is its growth over the step, None when the node does not report it); the awake budget's and the disk
+    reclaim's are telemetry events only, so for them this is the evidence around them: the cells awake at the start and the end of the step,
+    and the disk use against its budget (the reclaim starts at `disk.evict_fraction` of it, 0.7 by default)."""
     admission = admission or {}
     change = None if awake_start is None or awake_end is None else awake_end - awake_start
+    seen = [p["hibernated"] for s in samples if isinstance(p := (s.get("runtime") or {}).get("pressure"), dict) and isinstance(p.get("hibernated"), int)]
     return {"counter_in_runtime": False, "cells_awake_start": awake_start, "cells_awake_end": awake_end, "cells_awake_change": change,
+            "pressure_hibernated": seen[-1] - seen[0] if seen else None,
             "disk_used_max_pct_of_budget": admission.get("disk_used_max_pct_of_budget"), "disk_budget_bytes": admission.get("disk_budget_bytes")}
 
 
@@ -1140,7 +1143,7 @@ class Round:
                       distribution=distribution(samples, [n["name"] for n in info.get("nodes") or []]))
         record["per_node"] = per_node_summary(samples)
         record["refusals"] = refusals_503(merged["statuses"], samples)
-        record["evictions"] = eviction_evidence(self.awake_start, record["cells_awake"], record["admission"])
+        record["evictions"] = eviction_evidence(self.awake_start, record["cells_awake"], record["admission"], samples)
         refusals, answers_503 = record["refusals"], refused_of(merged["statuses"])[1]
         if refusals is None and answers_503:
             record["notes"].append(f"{answers_503} 503 answers not attributed: no /runtime reading")

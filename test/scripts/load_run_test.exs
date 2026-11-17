@@ -144,6 +144,9 @@ defmodule Atanor.LoadRunTest do
     assert "3 of 10 503 answers not attributed: no refusal counter of the node grew for them" in refusals["notes"]
     assert refusals["admission"]["disk_used_max_pct_of_budget"] == 50.0
     assert refusals["evictions"]["counter_in_runtime"] == false
+    # the growth of the node's pressure counter over the step, and none without a /runtime reading
+    assert refusals["evictions"]["pressure_hibernated"] == 4
+    assert r["refusals"]["no_runtime"]["evictions"]["pressure_hibernated"] == :null
     assert r["refusals"]["no_runtime"]["refusals"] == :null
     assert "10 503 answers not attributed: no /runtime reading" in r["refusals"]["no_runtime"]["notes"]
     assert r["refusals"]["all_counted"]["refusals"]["unattributed"] == 0
