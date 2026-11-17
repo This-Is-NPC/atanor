@@ -362,10 +362,17 @@ defmodule Atanor.LoadRunTest do
 
     assert %{"slow_requests" => 12, "window_requests" => 12, "stalled" => true, "max_ms" => 1061} = first["store_stall"]
 
+    # a store that stalls again in the repeat stalls at this load every time: the step fails on the store, valid, and the round goes on
     twice = r["store_stall_twice"]
     assert twice["runs"] == [10, 10]
-    assert twice["summary"]["invalid"] =~ "stall: store stalled, 12 node-to-store requests"
-    assert twice["first"]["status"] == "invalid" and twice["first"]["store_stall"]["stalled"]
+    assert twice["summary"]["invalid"] == :null
+    assert twice["summary"]["first_failure"] == 10
+    assert %{"status" => "fail", "valid" => true} = twice["first"]
+
+    assert twice["first"]["stop_reason"] ==
+             "store: stalled at this step twice, 12 node-to-store requests took >= 1000 ms within 5 s (slowest 1061 ms)"
+
+    assert twice["first"]["store_stall"]["stalled"]
     assert twice["first"]["first_attempt"]["stop_reason"] =~ "store stalled"
 
     # not a stall: slow requests spread over time, a few, under the limit, or the check off; the step fails on p99 as before and is not repeated
