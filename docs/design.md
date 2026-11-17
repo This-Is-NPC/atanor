@@ -2053,15 +2053,20 @@ starts at the first step (`1000 / max_moves_per_s` ms) after the previous one en
 pace is bounded by the duration of a move, which hibernates the cell (an upload of its
 state to the store) and wakes it on the target, plus the five seconds of a round that busy
 cells defer. A cell that is called all the time is often busy. In a load test (600 req/s
-over 64 hot cells) a node made 27 moves in about 67 s, one per 2.5 s. The cause comes from
-reading the code, not from a measure of each move.
+over 64 hot cells) a node made 27 moves in about 67 s, one per 2.5 s. In a second one (a
+join at 750 req/s over 64 hot cells, store with 25 ms of added latency and on disk) it made 35
+moves in 132 s, one per 3.8 s, while the store took 1 to 7 s for some uploads. Each move of
+a hot cell answers that cell's callers with 503 while it is paused: about 46 to 60 of them
+at 750 req/s. The cause comes from reading the code, not from a measure of each move.
 
 **Defaults.** They are a starting point, not a measurement. `start_delay_ms` 30 s is
 longer than the registry's refresh (3 s) and the detector's settling, so a node that
 is still starting or flapping moves nothing, and shorter than most rolling restarts'
 gap, so the cluster rebalances between two restarts. `max_moves_per_s` 5 keeps one cell
-in motion at a time and costs a node a few percent of a core; a node of 10,000
-awake cells gives a third of them away in about 11 minutes. It is capped at 20 because
+in motion at a time and costs a node a few percent of a core. Since moves are serial,
+the time to rebalance grows with the cells to move, not with this ceiling: at the measured
+2.5 to 3.8 s a move, a node of 10,000 awake cells takes about 2.3 to 3.5 hours to give a
+third of them away. It is capped at 20 because
 the plan steps once per `1000 / max_moves_per_s` ms.
 
 **No loops.** A plan hands a cell out once while the membership stays (`attempted`
