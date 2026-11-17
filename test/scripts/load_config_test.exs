@@ -100,6 +100,100 @@ defmodule Atanor.LoadConfigTest do
     assert r["missing_file"] == ["cannot read the file: No such file or directory"]
   end
 
+  test "round.cases, the store of a measure, the timeouts, the ws cap and the ceiling kind", %{dir: dir} do
+    {out, status} = System.cmd("python3", ["-I", "test/scripts/load_config_check.py", dir], stderr_to_stdout: true)
+    assert status == 0, out
+    r = out |> String.split("\n", trim: true) |> List.last() |> :json.decode()
+
+    # round.cases replaces scenarios x measures and sets the order; without it each scenario runs its measures, run_on limiting them
+    assert r["cases_order"] == [["B", "ws"], ["A", "cells"], ["A", "swap"]]
+    assert r["cases_default"] == [["A", "ws"], ["A", "scale"], ["B", "ws"]]
+    assert r["cases_run_on"] == ["round.cases: cannot be used with measures.ws.run_on; remove one of them"]
+    assert r["cases_variant"] == ["round.cases[0]: unknown variant 'x', ws has no variants"]
+
+    assert r["cases_bad"] == [
+             "round.cases[0]: expected SCENARIO/MEASURE, like A/http-native",
+             "round.cases[1]: unknown scenario 'C', expected one of A, B",
+             "round.cases[2]: unknown measure 'disk', expected one of http-native, http-wasm, http-wasm-jobs, ws, cells, swap, scale",
+             "round.cases[4]: 'A/cells' is listed twice"
+           ]
+
+    assert r["variant_table"] == ["measures.ws.variant.v: unknown variant 'v', there is no variant yet"]
+
+    # [measures.M.store] overrides the store for that measure: its own lab (env) and hash, and only the keys it may override
+    s = r["store_override"]
+    assert s["ws"] == %{"backing" => "disk", "latency_ms" => 2.5} and s["cells"] == %{}
+    assert s["env_ws"] == "1" and s["env_cells"] == "0" and s["latency_ws"] == "2.5"
+    assert s["hash_ws_changes"] and s["hash_cells_same"]
+
+    assert r["store_override_bad"] == [
+             "measures.ws.store.backing: 'usb' is not one of tmpfs, disk",
+             "measures.ws.store.memory: unknown key, expected one of backing, tmpfs_size, latency_ms"
+           ]
+
+    # step_timeout_s must cover a step's duration_s and the generator's grace_s, and the join of the scale measure
+    assert r["timeout_low"] == [
+             "round.step_timeout_s: 100 s is below 210 s (measures.ws duration_s + generator.grace_s) of A/ws"
+           ]
+
+    assert r["timeout_ok"] == [] and r["timeout_default_is_valid"] == []
+
+    assert r["timeout_scale_join"] == [
+             "round.step_timeout_s: 300 s is below 390 s (the join of scale.join + generator.grace_s) of A/scale"
+           ]
+
+    # ws: a node cap must lie above the highest step
+    cap = "the highest step, 1000 connections, is not below node.http_max_connections 1000"
+    assert r["ws_cap"] == ["measures.ws.steps: " <> cap]
+    assert r["ws_cap_ok"] == []
+    assert [<<"measures.ws.steps: the highest step, ", _::binary>>] = r["ws_cap_bisect"]
+
+    # ceiling: factors times the ceiling, rounded
+    assert r["ceiling_plan"] == ["ceiling", [300, 400, 500, 600]]
+    assert r["ceiling_missing"] == ["measures.cells.steps.ceiling: a ceiling plan needs the ceiling"]
+
+    assert r["ceiling_with_values"] == [
+             "measures.cells.steps.values: only a ladder uses values; set kind = \"ladder\" or remove them"
+           ]
+
+    assert r["scale_per_scenario"] == [%{"http-native:1" => 7}, [2.0]]
+
+    assert r["scale_per_scenario_bad"] == [
+             "scale.per_scenario.A.ceilings.cells:9: nodes must be 1 to scale.max_nodes (3)"
+           ]
+
+    assert r["errors_off"] == %{"enabled" => false}
+
+    # the hash of a case holds what affects it, and not the output, the host, the timeouts or the other measures' plans
+    h = r["case_hash"]
+    assert h["stable"] and h["scenario"] and h["swap_section"] and h["scale_sees_load_plans"]
+    assert h["ws_only_with_ws"] == [true, false, true, false]
+    assert h["store_all"] == [true, true, true, true]
+
+    # the resolved config as TOML reads back to itself (OUT/config.toml)
+    assert r["toml_round_trip"] == [true, true, true, true, true]
+    assert r["env_scale_no_nodes"] == [false, "1"]
+    assert r["env_cap"] == ["", "40000"]
+  end
+
+  test "--env prints the lab's ATANOR_LOAD_* lines of a scenario, with the store of a measure", %{dir: dir} do
+    file = Path.join(dir, "round.toml")
+    File.write!(file, "[store]\nlatency_ms = 7\n[measures.ws.store]\nbacking = \"disk\"\n")
+
+    {out, 0} = System.cmd("python3", ["-I", "scripts/load_config.py", "--env", file, "B", "ws"])
+    lines = String.split(out, "\n", trim: true)
+    assert "ATANOR_LOAD_CPUS=2" in lines and "ATANOR_LOAD_MEMORY=2g" in lines and "ATANOR_LOAD_TMPFS_SIZE=1g" in lines
+    assert "ATANOR_LOAD_STORE_DISK=1" in lines and "ATANOR_LOAD_STORE_LATENCY_MS=7" in lines
+    assert "ATANOR_LOAD_NODES=1" in lines and "ATANOR_LOAD_HTTP_MAX_CONNECTIONS=''" in lines
+
+    {out, 0} = System.cmd("python3", ["-I", "scripts/load_config.py", "--env", file, "A", "scale"])
+    assert "ATANOR_LOAD_STORE_DISK=0" in String.split(out, "\n", trim: true)
+    refute out =~ "ATANOR_LOAD_NODES"
+
+    {out, status} = System.cmd("python3", ["-I", "scripts/load_config.py", "--env", file, "C"], stderr_to_stdout: true)
+    assert status == 2 and out =~ "--env takes a scenario"
+  end
+
   test "--check prints the resolved config, or every problem and exit status 1", %{dir: dir} do
     ok = Path.join(dir, "ok.toml")
     File.write!(ok, "[judging.p99]\nmax_ms = 300\n")

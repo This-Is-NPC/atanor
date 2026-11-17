@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import sys
+import tomllib
 
 sys.dont_write_bytecode = True
 work = sys.argv[1]
@@ -97,6 +98,20 @@ same = {
 mismatch = {k: [defaults[k], v] for k, v in same.items() if defaults[k] != v}
 ramps = {m: [builtin["measures"][m]["steps"]["start"], builtin["measures"][m]["steps"]["max"]] for m in lc.RAMP_MEASURES}
 
+def resolved(text):
+    return lc.load_config(write("resolved.toml", text))
+
+
+def hashes(text, scenario, *measures):
+    config = resolved(text)
+    return [lc.case_hash(config, scenario, m) for m in measures]
+
+
+store_override = resolved("[measures.ws.store]\nbacking = \"disk\"\nlatency_ms = 2.5\n")
+ceiling_plan = lc.plan(resolved("[measures.cells.steps]\nkind = \"ceiling\"\nceiling = 400\n"), "cells", "A")
+scale_scenario = lc.scale_of(resolved("[round]\nscenarios = [\"A\", \"B\"]\n[scale]\nceiling_factors = [1.0]\n[scale.per_scenario.B]\nceiling_factors = [2.0]\n"
+                                      "[scale.per_scenario.B.ceilings]\n\"http-native:1\" = 7\n"), "B")
+base_hash = hashes("", "A", "ws", "cells", "swap", "scale")
 plans = {f"{s}_{m}": lc.plan(official, m, s)["values"] for m in ("http-native", "ws", "cells", "http-wasm-jobs") for s in ("A", "B")}
 a, b = lc.config_hash(builtin), lc.config_hash(lc.resolve({"judging": {"p99": {"max_ms": 250}}}))
 c = lc.config_hash(lc.resolve({"judging": {"p99": {"max_ms": 300}}}))
@@ -127,4 +142,43 @@ print(json.dumps({
     "many": len(problems("[judging.p99]\nmax_ms = -1\n[judging.refused]\nmax_pct = 500\n[bogus]\nx = 1\n")),
     "not_toml": problems("[judging\n"),
     "missing_file": missing(),
+    # round.cases: the order, the conflict with run_on, the reserved variant
+    "cases_order": lc.case_list(resolved("[round]\ncases = [\"B/ws\", \"A/cells\", \"A/swap\"]\n")),
+    "cases_default": lc.case_list(resolved("[round]\nscenarios = [\"A\", \"B\"]\nmeasures = [\"ws\", \"scale\"]\n[measures.scale]\nrun_on = [\"A\"]\n")),
+    "cases_run_on": problems("[round]\ncases = [\"A/ws\"]\n[measures.ws]\nrun_on = [\"A\"]\n"),
+    "cases_variant": problems("[round]\ncases = [\"A/ws/x\"]\n"),
+    "cases_bad": problems("[round]\ncases = [\"A\", \"C/ws\", \"A/disk\", \"A/cells\", \"A/cells\"]\n"),
+    "variant_table": problems("[measures.ws.variant.v.store]\nbacking = \"disk\"\n"),
+    # [measures.M.store]: the override, its own hash and lab, and what it validates
+    "store_override": {"ws": store_override["measures"]["ws"]["store"], "cells": store_override["measures"]["cells"]["store"],
+                       "env_ws": lc.env_lines(store_override, "A", "ws")["ATANOR_LOAD_STORE_DISK"], "env_cells": lc.env_lines(store_override, "A", "cells")["ATANOR_LOAD_STORE_DISK"],
+                       "latency_ws": lc.env_lines(store_override, "A", "ws")["ATANOR_LOAD_STORE_LATENCY_MS"],
+                       "hash_ws_changes": lc.case_hash(store_override, "A", "ws") != base_hash[0], "hash_cells_same": lc.case_hash(store_override, "A", "cells") == base_hash[1]},
+    "store_override_bad": problems("[measures.ws.store]\nbacking = \"usb\"\nmemory = \"1g\"\n"),
+    # the timeouts, the connection cap of ws, the ceiling kind
+    "timeout_low": problems("[round]\nmeasures = [\"ws\"]\nstep_timeout_s = 100\n"),
+    "timeout_ok": problems("[round]\nmeasures = [\"ws\"]\nstep_timeout_s = 210\n"),
+    "timeout_default_is_valid": problems("[round]\nmeasures = [\"http-native\", \"scale\"]\n"),
+    "timeout_scale_join": problems("[round]\nmeasures = [\"scale\"]\nstep_timeout_s = 300\n[scale]\nmax_nodes = 2\n"),
+    "ws_cap": problems("[round]\nmeasures = [\"ws\"]\n[node]\nhttp_max_connections = 1000\n[measures.ws.steps]\nkind = \"ladder\"\nvalues = [500, 1000]\n"),
+    "ws_cap_ok": problems("[round]\nmeasures = [\"ws\"]\n[node]\nhttp_max_connections = 1000\n[measures.ws.steps]\nkind = \"ladder\"\nvalues = [500, 999]\n"),
+    "ws_cap_bisect": problems("[round]\nmeasures = [\"ws\"]\n[node]\nhttp_max_connections = 1000\n"),
+    "ceiling_plan": [ceiling_plan["kind"], lc.plan_values(ceiling_plan)],
+    "ceiling_missing": problems("[measures.cells.steps]\nkind = \"ceiling\"\n"),
+    "ceiling_with_values": problems("[measures.cells.steps]\nkind = \"ceiling\"\nceiling = 5\nvalues = [1]\n"),
+    "scale_per_scenario": [scale_scenario["ceilings"], scale_scenario["ceiling_factors"]],
+    "scale_per_scenario_bad": problems("[scale.per_scenario.A.ceilings]\n\"cells:9\" = 5\n"),
+    "errors_off": resolved("[judging.errors]\nenabled = false\n")["judging"]["errors"],
+    # the hash of a case: the case's own settings, not the other measures', the output, the host or the timeouts
+    "case_hash": {"stable": base_hash == hashes("[output]\nname = \"x\"\n[host]\nssh = \"lab\"\nrepo = \"/r\"\n[round]\ntimeout_s = 5\nstep_timeout_s = 700\n", "A", "ws", "cells", "swap", "scale"),
+                  "ws_only_with_ws": [a == b for a, b in zip(hashes("[measures.cells.steps]\nrefine = 1\n", "A", "ws", "cells", "swap", "scale"), base_hash)],
+                  "store_all": [a != b for a, b in zip(hashes("[store]\nlatency_ms = 30\n", "A", "ws", "cells", "swap", "scale"), base_hash)],
+                  "scenario": hashes("[round]\nscenarios = [\"A\", \"B\"]\n", "B", "ws")[0] != base_hash[0],
+                  "scale_sees_load_plans": hashes("[measures.cells.steps]\nrefine = 1\n", "A", "scale")[0] != base_hash[3],
+                  "swap_section": hashes("[swap]\nworkers = 3\n", "A", "swap")[0] != base_hash[2]},
+    # the resolved config as TOML reads back to itself
+    "toml_round_trip": [lc.resolve(tomllib.loads(lc.dump_toml(c))) == c for c in (builtin, official, example, store_override, resolved("[scale.ceilings]\n\"cells:1\" = 5\n"))],
+    "env_scale_no_nodes": ["ATANOR_LOAD_NODES" in lc.env_lines(official, "A", "scale"), lc.env_lines(official, "A", "ws")["ATANOR_LOAD_NODES"]],
+    "env_cap": [lc.env_lines(builtin, "A")["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"], lc.env_lines(official, "B", "ws")["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"]],
+    "official_plan_values": lc.plan_values(lc.plan(official, "http-wasm", "A"))[:3],
 }))
