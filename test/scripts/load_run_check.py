@@ -345,7 +345,9 @@ def refusal_scenario(name, grown, statuses=None):
             return None
         seen.append(1)
         counted = {k: (v if len(seen) > 1 else 0) for k, v in grown.items()}
-        return {"admission": {"in_flight": 3, "refused": counted, "disk_used_bytes": 50 * MB, "disk_budget_bytes": 100 * MB}}
+        # The memory pressure hibernated 4 cells after the first reading.
+        pressure = {"hibernated": 7 if len(seen) > 1 else 3, "hibernate_at_bytes": 384 * MB}
+        return {"admission": {"in_flight": 3, "refused": counted, "disk_used_bytes": 50 * MB, "disk_budget_bytes": 100 * MB}, "pressure": pressure}
 
     real, real_admin = m.Round.run_generators, m.admin_json
     m.admin_json = runtime
