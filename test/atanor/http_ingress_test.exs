@@ -147,7 +147,9 @@ defmodule Atanor.HTTPIngressTest do
     end
 
     test "slow headers on the admin listener are cut and do not lock out a valid token" do
-      node = start(admin: [token: "t", port: 0, max_connections: 4, acceptors: 2, header_timeout_ms: 500])
+      # The deadline must outlast opening the four connections, or a slow host cuts the first before the last
+      # is counted and the listener is never seen full.
+      node = start(admin: [token: "t", port: 0, max_connections: 4, acceptors: 2, header_timeout_ms: 3_000])
       port = Atanor.admin_port(node.name)
       listener = Atanor.Admin.listener(node.name)
 
