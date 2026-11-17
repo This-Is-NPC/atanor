@@ -19,10 +19,12 @@ defmodule Atanor.Cluster.PropertiesTest do
   The run includes takeovers (design §8.10): `lose` freezes a node until a survivor
   confirms it down, serves its cells through the survivors (which takes them over)
   and thaws it as a false positive, and `steal` takes a cell from a healthy owner.
-  The old owner is fenced, so the data properties must hold. For a cell that was
-  taken, the two placement checks (the handler ran where the batch committed, no
-  overlap in time) are skipped: a callback that started before the takeover ends
-  its write through the new owner.
+  The old owner is fenced, so the data properties must hold. A node that cannot renew
+  its lease under store faults loses the cell the same way: another node acquires it
+  with an ordinary `acquire` once the lease expired. Both count as a takeover. For a
+  cell that was taken, the two placement checks (the handler ran where the batch
+  committed, no overlap in time) are skipped: a callback that started before the
+  takeover ends its write through the new owner.
 
   **D1 across nodes.** A request forwarded to another node runs entirely on the
   deployment the ingress pinned, also while nodes switch at different times.
@@ -92,6 +94,43 @@ defmodule Atanor.Cluster.PropertiesTest do
             ) do
         run_c1(ops)
       end
+    end
+
+    # The sequence of seed 950368: n1 cannot renew `c2` under store timeouts, its lease expires and n3 acquires
+    # the cell with an ordinary `acquire` (no `take_over`) while a handler on n1 is still running. It reproduced
+    # in the fourth of five runs of the sequence.
+    test "a lease that expired under store timeouts and was acquired by another node counts as a takeover" do
+      ops = [
+        {:pass, 1392},
+        {:kill, :n2},
+        {:request, :n3, "c1"},
+        {:request, :n1, "c1"},
+        {:lose, :n2},
+        {:lose, :n3},
+        {:heal_nodes, {:n1, :n3}},
+        {:request, :n2, "c1"},
+        {:heal_store, :n1},
+        {:pass, 820},
+        {:burst, :n3, "c2"},
+        {:pause, :n2},
+        {:request, :n1, "c1"},
+        {:lose, :n1},
+        {:partition_nodes, {:n2, :n3}},
+        {:heal_store, :n1},
+        {:burst, :n3, "c1"},
+        {:pass, 1054},
+        {:heal_store, :n1},
+        {:store_fault, :n1, :timeout, 4},
+        {:request, :n2, "c2"},
+        {:request, :n3, "c2"},
+        {:request, :n2, "c2"},
+        {:lose, :n1},
+        {:heal_store, :n1},
+        {:request, :n3, "c2"},
+        {:request, :n3, "c0"}
+      ]
+
+      for _ <- 1..5, do: run_c1(ops)
     end
 
     # The sequence of seed 73201: n2 is thawed after n3 took `c1` over and acknowledged increments, and the
@@ -345,14 +384,16 @@ defmodule Atanor.Cluster.PropertiesTest do
     # the takeover. The data properties are not relaxed for any cell.
     defp check_placement(cluster, cell, requests) do
       takeovers =
-        for %{event: [:alambique, :lease, :take_over], meta: %{result: :ok, cell: "log." <> ^cell}} = e <-
+        for %{event: [:alambique, :lease, kind], meta: %{result: :ok, cell: "log." <> ^cell}} = e <-
               Cluster.events(cluster),
+            kind in [:take_over, :acquire],
             do: %{at: e.at, taker: Atom.to_string(Cluster.node(cluster, e.node))}
 
       C1.check_placement(cluster, cell, requests, &explained!(cell, &1, &2, takeovers))
     end
 
-    # A handler on another node than the commit is explained by a takeover: it started before one finished
+    # A handler on another node than the commit is explained by a takeover (or an acquire of an expired
+    # lease, `takeovers` has both): it started before one finished
     # and before the batch committed, or it started on the old owner at most `@window_ms` after the last one.
     defp explained!(cell, n, body, takeovers) do
       from = body["from"]
