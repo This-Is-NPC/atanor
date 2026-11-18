@@ -1646,6 +1646,11 @@ over continuation frames) and `max_frames_per_s` (100) with `frame_burst`
 (200): a token bucket per socket, and a socket over it closes with 1008. A
 socket on a protected route (§7.5) also closes with 1008 when the `exp` of its
 verified token passes, a timer set at the upgrade from the claims header.
+`permessage-deflate` is off (`websocket.compress: false`): `max_frame_bytes`
+bounds the frame as received, so a small compressed frame could inflate far
+past it. With `websocket.allowed_origins` set, an upgrade whose `Origin` is not
+in the list is answered 403 before `ws_init` runs; a request without `Origin`
+(not a browser page) passes.
 
 Attached sockets use the `:pg` scope `Atanor.PG`, group `{Atanor.Sockets,
 prefix, namespace, key}`. `Env.attach(env, {ns, key})` joins the env's socket
@@ -3575,12 +3580,21 @@ wrong-secret, revoked and expired tokens are 401 with no change.
 
 #### Limits
 
-**Admin errors are Elixir text, and an upload is held in memory.** Some errors
-carry a `reason` made with `inspect/1` (`invalid_package`, `invalid_operation`,
-`node_unreachable`, and the `error` of a worker status). The text is not a
-stable format and can name internal terms such as node names or file paths.
-Only a caller with a valid token sees it, so parse the `error` code and treat
-`reason` as text for people. A package upload is read into memory up to
+**A few fields are still Elixir text, and an upload is held in memory.** The
+`reason` of `invalid_package`, `invalid_operation` and `node_unreachable` (and
+of a node that did not answer in `/deployments` and the other per-node lists)
+is a fixed English text per known case and a generic one that points to the
+node log for the rest; the term itself goes to the node log
+(`Atanor.Admin.Reason`). The
+`error` of a worker status and of `/deployments` is a stable code
+(`module_not_loaded`, `route_taken`, `listener_not_configured`, ...,
+`apply_failed` for the rest) with the text in `reason`. Still made with
+`inspect/1`: the `last_error` of an operation record, the `reason` of the
+`errors` of `/drain` and of `/peers`, and the message of an
+`invalid_operation` raised while a selector or an action is checked. The text
+is not a stable format and can name internal terms. Only a caller with a valid
+token sees it, so parse the `error` code and treat `reason` as text for
+people. A package upload is read into memory up to
 `max_package_bytes` (64 MiB by default) before it is checked, so each upload in
 flight can hold that much (inference: ten parallel uploads hold about 640 MiB).
 Workaround: keep the admin port reachable by operators and CI only, cap the
@@ -4540,9 +4554,12 @@ packages, because compiled components are not evicted while the instance runs.
 
 Every component gets the full WASI preview 2 interfaces with an empty
 context: no preopened directories, environment, arguments, stdin or stdout;
-stderr is captured up to `stderr_bytes` (4 KiB by default) and logged as a warning, raw
-and only trimmed (control characters and newlines are not escaped, so a guest can
-forge log lines; see [how-to-write-a-wasm-worker.md](how-to-write-a-wasm-worker.md)); sockets and IP name
+stderr is captured up to `stderr_bytes` (4 KiB by default) and logged as one
+warning line: invalid UTF-8 is replaced, the text is trimmed, and control
+characters (C0, DEL, C1) and the Unicode line and paragraph separators are
+escaped (`\n`, `\r`, `\t`, `\x1b`, `\u{2028}`), so a guest cannot forge log
+lines or terminal sequences; printable UTF-8 is kept (see
+[how-to-write-a-wasm-worker.md](how-to-write-a-wasm-worker.md)); sockets and IP name
 lookup are denied by default. The `atanor:*` interfaces and
 `wasi:http/outgoing-handler` are linked only when granted. Guests built with
 any `wasi 0.2.x` bindings link against the host's 0.2.12. The imports are
