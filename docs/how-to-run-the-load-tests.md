@@ -234,6 +234,40 @@ check and not a ramp, also exits 1 when it failed. The swap starts node B from t
 the swap stops at once with B's exit status and its last log lines. The reason is in `stop_reason` of the step file
 and in `swap-TIME.log` next to it.
 
+## Measured results
+
+These are the values of the official round 018f ([load/rounds/018f.toml](../load/rounds/018f.toml)). They are
+measurements of one lab host, not guarantees. The host was one VM with 4 vCPUs and about 5 GB of RAM. The store
+was SeaweedFS on the disk of that VM. Alambique was the pin v0.11.0. The first four scenario A measures ran on
+Atanor commit `3e32ed0` and the rest on `f853a15`. Run the round on your own hardware before you size.
+
+Scenario A is a node limited to 1 CPU and 512 MB. Scenario B is 2 CPUs and 2 GB. The criteria are the ones of
+[how a step is judged](#how-a-step-is-judged) at the defaults of the round file: p99 over 250 ms, 503 answers
+over 1% of all answers, any other 5xx or any error, the working set at 90% of the memory limit. Each value
+below was approved with the refine and confirm phases, unless a row says otherwise. Rates are requests per second.
+
+| Measure | A (1 CPU, 512 MB) | B (2 CPUs, 2 GB) |
+| --- | --- | --- |
+| `http-native` | 590. Failed at 650 with p99 338 ms. | 1641. Failed at 1875 with p99 271 ms. |
+| `http-wasm` | 450. Failed at 800: 3.2% of the answers were refused (`worker_queue`). | No approved value. The best step was 1300 with p99 139 ms. Its confirmation failed because the lab store stalled twice: a limit of the lab, not of the node. |
+| `ws`, connections | 3300. Failed at 4000: working set at 90%. | 22500. Failed at 25000: 695 connections failed and the working set was at 93.6%. |
+| `cells`, hot cells | 397. Failed at 470 with p99 475 ms. | 2438. Failed at 2500 with p99 515 ms. |
+| `http-wasm-jobs` | 68, the top of the ladder: nothing failed. | 109. 112 failed because the lab store stalled twice: a limit of the lab. |
+| `swap` | ok at 68 req/s. 212 responses were 503 `held_elsewhere` during the swap. | ok at 109 req/s. The swap took 11.8 s, the p99 peak was 593 ms and 366 responses were 503 `held_elsewhere`. |
+
+A later run of the `cells` measure on the same code in A failed 397 at p99 267 ms and approved 372. Read the
+ceiling of A cells as between about 370 and 400: that is the run-to-run noise of the lab.
+
+The scale measure ran on scenario A, with one and two nodes behind the balancer:
+
+| Configuration | One node | Two nodes | Gain |
+| --- | --- | --- | --- |
+| `http-native` | 600, confirmed | 998, confirmed | 1.66, an efficiency of 0.83 |
+| `cells` | 372, confirmed | 695, the best step, not confirmed (the confirmation had p99 278 ms) | 1.87, not confirmed |
+
+A node that joined at 900 req/s was judged ok. The requests spread over the nodes in 20.8 s and the cells in
+199.5 s. The scale measure is described in [the scale measure](#the-scale-measure).
+
 ## How the environment is built
 
 One container per service, all of the project `atanor-cluster` (`scripts/cluster-*`), plus the throwaway
