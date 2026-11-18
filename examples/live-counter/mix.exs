@@ -18,7 +18,7 @@ defmodule LiveCounter.MixProject do
   end
 
   # In your app, depend on a release tag instead:
-  #   {:atanor, git: "https://github.com/This-Is-NPC/atanor.git", tag: "v0.3.0"}
+  #   {:atanor, git: "https://github.com/This-Is-NPC/atanor.git", tag: "v0.4.0"} # x-release-please-version
   defp deps do
     [
       {:atanor, path: "../.."},

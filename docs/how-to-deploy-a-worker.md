@@ -256,8 +256,8 @@ of a node: give one or the other`). `ATANOR_URL`, `ATANOR_TOKEN` and
 The release image holds the same command, so a machine with Docker and no
 Erlang can deploy. The image starts the node with no argument and runs the
 command for `deploy` (and `status`, `activate`, ...). Mount the project and
-give the credentials by files. Until a release has published the image (0.4.0 will be the first), build it
-([README](../README.md#install)) and use `atanor:local` in place of `ghcr.io/this-is-npc/atanor`:
+give the credentials by files. The image is published from 0.4.0 on and pulls without a login; for your
+own build ([README](../README.md#install)), use `atanor:local` in place of `ghcr.io/this-is-npc/atanor`:
 
 ```sh
 docker run --rm -v "$PWD:/w:ro" -v "$HOME/.secrets/atanor:/run/secrets:ro" \

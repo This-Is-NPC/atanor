@@ -27,8 +27,8 @@ The release image and tarball hold the same command, so a machine with Docker ne
 entrypoint runs the `atanor` command for the commands below, and starts the node with no argument
 ([how-to-build-the-release.md](how-to-build-the-release.md)):
 
-Until a release has published the image (0.4.0 will be the first), build it
-([README](../README.md#install)) and use `atanor:local` in place of `ghcr.io/this-is-npc/atanor`.
+The image is published from 0.4.0 on and pulls without a login. For your own build
+([README](../README.md#install)), use `atanor:local` in place of `ghcr.io/this-is-npc/atanor`.
 
 ```sh
 docker run --rm -v "$PWD:/w:ro" ghcr.io/this-is-npc/atanor deploy /w --bucket s3://my-bucket --activate
