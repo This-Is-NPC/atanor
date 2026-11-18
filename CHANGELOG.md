@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.5.0](https://github.com/This-Is-NPC/atanor/compare/v0.4.1...v0.5.0) (2026-11-18)
+
+
+### Features
+
+* **daemon:** add operator consent settings ([a0823da](https://github.com/This-Is-NPC/atanor/commit/a0823da2f331b1fc53a69c1416f242867a234d95))
+* **http:** declare a TLS proxy, warn on clear listeners ([5e0a059](https://github.com/This-Is-NPC/atanor/commit/5e0a05941b7a020c7812f3902e7442e6219c70d4))
+* **telemetry:** count release compaction outcomes ([97bad64](https://github.com/This-Is-NPC/atanor/commit/97bad640e5ae1c458f25b86da2f8a17c5e9f70c0))
+
+
+### Bug Fixes
+
+* **admin:** give error bodies fixed reasons ([3c44321](https://github.com/This-Is-NPC/atanor/commit/3c443210f0e1f11281d8fd263476c7d649634c9c))
+* **cli:** refuse login when stty fails ([b2b6f1a](https://github.com/This-Is-NPC/atanor/commit/b2b6f1aa213ecd52407e6baae64bc625cfbf2be4))
+* **deps:** bump plug past a multipart advisory ([ff0ad9f](https://github.com/This-Is-NPC/atanor/commit/ff0ad9f83dd0c9f357f19ed52a7343fbb5fa71f5))
+* **http:** name refused wakes awake_limit ([ae11aa6](https://github.com/This-Is-NPC/atanor/commit/ae11aa685893cb53a64b8cac66b6ed56e2a5f409))
+* **tls:** hide key bytes, warn on cert validity ([1553c6a](https://github.com/This-Is-NPC/atanor/commit/1553c6a8fadd88821fe0abb7597b1ce209f2dfd0))
+* **wasm:** escape guest stderr before logging ([bc40671](https://github.com/This-Is-NPC/atanor/commit/bc406712b955cfadae1f1c65e7d6f443edbd6131))
+* **ws:** turn compression off, add allowed origins ([8eedb10](https://github.com/This-Is-NPC/atanor/commit/8eedb104db51fdd9e8ba84eaf88cb46781951812))
+
+
+### Performance Improvements
+
+* **build:** share the cargo target, cache the NIF ([39c153a](https://github.com/This-Is-NPC/atanor/commit/39c153af31f555fc45c1f5fa472fc6eb1489415b))
+
 ## [0.4.1](https://github.com/This-Is-NPC/atanor/compare/v0.4.0...v0.4.1) (2026-11-18)
 
 
