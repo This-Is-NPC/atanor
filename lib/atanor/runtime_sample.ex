@@ -26,6 +26,7 @@ defmodule Atanor.RuntimeSample do
       cgroup: cgroup(cgroup_dir),
       admission: Atanor.Admission.stats(name),
       wakes: Atanor.Admission.wakes(name),
+      hibernations: Atanor.Admission.hibernations(name),
       pressure: Atanor.Pressure.stats(name),
       wasm: wasm(),
       store: Atanor.Overview.store_breakers(name)

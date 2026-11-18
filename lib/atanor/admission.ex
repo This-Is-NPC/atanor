@@ -61,7 +61,14 @@ defmodule Atanor.Admission do
   @refused_disk_full 16
   @refused_unavailable 17
   @wakes 18
-  @counters 18
+  @compaction_none 19
+  @compaction_done 20
+  @compaction_deadline 21
+  @compaction_error 22
+  @tail_max 23
+  @warned_at 24
+  @counters 24
+  @warn_every_ms 1_000
   @deadline {__MODULE__, :deadline}
 
   @doc "The gap, as a fraction of the limit, between the refuse and the resume marks."
@@ -232,6 +239,67 @@ defmodule Atanor.Admission do
   @doc "The cells woken on this node since it started."
   @spec wakes(atom) :: non_neg_integer
   def wakes(name), do: :atomics.get(handle(name).counters, @wakes)
+
+  @compaction_counters %{
+    none: @compaction_none,
+    done: @compaction_done,
+    deadline: @compaction_deadline,
+    error: @compaction_error
+  }
+
+  @doc false
+  # Counts a hibernation by the outcome of its release compaction and keeps the longest `tail` (WAL files) found
+  # (`hibernations/1`). Any other outcome is ignored.
+  @spec hibernation(atom, atom, non_neg_integer) :: :ok
+  def hibernation(name, outcome, tail) do
+    with %{counters: counters} <- :persistent_term.get({__MODULE__, name}, nil),
+         {:ok, counter} <- Map.fetch(@compaction_counters, outcome) do
+      :atomics.add(counters, counter, 1)
+      put_max(counters, @tail_max, tail)
+    end
+
+    :ok
+  end
+
+  defp put_max(counters, index, value) do
+    current = :atomics.get(counters, index)
+
+    if value > current and :atomics.compare_exchange(counters, index, current, value) != :ok,
+      do: put_max(counters, index, value)
+
+    :ok
+  end
+
+  @doc "The hibernations on this node since it started, by compaction outcome, and the longest tail they found."
+  @spec hibernations(atom) :: %{compaction: %{atom => non_neg_integer}, tail_max: non_neg_integer}
+  def hibernations(name) do
+    counters = handle(name).counters
+
+    %{
+      compaction:
+        Map.new(@compaction_counters, fn {outcome, counter} -> {outcome, :atomics.get(counters, counter)} end),
+      tail_max: :atomics.get(counters, @tail_max)
+    }
+  end
+
+  @doc false
+  # True at most once per second per node: the warning of a compaction that did not finish is rate-limited, the
+  # counters are not.
+  @spec warn_hibernation?(atom) :: boolean
+  def warn_hibernation?(name) do
+    now = System.monotonic_time(:millisecond)
+
+    case :persistent_term.get({__MODULE__, name}, nil) do
+      nil ->
+        false
+
+      %{counters: counters} ->
+        last = :atomics.get(counters, @warned_at)
+
+        (last == 0 or now - last >= @warn_every_ms) and
+          :atomics.compare_exchange(counters, @warned_at, last, now) == :ok
+    end
+  end
 
   defp add(name, counter) do
     :atomics.add(handle(name).counters, counter, 1)

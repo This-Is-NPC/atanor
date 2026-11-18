@@ -154,6 +154,7 @@ defmodule Atanor.LoadRunTest do
 
     # an older node reports none of the newer counters: null, not 0; the 503 reasons come from the generator
     assert refusals["evictions"]["wakes"] == :null
+    assert refusals["evictions"]["compaction"] == :null
     assert refusals["admission"]["unavailable_by_reason"] == :null
     assert refusals["statuses_503_by_reason"] == %{}
 
@@ -164,6 +165,15 @@ defmodule Atanor.LoadRunTest do
     assert newer["admission"]["unavailable_by_reason"] == %{"store_unavailable" => 3, "breaker_open" => 0}
     assert newer["admission"]["refused_unreported"] |> Enum.member?("unavailable") == false
     assert newer["evictions"]["wakes"] == 15
+
+    assert newer["evictions"]["compaction"] == %{
+             "none" => 0,
+             "done" => 2,
+             "deadline" => 2,
+             "error" => 0,
+             "tail_max" => 192
+           }
+
     assert newer["statuses_503_by_reason"] == %{"unavailable/store_unavailable" => 7, "overloaded/busy" => 3}
 
     assert record["store"]["tmpfs_max_pct"] == 50.0
