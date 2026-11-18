@@ -161,7 +161,11 @@ single writer.
 ## What to expect
 
 - While a cell moves, calls for it wait (up to `move_timeout_ms`) and then go to
-  the new owner. Sockets stay on their nodes and keep working.
+  the new owner. Sockets stay on their nodes and keep working. A move compacts
+  the cell's WAL tail before it hands the lease over (when it has
+  `compaction: [release_min_tail:]` files), and may spend up to `move_timeout_ms`
+  less `release_reserve_ms` on it, 13 s by default, not the 3 s of a drain: a cell
+  with a long tail can wait that long for its move.
 - After a move, a cell that goes to sleep wakes on the node Alambique prefers
   for it (rendezvous hashing), not necessarily where you moved it. The loop moves
   it again if it is hot again after `residence_ms`. A tagged node is the way to
