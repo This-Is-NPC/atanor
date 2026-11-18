@@ -1551,6 +1551,27 @@ handshakes read the new material. This replaces the usual `sni_fun` route:
 `sni_fun` is only called when the client sends SNI, and SMTP clients often do
 not, so the per-handshake options cover every client.
 
+**Limits of TLS reload.**
+
+* *No check of the validity dates.* A load checks only that the key belongs to
+  the first certificate (`check_key/2` in `lib/atanor/tcp/tls.ex`). An expired or
+  not-yet-valid certificate loads, is logged as a reload and is served, and the
+  reload logs no warning before a certificate expires. Scenario: a renewal job
+  fails, the file keeps its old content, and clients start to refuse the
+  listener on the day it expires, with nothing in the node log. Workaround:
+  monitor the expiry of the served certificate from outside (a probe that
+  connects to the port and reads `notAfter`), and alert well before it.
+* *A key error can print key material.* `format_error/1` renders
+  `{:unsupported_key, term}` with `inspect/1`. For a private key of a shape
+  Atanor does not recognise, `term` is the decoded key, so the warning in the
+  node log and the `reason` of a 422 `reload_failed` from
+  `POST /listeners/:name/reload-tls` can contain private key numbers. Expected
+  keys (RSA, ECDSA, EdDSA, DSA) never reach that branch; a key that does is
+  rare (inference: an unusual PEM entry type). Workaround: keep the node log and
+  the admin API private, and rotate a key whose
+  error text was logged or sent to a shared place. Proposed fix: print only the
+  type of the key.
+
 **Ranch protocols.** A `"protocol": "ranch"` route needs a worker that exports
 `ranch_protocol(env) :: {module, opts}`; without it the activation is refused
 with `{:missing_callback, module, {:ranch_protocol, 1}}`. Atanor starts one
@@ -3556,6 +3577,27 @@ wrong-secret, revoked and expired tokens are 401 with no change.
 
 #### Limits
 
+**Admin errors are Elixir text, and an upload is held in memory.** Some errors
+carry a `reason` made with `inspect/1` (`invalid_package`, `invalid_operation`,
+`node_unreachable`, and the `error` of a worker status). The text is not a
+stable format and can name internal terms such as node names or file paths.
+Only a caller with a valid token sees it, so parse the `error` code and treat
+`reason` as text for people. A package upload is read into memory up to
+`max_package_bytes` (64 MiB by default) before it is checked, so each upload in
+flight can hold that much (inference: ten parallel uploads hold about 640 MiB).
+Workaround: keep the admin port reachable by operators and CI only, cap the
+request body at the balancer, and lower `max_package_bytes` when your packages
+are small.
+
+**The attempt limit can lock out a shared address.** The throttle counts
+failures per peer address (§10.2, "Attempt limit"), and an address over the
+limit is refused even with the right token. Anyone who shares that address can
+therefore keep a legitimate operator out by sending wrong tokens: all clients
+behind one proxy, or one IPv6 /64. The limit is per node, so a cluster behind a
+balancer lets `max_failures` per node through, and a restart clears it.
+Workaround: limit the admin port to known addresses and use a high-entropy
+token (§10.2); the limit slows guessing, it does not replace those.
+
 **The audit log has no retention.** A forbidden call on an audited endpoint
 writes an audit object that Atanor never deletes: the log is immutable by
 design. Workaround: give the `audit/` prefix of the bucket a lifecycle rule that
@@ -4500,7 +4542,9 @@ packages, because compiled components are not evicted while the instance runs.
 
 Every component gets the full WASI preview 2 interfaces with an empty
 context: no preopened directories, environment, arguments, stdin or stdout;
-stderr is captured up to `stderr_bytes` (4 KiB by default) and logged as a warning; sockets and IP name
+stderr is captured up to `stderr_bytes` (4 KiB by default) and logged as a warning, raw
+and only trimmed (control characters and newlines are not escaped, so a guest can
+forge log lines; see [how-to-write-a-wasm-worker.md](how-to-write-a-wasm-worker.md)); sockets and IP name
 lookup are denied by default. The `atanor:*` interfaces and
 `wasi:http/outgoing-handler` are linked only when granted. Guests built with
 any `wasi 0.2.x` bindings link against the host's 0.2.12. The imports are

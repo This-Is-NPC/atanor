@@ -192,7 +192,15 @@ Every value is a positive integer in milliseconds unless noted.
 To drop the cached keys of a node at once, for example after the provider
 withdrew a key, call `POST /auth/keys/flush` on the admin API of each node
 ([step 14](how-to-use-the-admin-api.md)). The next request fetches the keys
-again.
+again. The flush acts on one node only, so a cluster needs one call per node
+(design §7.5).
+
+With the defaults a key the provider withdrew can verify tokens for up to 25
+hours on a node that cannot reach the provider: `jwks_max_age_ms` (1 h) plus
+`jwks_max_stale_ms` (24 h). A node that can reach the provider drops it at the
+next refresh after 1 h. Lower both settings if that is too long for you, at the
+cost of a 503 `auth_unavailable` sooner when the provider is down. Tokens also
+stay valid until their own `exp`, whatever the cache holds.
 
 Concurrent requests never stampede the provider: one process makes the
 fetches, one at a time, and the requests that waited find the keys cached.

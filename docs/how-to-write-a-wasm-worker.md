@@ -311,6 +311,12 @@ does not instantiate in either mode.
   before repeating a write that is not idempotent.
 - **The client gets 500 `internal_error` and the log shows `wasm trap`.** The
   guest panicked or trapped; its stderr, up to `stderr_bytes` (4 KiB by default), is logged just before.
+  The text is logged as the guest wrote it, trimmed at both ends only: a guest
+  that writes newlines or terminal escape codes can forge log lines or garble a
+  terminal. Do not let a log reader trust a line only because it looks like one
+  of the node's. Workaround: have your log shipper escape control characters
+  (it can recognise the prefix `worker NAME (deployment ID) wrote to stderr:`),
+  and do not print request data to stderr from a guest.
 - **503 `overloaded`.** The queue was full (`worker_queue`), a call between workers found `max_nested_calls` in flight (`nested_calls`), or the call waited for a thread past `queue_wait_ms` or the request's `http.queue_wait_ms` and was taken back (`queue_timeout`, it never ran) (a guest that
   waits counts against neither `threads` nor `worker_calls`, up to `max_waiting` waiting guests on the node, 19 on 512 MiB and 76 on 2 GiB). The body is `{"error":"overloaded","reason":"worker_queue"}` (`reason` names the gate that refused; for the others see [design §7.1](design.md))
   and the response carries `Retry-After` (`http.retry_after_s`, 1 s by default).
