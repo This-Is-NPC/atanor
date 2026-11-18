@@ -218,10 +218,13 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    the biggest ETS tables and processes (by message queue and by memory), the cgroup
    counters (`memory.current`, `memory.stat`, `oom_kill`), the Wasm gauges and the
    admission counters (`admission`: requests in flight, refusals by reason (`refused`: `memory`, `disk`,
-   `in_flight`, `queue_timeout`, `worker_queue` and `nested_calls`), the last working set, the disk use of `data_dir` against its budget,
-   and whether the node is refusing, see
-   [configuration](configuration.md)) and `store`, the circuit breaker of
-   each store location as in `/health`. A
+   `in_flight`, `queue_timeout`, `worker_queue`, `nested_calls`, `wake_gate`, `awake_limit`, `busy` and
+   `disk_full`, and `unavailable` for every other 503, split by reason in `unavailable_by_reason`), the last
+   working set, the disk use of `data_dir` against its budget, and whether the node is refusing, see
+   [configuration](configuration.md)), `wakes` (cells woken since the node started), `pressure` (cells
+   hibernated by memory pressure) and `store`, the circuit breaker of
+   each store location as in `/health`. The counters are in
+   [telemetry](telemetry.md#counters-of-get-runtime). A
    cgroup field is `null` when its file cannot be read. The load harness samples it
    ([how-to-run-the-load-tests.md](how-to-run-the-load-tests.md)).
 
