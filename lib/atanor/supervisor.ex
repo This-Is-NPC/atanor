@@ -32,6 +32,7 @@ defmodule Atanor.Supervisor do
   @impl true
   def init(config) do
     log_awake_budget(config)
+    log_clear_listeners(config)
     Atanor.WakeLog.attach(config.name)
     Atanor.HibernateLog.attach(config.name)
 
@@ -166,6 +167,21 @@ defmodule Atanor.Supervisor do
         id: :admin
       )
     ]
+  end
+
+  # Tokens cross the admin and dashboard listeners in clear: outside loopback they need TLS in front.
+  defp log_clear_listeners(%Config{behind_tls_proxy: true}), do: :ok
+
+  defp log_clear_listeners(config) do
+    for {name, %{ip: ip, port: port}} <- [admin: config.admin, dashboard: config.dashboard],
+        not Config.loopback?(ip) do
+      Logger.warning(
+        "atanor: the #{name} listener binds #{:inet.ntoa(ip)}:#{port} without TLS, so its token passes in clear; " <>
+          "put a TLS proxy in front and set behind_tls_proxy (ATANOR_BEHIND_TLS_PROXY=true), or bind to loopback"
+      )
+    end
+
+    :ok
   end
 
   # The ceiling for awake cells may be derived from the node's memory, so say where it came from.

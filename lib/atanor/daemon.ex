@@ -86,6 +86,8 @@ defmodule Atanor.Daemon do
      "The outbound HTTP hosts each worker may ask its manifest for (`http_allow:`), same format as `ATANOR_HOSTS`. Default: unset, any public host."},
     {"ATANOR_NAMESPACES", :grants,
      "The workers that may use each cell namespace (`namespaces:`), `namespace=worker,worker;namespace=worker`. Default: unset, the first worker to claim a namespace owns it."},
+    {"ATANOR_BEHIND_TLS_PROXY", :boolean,
+     "Declares that a proxy terminates TLS in front of the node (`behind_tls_proxy:`): the dashboard cookie is `Secure` and the start warning about a clear admin or dashboard listener is off. Default false."},
     {"ATANOR_ADVERTISE", :boot,
      "The host or IP the other nodes reach this one at; the Erlang node is `atanor@<it>`, which is what the node registry advertises."},
     {"ATANOR_NET_TICKTIME", :boot, "Seconds a silent peer goes unnoticed (Erlang's `net_ticktime`). Default 60."},
@@ -544,6 +546,7 @@ defmodule Atanor.Daemon do
     opts =
       [store: store, data_dir: v["ATANOR_DATA_DIR"] || @default_data_dir, ip: ip, port: port]
       |> put_unless(prefix == "", :prefix, prefix)
+      |> put_unless(is_nil(v["ATANOR_BEHIND_TLS_PROXY"]), :behind_tls_proxy, v["ATANOR_BEHIND_TLS_PROXY"])
       |> put_unless(is_nil(v["ATANOR_HOSTS"]), :hosts, v["ATANOR_HOSTS"])
       |> put_unless(is_nil(v["ATANOR_HTTP_ALLOW"]), :http_allow, v["ATANOR_HTTP_ALLOW"])
       |> put_unless(is_nil(v["ATANOR_NAMESPACES"]), :namespaces, v["ATANOR_NAMESPACES"])

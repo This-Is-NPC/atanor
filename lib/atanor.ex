@@ -28,6 +28,9 @@ defmodule Atanor do
     * `:prefix` - key prefix of Atanor's objects (default `"atanor"`).
     * `:port` - HTTP ingress port, `0` for an ephemeral one (default 4000).
     * `:ip` - address the ingress listens on (default `{127, 0, 0, 1}`).
+    * `:behind_tls_proxy` - declares that a proxy terminates TLS in front of the node (default
+      false). The dashboard cookie is then `Secure`, and the node stops warning at start that an
+      admin or dashboard listener outside loopback sends its token in clear.
     * `:poll_interval_ms` - how often the node reloads the workers' heads from
       the store (default 5000). Switches made through an instance also reach
       the other nodes at once (design §2, §5).
@@ -110,7 +113,7 @@ defmodule Atanor do
       default loopback) and `:page_size` (50 rows), `:max_page_size` (500) and
       `:poll_ms` (5000, how often the native counters are emitted),
       `:cookie_max_age_s` (86 400, the `Max-Age` of the session cookie) and
-      `:secure_cookie` (false; `true` adds `Secure`, for a dashboard served
+      `:secure_cookie` (the value of `:behind_tls_proxy`; `true` adds `Secure`, for a dashboard served
       over https by a proxy). It needs the optional dependencies listed by `Atanor.Dashboard.dependencies/0` and
       runs once per VM.
     * `:detector` - the failure detector between nodes (design §8.7):

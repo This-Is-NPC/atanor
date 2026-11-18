@@ -161,6 +161,22 @@ defmodule Atanor.DashboardTest do
       end
     end
 
+    test "behind_tls_proxy makes the cookie Secure unless the dashboard says otherwise" do
+      start([], behind_tls_proxy: true)
+      assert session_cookie(get(build_conn(), "/workers?token=#{@token}")) =~ "secure"
+      assert %{dashboard: %{secure_cookie: false}} = tls_config(secure_cookie: false)
+      assert_raise ArgumentError, ~r/behind_tls_proxy/, fn -> tls_config([], "yes") end
+    end
+
+    defp tls_config(dashboard, behind \\ true) do
+      Atanor.Config.build(
+        data_dir: "/tmp/x",
+        store: {Mod, nil},
+        behind_tls_proxy: behind,
+        dashboard: [token: @token] ++ dashboard
+      )
+    end
+
     test "a forged cookie is refused" do
       start()
       conn = build_conn() |> put_req_header("cookie", "_atanor_dashboard=forged") |> get("/workers")

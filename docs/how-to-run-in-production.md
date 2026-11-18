@@ -18,6 +18,69 @@ HAProxy, which the [container cluster](how-to-run-a-cluster-in-containers.md) al
 | 4369 and 9100 to 9110 | Erlang distribution between nodes: `epmd` and the node ports. | The other nodes only. |
 | TCP ports of your manifests | Raw TCP, or TLS terminated by the node. | As your workers need. |
 
+## TLS at the proxy
+
+The ingress, the admin API and the dashboard speak plain HTTP. The node has no TLS for them: a TLS-terminating
+proxy (HAProxy, nginx, a cloud load balancer) must sit in front. Without it, the admin and dashboard tokens, and
+every `Authorization` header of your workers' clients, cross the network in clear.
+
+1. Terminate TLS at the proxy for 4000, and for 4001 and 4002 when anyone reaches them from outside. Forward to
+   the node over the private network. A short HAProxy example, with the style of
+   [cluster/haproxy.cfg](../cluster/haproxy.cfg) (the certificate is a PEM file with the chain and the key):
+
+   ```text
+   frontend https
+       bind :443 ssl crt /etc/haproxy/certs/app.example.com.pem alpn h2,http/1.1
+       option httplog
+       default_backend atanor_http
+
+   frontend admin_https
+       bind :4443 ssl crt /etc/haproxy/certs/admin.example.com.pem
+       default_backend atanor_admin
+   ```
+
+   The backends are those of step 5.
+2. Tell the node. Set `ATANOR_BEHIND_TLS_PROXY=true` (file key `behind_tls_proxy`; library option
+   `behind_tls_proxy: true`). The dashboard session cookie then gets `Secure`, and the start warning below does not
+   appear.
+3. Check the log. A node whose admin or dashboard listener binds outside loopback (the daemon default is
+   `0.0.0.0`) and does not have `ATANOR_BEHIND_TLS_PROXY` logs, at start:
+
+   ```text
+   atanor: the admin listener binds 0.0.0.0:4001 without TLS, so its token passes in clear; put a TLS proxy in front and set behind_tls_proxy (ATANOR_BEHIND_TLS_PROXY=true), or bind to loopback
+   ```
+
+   The setting is a declaration, not a check: the node cannot see whether the proxy is there. To leave nothing to
+   declare, bind the listener to loopback (`ATANOR_ADMIN_LISTEN=127.0.0.1:4001`) and reach it through a tunnel or
+   a proxy on the same host.
+
+## Who may claim what
+
+Every deploy token with `worker:<name>:deploy` and `activate` can claim any free host route, any cell namespace
+that nobody owns, and outbound HTTP to any public host, unless the operator restricts it. Three settings do that;
+unset, each one allows everything, and the node says so at start:
+
+```text
+atanor: this node trusts every deployer: any route host, cell namespace and outbound HTTP host is allowed; restrict them with ATANOR_HOSTS, ATANOR_NAMESPACES and ATANOR_HTTP_ALLOW
+```
+
+`GET /runtime` shows the state under `consent` (`{"hosts": false, "http_allow": false, "namespaces": false,
+"open": true}`; `open` is true when none is set). A closed node, with all three set, in the format of
+[configuration.md](configuration.md#the-daemon-environment-and-file):
+
+```sh
+ATANOR_HOSTS='shop=shop.example.com,*.shop.example.com;blog=blog.example.com'
+ATANOR_NAMESPACES='carts=shop;posts=blog'
+ATANOR_HTTP_ALLOW='shop=api.payments.example.com;blog=*'
+```
+
+- `ATANOR_HOSTS`: the hosts each worker may claim in its routes. A worker that is not listed claims none, and an
+  activation outside the list fails with 422 `host_not_allowed`.
+- `ATANOR_NAMESPACES`: the workers that may use each cell namespace. A namespace that is not listed stays open to
+  the first worker that claims it.
+- `ATANOR_HTTP_ALLOW`: the hosts each worker's manifest may list under `http.allow`. A worker that is not listed
+  may call none.
+
 ## Prerequisites
 
 - Two or more nodes of the image, started as in [configuration.md](configuration.md#the-daemon-environment-and-file),
@@ -78,8 +141,8 @@ HAProxy, which the [container cluster](how-to-run-a-cluster-in-containers.md) al
    ([how-to-use-the-admin-api.md](how-to-use-the-admin-api.md)). Route a WebSocket and a long TCP
    connection with a tunnel timeout longer than your idle time (`timeout tunnel 1h` above).
 
-6. **Terminate TLS at the balancer.** The ingress, the admin API and the dashboard speak plain HTTP, so the
-   balancer holds the certificate for your domains and forwards to 4000 on the private network. Do the same for
+6. **Terminate TLS at the balancer, and set `ATANOR_BEHIND_TLS_PROXY`** ([TLS at the proxy](#tls-at-the-proxy)).
+   The balancer holds the certificate for your domains and forwards to 4000 on the private network. Do the same for
    4001 if operators or CI reach it from outside, with its own host name and a firewall allowing only them. Atanor
    terminates TLS itself only for TCP listeners that a worker claims (`tls_mode: :implicit` or `:starttls`,
    [how-to-serve-tcp.md](how-to-serve-tcp.md)). Behind a balancer a worker sees the balancer's address; read the
@@ -88,6 +151,8 @@ HAProxy, which the [container cluster](how-to-run-a-cluster-in-containers.md) al
    and when the status changes, and it still serves that certificate. Alert on that log line, and keep a probe
    from outside that reads the served certificate's `notAfter`
    ([design §7.3, "Limits of TLS reload"](design.md#73-tcp-and-websockets)).
+
+   Also restrict what a deployer may claim ([who may claim what](#who-may-claim-what)).
 
 7. **Enforce the limits that a balancer does better.** The ingress bounds each read and each listener, but it has no
    deadline for a whole request and no limit per client address. Set header and body timeouts and a per-address
