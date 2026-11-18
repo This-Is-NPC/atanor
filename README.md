@@ -6,9 +6,9 @@ cluster of nodes, with compute and S3-compatible storage only. It is built on
 Alambique, which provides the cells, and it knows no product, organization,
 tenant or region.
 
-**Status:** version <!-- x-release-please-start-version -->0.3.0<!-- x-release-please-end -->,
+**Status:** version 0.4.0 <!-- x-release-please-version -->,
 shipped as one daemon: a container image and a tarball ([install](#install)). The first
-release, 0.4.0, is from 2026-11-06; [CHANGELOG.md](CHANGELOG.md) lists every release and
+release, 0.1.0, is from 2026-11-06; [CHANGELOG.md](CHANGELOG.md) lists every release and
 change. Open defects are in [docs/what-does-not-work.md](docs/what-does-not-work.md); the
 limits of the design are in [Limitations](#limitations) and in [docs/design.md](docs/design.md).
 
@@ -29,27 +29,24 @@ You need Docker, `git`, `curl` and `openssl`, on Linux or macOS. Run the blocks 
 shell, in an empty directory. `IMAGE` is set in step 1 and used in steps 4 and 5, so a new shell
 needs the `export` again.
 
-1. Name the image and fetch the example worker: a manifest and a compiled WASM component.
+1. Name the image and fetch the example worker: a manifest and a compiled WASM component. The
+   image is published and pulls without a login; the clone is the tag of the same release.
 
-   No release has published the container image yet (`ghcr.io/this-is-npc/atanor` answers `denied`);
-   the first one will come with the 0.4.0 release. Until then, build it from source and use it as
-   `IMAGE` (about 20 minutes on a clean 2 vCPU machine, see
+   ```sh
+   export IMAGE=ghcr.io/this-is-npc/atanor:0.4.0 # x-release-please-version
+   git clone --depth 1 --branch v0.4.0 https://github.com/This-Is-NPC/atanor.git atanor-src # x-release-please-version
+   ```
+
+   To run your own build instead, build the image from the clone and use it as `IMAGE` (about
+   20 minutes on a clean 2 vCPU machine, see
    [what it costs](docs/how-to-build-the-release.md#what-it-costs)):
 
    ```sh
-   git clone --depth 1 https://github.com/This-Is-NPC/atanor.git atanor-src
    docker build --target runtime -t atanor:local atanor-src
    export IMAGE=atanor:local
    ```
 
-   Once a release has published the image, use it instead and skip the build:
-
-   ```sh
-   export IMAGE=ghcr.io/this-is-npc/atanor:latest
-   git clone --depth 1 https://github.com/This-Is-NPC/atanor.git atanor-src
-   ```
-
-   Then, either way, fetch the example worker:
+   Then fetch the example worker:
 
    ```sh
    mkdir atanor-hello atanor-secrets
@@ -69,13 +66,13 @@ needs the `export` again.
 
    ```sh
    docker network create atanor-net
-   docker run -d --name atanor-store --network atanor-net -p 0.4.0.1:8333:8333 \
+   docker run -d --name atanor-store --network atanor-net -p 127.0.0.1:8333:8333 \
      -v "$PWD/atanor-secrets:/run/secrets:ro" --entrypoint /bin/sh chrislusf/seaweedfs:4.48 -c \
      'export AWS_ACCESS_KEY_ID="$(cat /run/secrets/access_key)" AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/secret_key)"; \
-      exec /entrypoint.sh mini -dir=/data -ip=atanor-store -ip.bind=0.4.0.0 -s3.port=8333 -admin.ui=false'
-   until curl -s -o /dev/null http://0.4.0.1:8333/; do sleep 1; done
+      exec /entrypoint.sh mini -dir=/data -ip=atanor-store -ip.bind=0.0.0.0 -s3.port=8333 -admin.ui=false'
+   until curl -s -o /dev/null http://127.0.0.1:8333/; do sleep 1; done
    curl -sS -o /dev/null -w 'create bucket: HTTP %{http_code}\n' --aws-sigv4 aws:amz:us-east-1:s3 \
-     --user "$(cat atanor-secrets/access_key):$(cat atanor-secrets/secret_key)" -X PUT http://0.4.0.1:8333/atanor
+     --user "$(cat atanor-secrets/access_key):$(cat atanor-secrets/secret_key)" -X PUT http://127.0.0.1:8333/atanor
    ```
 
    ```text
@@ -89,13 +86,13 @@ needs the `export` again.
 
    ```sh
    docker run -d --name atanor-node --network atanor-net --stop-timeout 90 \
-     -p 0.4.0.1:4000:4000 -p 127.0.0.1:4001:4001 -v "$PWD/atanor-secrets:/run/secrets:ro" \
+     -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 -v "$PWD/atanor-secrets:/run/secrets:ro" \
      -e ATANOR_STORE=s3://atanor -e ATANOR_S3_ENDPOINT=http://atanor-store:8333 \
      -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret_key \
      -e ATANOR_ADMIN_TOKEN_FILE=/run/secrets/admin_token -e ATANOR_COOKIE_FILE=/run/secrets/cookie \
      -e ATANOR_ADVERTISE=atanor-node.local "$IMAGE"
    until [ "$(curl -s -o /dev/null -w '%{http_code}' -H "authorization: Bearer $(cat atanor-secrets/admin_token)" \
-     http://0.4.0.1:4001/health/ready)" = 200 ]; do
+     http://127.0.0.1:4001/health/ready)" = 200 ]; do
      [ "$(docker inspect -f '{{.State.Running}}' atanor-node 2>/dev/null)" = true ] \
        || { docker logs atanor-node; echo "atanor-node is not running" >&2; break; }
      sleep 1
@@ -129,7 +126,7 @@ needs the `export` again.
 6. Call it. The route of the manifest is the host `localhost` and the path `/hello`.
 
    ```sh
-   until curl -sf -H 'Host: localhost' http://0.4.0.1:4000/hello/world; do sleep 1; done
+   until curl -sf -H 'Host: localhost' http://127.0.0.1:4000/hello/world; do sleep 1; done
    ```
 
    ```text
@@ -139,7 +136,8 @@ needs the `export` again.
 7. Remove everything this section created, the images included. The commands are separate so you
    can run them again after a partial install: one that finds nothing to remove prints an error
    and the next still runs. If you use the SeaweedFS image for something else, leave out its line.
-   `-v` also removes the anonymous volume that the SeaweedFS image declares.
+   `-v` also removes the anonymous volumes that the images declare: SeaweedFS one, and the node image
+   one at `/var/lib/atanor/cells`.
 
    ```sh
    docker rm -fv atanor-node atanor-store
@@ -149,13 +147,23 @@ needs the `export` again.
    rm -rf atanor-src atanor-hello atanor-secrets
    ```
 
+   If a `docker run` failed, its container may be gone but its volume is not: run `docker volume ls`
+   and remove any leftover with `docker volume rm <name>`. If you also followed the
+   [backup example](docs/how-to-operate-atanor.md#back-up-and-restore), remove the aws-cli image
+   (`docker rmi amazon/aws-cli`) and the `backup/` directory.
+
 Measured from a clean container with Docker on a laptop (linux/amd64, images already pulled), the
 steps take 12.9 s in all: step 3 1.3 s, step 4 2.4 s, step 5 3.8 s, step 6 5.0 s (the node applies the new
 deployment at its next poll). The times leave out the image pulls (the SeaweedFS image is about
 725 MB). On a clean 2 vCPU, 3 GB virtual machine the first start of the node in step 4 took 38.6 s,
 the next two 15.2 s and about 6.4 s, against 2.4 s on the laptop; the whole sequence took about 51 s
 there, pulls excluded; the first pull of the SeaweedFS image took about 75 s on that VM. The image is 55 MB to pull (compressed) and 224 MB on disk once
-unpacked. The `package` id and the byte count in your output may differ.
+unpacked.
+
+Measured again on a 2 vCPU, 3 GB virtual machine on 2026-11-18 with v0.4.0: the pull of the node
+image took 58 s and the pull of the SeaweedFS image 62 s; the node was ready after 28 s (step 4) and
+the deploy took 30 s (step 5). The quick start without the pulls took about 1 minute 45 seconds.
+The `package` id and the byte count in your output may differ.
 
 From here: [deploy changes and roll back](docs/how-to-deploy-a-worker.md), [write your own WASM
 worker](docs/how-to-write-a-wasm-worker.md), [run it in production](docs/how-to-run-in-production.md).
@@ -183,13 +191,12 @@ rehearsal, an admin API, a CLI, telemetry and a read-only dashboard. The model i
 Atanor ships as one daemon, configured by `ATANOR_*` environment variables or a JSON file
 ([reference](docs/configuration.md#the-daemon-environment-and-file)).
 
-- **Container image:** `ghcr.io/this-is-npc/atanor` (`:latest` or a version tag), for linux/amd64 and
-  linux/arm64. No release has published it yet; the first one will come with 0.4.0, and until then
-  you build it from source (below). It starts a node with no argument and runs the `atanor` command for `deploy`, `status`
-  and the rest.
-- **Tarball:** `atanor-<version>-linux-<arch>.tar.gz` on each GitHub release from 0.4.0 on (the
-  earlier releases have none; [build it](docs/how-to-build-the-release.md#build-the-tarball) yourself
-  meanwhile). It needs glibc 2.38 or later,
+- **Container image (the default):** `docker pull ghcr.io/this-is-npc/atanor:0.4.0` <!-- x-release-please-version -->
+  (`:latest` or a version tag), for linux/amd64 and linux/arm64. It pulls without a login. It starts
+  a node with no argument and runs the `atanor` command for `deploy`, `status` and the rest.
+- **Tarball:** `atanor-<version>-linux-<arch>.tar.gz`, with its sha256, on each GitHub release from
+  0.4.0 on (the earlier releases have none; [build it](docs/how-to-build-the-release.md#build-the-tarball)
+  yourself for those). It needs glibc 2.38 or later,
   OpenSSL 3.4 or later, `libstdc++6` and `libncurses6` ([details](docs/how-to-build-the-release.md#build-the-tarball)).
 - **From source:** `docker build --target runtime -t atanor:local .` in a clone of the repository, then
   use `atanor:local` as the image ([how to build the image](docs/how-to-build-the-release.md)).
@@ -204,7 +211,9 @@ The [quick start](#run-it-in-1-minute) removes what it created in its step 7. Fo
 1. Stop the node and give it time to hand its cells back: `docker stop --time 90 <node>` (or
    `systemctl stop`, for the tarball), then `docker rm -v <node>`.
 2. Remove the local copies of cells: the volume or directory mounted at `/var/lib/atanor/cells` (the
-   `data_dir`; `ATANOR_DATA_DIR` changes it). They are copies: the bucket holds the data.
+   `data_dir`; `ATANOR_DATA_DIR` changes it). They are copies: the bucket holds the data. The node
+   image declares an anonymous volume there, which `docker rm -v` removes. After a failed `docker run`,
+   check `docker volume ls` and remove the leftover with `docker volume rm <name>`.
 3. Remove the secrets you created for it: the files behind `ATANOR_ADMIN_TOKEN_FILE`,
    `ATANOR_COOKIE_FILE` and the S3 key files, and revoke the S3 keys at your provider.
 4. Remove the image (`docker rmi <image>`) or the unpacked tarball directory.
@@ -236,7 +245,7 @@ To run it:
 
 To develop Atanor ([how to build and test](docs/how-to-build-and-test.md)):
 
-- `mise` and Docker. `mise.toml` pins Erlang 28.5, Elixir 0.4.0 and Rust 1.97.1.
+- `mise` and Docker. `mise.toml` pins Erlang 28.5, Elixir 1.20.4 and Rust 1.97.1.
 - A C compiler: Alambique and `native/atanor_wasm` (Wasmtime) compile native libraries, and WASM
   guests need the `wasm32-wasip2` target.
 - Alambique, fetched from its public git repository at the release tag in `alambique.ref`.
