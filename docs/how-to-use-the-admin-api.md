@@ -223,11 +223,12 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    admission counters (`admission`: requests in flight, refusals by reason (`refused`: `memory`, `disk`,
    `in_flight`, `queue_timeout`, `worker_queue`, `nested_calls`, `wake_gate`, `awake_limit`, `busy` and
    `disk_full`, and `unavailable` for every other 503, split by reason in `unavailable_by_reason`;
-   `awake_limit` includes a wake refused because the wake slots and queue are full), the last
+   `awake_limit` includes a wake refused because the wake slots and queue are full; `awake_limit_by` counts those wakes
+   by reason: `no_wait`, `queue_full`, `wait_expired`, `crowded` and `max_children`), the last
    working set, the disk use of `data_dir` against its budget, and whether the node is refusing, see
    [configuration](configuration.md)), `wakes` (cells woken since the node started), `wake_ms` (the time those wakes took: `total` and `max`, in milliseconds), `hibernations` (cells hibernated, by the outcome of
-   the compaction before their release: `compaction` with `none`, `done`, `deadline` and `error`, and
-   `tail_max`, the longest WAL tail found), `pressure` (cells
+   the compaction before their release: `compaction` with `none`, `done`, `deadline`, `deadline_error` and `error`, and
+   `tail_max`, the longest WAL tail left after a release compaction), `pressure` (cells
    hibernated by memory pressure), `store`, the circuit breaker of
    each store location as in `/health`, and `consent`: which of `hosts`, `http_allow` and `namespaces` the
    node enforces, and `open: true` when none is

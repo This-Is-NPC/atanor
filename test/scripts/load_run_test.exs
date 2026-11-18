@@ -163,6 +163,8 @@ defmodule Atanor.LoadRunTest do
     assert newer["refusals"]["by_cause"] == %{"unavailable" => 7, "busy" => 1}
     assert newer["refusals"]["attributed"] == 8 and newer["refusals"]["unattributed"] == 2
     assert newer["admission"]["unavailable_by_reason"] == %{"store_unavailable" => 3, "breaker_open" => 0}
+    assert newer["admission"]["awake_limit_by"] == %{"no_wait" => 0, "wait_expired" => 4}
+    assert refusals["admission"]["awake_limit_by"] == :null
     assert newer["admission"]["refused_unreported"] |> Enum.member?("unavailable") == false
     assert newer["evictions"]["wakes"] == 15
 

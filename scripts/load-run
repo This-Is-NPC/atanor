@@ -624,7 +624,7 @@ def per_node_summary(samples):
         out[name] = {"throttled_ms": round((throttled[-1] - throttled[0]) * 1000) if throttled else None,
                      "throttled_jump_ms": round(max((b - a for a, b in zip(throttled, throttled[1:])), default=0) * 1000) if throttled else None,
                      "in_flight_max": max((a.get("in_flight") or 0 for a in admissions), default=None), "refused": refused_delta(admissions),
-                     "unavailable_by_reason": reasons_delta(admissions), "wakes": counter_growth([(r or {}).get("wakes") for r, _ in reads]),
+                     "unavailable_by_reason": reasons_delta(admissions), "awake_limit_by": reasons_delta(admissions, "awake_limit_by"), "wakes": counter_growth([(r or {}).get("wakes") for r, _ in reads]),
                      "compaction": compaction_growth([r for r, _ in reads]),
                      "disk_budget_bytes": next((a["disk_budget_bytes"] for a in reversed(admissions) if isinstance(a.get("disk_budget_bytes"), int)), None),
                      "runtime_failed": sum(1 for r, _ in reads if r is None), "runtime_error": next((e for _, e in reversed(reads) if e), None)}
@@ -640,10 +640,10 @@ def refused_delta(admissions):
     return {k: v - (first.get(k) or 0) for k, v in last.items() if isinstance(v, int)}
 
 
-def reasons_delta(admissions):
-    """{reason: growth between the first and the last of `admissions`} of `unavailable_by_reason` (the 503 `unavailable` answers by reason);
-    None when no admission reports it (an older node)."""
-    seen = [a["unavailable_by_reason"] for a in admissions if isinstance(a.get("unavailable_by_reason"), dict)]
+def reasons_delta(admissions, key="unavailable_by_reason"):
+    """{reason: growth between the first and the last of `admissions`} of `key`: `unavailable_by_reason` (the 503 `unavailable` answers by
+    reason) or `awake_limit_by` (the wakes Alambique refused, by reason); None when no admission reports it (an older node)."""
+    seen = [a[key] for a in admissions if isinstance(a.get(key), dict)]
     if not seen:
         return None
     return {k: v - (seen[0].get(k) or 0) for k, v in seen[-1].items() if isinstance(v, int)}
@@ -688,7 +688,7 @@ def admission_summary(samples):
     disk = [a["disk_used_bytes"] for a in seen if isinstance(a.get("disk_used_bytes"), int)]
     budget = last.get("disk_budget_bytes")
     delta = refused_delta(seen)
-    return {"refused": delta, "unavailable_by_reason": reasons_delta(seen), "refused_unreported": [k for k in REFUSED_KEYS if k not in delta], "refusing_seen": any(a.get("refusing") or a.get("disk_refusing") for a in seen),
+    return {"refused": delta, "unavailable_by_reason": reasons_delta(seen), "awake_limit_by": reasons_delta(seen, "awake_limit_by"), "refused_unreported": [k for k in REFUSED_KEYS if k not in delta], "refusing_seen": any(a.get("refusing") or a.get("disk_refusing") for a in seen),
             "in_flight_max": max((a.get("in_flight") or 0 for a in seen), default=None), "working_set_max_bytes": max((a.get("working_set_bytes") or 0 for a in seen), default=None),
             "disk_used_start_bytes": disk[0] if disk else None, "disk_used_max_bytes": max(disk) if disk else None,
             "disk_used_max_pct_of_budget": round(100 * max(disk) / budget, 1) if disk and budget else None,

@@ -69,7 +69,13 @@ defmodule Atanor.Admission do
   @warned_at 24
   @wake_ms_total 25
   @wake_ms_max 26
-  @counters 26
+  @compaction_deadline_error 27
+  @overloaded_no_wait 28
+  @overloaded_queue_full 29
+  @overloaded_wait_expired 30
+  @overloaded_crowded 31
+  @overloaded_max_children 32
+  @counters 32
   @warn_every_ms 1_000
   @deadline {__MODULE__, :deadline}
 
@@ -259,12 +265,34 @@ defmodule Atanor.Admission do
     none: @compaction_none,
     done: @compaction_done,
     deadline: @compaction_deadline,
+    deadline_error: @compaction_deadline_error,
     error: @compaction_error
   }
 
+  @overloaded_counters %{
+    no_wait: @overloaded_no_wait,
+    queue_full: @overloaded_queue_full,
+    wait_expired: @overloaded_wait_expired,
+    crowded: @overloaded_crowded,
+    max_children: @overloaded_max_children
+  }
+
   @doc false
-  # Counts a hibernation by the outcome of its release compaction and keeps the longest `tail` (WAL files) found
-  # (`hibernations/1`). Any other outcome is ignored.
+  # Counts a wake Alambique refused with `{:error, :overloaded}`, by the reason of its event (`stats/1`,
+  # `awake_limit_by`). Any other reason is ignored.
+  @spec overloaded(atom, atom) :: :ok
+  def overloaded(name, reason) do
+    with %{counters: counters} <- :persistent_term.get({__MODULE__, name}, nil),
+         {:ok, counter} <- Map.fetch(@overloaded_counters, reason) do
+      :atomics.add(counters, counter, 1)
+    end
+
+    :ok
+  end
+
+  @doc false
+  # Counts a hibernation by the outcome of its release compaction and keeps the longest `tail` (WAL files) left
+  # after it (`hibernations/1`). Any other outcome is ignored.
   @spec hibernation(atom, atom, non_neg_integer) :: :ok
   def hibernation(name, outcome, tail) do
     with %{counters: counters} <- :persistent_term.get({__MODULE__, name}, nil),
@@ -285,7 +313,7 @@ defmodule Atanor.Admission do
     :ok
   end
 
-  @doc "The hibernations on this node since it started, by compaction outcome, and the longest tail they found."
+  @doc "The hibernations on this node since it started, by compaction outcome, and the longest tail left after one."
   @spec hibernations(atom) :: %{compaction: %{atom => non_neg_integer}, tail_max: non_neg_integer}
   def hibernations(name) do
     counters = handle(name).counters
@@ -364,7 +392,9 @@ defmodule Atanor.Admission do
   that would have woken a cell while the memory gate was refusing), `queue_timeout` (waited past
   `http: [queue_wait_ms:]`), `worker_queue` (the WASM queue was full), `nested_calls` (calls between workers
   refused at `max_nested_calls`), `awake_limit` (the awake cells are at their ceiling, or the wake slots and queue are full: Alambique's bare
-  `{:error, :overloaded}`, also when it refuses the wake of a cell that a request is looking up), `busy` and
+  `{:error, :overloaded}`, also when it refuses the wake of a cell that a request is looking up; `awake_limit_by`
+  counts the wakes Alambique refused by its reason: `no_wait`, `queue_full`, `wait_expired`, `crowded`,
+  `max_children`), `busy` and
   `disk_full`. Every other 503 the HTTP layer answers is in `refused.unavailable`, and `unavailable_by_reason`
   has the same count by reason (`owner_unreachable`, `fenced`, `unknown_outcome`, `overloaded_unattributed`,
   ...); `overloaded_unattributed` is a 503 `overloaded` whose gate is unknown.
@@ -390,6 +420,8 @@ defmodule Atanor.Admission do
         disk_full: :atomics.get(counters, @refused_disk_full),
         unavailable: :atomics.get(counters, @refused_unavailable)
       },
+      awake_limit_by:
+        Map.new(@overloaded_counters, fn {reason, counter} -> {reason, :atomics.get(counters, counter)} end),
       unavailable_by_reason: Map.new(:ets.tab2list(handle.reasons)),
       working_set_bytes: if(handle.memory, do: :atomics.get(counters, @working_set)),
       limit_bytes: handle.limit,

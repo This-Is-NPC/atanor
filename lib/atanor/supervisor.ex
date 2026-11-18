@@ -35,6 +35,7 @@ defmodule Atanor.Supervisor do
     log_clear_listeners(config)
     Atanor.WakeLog.attach(config.name)
     Atanor.HibernateLog.attach(config.name)
+    Atanor.OverloadLog.attach(config.name)
 
     children =
       [
