@@ -88,7 +88,7 @@ Attach handlers as in [telemetry.md](telemetry.md). The ones to chart or alert o
 | `[:alambique, :cell, :quarantined]` | count | Any | A cell that crashed the VM repeatedly and was frozen. |
 | Log `atanor: store breaker open for ...` | line | Any | The cause is the lines before it: `atanor: store failure: :get on default: reason=:timeout_recv counted=true`. |
 | Log `atanor: slow wake of ...` | line | Any | A wake of 1 s or more, with the store requests it made and the time they took. |
-| `[:alambique, :cell, :hibernate]` with `compaction: :deadline` or `:error`, `/runtime` `.hibernations.compaction` | count | `deadline` or `error` rising | Cells leave long WAL chains, so their next wake reads many segments. The node also logs `atanor: release compaction of ...`, at most once per second. Check the store's latency; `compaction: [release_deadline_ms:]` (3 s by default) passes through to Alambique ([configuration](configuration.md)). |
+| `[:alambique, :cell, :hibernate]` with `compaction: :deadline`, `:deadline_error` or `:error`, `/runtime` `.hibernations.compaction` | count | `deadline`, `deadline_error` or `error` rising | Cells leave long WAL chains (`.hibernations.tail_max` is the longest left after a compaction), so their next wake reads many segments. The node also logs `atanor: release compaction of ...`, at most once per second. Check the store's latency; `compaction: [release_deadline_ms:]` (3 s by default) passes through to Alambique ([configuration](configuration.md)). |
 
 ## Recommended alerts
 
@@ -555,7 +555,7 @@ retry-after: 1
 | `in_flight` | 1,024 requests being served | `Atanor.Admission` | Add nodes, or find what makes requests slow (the store, a worker). |
 | `queue_timeout` | An admitted request waited 5 s for a wake, a cell or a WASM slot | `Atanor.Admission`, `Atanor.Cell` | Usually the store is slow: [the store breaker](#the-store-breaker-is-open) or [slow wake](#cells-wake-slowly). The request did not run; the client retries. |
 | `wake_gate` | The memory gate is closed and the cell is not awake anywhere | `Atanor.Cell` | As `memory`. |
-| `awake_limit`, `busy`, `disk_full` | Alambique's own limits: awake cells full, or the wake slots and queue full (many cells waking at once, on a request's lookup or call); a cell's waiting callers or the statement slots full; SQLite out of space | `Atanor.Unavailable` | Raise `awake: [max_cells:]`, `sql: [max_concurrent_statements:]`, or the disk. |
+| `awake_limit`, `busy`, `disk_full` | Alambique's own limits: awake cells full, or the wake slots and queue full (many cells waking at once, on a request's lookup or call); a cell's waiting callers or the statement slots full; SQLite out of space | `Atanor.Unavailable` | Raise `awake: [max_cells:]`, `sql: [max_concurrent_statements:]`, or the disk. `/runtime` `.admission.awake_limit_by` says why Alambique refused a wake: `no_wait`, `queue_full`, `wait_expired` (raise `awake: [wake_queue_ms:]` or `max_wakes`), `crowded` or `max_children`. |
 | `worker_queue`, `nested_calls` | The WASM queue is full; calls between workers above `max_nested_calls` | `Atanor.Wasm` | Raise `worker_queue` or `queue` of the WASM settings, or fix the worker that calls itself in a loop. |
 
 Only `memory`, `disk` and `queue_timeout` were reproduced; the others are read from

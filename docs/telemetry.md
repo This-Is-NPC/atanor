@@ -183,6 +183,11 @@ the limit or more (design §4.3,
   overload refusals, and `unavailable` for every other 503. `awake_limit` also counts a wake that Alambique
   refuses because its wake slots and queue are full. A 503 `overloaded` that names no gate counts as
   `unavailable` (`unavailable_by_reason.overloaded_unattributed`).
+* `admission.awake_limit_by` splits the wakes Alambique refused with `{:error, :overloaded}` by the `reason` of its
+  `[:alambique, :admission, :overloaded]` event: `no_wait` (no free wake slot and no time to wait for one),
+  `queue_full`, `wait_expired`, `crowded` and `max_children`. The event names no instance, so a VM that runs more
+  than one instance counts the refusals of all of them in each. It counts wakes, and `awake_limit` counts calls
+  (and also the awake-cells ceiling), so the sum of `awake_limit_by` can differ from `awake_limit`.
 * `admission.unavailable_by_reason` splits `refused.unavailable` by the `reason` of the answer: for example
   `owner_unreachable`, `fenced`, `owner_unknown`, `store_unavailable`, `deployment_unavailable`, `draining`,
   `unknown_outcome`, `keys_unavailable` (a 503 of an `auth:` route) and `overloaded_unattributed` (an
@@ -200,12 +205,14 @@ the limit or more (design §4.3,
   a wake waited for a slot.
 * `hibernations.compaction` counts the cells hibernated on this node since it started, by the outcome of the
   compaction Alambique runs on the WAL tail before it releases the lease: `none` (not tried, or the call had
-  less than `release_reserve_ms` left), `done`, `deadline` (`release_deadline_ms` passed and the cell was
-  released with its chain partly merged) and `error` (the pass failed and the cell was released anyway).
-  `hibernations.tail_max` is the longest tail, in level-0 files, that a release found. They come from
+  less than `release_reserve_ms` left), `done`, `deadline` (the deadline passed and the cell was released with
+  its chain partly merged; the merges already made stay), `deadline_error` (the deadline passed while the cell's
+  files were being listed, before the chain was known) and `error` (the pass failed and the cell was released
+  anyway). `hibernations.tail_max` is the longest tail, in level-0 files, that was left after a release
+  compaction (before Alambique 0.13.0 it was the tail found before it). They come from
   Alambique's `[:alambique, :cell, :hibernate]` event, which every hibernation emits (idle, on request, at
   shutdown), and the event names no instance, so a VM that runs more than one instance counts all of them in
-  each. A `deadline` or `error` also logs `atanor: release compaction of "<cell>" ended with ...`, at most once
+  each. A `deadline`, `deadline_error` or `error` also logs `atanor: release compaction of "<cell>" ended with ...`, at most once
   per second per node.
 
 ## WASM events

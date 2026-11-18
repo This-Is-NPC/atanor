@@ -402,7 +402,8 @@ def refusal_scenario(name, grown, statuses=None, newer=False, reasons=None):
         # A newer node also counts the release compaction outcomes: 2 cut by the deadline after the first reading, tail 192.
         hibernations = {"compaction": {"none": 1, "done": 5 if len(seen) > 1 else 3, "deadline": 2 if len(seen) > 1 else 0, "error": 0}, "tail_max": 192 if len(seen) > 1 else 6}
         more = {"wakes": 20 if len(seen) > 1 else 5, "hibernations": hibernations} if newer else {}
-        more_admission = {"unavailable_by_reason": {"store_unavailable": 4 if len(seen) > 1 else 1, "breaker_open": 2}} if newer else {}
+        more_admission = {"unavailable_by_reason": {"store_unavailable": 4 if len(seen) > 1 else 1, "breaker_open": 2},
+                                    "awake_limit_by": {"no_wait": 0, "wait_expired": 5 if len(seen) > 1 else 1}} if newer else {}
         return {"admission": {"in_flight": 3, "refused": counted, "disk_used_bytes": 50 * MB, "disk_budget_bytes": 100 * MB, **more_admission}, "pressure": pressure, **more}
 
     real, real_admin = m.Round.run_generators, m.admin_json

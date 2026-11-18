@@ -22,15 +22,18 @@ defmodule Atanor.HibernateLogTest do
       node = Node.start(workers: [Manifests.jobs("jobs")])
       on_exit(fn -> Node.stop(node) end)
       before = hibernations(node.name)
-      assert %{compaction: %{none: _, done: _, deadline: _, error: _}, tail_max: _} = before
+      assert %{compaction: %{none: _, done: _, deadline: _, deadline_error: _, error: _}, tail_max: _} = before
 
-      for outcome <- [:none, :done, :deadline, :error], do: hibernate(node.name, outcome, "jobs.counted", 7, 1)
+      for outcome <- [:none, :done, :deadline, :deadline_error, :error],
+          do: hibernate(node.name, outcome, "jobs.counted", 7, 1)
+
       hibernate(node.name, :done, "jobs.counted", 3, 1)
 
       now = hibernations(node.name)
       assert now.compaction.none >= before.compaction.none + 1
       assert now.compaction.done >= before.compaction.done + 2
       assert now.compaction.deadline >= before.compaction.deadline + 1
+      assert now.compaction.deadline_error >= before.compaction.deadline_error + 1
       assert now.compaction.error >= before.compaction.error + 1
       assert now.tail_max >= 7
     end
@@ -51,6 +54,11 @@ defmodule Atanor.HibernateLogTest do
     test "a compaction cut by its deadline is logged with the cell, tail and time" do
       log = capture_log(fn -> hibernate(nil, :deadline, "jobs.cut", 192, 3_000) end)
       assert log =~ ~s(release compaction of "jobs.cut" ended with deadline after 3000 ms, 192 WAL files)
+    end
+
+    test "a compaction cut while listing is logged" do
+      log = capture_log(fn -> hibernate(nil, :deadline_error, "jobs.listing", 0, 3_000) end)
+      assert log =~ ~s(release compaction of "jobs.listing" ended with deadline_error after 3000 ms)
     end
 
     test "a failed compaction is logged" do
