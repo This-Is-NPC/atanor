@@ -29,6 +29,17 @@ defmodule Atanor.HotCellsConfigTest do
     assert %{enabled: true, cpu_enter: 80, cpu_exit: 50, tags: ["dedicated"], affinity: [{"rooms", "dedicated"}]} = hot
   end
 
+  test "release_deadline_ms is nil or a non-negative integer" do
+    assert %{hot_cells: %{release_deadline_ms: nil}} = build(nil)
+    assert %{hot_cells: %{release_deadline_ms: nil}} = build(enabled: true)
+    assert %{hot_cells: %{release_deadline_ms: 0}} = build(release_deadline_ms: 0)
+    assert %{hot_cells: %{release_deadline_ms: 5_000}} = build(release_deadline_ms: 5_000)
+
+    for bad <- [-1, 1.5, "3000", :infinity] do
+      assert_raise ArgumentError, ~r/release_deadline_ms/, fn -> build(release_deadline_ms: bad) end
+    end
+  end
+
   test "refuses what cannot work" do
     for bad <- [
           [cpu_exit: 90],

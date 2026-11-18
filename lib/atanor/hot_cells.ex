@@ -448,25 +448,18 @@ defmodule Atanor.HotCells do
     end)
   end
 
-  # The compaction of the release may use the whole move budget: Alambique still stops it `release_reserve_ms`
-  # before the timeout, so it gets `move_timeout_ms` less that, not the 3 s of a drain. A node that turned the
-  # release compaction off (`compaction: [release_deadline_ms: 0]`) keeps it off for moves.
-  defp release_deadline(instance, timeout) do
-    case Registry.config(instance).alambique_opts[:compaction][:release_deadline_ms] do
-      0 -> 0
-      _ -> timeout
-    end
-  end
-
   # Runs the move and tells the server and, through it, the peers.
   defp run(instance, address, id, target, reason, timeout) do
     started = System.monotonic_time()
     # A rebalance move leaves a busy cell where it is: the owner decides, so there is no check-then-move window.
-    opts = [
-      timeout: timeout,
-      only_if_idle: reason == :rebalance,
-      release_deadline_ms: release_deadline(instance, timeout)
-    ]
+    opts = [timeout: timeout, only_if_idle: reason == :rebalance]
+
+    # Without the option, Alambique uses the node's `compaction: [release_deadline_ms:]`.
+    opts =
+      case Registry.config(instance).hot_cells.release_deadline_ms do
+        nil -> opts
+        ms -> [release_deadline_ms: ms] ++ opts
+      end
 
     result = Cell.move(instance, address, target, opts)
     duration = System.monotonic_time() - started

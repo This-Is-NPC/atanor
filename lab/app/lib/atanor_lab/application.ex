@@ -70,7 +70,7 @@ defmodule AtanorLab.Application do
     if System.get_env("ATANOR_LAB_HOT_CELLS") == "on" do
       integers =
         for key <- ~w(interval_ms sustain_ms write_enter write_exit read_enter read_exit queue_enter queue_exit
-                      cpu_enter cpu_exit margin residence_ms node_cooldown_ms max_moves move_timeout_ms stale_ms
+                      cpu_enter cpu_exit margin residence_ms node_cooldown_ms max_moves move_timeout_ms release_deadline_ms stale_ms
                       replica_enter replica_exit replica_hold_ms)a,
             value = System.get_env("ATANOR_LAB_HOT_" <> String.upcase(Atom.to_string(key))),
             do: {key, String.to_integer(value)}
