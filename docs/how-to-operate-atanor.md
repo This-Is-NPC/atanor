@@ -116,14 +116,36 @@ point inside its retention window, which does not help if the bucket is gone
 `owners/`, `meta/`, `alarms/`, `audit/`. Without `packages/` and `workers/` the nodes have no worker to run;
 without `owners/` a cell namespace has no owner. Not copied, by design: the secrets, and the `data_dir`.
 
-**How to copy.** Any S3 client works. The commands below use MinIO's `mc` from its image, in the same Docker
-network as the store, with the keys in `$ACCESS` and `$SECRET` (placeholders; here they are read from the
-files that the nodes use). The alias `s` is the store, and `/b` is the backup directory on the host.
+**How to copy.** Any S3 client works. The commands below use the AWS CLI from the `amazon/aws-cli` image
+(unpinned: no tag was checked), in the same Docker network as the store. They fit the
+[README quick start](../README.md#run-it-in-1-minute), run from the directory where you ran it: the network
+`atanor-net`, the store `atanor-store:8333`, the bucket `atanor` with no prefix, and the keys in
+`atanor-secrets/access_key` and `atanor-secrets/secret_key`. For another setup, change those names.
+
+The function `s3` runs one AWS CLI command. The keys reach the container as environment variables, so they
+show in `docker inspect` while it runs. `--user` makes the files in `backup/` yours, not root's; `HOME=/tmp`
+gives that user a writable home. On the host, `backup/` is the backup directory and `backup/bucket` holds the
+copy; in the container the same directory is `/b`.
 
 ```sh
-mc() { docker run --rm --name atanor-runbook-mc --network NET -v "$BACKUP:/b" \
-  -e MC_HOST_s="http://$ACCESS:$SECRET@STORE_HOST:8333" minio/mc "$@"; }
+mkdir -p backup
+s3() { docker run --rm --network atanor-net --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -e AWS_ACCESS_KEY_ID="$(cat atanor-secrets/access_key)" \
+  -e AWS_SECRET_ACCESS_KEY="$(cat atanor-secrets/secret_key)" -e AWS_DEFAULT_REGION=us-east-1 \
+  -v "$PWD/backup:/b" amazon/aws-cli --endpoint-url http://atanor-store:8333 "$@"; }
 ```
+
+Copy the bucket `atanor` (all of it) to `backup/bucket`, and copy it back to restore:
+
+```sh
+s3 s3 sync s3://atanor /b/bucket     # back up: bucket to the host
+s3 s3 sync /b/bucket s3://atanor     # restore: host to the bucket
+```
+
+The restore needs a store that is running with its bucket created, as in step 3 of the quick start. When
+you are done, remove `backup/` and the image (`docker rmi amazon/aws-cli`). The measurements below were taken
+with MinIO's `mc mirror`, whose progress tables they show; `s3 s3 sync` makes the same copy and prints
+other lines.
 
 **Which copy is safe.** Read this before you choose, because the two ways differ ([the evidence](#restore-from-a-copy-of-a-live-bucket)):
 
@@ -155,7 +177,8 @@ beta 40 rows, last seq 40, sha256 8cf54163272ea7e9
 gamma 40 rows, last seq 40, sha256 e0462940bf8b5ee4
 ```
 
-The bucket held 475 objects and 2.4 MiB (`mc du s/atanor`).
+The bucket held 475 objects and 2.4 MiB (`mc du s/atanor`; with the function above,
+`s3 s3 ls --recursive --summarize s3://atanor | tail -2`).
 
 ### (a) Lose the node
 
@@ -228,7 +251,7 @@ then the node was drained and copied:
 curl -s -X POST -H "authorization: Bearer $TOKEN" $ADMIN/drain
 until [ "$(docker inspect -f '{{.State.Status}}' node-d)" = exited ]; do sleep 1; done
 docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' node-d
-mc mirror s/atanor /b/atanor
+s3 s3 sync s3://atanor /b/bucket
 ```
 
 ```text
@@ -244,7 +267,7 @@ back, and a new node was started on a new, empty `data_dir`:
 ```sh
 docker rm -f node-d store                # the disaster
 # start a new store as in the README, then create the bucket (HTTP 200)
-mc mirror /b/atanor s/atanor
+s3 s3 sync /b/bucket s3://atanor
 docker run -d --name node-e ... -v /tmp/atanor-runbook-data-e:/var/lib/atanor/cells ...
 for room in alpha beta gamma delta; do curl -s -H "host: scoreboard.localhost" "http://127.0.0.1:14040/rooms/$room" | jq -c '{last_seq,ranked_through}'; done
 curl -s -H "host: scoreboard.localhost" "http://127.0.0.1:14040/rooms/delta/writes?limit=1000" | jq '[.writes[].id|select(startswith("e-"))]|length'
@@ -304,7 +327,7 @@ more than `alarms.timeout_ms`, the next enqueue or re-arm of that cell checks th
 it is missing. What remains is a cell with pending jobs that gets no new enqueue: it stays stuck
 ([what-does-not-work.md](what-does-not-work.md)). Enqueue a job to the cell, or use the repair below.
 
-Copying `alarms/` last (a second `mc mirror` after the first, with `--exclude 'atanor/alarms/*'`) did not avoid
+Copying `alarms/` last (a second `mc mirror` after the first, with `--exclude 'atanor/alarms/*'`; in the lab bucket the objects sat under the prefix `atanor`) did not avoid
 it: the room `delta`, copied that way with a writer running, came back with `{"last_seq":50,"ranked_through":44}`.
 **Repair**, observed to work: put an empty-looking object at the key of the missing entry. Read the row from a
 copy of the cell (`mix alambique.restore rooms.delta out.db`, then
