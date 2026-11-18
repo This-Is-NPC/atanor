@@ -116,8 +116,8 @@ point inside its retention window, which does not help if the bucket is gone
 `owners/`, `meta/`, `alarms/`, `audit/`. Without `packages/` and `workers/` the nodes have no worker to run;
 without `owners/` a cell namespace has no owner. Not copied, by design: the secrets, and the `data_dir`.
 
-**How to copy.** Any S3 client works. The commands below use the AWS CLI from the `amazon/aws-cli` image
-(unpinned: no tag was checked), in the same Docker network as the store. They fit the
+**How to copy.** Any S3 client works. The commands below use the AWS CLI from the `amazon/aws-cli` image,
+in the same Docker network as the store. They fit the
 [README quick start](../README.md#run-it-in-1-minute), run from the directory where you ran it: the network
 `atanor-net`, the store `atanor-store:8333`, the bucket `atanor` with no prefix, and the keys in
 `atanor-secrets/access_key` and `atanor-secrets/secret_key`. For another setup, change those names.
