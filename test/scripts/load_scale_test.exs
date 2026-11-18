@@ -192,6 +192,7 @@ defmodule Atanor.LoadScaleTest do
              # the stub nodes report no pressure counter
              "pressure_hibernated" => :null,
              "wakes" => :null,
+             "compaction" => :null,
              "disk_used_max_pct_of_budget" => 10.0,
              "disk_budget_bytes" => 100 * 1_048_576
            }

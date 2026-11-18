@@ -191,6 +191,15 @@ the limit or more (design §4.3,
 * `wakes` is the number of cells woken on this node since it started, counted from Alambique's
   `[:alambique, :cell, :wake]` event with `result: :ok`. The event names no instance, so a VM that runs more
   than one instance counts the wakes of all of them in each.
+* `hibernations.compaction` counts the cells hibernated on this node since it started, by the outcome of the
+  compaction Alambique runs on the WAL tail before it releases the lease: `none` (not tried, or the call had
+  less than `release_reserve_ms` left), `done`, `deadline` (`release_deadline_ms` passed and the cell was
+  released with its chain partly merged) and `error` (the pass failed and the cell was released anyway).
+  `hibernations.tail_max` is the longest tail, in level-0 files, that a release found. They come from
+  Alambique's `[:alambique, :cell, :hibernate]` event, which every hibernation emits (idle, on request, at
+  shutdown), and the event names no instance, so a VM that runs more than one instance counts all of them in
+  each. A `deadline` or `error` also logs `atanor: release compaction of "<cell>" ended with ...`, at most once
+  per second per node.
 
 ## WASM events
 

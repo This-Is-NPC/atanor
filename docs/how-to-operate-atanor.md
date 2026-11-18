@@ -86,6 +86,7 @@ Attach handlers as in [telemetry.md](telemetry.md). The ones to chart or alert o
 | `[:alambique, :cell, :quarantined]` | count | Any | A cell that crashed the VM repeatedly and was frozen. |
 | Log `atanor: store breaker open for ...` | line | Any | The cause is the lines before it: `atanor: store failure: :get on default: reason=:timeout_recv counted=true`. |
 | Log `atanor: slow wake of ...` | line | Any | A wake of 1 s or more, with the store requests it made and the time they took. |
+| `[:alambique, :cell, :hibernate]` with `compaction: :deadline` or `:error`, `/runtime` `.hibernations.compaction` | count | `deadline` or `error` rising | Cells leave long WAL chains, so their next wake reads many segments. The node also logs `atanor: release compaction of ...`, at most once per second. Check the store's latency; `compaction: [release_deadline_ms:]` (3 s by default) passes through to Alambique ([configuration](configuration.md)). |
 
 ## Recommended alerts
 

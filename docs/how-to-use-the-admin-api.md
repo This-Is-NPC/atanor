@@ -222,7 +222,9 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    `disk_full`, and `unavailable` for every other 503, split by reason in `unavailable_by_reason`;
    `awake_limit` includes a wake refused because the wake slots and queue are full), the last
    working set, the disk use of `data_dir` against its budget, and whether the node is refusing, see
-   [configuration](configuration.md)), `wakes` (cells woken since the node started), `pressure` (cells
+   [configuration](configuration.md)), `wakes` (cells woken since the node started), `hibernations` (cells hibernated, by the outcome of
+   the compaction before their release: `compaction` with `none`, `done`, `deadline` and `error`, and
+   `tail_max`, the longest WAL tail found), `pressure` (cells
    hibernated by memory pressure) and `store`, the circuit breaker of
    each store location as in `/health`. The counters are in
    [telemetry](telemetry.md#counters-of-get-runtime). A

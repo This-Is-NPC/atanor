@@ -399,7 +399,9 @@ def refusal_scenario(name, grown, statuses=None, newer=False, reasons=None):
         counted = {k: (v if len(seen) > 1 else 0) for k, v in grown.items()}
         # The memory pressure hibernated 4 cells after the first reading.
         pressure = {"hibernated": 7 if len(seen) > 1 else 3, "hibernate_at_bytes": 384 * MB}
-        more = {"wakes": 20 if len(seen) > 1 else 5} if newer else {}
+        # A newer node also counts the release compaction outcomes: 2 cut by the deadline after the first reading, tail 192.
+        hibernations = {"compaction": {"none": 1, "done": 5 if len(seen) > 1 else 3, "deadline": 2 if len(seen) > 1 else 0, "error": 0}, "tail_max": 192 if len(seen) > 1 else 6}
+        more = {"wakes": 20 if len(seen) > 1 else 5, "hibernations": hibernations} if newer else {}
         more_admission = {"unavailable_by_reason": {"store_unavailable": 4 if len(seen) > 1 else 1, "breaker_open": 2}} if newer else {}
         return {"admission": {"in_flight": 3, "refused": counted, "disk_used_bytes": 50 * MB, "disk_budget_bytes": 100 * MB, **more_admission}, "pressure": pressure, **more}
 

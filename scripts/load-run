@@ -625,6 +625,7 @@ def per_node_summary(samples):
                      "throttled_jump_ms": round(max((b - a for a, b in zip(throttled, throttled[1:])), default=0) * 1000) if throttled else None,
                      "in_flight_max": max((a.get("in_flight") or 0 for a in admissions), default=None), "refused": refused_delta(admissions),
                      "unavailable_by_reason": reasons_delta(admissions), "wakes": counter_growth([(r or {}).get("wakes") for r, _ in reads]),
+                     "compaction": compaction_growth([r for r, _ in reads]),
                      "disk_budget_bytes": next((a["disk_budget_bytes"] for a in reversed(admissions) if isinstance(a.get("disk_budget_bytes"), int)), None),
                      "runtime_failed": sum(1 for r, _ in reads if r is None), "runtime_error": next((e for _, e in reversed(reads) if e), None)}
     return out
@@ -652,6 +653,16 @@ def counter_growth(values):
     """Last minus first of the integers in `values` (a counter of /runtime, one per sample); None when it was never reported."""
     seen = [v for v in values if isinstance(v, int)]
     return seen[-1] - seen[0] if seen else None
+
+
+def compaction_growth(runtimes):
+    """{outcome: growth of the hibernations by release compaction outcome (`hibernations.compaction` of /runtime)} plus `tail_max` (the longest WAL
+    tail the node found, last reading); None when no reading reports it (an older node)."""
+    seen = [h for r in runtimes if isinstance(h := (r or {}).get("hibernations"), dict) and isinstance(h.get("compaction"), dict)]
+    if not seen:
+        return None
+    first, last = seen[0]["compaction"], seen[-1]["compaction"]
+    return {**{k: v - (first.get(k) or 0) for k, v in last.items() if isinstance(v, int)}, "tail_max": seen[-1].get("tail_max")}
 
 
 def budget_note(budgets):
@@ -694,6 +705,7 @@ def eviction_evidence(awake_start, awake_end, admission, samples=()):
     seen = [p["hibernated"] for s in samples if isinstance(p := (s.get("runtime") or {}).get("pressure"), dict) and isinstance(p.get("hibernated"), int)]
     return {"counter_in_runtime": False, "cells_awake_start": awake_start, "cells_awake_end": awake_end, "cells_awake_change": change,
             "pressure_hibernated": seen[-1] - seen[0] if seen else None, "wakes": counter_growth([(s.get("runtime") or {}).get("wakes") for s in samples]),
+            "compaction": compaction_growth([s.get("runtime") for s in samples]),
             "disk_used_max_pct_of_budget": admission.get("disk_used_max_pct_of_budget"), "disk_budget_bytes": admission.get("disk_budget_bytes")}
 
 
