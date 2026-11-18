@@ -50,7 +50,8 @@ defmodule Atanor.Daemon do
   @registry_ttl_ms 15_000
   @registry_renew_ms 3_000
 
-  # `listen` keys take `ip:port`; `bytes` take a number of bytes, with an optional k, m or g (powers
+  # `listen` keys take `ip:port`; `grants` take `name=item,item;name=item` (a map from a name to a list);
+  # `bytes` take a number of bytes, with an optional k, m or g (powers
   # of 1024). `:boot` keys are read by the start script.
   @keys [
     {"ATANOR_STORE", :url, "The bucket as `s3://bucket` or `s3://bucket/prefix` (prefix default `atanor`). Required."},
@@ -79,6 +80,12 @@ defmodule Atanor.Daemon do
     {"ATANOR_ADMIN_TOKEN", :secret, "The admin token, at least 32 bytes. Without it there is no admin API."},
     {"ATANOR_DASHBOARD_LISTEN", :listen, "The dashboard, `ip:port`. Default `0.0.0.0:4002`."},
     {"ATANOR_DASHBOARD_TOKEN", :secret, "The dashboard token, at least 32 bytes. Without it there is no dashboard."},
+    {"ATANOR_HOSTS", :grants,
+     "The HTTP hosts each worker may claim in its routes (`hosts:`), `worker=host,host;worker=*.domain`; `*` allows any host. Default: unset, any host."},
+    {"ATANOR_HTTP_ALLOW", :grants,
+     "The outbound HTTP hosts each worker may ask its manifest for (`http_allow:`), same format as `ATANOR_HOSTS`. Default: unset, any public host."},
+    {"ATANOR_NAMESPACES", :grants,
+     "The workers that may use each cell namespace (`namespaces:`), `namespace=worker,worker;namespace=worker`. Default: unset, the first worker to claim a namespace owns it."},
     {"ATANOR_ADVERTISE", :boot,
      "The host or IP the other nodes reach this one at; the Erlang node is `atanor@<it>`, which is what the node registry advertises."},
     {"ATANOR_NET_TICKTIME", :boot, "Seconds a silent peer goes unnoticed (Erlang's `net_ticktime`). Default 60."},
@@ -216,6 +223,7 @@ defmodule Atanor.Daemon do
     case result do
       {:ok, settings} ->
         Logger.info(describe(settings))
+        warn_open(settings)
         settings
 
       {:error, messages} ->
@@ -262,6 +270,17 @@ defmodule Atanor.Daemon do
   @spec describe(settings) :: String.t()
   def describe(%{effective: effective}),
     do: "atanor: effective settings " <> Enum.map_join(effective, " ", fn {name, text} -> "#{name}=#{text}" end)
+
+  # Without any of the three ceilings, a token with the deploy and activate scopes claims any free route,
+  # namespace and outbound host.
+  defp warn_open(%{opts: opts}) do
+    unless Enum.any?([:hosts, :namespaces, :http_allow], &Keyword.has_key?(opts, &1)) do
+      Logger.warning(
+        "atanor: this node trusts every deployer: any route host, cell namespace and outbound HTTP host is allowed; " <>
+          "restrict them with ATANOR_HOSTS, ATANOR_NAMESPACES and ATANOR_HTTP_ALLOW"
+      )
+    end
+  end
 
   # The file: a flat JSON object. Values are strings or integers; null counts as unset.
   defp decode(nil), do: {:ok, %{}}
@@ -462,6 +481,24 @@ defmodule Atanor.Daemon do
     end
   end
 
+  defp parse(:grants, text) do
+    entries =
+      for entry <- String.split(text, ";", trim: true) do
+        with [name, items] <- String.split(entry, "=", parts: 2),
+             items = items |> String.split(",") |> Enum.map(&String.trim/1),
+             name = String.trim(name),
+             true <- name != "" and "" not in items do
+          {name, items}
+        else
+          _ -> :error
+        end
+      end
+
+    if entries != [] and :error not in entries,
+      do: {:ok, Map.new(entries)},
+      else: {:error, "must be name=item,item;name=item"}
+  end
+
   defp parse(:listen, text) do
     with [host, port] <- Regex.run(~r/\A(.+):([0-9]+)\z/, text, capture: :all_but_first),
          {:ok, ip} <- :inet.parse_address(String.to_charlist(String.trim(host, "[") |> String.trim("]"))),
@@ -507,6 +544,9 @@ defmodule Atanor.Daemon do
     opts =
       [store: store, data_dir: v["ATANOR_DATA_DIR"] || @default_data_dir, ip: ip, port: port]
       |> put_unless(prefix == "", :prefix, prefix)
+      |> put_unless(is_nil(v["ATANOR_HOSTS"]), :hosts, v["ATANOR_HOSTS"])
+      |> put_unless(is_nil(v["ATANOR_HTTP_ALLOW"]), :http_allow, v["ATANOR_HTTP_ALLOW"])
+      |> put_unless(is_nil(v["ATANOR_NAMESPACES"]), :namespaces, v["ATANOR_NAMESPACES"])
       |> put_listener(:admin, v["ATANOR_ADMIN_LISTEN"], 4001, v["ATANOR_ADMIN_TOKEN"],
         header_timeout_ms: v["ATANOR_ADMIN_HEADER_TIMEOUT_MS"],
         body_timeout_ms: v["ATANOR_ADMIN_BODY_TIMEOUT_MS"]
@@ -600,6 +640,11 @@ defmodule Atanor.Daemon do
 
   defp shown(name, :url, parsed, _env),
     do: with({bucket, prefix} <- parsed[name], do: Path.join("s3://" <> bucket, prefix))
+
+  defp shown(name, :grants, parsed, _env) do
+    with %{} = grants <- parsed[name],
+         do: grants |> Enum.sort() |> Enum.map_join(";", fn {key, items} -> key <> "=" <> Enum.join(items, ",") end)
+  end
 
   defp shown(name, :listen, parsed, _env), do: with({ip, port} <- parsed[name], do: "#{:inet.ntoa(ip)}:#{port}")
   defp shown(name, _type, parsed, _env), do: with(value when value != nil <- parsed[name], do: to_string(value))
