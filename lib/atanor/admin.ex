@@ -28,7 +28,7 @@ defmodule Atanor.Admin do
 
   require Logger
 
-  alias Atanor.Admin.{Audit, Scope, Throttle, Tokens}
+  alias Atanor.Admin.{Audit, Reason, Scope, Throttle, Tokens}
   alias Atanor.Deployments.{Head, Service, Versions}
   alias Atanor.HTTP.Deadline
   alias Atanor.{Deployments, Jobs, Manifest, Overview, Registry, Rehearsal, Sweeps}
@@ -289,7 +289,7 @@ defmodule Atanor.Admin do
     else
       :error -> json(conn, 404, %{error: "unknown_node"})
       {:error, :invalid_limit} -> json(conn, 400, %{error: "invalid_limit"})
-      {:error, reason} -> json(conn, 504, %{error: "node_unreachable", reason: inspect(reason)})
+      {:error, reason} -> json(conn, 504, %{error: "node_unreachable", reason: Reason.unreachable(reason)})
     end
   end
 
@@ -365,7 +365,7 @@ defmodule Atanor.Admin do
           case Sweeps.start(name, attrs) do
             {:ok, operation} -> json(conn, 201, operation)
             {:error, :too_many_operations} -> json(conn, 429, %{error: "too_many_operations"})
-            {:error, reason} -> json(conn, 400, %{error: "invalid_operation", reason: inspect(reason)})
+            {:error, reason} -> json(conn, 400, %{error: "invalid_operation", reason: Reason.operation(reason)})
           end
         rescue
           exception -> json(conn, 400, %{error: "invalid_operation", reason: Exception.message(exception)})
@@ -623,7 +623,7 @@ defmodule Atanor.Admin do
   defp deploy_error(reason, _), do: {503, store_unavailable_body(reason)}
 
   defp format_package_error({:invalid_manifest, _, _} = error), do: Manifest.format_error(error)
-  defp format_package_error(reason), do: inspect(reason)
+  defp format_package_error(reason), do: Reason.package(reason)
 
   defp activate(conn, name, worker) do
     event = %{"action" => "version.activate", "worker" => worker}
@@ -702,15 +702,12 @@ defmodule Atanor.Admin do
     case Deployments.head(name, worker) do
       {:ok, head} ->
         applied = Map.get(Deployments.status(name), worker, %{applied: nil, error: nil})
+        {error, reason} = Reason.applied(applied.error)
 
         json(
           conn,
           200,
-          Map.merge(Head.to_map(head), %{
-            node: node(),
-            applied: applied.applied,
-            error: applied.error && inspect(applied.error)
-          })
+          Map.merge(Head.to_map(head), %{node: node(), applied: applied.applied, error: error, reason: reason})
         )
 
       {:error, error} ->

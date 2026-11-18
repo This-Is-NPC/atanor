@@ -1267,7 +1267,14 @@
                   "string",
                   "null"
                 ],
-                "description": "Why the head could not be applied."
+                "description": "A stable code for why the head could not be applied, for example `module_not_loaded`, `route_taken` or `listener_not_configured`; `apply_failed` for any other cause. `null` when none."
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "A fixed English text for people that goes with `error`; `null` when there is no error. The cause itself is in the node log."
               }
             },
             "required": [
