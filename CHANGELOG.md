@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.0](https://github.com/This-Is-NPC/atanor/compare/v0.5.0...v0.6.0) (2026-11-18)
+
+
+### Features
+
+* **load:** judge each scale load on its own ([0bd735c](https://github.com/This-Is-NPC/atanor/commit/0bd735c4c8b10907194cd7621568936a5fd83b99))
+* **telemetry:** time cell wakes ([209d5ef](https://github.com/This-Is-NPC/atanor/commit/209d5effd8f7f5400701b772f8572341e7a03574))
+
+
+### Bug Fixes
+
+* **build:** keep priv so a cached NIF loads ([6575968](https://github.com/This-Is-NPC/atanor/commit/65759683aa02577101bc280562a7f3b2eb21c2d0))
+
+
+### Performance Improvements
+
+* **jobs:** rearm inside the claim transaction ([98867c4](https://github.com/This-Is-NPC/atanor/commit/98867c4883a06f01f49f06f35e56d432543e7ca3))
+* **load:** add the 025 node-join round ([61e2831](https://github.com/This-Is-NPC/atanor/commit/61e2831dc6e3cb40f0a9b18d5223cf81b514cc46))
+
 ## [0.5.0](https://github.com/This-Is-NPC/atanor/compare/v0.4.1...v0.5.0) (2026-11-18)
 
 
