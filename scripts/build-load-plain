@@ -10,6 +10,6 @@ app="$root/examples/load-plain"
 "$root/scripts/wasm-guest-deps" "$app/guest"
 cd "$app/guest"
 cargo build --release --quiet --target wasm32-wasip2
-cp target/wasm32-wasip2/release/load_plain_guest.wasm "$app/load-plain.wasm"
+cp "${CARGO_TARGET_DIR:-target}"/wasm32-wasip2/release/load_plain_guest.wasm "$app/load-plain.wasm"
 cp "$app/load-plain.wasm" "$root/test/fixtures/wasm/load-plain.wasm"
 echo "built examples/load-plain/load-plain.wasm ($(wc -c <"$app/load-plain.wasm") bytes)"
