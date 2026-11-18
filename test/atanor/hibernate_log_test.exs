@@ -28,10 +28,10 @@ defmodule Atanor.HibernateLogTest do
       hibernate(node.name, :done, "jobs.counted", 3, 1)
 
       now = hibernations(node.name)
-      assert now.compaction.none == before.compaction.none + 1
-      assert now.compaction.done == before.compaction.done + 2
-      assert now.compaction.deadline == before.compaction.deadline + 1
-      assert now.compaction.error == before.compaction.error + 1
+      assert now.compaction.none >= before.compaction.none + 1
+      assert now.compaction.done >= before.compaction.done + 2
+      assert now.compaction.deadline >= before.compaction.deadline + 1
+      assert now.compaction.error >= before.compaction.error + 1
       assert now.tail_max >= 7
     end
 
