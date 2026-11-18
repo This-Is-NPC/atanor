@@ -188,6 +188,10 @@ the limit or more (design §4.3,
   `unknown_outcome`, `keys_unavailable` (a 503 of an `auth:` route) and `overloaded_unattributed` (an
   `overloaded` that names no gate). A reason that is not an atom counts as `other`. The sum of its values is
   `refused.unavailable`. The 503 of the ingress gates and of the call gates is not in it.
+* `consent` says which operator ceilings the node enforces: `hosts`, `http_allow` and `namespaces` are
+  `true` when the matching option is set, and `open` is `true` when none is, so any deployer may claim routes,
+  namespaces and outbound hosts
+  ([who may claim what](how-to-run-in-production.md#who-may-claim-what)).
 * `wakes` is the number of cells woken on this node since it started, counted from Alambique's
   `[:alambique, :cell, :wake]` event with `result: :ok`. The event names no instance, so a VM that runs more
   than one instance counts the wakes of all of them in each.
