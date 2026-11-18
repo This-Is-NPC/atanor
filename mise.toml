@@ -6,6 +6,13 @@ rust = { version = "1.97.1", targets = "wasm32-wasip2", components = "rustfmt,ll
 "aqua:rhysd/actionlint" = "1.7.12"
 shellcheck = "0.11.0"
 
+[env]
+# One cargo target for every checkout and worktree on this machine: cargo locks it, so parallel
+# builds queue and wasmtime is compiled once. CI keeps the in-tree target, which is what it caches.
+CARGO_TARGET_DIR = "{% if env.CI %}{{ config_root }}/native/atanor_wasm/target{% else %}{{ env.HOME }}/.cache/atanor/cargo-target{% endif %}"
+# Built NIFs by a hash of native/atanor_wasm and the Rust pin (lib/atanor/wasm/native.ex); empty in CI.
+ATANOR_NIF_CACHE = "{% if env.CI %}{% else %}{{ env.HOME }}/.cache/atanor/nif{% endif %}"
+
 [tasks.test]
 description = "Run the default test suite (no external services)"
 run = "mix test"
