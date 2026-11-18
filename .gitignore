@@ -4,7 +4,8 @@ erl_crash.dump
 *.db*
 /tmp
 /native/*/target
-/priv
+/priv/*
+!/priv/.gitkeep
 /test/fixtures/guests/target
 /test/fixtures/guests/wit/deps
 /lab/results
