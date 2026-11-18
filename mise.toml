@@ -128,6 +128,10 @@ run = "scripts/format-check"
 description = "Check the relative links and anchors of the tracked Markdown files"
 run = "scripts/link-check"
 
+[tasks."check:readme"]
+description = "Check that README.md has no one-line release-please block and no replaced address like 0.4.0.1"
+run = "scripts/readme-check"
+
 [tasks."local-check"]
 description = "Run the gate on HEAD and post a local-check status, for manual use: CI is the merge gate (options: --post-only --state=success --sha=SHA, --dry-run)"
 run = "scripts/local-check"
