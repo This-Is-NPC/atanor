@@ -136,8 +136,8 @@ needs the `export` again.
 7. Remove everything this section created, the images included. The commands are separate so you
    can run them again after a partial install: one that finds nothing to remove prints an error
    and the next still runs. If you use the SeaweedFS image for something else, leave out its line.
-   `-v` also removes the anonymous volumes that the images declare: SeaweedFS one, and the node image
-   one at `/var/lib/atanor/cells`.
+   `-v` also removes the anonymous volumes that the images declare: the SeaweedFS one, and the node
+   image one at `/var/lib/atanor/cells`.
 
    ```sh
    docker rm -fv atanor-node atanor-store
@@ -160,7 +160,7 @@ the next two 15.2 s and about 6.4 s, against 2.4 s on the laptop; the whole sequ
 there, pulls excluded; the first pull of the SeaweedFS image took about 75 s on that VM. The image is 55 MB to pull (compressed) and 224 MB on disk once
 unpacked.
 
-Measured again on a 2 vCPU, 3 GB virtual machine on 2026-11-18 with v0.4.0: the pull of the node
+Measured again on a 2 vCPU, 3 GB virtual machine on 2026-11-17 with v0.4.0: the pull of the node
 image took 58 s and the pull of the SeaweedFS image 62 s; the node was ready after 28 s (step 4) and
 the deploy took 30 s (step 5). The quick start without the pulls took about 1 minute 45 seconds.
 The `package` id and the byte count in your output may differ.
