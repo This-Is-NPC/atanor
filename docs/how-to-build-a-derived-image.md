@@ -51,7 +51,7 @@ is not a supported way to install it.
 
    defp deps do
      [
-       {:atanor, git: "https://github.com/This-Is-NPC/atanor.git", tag: "v0.5.0"}, # x-release-please-version
+       {:atanor, git: "https://github.com/This-Is-NPC/atanor.git", tag: "v0.6.0"}, # x-release-please-version
        {:phoenix, "~> 1.8"},
        {:phoenix_live_view, "~> 1.2"}
      ]
