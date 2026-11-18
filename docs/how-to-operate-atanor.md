@@ -527,7 +527,7 @@ retry-after: 1
 | `in_flight` | 1,024 requests being served | `Atanor.Admission` | Add nodes, or find what makes requests slow (the store, a worker). |
 | `queue_timeout` | An admitted request waited 5 s for a wake, a cell or a WASM slot | `Atanor.Admission`, `Atanor.Cell` | Usually the store is slow: [the store breaker](#the-store-breaker-is-open) or [slow wake](#cells-wake-slowly). The request did not run; the client retries. |
 | `wake_gate` | The memory gate is closed and the cell is not awake anywhere | `Atanor.Cell` | As `memory`. |
-| `awake_limit`, `busy`, `disk_full` | Alambique's own limits: awake cells or wakes full; a cell's waiting callers or the statement slots full; SQLite out of space | `Atanor.Unavailable` | Raise `awake: [max_cells:]`, `sql: [max_concurrent_statements:]`, or the disk. |
+| `awake_limit`, `busy`, `disk_full` | Alambique's own limits: awake cells full, or the wake slots and queue full (many cells waking at once, on a request's lookup or call); a cell's waiting callers or the statement slots full; SQLite out of space | `Atanor.Unavailable` | Raise `awake: [max_cells:]`, `sql: [max_concurrent_statements:]`, or the disk. |
 | `worker_queue`, `nested_calls` | The WASM queue is full; calls between workers above `max_nested_calls` | `Atanor.Wasm` | Raise `worker_queue` or `queue` of the WASM settings, or fix the worker that calls itself in a loop. |
 
 Only `memory`, `disk` and `queue_timeout` were reproduced; the others are read from

@@ -118,7 +118,7 @@ defmodule Atanor.Cell do
 
         case within_deadline(config.alambique, id, :touch, [], &Alambique.touch(config.alambique, id, &1)) do
           {:error, :timeout} -> if Admission.expired?(), do: queue_timeout(), else: {:error, :timeout}
-          result -> result
+          result -> note_outcome(instance, result)
         end
       end
     end
