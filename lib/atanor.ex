@@ -150,7 +150,8 @@ defmodule Atanor do
       must be this far under the source's), `:residence_ms` (300 000, a cell that
       moved stays this long), `:node_cooldown_ms` (30 000, source and target of a
       move take part in no other), `:max_moves` (1, moves in progress in the
-      cluster), `:move_timeout_ms` (15 000), `:stale_ms` (5000, a node not heard
+      cluster), `:move_timeout_ms` (15 000; the
+      release compaction of a move may use all of it but `release_reserve_ms`), `:stale_ms` (5000, a node not heard
       from this long is not a target), `:max_tracked` (100 hot cells per node),
       `:tags` (labels of this node, a list of strings) and `:affinity`
       (`[{namespace, tag}]`: hot cells of the namespace go to a node with the tag),
