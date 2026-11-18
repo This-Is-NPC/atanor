@@ -88,6 +88,8 @@ defmodule Atanor.DaemonTest do
           "ATANOR_HTTP_BODY_TIMEOUT_MS" => "9000",
           "ATANOR_ADMIN_HEADER_TIMEOUT_MS" => "3000",
           "ATANOR_ADMIN_BODY_TIMEOUT_MS" => "7000",
+          "ATANOR_WEBSOCKET_COMPRESS" => "true",
+          "ATANOR_WEBSOCKET_ALLOWED_ORIGINS" => "https://a.example, https://B.example",
           "ATANOR_ADVERTISE" => "node-a.example",
           "ATANOR_REGISTRY_TTL_MS" => "9000",
           "ATANOR_REGISTRY_RENEW_MS" => "1500"
@@ -118,6 +120,13 @@ defmodule Atanor.DaemonTest do
       assert errors(env(%{"ATANOR_HTTP_MAX_CONNECTIONS" => "5"})) =~ "max_connections"
       assert {config.http.header_timeout_ms, config.http.body_timeout_ms} == {4_000, 9_000}
       assert {config.admin.header_timeout_ms, config.admin.body_timeout_ms} == {3_000, 7_000}
+      assert config.websocket.compress
+      assert config.websocket.allowed_origins == ["https://a.example", "https://b.example"]
+
+      assert errors(env(%{"ATANOR_WEBSOCKET_ALLOWED_ORIGINS" => "https://a.example,"})) =~
+               "ATANOR_WEBSOCKET_ALLOWED_ORIGINS"
+
+      assert errors(env(%{"ATANOR_WEBSOCKET_COMPRESS" => "yes"})) =~ "ATANOR_WEBSOCKET_COMPRESS"
     end
 
     test "the registry advertises the node name, with a join time of seconds by default" do

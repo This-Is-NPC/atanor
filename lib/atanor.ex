@@ -86,6 +86,9 @@ defmodule Atanor do
       one socket, `:max_frames_per_s` (100) with a burst of `:frame_burst`
       (200); a socket over it is closed with 1008. A socket on a route with
       an `:auth` rule is also closed with 1008 when its token expires.
+      `:compress` (false) lets clients negotiate permessage-deflate, which can
+      inflate a frame past `:max_frame_bytes`. `:allowed_origins` (nil, any)
+      is a list of origins; an upgrade with another `Origin` gets 403.
     * `:alarms` - `:tick_ms` (1000), `:timeout_ms` (30 000), `:max_attempts`
       (5), `:page_size` (1000 index entries per scan), `:concurrency` (16
       handler tasks), `:backoff_ms` (1000) and `:max_backoff_ms` (60 000) of

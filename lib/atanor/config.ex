@@ -2,7 +2,14 @@ defmodule Atanor.Config do
   @moduledoc false
 
   @tcp %{idle_timeout_ms: 60_000, max_chunk_bytes: 65_536, max_connections: 16_384, acceptors: 10}
-  @websocket %{idle_timeout_ms: 60_000, max_frame_bytes: 1_000_000, max_frames_per_s: 100, frame_burst: 200}
+  @websocket %{
+    idle_timeout_ms: 60_000,
+    max_frame_bytes: 1_000_000,
+    max_frames_per_s: 100,
+    frame_burst: 200,
+    compress: false,
+    allowed_origins: nil
+  }
   @alarms %{
     tick_ms: 1_000,
     timeout_ms: 30_000,
@@ -577,7 +584,7 @@ defmodule Atanor.Config do
       listeners: listeners,
       private_hosts: private_hosts!(Keyword.get(opts, :allow_private_hosts, [])),
       tcp: tcp,
-      websocket: limits!(opts[:websocket], @websocket, :websocket),
+      websocket: websocket!(opts[:websocket]),
       alarms: alarms!(opts[:alarms]),
       jobs: jobs!(opts[:jobs]),
       sweeps: sweeps!(opts[:sweeps]),
@@ -845,6 +852,23 @@ defmodule Atanor.Config do
 
     check!(valid?, ":#{option} must be a keyword list with positive integers for #{inspect(Map.keys(defaults))}")
     Map.merge(defaults, Map.new(opts))
+  end
+
+  # `settings!` for the numbers and `:compress`; `:allowed_origins` is `nil` (any origin) or a list of origins.
+  defp websocket!(nil), do: @websocket
+
+  defp websocket!(opts) do
+    check!(Keyword.keyword?(opts), ":websocket must be a keyword list")
+    {origins, rest} = Keyword.pop(opts, :allowed_origins)
+
+    check!(
+      is_nil(origins) or (is_list(origins) and origins != [] and Enum.all?(origins, &(is_binary(&1) and &1 != ""))),
+      ":websocket :allowed_origins must be nil or a non-empty list of origins, for example \"https://app.example.com\""
+    )
+
+    rest
+    |> settings!(@websocket, :websocket)
+    |> Map.put(:allowed_origins, origins && Enum.map(origins, &String.downcase/1))
   end
 
   defp oidc!(opts) do
