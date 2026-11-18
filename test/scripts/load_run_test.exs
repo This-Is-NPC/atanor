@@ -495,6 +495,12 @@ defmodule Atanor.LoadRunTest do
              :null
            ]
 
+    # [scale.judging.LOAD]: cells ramps with its own rules, http-native keeps the measure's
+    assert r["scale_judging"] == %{
+             "ramped" => %{"cells" => [900.0, false], "http-native" => [400.0, true]},
+             "args" => [400.0, true]
+           }
+
     assert r["stall_repeats"] == %{"two" => [10, 10, 10, 20, 20], "none" => [10]}
 
     # the criterion "5xx or error fails a step" is on by default and can be turned off

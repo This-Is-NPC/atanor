@@ -201,6 +201,36 @@ defmodule Atanor.LoadConfigTest do
            ]
   end
 
+  test "[scale.judging.LOAD] judges one load of the scale on its own rules", %{dir: dir} do
+    {out, status} = System.cmd("python3", ["-I", "test/scripts/load_config_check.py", dir], stderr_to_stdout: true)
+    assert status == 0, out
+    s = out |> String.split("\n", trim: true) |> List.last() |> :json.decode() |> Map.fetch!("scale_judging")
+
+    # scale load over measures.scale.judging over [judging], rule by rule
+    assert s["cells"] == [
+             %{"enabled" => true, "max_ms" => 900.0},
+             %{"enabled" => false},
+             %{"enabled" => true, "max_pct" => 2.0}
+           ]
+
+    assert s["http_native"] == [
+             %{"enabled" => true, "max_ms" => 400.0},
+             %{"enabled" => true},
+             %{"enabled" => true, "max_pct" => 2.0}
+           ]
+
+    assert s["measure_only"] == %{"enabled" => true, "max_ms" => 400.0}
+    assert s["other_measure"] == %{"enabled" => true, "max_ms" => 250.0}
+    assert s["hash_changes"] and s["hash_stable"] and s["hash_cells_same"] and s["round_trip"]
+
+    assert s["bad"] == [
+             "scale.judging.cells.p99.max_ms: -1 is out of range, expected > 0",
+             "scale.judging.cells.p99.max: unknown key (did you mean 'max_ms'?)",
+             "scale.judging.cells.nope: unknown key, expected one of stall_repeats, errors, p99, refused, memory, fds, delivery, store_fill, store_stall, generator_lag, throttle, host_load, host_busy, generator_swap, host_swap, host_memory",
+             "scale.judging.ws: unknown load 'ws', expected one of http-native, http-wasm, http-wasm-jobs, cells"
+           ]
+  end
+
   test "--env prints the lab's ATANOR_LOAD_* lines of a scenario, with the store of a measure", %{dir: dir} do
     file = Path.join(dir, "round.toml")
     File.write!(file, "[store]\nlatency_ms = 7\n[measures.ws.store]\nbacking = \"disk\"\n")

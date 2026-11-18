@@ -184,7 +184,17 @@ measure only (and `[measures.NAME.judging] stall_repeats`). It is merged over th
 that measure's case and leaves the other measures alone. Example: `[measures.ws.judging.refused]` with
 `max_pct = 5` lets `ws` pass with up to 5% refused. `[measures.NAME.store]` overrides `backing`, `tmpfs_size` and
 `latency_ms` of `[store]` for that measure, which then gets a lab of its own; the next measure goes back to the
-scenario's lab. The table `[measures.NAME.variant.V.store]` is reserved for variants and is refused for now: no
+scenario's lab.
+
+**One load of the scale, other rules.** The `scale` measure ramps each of `scale.loads` (`http-native`, `cells`, ...)
+under the same rules. `[scale.judging.LOAD.RULE]` (`LOAD` one of `http-native`, `http-wasm`, `http-wasm-jobs`,
+`cells`; also `[scale.judging.LOAD] stall_repeats`) overrides those rules for that load only. Precedence, the most
+specific wins, key by key: `[scale.judging.LOAD]`, then `[measures.scale.judging]`, then `[judging]`. Example:
+`[scale.judging.cells.p99]` with `max_ms = 500` judges the cells ramps on a 500 ms p99 and `http-native` on 250 ms.
+It enters the hash of the scale case only when a load has an override. An unknown load or key is refused like any
+other. The join keeps the measure's rules, whatever its load.
+
+The table `[measures.NAME.variant.V.store]` is reserved for variants and is refused for now: no
 Atanor measure has one.
 
 **Timeouts.** Every load generator process runs under `timeout --kill-after=10s`, killed after

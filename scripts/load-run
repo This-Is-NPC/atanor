@@ -1602,6 +1602,8 @@ def scale_config(args, load, nodes, previous, given):
     one node fewer, where a larger configuration starts; `given`: the ceilings of an earlier round (the steps are fractions of them)."""
     a = copy.copy(args)
     a.measure, a.steps = load, args.steps if nodes == 1 else None
+    for name, value in (getattr(args, "load_judging", None) or {}).get(load, {}).items():
+        setattr(a, name, value)
     a.start, a.max, a.factor = args.start or RAMPS[load][0], args.max or RAMPS[load][1], args.factor
     plan = (getattr(args, "load_plans", None) or {}).get(load)
     if plan:  # a config round: the ramp of the load as the config plans it for the scenario
@@ -1901,17 +1903,12 @@ def scale(args):
             "configs": configs, "join": None if joined is None else {k: joined[k] for k in ("status", "stop_reason", "rate", "windows", "generator")}, "join_note": note}
 
 
-def config_defaults(config, measure, scenario, path):
-    """The defaults of the arguments of `measure` in `scenario` from a round config. A criterion that is off gets a limit nothing reaches."""
-    j, g, w, sw = load_config.judging_of(config, measure), config["generator"], config["workload"], config["swap"]
+def judging_args(j):
+    """The arguments the judging rules `j` set. A criterion that is off gets a limit nothing reaches."""
     off = float("inf")
     limit = lambda name, key, none=off: j[name][key] if j[name]["enabled"] else none
-    stall, scale = j["store_stall"], load_config.scale_of(config, scenario)
-    join, spread = config["scale"]["join"], config["scale"]["spread"]
-    found = {
-        "out": load_config.output_dir(config, ROOT), "command": f"mise run load -- --config {path}",
-        "step_s": 0.0, "factor": 2.0, "start": None, "max": None, "steps": None, "refine": 0, "no_confirm": False,  # the ramp measures set their own below
-        "config_hash": load_config.case_hash(config, scenario, measure), "step_timeout": config["round"]["step_timeout_s"],
+    stall = j["store_stall"]
+    return {
         "p99_ms": limit("p99", "max_ms"), "max_refused_pct": limit("refused", "max_pct"), "memory_pct": limit("memory", "max_pct"), "fd_pct": limit("fds", "max_pct"),
         "delivery": limit("delivery", "min_ratio", 0.0), "judge_errors": j["errors"]["enabled"], "stall_repeats": j["stall_repeats"],
         "host_load_max": limit("host_load", "max"), "quiet_window": limit("host_load", "quiet_window_s", 0.0), "quiet_max_wait": j["host_load"]["quiet_max_wait_s"],
@@ -1921,6 +1918,21 @@ def config_defaults(config, measure, scenario, path):
         "max_throttle_jump_ms": limit("throttle", "max_jump_ms"), "max_store_stall_ms": limit("store_stall", "min_ms", 0.0),
         "store_stall_requests": stall["min_requests"], "store_fail_on_repeat": stall["fail_on_repeat"],
         "min_available_gb": limit("host_memory", "min_available_gib", 0.0),
+    }
+
+
+def config_defaults(config, measure, scenario, path):
+    """The defaults of the arguments of `measure` in `scenario` from a round config."""
+    g, w, sw = config["generator"], config["workload"], config["swap"]
+    scale = load_config.scale_of(config, scenario)
+    join, spread = config["scale"]["join"], config["scale"]["spread"]
+    found = {
+        "out": load_config.output_dir(config, ROOT), "command": f"mise run load -- --config {path}",
+        "step_s": 0.0, "factor": 2.0, "start": None, "max": None, "steps": None, "refine": 0, "no_confirm": False,  # the ramp measures set their own below
+        "config_hash": load_config.case_hash(config, scenario, measure), "step_timeout": config["round"]["step_timeout_s"],
+        **judging_args(load_config.judging_of(config, measure)),
+        # [scale.judging.LOAD]: the rules of one load of the scale, over the measure's
+        "load_judging": {load: judging_args(load_config.judging_of(config, measure, load)) for load in config["scale"]["judging"]},
         "sample_s": g["sample_s"], "timeout": g["timeout_s"], "gen_grace": g["grace_s"], "rate_per_proc": g["rate_per_proc"], "conns_per_rate": g["conns_per_rate"],
         "write_ratio": w["write_ratio"], "cells": w["cells"], "no_warmup": not w["warmup"], "cell_period": w["cell_period_s"], "cells_conns": w["cells_conns"],
         "open_rate": w["open_rate"], "ws_interval": w["ws_interval_s"], "worker": w["worker"],
