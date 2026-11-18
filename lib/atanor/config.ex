@@ -205,7 +205,8 @@ defmodule Atanor.Config do
   # is `[{namespace, tag}]`: hot cells of the namespace go to a node with the tag. `move: false` keeps the
   # loop from moving cells. `replicas: true` turns on the read replicas of Alambique for a cell read at
   # `replica_enter` reads per second in the cluster (off below `replica_exit`, and not before `replica_hold_ms`);
-  # it needs `alambique: [replicas: ...]`.
+  # it needs `alambique: [replicas: ...]`. `release_deadline_ms` (nil or a non-negative integer) is the release
+  # compaction deadline of a move; nil keeps the node's `compaction: [release_deadline_ms:]`.
   @hot_cells %{
     enabled: false,
     interval_ms: 1_000,
@@ -224,6 +225,7 @@ defmodule Atanor.Config do
     node_cooldown_ms: 30_000,
     max_moves: 1,
     move_timeout_ms: 15_000,
+    release_deadline_ms: nil,
     stale_ms: 5_000,
     max_tracked: 100,
     move: true,
@@ -1196,6 +1198,7 @@ defmodule Atanor.Config do
     check!(Keyword.keyword?(opts), ":hot_cells must be a keyword list")
     {tags, opts} = Keyword.pop(opts, :tags, [])
     {affinity, opts} = Keyword.pop(opts, :affinity, [])
+    {release_deadline, opts} = Keyword.pop(opts, :release_deadline_ms)
 
     check!(
       is_list(tags) and Enum.all?(tags, &(is_binary(&1) and &1 != "")),
@@ -1208,7 +1211,13 @@ defmodule Atanor.Config do
     end
 
     check!(is_list(affinity) and Enum.all?(affinity, rule?), ":hot_cells :affinity must be a list of {namespace, tag}")
-    hot = settings!(opts, Map.drop(@hot_cells, [:tags, :affinity]), :hot_cells)
+
+    check!(
+      is_nil(release_deadline) or (is_integer(release_deadline) and release_deadline >= 0),
+      ":hot_cells :release_deadline_ms must be nil or a non-negative integer"
+    )
+
+    hot = settings!(opts, Map.drop(@hot_cells, [:tags, :affinity, :release_deadline_ms]), :hot_cells)
 
     for {exit, enter} <- [
           write_exit: :write_enter,
@@ -1227,7 +1236,7 @@ defmodule Atanor.Config do
       ":hot_cells :replicas needs the Alambique replicas: give alambique: [replicas: []]"
     )
 
-    Map.merge(hot, %{tags: tags, affinity: affinity})
+    Map.merge(hot, %{tags: tags, affinity: affinity, release_deadline_ms: release_deadline})
   end
 
   defp rebalance!(opts) do

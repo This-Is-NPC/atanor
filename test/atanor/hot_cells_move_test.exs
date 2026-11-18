@@ -43,15 +43,17 @@ defmodule Atanor.HotCellsMoveTest do
     end
   end
 
-  test "a move gives its release compaction the move timeout" do
+  test "a move leaves the release compaction deadline to Alambique by default" do
     node = start(hot_cells: [enabled: true, move_timeout_ms: 9_000])
     opts = move_opts(node, :manual)
     assert opts[:timeout] == 9_000
-    assert opts[:release_deadline_ms] == 9_000
+    refute Keyword.has_key?(opts, :release_deadline_ms)
   end
 
-  test "a node that turned the release compaction off keeps it off for moves" do
-    node = start(hot_cells: [enabled: true], alambique: [compaction: [release_deadline_ms: 0]])
-    assert move_opts(node, :manual)[:release_deadline_ms] == 0
+  test "hot_cells release_deadline_ms is passed to the move as given" do
+    for ms <- [0, 4_000] do
+      node = start(hot_cells: [enabled: true, release_deadline_ms: ms])
+      assert move_opts(node, :manual)[:release_deadline_ms] == ms
+    end
   end
 end

@@ -2740,7 +2740,7 @@ The sequence of `Atanor.drain/2`:
    compaction stops after `release_deadline_ms` (3 000; 0 turns it off) and `release_reserve_ms` (2 000) before
    the end of the call, and does not start with less left; then the release goes on with what was merged (since 0.13.0 the merges
    already published stay, and the compaction ends with `more: true`; a cut during the listing is the outcome
-   `deadline_error`). A move (`Alambique.move/4`) takes its own `release_deadline_ms`, see §8.15. Each
+   `deadline_error`). A move takes the same deadline unless `hot_cells: [release_deadline_ms:]` is set (§8.15). Each
    release pays one listing of the cell's files. The times nest: the compaction gets
    `min(release_deadline_ms, drain_timeout_ms - release_reserve_ms)`, so the default 15 000 gives it the full
    3 000 ms. Alambique also limits the drain as a whole to 60 000 ms (`drain: [deadline_ms:]`, Atanor does not
@@ -3252,7 +3252,8 @@ second, `queue` in calls):
 | `residence_ms` | 300 000 | a cell that moved is not moved again for this long |
 | `node_cooldown_ms` | 30 000 | after a move, source and target take part in none |
 | `max_moves` | 1 | moves in progress in the cluster |
-| `move_timeout_ms` | 15 000 | per `Alambique.move/4`; also the `release_deadline_ms` the move passes, so its compaction gets this less `release_reserve_ms` (13 000 by default) instead of the 3 000 of a drain. `compaction: [release_deadline_ms: 0]` keeps it off for moves |
+| `move_timeout_ms` | 15 000 | per `Alambique.move/4` |
+| `release_deadline_ms` | nil | release compaction deadline of a move, a non-negative integer (0 turns it off); nil uses `compaction: [release_deadline_ms:]` (3 000). Round 025 measured 5xx ×7 with 15 000 |
 | `stale_ms` | 5 000 | a node not heard from this long is not a target |
 | `max_tracked` | 100 | hot cells kept per node, and cells whose remote reads a node reports |
 | `move` | true | false: the loop moves no cell (it can still switch replicas) |
