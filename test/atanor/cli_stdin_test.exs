@@ -75,6 +75,28 @@ defmodule Atanor.CLIStdinTest do
     refute output =~ @secret
   end
 
+  # An stty that fails, first in the PATH of the program only.
+  @tag skip:
+         not (is_binary(System.find_executable("script")) and File.dir?("/proc/self")) &&
+           "needs script(1) and /proc"
+  test "when stty cannot turn the echo off nothing is read" do
+    bin = Path.join(System.tmp_dir!(), "atanor-stty-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(bin)
+    File.write!(Path.join(bin, "stty"), "#!/bin/sh\nexit 1\n")
+    File.chmod!(Path.join(bin, "stty"), 0o755)
+    on_exit(fn -> File.rm_rf(bin) end)
+
+    # The program ends at once: with the old code it would wait for a line (and halt after 20 s).
+    program = ~s|IO.puts("RESULT:" <> inspect(Atanor.CLI.read_line("Token: ")))|
+    shell = "stty echo && TERM=dumb PATH=#{bin}:$PATH " <> command(program)
+    args = ["-qefc", shell, "-E", "never", "/dev/null"]
+    port = Port.open({:spawn_executable, System.find_executable("script")}, [:binary, :exit_status, args: args])
+
+    output = collect(port)
+    assert output =~ "RESULT:{:error, :echo}"
+    refute output =~ "Token: "
+  end
+
   test "a pipe is read as it is, without a prompt" do
     program = ~s|IO.puts("GOT:" <> String.trim(Atanor.CLI.read_line("Token: ")))|
     {out, 0} = System.cmd("sh", ["-c", "printf '#{@secret}\\n' | " <> command(program)], stderr_to_stdout: true)

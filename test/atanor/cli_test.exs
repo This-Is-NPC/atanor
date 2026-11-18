@@ -208,6 +208,19 @@ defmodule Atanor.CLITest do
     refute Map.has_key?(profiles, "bad")
   end
 
+  test "login refuses, and stores nothing, when the terminal cannot hide the token", %{
+    project: project,
+    env: env,
+    admin: admin
+  } do
+    context = %{ctx(env, project) | stdin: fn _prompt -> {:error, :echo} end}
+
+    assert {2, "", err} = cli(context, ["login", "--url", admin, "--profile", "noecho"])
+    assert err =~ "cannot hide what you type"
+    assert err =~ "ATANOR_TOKEN"
+    refute File.exists?(Path.join([env["XDG_CONFIG_HOME"], "atanor", "config.json"]))
+  end
+
   test "failures are messages with exit codes", %{project: project, env: env, admin: admin} do
     context = ctx(env, project)
     auth = %{"ATANOR_URL" => admin, "ATANOR_TOKEN" => @operator}
