@@ -331,6 +331,7 @@ defmodule Atanor.Config do
     :modules,
     :admin,
     :dashboard,
+    behind_tls_proxy: false,
     callers: %{},
     package: @package,
     auth: %{},
@@ -389,6 +390,7 @@ defmodule Atanor.Config do
     :oidc,
     :listeners,
     :allow_private_hosts,
+    :behind_tls_proxy,
     :tcp,
     :websocket,
     :alarms,
@@ -521,6 +523,8 @@ defmodule Atanor.Config do
     check!(is_binary(prefix) and Regex.match?(@prefix, prefix), ":prefix must match #{inspect(@prefix.source)}")
     check!(is_integer(port) and port in 0..65_535, ":port must be an integer from 0 to 65535")
     check!(is_tuple(Keyword.get(opts, :ip, {127, 0, 0, 1})), ":ip must be an address tuple")
+    behind_tls_proxy = Keyword.get(opts, :behind_tls_proxy, false)
+    check!(is_boolean(behind_tls_proxy), ":behind_tls_proxy must be true or false")
     check!(Keyword.keyword?(Keyword.get(opts, :alambique, [])), ":alambique must be a keyword list")
     check!(not Keyword.has_key?(Keyword.get(opts, :alambique, []), :join), ":alambique :join is set by Atanor")
     alambique_opts!(Keyword.get(opts, :alambique, []))
@@ -582,7 +586,8 @@ defmodule Atanor.Config do
       diagnostics: diagnostics!(opts[:diagnostics], opts[:data_dir]),
       rehearsal: rehearsal!(opts[:rehearsal]),
       admin: admin!(opts[:admin]),
-      dashboard: dashboard!(opts[:dashboard]),
+      dashboard: dashboard!(opts[:dashboard], behind_tls_proxy),
+      behind_tls_proxy: behind_tls_proxy,
       detector: detector!(opts[:detector]),
       takeover: settings!(opts[:takeover], @takeover, :takeover),
       hot_cells: hot_cells!(opts[:hot_cells], Keyword.get(opts, :alambique, [])),
@@ -1281,9 +1286,11 @@ defmodule Atanor.Config do
   defp positive_integer?(value), do: is_integer(value) and value > 0
 
   # The admin API and the dashboard: a token-protected listener on its own port.
-  defp loopback?({127, _, _, _}), do: true
-  defp loopback?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
-  defp loopback?(_ip), do: false
+  @doc "Whether `ip` is a loopback address (127.0.0.0/8 or ::1)."
+  @spec loopback?(:inet.ip_address()) :: boolean
+  def loopback?({127, _, _, _}), do: true
+  def loopback?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  def loopback?(_ip), do: false
 
   defp listener!(opts, option, default_port, extra) do
     allowed = [:token, :port, :ip] ++ extra
@@ -1342,9 +1349,9 @@ defmodule Atanor.Config do
     })
   end
 
-  defp dashboard!(nil), do: nil
+  defp dashboard!(nil, _behind_tls_proxy), do: nil
 
-  defp dashboard!(opts) do
+  defp dashboard!(opts, behind_tls_proxy) do
     dashboard =
       listener!(
         opts,
@@ -1363,7 +1370,7 @@ defmodule Atanor.Config do
     max_page_size = Keyword.get(opts, :max_page_size, 500)
     poll_ms = Keyword.get(opts, :poll_ms, 5_000)
     cookie_max_age_s = Keyword.get(opts, :cookie_max_age_s, 86_400)
-    secure_cookie = Keyword.get(opts, :secure_cookie, false)
+    secure_cookie = Keyword.get(opts, :secure_cookie, behind_tls_proxy)
     check!(positive_integer?(page_size), ":dashboard :page_size must be a positive integer")
     check!(positive_integer?(max_page_size), ":dashboard :max_page_size must be a positive integer")
     check!(page_size <= max_page_size, ":dashboard :page_size must not exceed :max_page_size")

@@ -53,8 +53,11 @@ shows is in [screens.md](screens.md).
    The cookie lasts `cookie_max_age_s` seconds (86 400, one day by default).
    The dashboard listens on plain http, so it cannot tell that a proxy in front
    of it serves https: pass `secure_cookie: true` then, and the cookie gets
-   `Secure`. Leave it `false` for a loopback dashboard, which a browser
-   reaches over http and would not send a `Secure` cookie to.
+   `Secure`. Its default is the node's `behind_tls_proxy` option
+   (`ATANOR_BEHIND_TLS_PROXY` in the daemon, [TLS at the proxy](how-to-run-in-production.md#tls-at-the-proxy)),
+   so a node declared behind a TLS proxy needs no other setting. Leave it `false` for a loopback dashboard, which a
+   browser reaches over http and would not send a `Secure` cookie to. A dashboard that binds outside loopback
+   without `behind_tls_proxy` logs a warning at start: its token passes in clear.
 
 2. Open the URL, with the token. The browser is sent to the same page without
    the token in the address and keeps a cookie that says it is signed in.
