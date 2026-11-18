@@ -98,13 +98,23 @@ defmodule Atanor.Overview do
   defp status(:stopping), do: "stopping"
 
   @doc """
-  What this node's memory is made of and the state of its rebalance on join (`GET /runtime`); the cgroup is
-  the one of `:memory` `:cgroup_path`.
+  What this node's memory is made of, the state of its rebalance on join and which operator ceilings
+  (`:hosts`, `:http_allow`, `:namespaces`) it enforces (`GET /runtime`); the cgroup is the one of
+  `:memory` `:cgroup_path`.
   """
   def runtime(name) do
     name
     |> Atanor.RuntimeSample.sample(Path.dirname(Registry.config(name).memory.cgroup_path))
     |> Map.put(:rebalance, rebalance(name))
+    |> Map.put(:consent, consent(Registry.config(name)))
+  end
+
+  # Which operator ceilings are set; `open` when none is, and any deployer may claim routes, namespaces
+  # and outbound hosts.
+  defp consent(config) do
+    set = %{hosts: config.hosts, http_allow: config.http_allow, namespaces: config.namespaces}
+    set = Map.new(set, fn {key, value} -> {key, value != nil} end)
+    Map.put(set, :open, not Enum.any?(Map.values(set)))
   end
 
   defp rebalance(name) do

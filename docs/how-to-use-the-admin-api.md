@@ -222,8 +222,10 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    `disk_full`, and `unavailable` for every other 503, split by reason in `unavailable_by_reason`), the last
    working set, the disk use of `data_dir` against its budget, and whether the node is refusing, see
    [configuration](configuration.md)), `wakes` (cells woken since the node started), `pressure` (cells
-   hibernated by memory pressure) and `store`, the circuit breaker of
-   each store location as in `/health`. The counters are in
+   hibernated by memory pressure), `store`, the circuit breaker of
+   each store location as in `/health`, and `consent`: which of `hosts`, `http_allow` and `namespaces` the
+   node enforces, and `open: true` when none is
+   ([who may claim what](how-to-run-in-production.md#who-may-claim-what)). The counters are in
    [telemetry](telemetry.md#counters-of-get-runtime). A
    cgroup field is `null` when its file cannot be read. The load harness samples it
    ([how-to-run-the-load-tests.md](how-to-run-the-load-tests.md)).
