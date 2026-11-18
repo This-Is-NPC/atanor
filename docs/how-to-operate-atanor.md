@@ -54,6 +54,8 @@ curl -s -H "authorization: Bearer $TOKEN" $ADMIN/runtime | jq -c '.admission, .s
 | `/runtime` `.admission.disk_refusing` | `true` | The disk gate is closed. |
 | `/runtime` `.admission.in_flight` / `.max_in_flight` | 0.7 for 5 minutes | At 1,024 requests at once the node refuses with `in_flight`. A high value with a low CPU means requests wait for the store or a cell. |
 | `/runtime` `.admission.refused.*` | Any increase of `memory`, `disk` or `in_flight`; a rate above 1% of requests for `wake_gate`, `awake_limit`, `busy`, `disk_full`, `queue_timeout`, `worker_queue`, `nested_calls`; any increase of `unavailable` | Each gate counter is one reason of 503 `overloaded`, and every such 503 is in one of them. `unavailable` counts every other 503, and `.admission.unavailable_by_reason` names why (`owner_unreachable`, `fenced`, `unknown_outcome`, `overloaded_unattributed`, ...). They count since the node started: alert on the rate. |
+| `/runtime` `.consent.open` | `true` on a node where several teams deploy | No `hosts`, `http_allow` or `namespaces` ceiling is set, so any deployer may claim routes, namespaces and outbound hosts ([who may claim what](how-to-run-in-production.md#who-may-claim-what)). The node also warns at start. |
+| `/runtime` `.pressure.hibernated`, `.wakes` | A steady rise of `pressure.hibernated`; a `wakes` rate far above your usual | `pressure.hibernated` counts cells hibernated by memory pressure; `wakes` counts cells woken on this node since it started. Cells that go to sleep and wake again at once say the awake set is too big for the memory ([memory](configuration.md#cells-limits-memory-and-store-requests)). |
 | `/runtime` `.cgroup.events.oom_kill` | Any increase | The kernel killed a process of the container. |
 | `/runtime` `.cgroup.memory_current` / `.memory_max` | 0.9 | `memory_current` includes the page cache; the gate uses the working set, so this is the late warning. `memory_max` is `null` without a limit. |
 | `/runtime` `.top_message_queue[0].message_queue_len` | 10,000 | A process that cannot keep up. `.top_message_queue[0].name` names it. |
@@ -412,7 +414,13 @@ Steps for a real upgrade:
 
 1. **Read the changes.** [CHANGELOG.md](../CHANGELOG.md) for breaking changes and renamed variables (a renamed
    `ATANOR_*` variable fails the start, which is the safe way), and
-   [how-to-update-alambique.md](how-to-update-alambique.md) if the Alambique version changed.
+   [how-to-update-alambique.md](how-to-update-alambique.md) if the Alambique version changed. From 0.4.1 to 0.5.0:
+   WebSocket `permessage-deflate` is off by default (`ATANOR_WEBSOCKET_COMPRESS=true` brings it back,
+   [trade-off](how-to-use-websockets.md#origins-and-compression)); the `reason` of admin errors is a fixed text per
+   case, so parse the `error` code ([admin API](how-to-use-the-admin-api.md)); `atanor login` exits 2 when it cannot
+   hide the token ([cli](cli.md#atanor-login---url-url)); the node warns at start when no `ATANOR_HOSTS`,
+   `ATANOR_NAMESPACES` or `ATANOR_HTTP_ALLOW` is set, and when an admin or dashboard listener is not on loopback
+   and `ATANOR_BEHIND_TLS_PROXY` is not set ([production](how-to-run-in-production.md#tls-at-the-proxy)).
 2. **Back up.** A cold copy if you can, a live one with the repair above if you cannot.
 3. **Rehearse migrations.** If the new package has migrations, run
    [how-to-run-a-migration-rehearsal.md](how-to-run-a-migration-rehearsal.md) on copies of real cells. A cell is

@@ -26,13 +26,22 @@ defmodule Atanor.QueueDeadlineWasmTest do
 
     assert length(queue_timeouts) >= 4, inspect(for r <- responses, do: r.status)
 
-    # The node times each call from its admission to its result, so a slow client or connection does not
-    # count. A call gave up at the deadline if it ended before any spinner released its thread.
+    # A call that waited past the deadline is refused, not run: without the bound the 8 queued calls would
+    # get a thread when the spinners end and run. The node times each call from its admission to its result.
+    # A refusal that ends late still ended before the pool's own wait (`wasm: [queue_wait_ms:]`), which
+    # separates it from a deadline that was ignored. It is not compared with the spinners: under CPU
+    # contention (coverage on a small runner) the timer of a refusal can fire as late as the CPU limit,
+    # about 300 ms against the 100 ms deadline (seen at 302 ms in CI).
     calls = invoked()
     {refused, ran} = Enum.split_with(calls, &(&1.result == :overloaded))
     assert length(refused) == length(queue_timeouts), inspect(calls)
     assert ran != []
-    assert Enum.max(Enum.map(refused, & &1.duration)) < Enum.min(Enum.map(ran, & &1.duration)), inspect(calls)
+    pool_wait = System.convert_time_unit(Atanor.Wasm.settings().queue_wait_ms, :millisecond, :native)
+    durations = Enum.map(refused, & &1.duration)
+    assert Enum.max(durations) < pool_wait, inspect(calls)
+    # The earliest refusal ended before the spinners freed their threads (300 ms): a timer that fires late
+    # for every call, so that none ends at the deadline, is caught. Late timers alone are not.
+    assert Enum.min(durations) < System.convert_time_unit(250, :millisecond, :native), inspect(calls)
 
     assert_receive {:telemetry, [:atanor, :http, :reject], _, %{reason: :queue_timeout}}
     assert Admission.stats(node.name).refused.queue_timeout == length(queue_timeouts)
