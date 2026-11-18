@@ -511,13 +511,29 @@ defmodule Atanor.Wasm do
   defp next_timeout(wait_ms, nil), do: wait_ms
   defp next_timeout(_wait_ms, {_ticket, queue_wait_ms}), do: queue_wait_ms
 
+  @doc false
+  # Guest text for one log line: control characters (C0, DEL, C1) and line separators are escaped, so the
+  # guest cannot forge lines or terminal sequences; printable UTF-8 stays as it is.
+  def printable(text) do
+    text
+    |> String.replace_invalid()
+    |> String.trim()
+    |> String.replace(~r/[\x00-\x1f\x7f\x{80}-\x{9f}\x{2028}\x{2029}]/u, fn
+      "\n" -> "\\n"
+      "\r" -> "\\r"
+      "\t" -> "\\t"
+      <<codepoint::utf8>> when codepoint < 0x100 -> "\\x" <> Base.encode16(<<codepoint>>, case: :lower)
+      <<codepoint::utf8>> -> "\\u{" <> Integer.to_string(codepoint, 16) <> "}"
+    end)
+  end
+
   defp finish({result, stderr, timing}, instance, deployment, started, call) do
     worker = Deployment.worker(deployment)
     duration = System.monotonic_time() - started
     metadata = %{instance: instance, worker: worker, deployment: deployment.id, call: call}
 
     if stderr != "" do
-      Logger.warning("worker #{worker} (deployment #{deployment.id}) wrote to stderr: #{String.trim(stderr)}")
+      Logger.warning("worker #{worker} (deployment #{deployment.id}) wrote to stderr: #{printable(stderr)}")
     end
 
     measurements = Map.merge(%{duration: duration}, timings(timing))
