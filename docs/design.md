@@ -323,7 +323,8 @@ rewrite an undo position. Sharing a namespace puts the workers in one trust
 domain. A check that a job's worker grants jobs and the namespace was tried and
 not kept: a worker that has both still runs a planted row, and a refused row at
 the head of a cell with `cell_concurrency` 1 blocks the jobs behind it.
-Workaround: set the four ceilings on every node where several teams deploy, cap
+Workaround: set the four ceilings on every node where several teams deploy (the daemon
+sets three: `ATANOR_HOSTS`, `ATANOR_NAMESPACES`, `ATANOR_HTTP_ALLOW`; the node warns at start while none is set), cap
 the component with `package: [max_component_bytes: ...]`, give each tenant its
 own namespaces and share one only between workers you trust. Evidence:
 `test/atanor/grants_test.exs`, `test/atanor/package_limits_test.exs`.
