@@ -11,7 +11,53 @@ defmodule Atanor.Wasm.Native do
     * `{:atanor_wasm, tag, :host, id, op, args}`, answered with `host_reply/2`
   """
 
-  use Rustler, otp_app: :atanor, crate: "atanor_wasm", path: "native/atanor_wasm", mode: :release
+  # A built NIF is kept in `ATANOR_NIF_CACHE` (set by mise.toml outside CI) under a hash of the crate's
+  # sources and the Rust pin, so a new checkout or worktree copies it instead of compiling wasmtime again.
+  root = Path.expand("../../..", __DIR__)
+  crate = Path.join(root, "native/atanor_wasm")
+
+  sources =
+    ["Cargo.toml", "Cargo.lock", "src/**/*", "wit/**/*"]
+    |> Enum.flat_map(&Path.wildcard(Path.join(crate, &1)))
+    |> Enum.filter(&File.regular?/1)
+    |> Enum.sort()
+
+  for source <- sources, do: @external_resource(source)
+
+  nif = Path.join(root, "priv/native/atanor_wasm.so")
+
+  cached =
+    case System.get_env("ATANOR_NIF_CACHE", "") do
+      "" ->
+        nil
+
+      dir ->
+        mise = Path.join(root, "mise.toml")
+        rust = if File.regular?(mise), do: Regex.run(~r/^rust = .*$/m, File.read!(mise)), else: nil
+        parts = [inspect(rust) | Enum.map(sources, &[Path.relative_to(&1, crate), 0, File.read!(&1), 0])]
+        Path.join([dir, Base.encode16(:crypto.hash(:sha256, parts), case: :lower), "atanor_wasm.so"])
+    end
+
+  hit? = cached != nil and File.regular?(cached)
+
+  if hit? do
+    File.mkdir_p!(Path.dirname(nif))
+    File.cp!(cached, nif)
+  end
+
+  use Rustler,
+    otp_app: :atanor,
+    crate: "atanor_wasm",
+    path: "native/atanor_wasm",
+    mode: :release,
+    skip_compilation?: hit?
+
+  if cached != nil and not hit? and File.regular?(nif) do
+    File.mkdir_p!(Path.dirname(cached))
+    partial = cached <> ".#{System.unique_integer([:positive])}"
+    File.cp!(nif, partial)
+    File.rename!(partial, cached)
+  end
 
   @doc "Starts the engine, the pool and the epoch ticker once per VM."
   @spec configure(map) :: :ok | {:error, String.t()}

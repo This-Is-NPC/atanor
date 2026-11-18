@@ -10,6 +10,21 @@ for the SeaweedFS tests and `--store seaweedfs`; the cluster lab needs KVM,
 libvirt, `virt-install`, `xorriso` and about 14 GB of free RAM
 ([lab guide](how-to-run-the-cluster-lab.md)).
 
+The Rust NIF (`native/atanor_wasm`, with wasmtime) is the slow part of a build. Outside CI, `mise.toml` shares
+it between every checkout and worktree of the machine:
+
+- `CARGO_TARGET_DIR` is `~/.cache/atanor/cargo-target`. Cargo locks it, so two builds at once queue
+  ("Blocking waiting for file lock") instead of compiling wasmtime twice.
+- `ATANOR_NIF_CACHE` is `~/.cache/atanor/nif`. A built `atanor_wasm.so` is kept there under a hash of
+  the crate's `Cargo.toml`, `Cargo.lock`, `src/` and `wit/` and of the Rust pin. A checkout whose crate has
+  that hash copies it into `priv/native/` and runs no cargo at all. A change under `native/atanor_wasm`
+  changes the hash and builds again.
+
+Measured on the development laptop, 2026-11-18: a new worktree with the shared target already built
+compiled the NIF in 13 s; with the NIF in the cache, the compile of `Atanor.Wasm.Native` ran no cargo and
+took under a second. CI keeps the in-tree target that it caches, and has no NIF cache; `mise run
+test:coverage` always builds the instrumented NIF. Remove `~/.cache/atanor` to start over.
+
 ## Run a local node
 
 ```sh

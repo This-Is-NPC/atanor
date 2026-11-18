@@ -63,6 +63,8 @@ if [ $report_only -eq 0 ]; then
   eval "$(cd "$crate" && cargo llvm-cov show-env --export-prefix 2>/dev/null)"
   set +a
   export CARGO_TARGET_DIR=$crate/target/llvm-cov-target
+  # A cached NIF is not instrumented: always build it here.
+  export ATANOR_NIF_CACHE=
   export CARGO_LLVM_COV_TARGET_DIR=$CARGO_TARGET_DIR CARGO_LLVM_COV_BUILD_DIR=$CARGO_TARGET_DIR
   export LLVM_PROFILE_FILE=$CARGO_TARGET_DIR/atanor_wasm-%p-%m.profraw
   export MIX_BUILD_PATH=$root/_build/coverage MIX_ENV=test
