@@ -211,7 +211,8 @@ defmodule Atanor.CLI do
   @doc """
   Reads one line from standard input. At a terminal it prompts on standard
   error and reads with the echo off, so a token is not shown; a pipe is read
-  as it is, without a prompt.
+  as it is, without a prompt. When the echo cannot be turned off it reads
+  nothing and returns `{:error, :echo}`.
   """
   @spec read_line(String.t()) :: String.t() | :eof | {:error, term}
   def read_line(prompt) do
@@ -219,14 +220,19 @@ defmodule Atanor.CLI do
   end
 
   defp read_hidden(prompt) do
-    IO.write(:stderr, prompt)
-    restore = hide_echo()
+    case hide_echo() do
+      {:ok, restore} ->
+        IO.write(:stderr, prompt)
 
-    try do
-      IO.gets("")
-    after
-      restore.()
-      IO.write(:stderr, "\n")
+        try do
+          IO.gets("")
+        after
+          restore.()
+          IO.write(:stderr, "\n")
+        end
+
+      :error ->
+        {:error, :echo}
     end
   end
 
@@ -237,23 +243,30 @@ defmodule Atanor.CLI do
       :ok ->
         :io.setopts(:standard_io, echo: false)
 
-        fn ->
-          :io.setopts(:standard_io, echo: true)
-          :shell.start_interactive({:noshell, :cooked})
-        end
+        {:ok,
+         fn ->
+           :io.setopts(:standard_io, echo: true)
+           :shell.start_interactive({:noshell, :cooked})
+         end}
 
       {:error, _} ->
-        stty("-echo")
-        fn -> stty("echo") end
+        with :ok <- stty("-echo"), do: {:ok, fn -> stty("echo") end}
     end
   end
 
-  # Without stdio the child keeps the terminal of the VM as its standard input.
+  # Without stdio the child keeps the terminal of the VM as its standard input. `:ok` only when stty exits 0.
   defp stty(flag) do
-    port = Port.open({:spawn_executable, System.find_executable("stty")}, [:nouse_stdio, :exit_status, args: [flag]])
+    case System.find_executable("stty") do
+      nil ->
+        :error
 
-    receive do
-      {^port, {:exit_status, _}} -> :ok
+      stty ->
+        port = Port.open({:spawn_executable, stty}, [:nouse_stdio, :exit_status, args: [flag]])
+
+        receive do
+          {^port, {:exit_status, 0}} -> :ok
+          {^port, {:exit_status, _}} -> :error
+        end
     end
   end
 
@@ -500,14 +513,17 @@ defmodule Atanor.CLI do
   defp present_url(url), do: {:ok, url}
 
   defp login_token(env, ctx) do
-    token =
-      blank(env["ATANOR_TOKEN"]) ||
-        case ctx.stdin.("Token: ") do
-          :eof -> nil
-          nil -> nil
-          line -> blank(String.trim(line))
-        end
+    case blank(env["ATANOR_TOKEN"]) do
+      nil -> read_token(ctx.stdin.("Token: "))
+      token -> {:ok, token}
+    end
+  end
 
+  defp read_token({:error, :echo}),
+    do: {:usage, "this terminal cannot hide what you type: give the token in ATANOR_TOKEN or on a pipe"}
+
+  defp read_token(line) do
+    token = if is_binary(line), do: blank(String.trim(line))
     if token, do: {:ok, token}, else: {:usage, "give the token in ATANOR_TOKEN or on standard input"}
   end
 
