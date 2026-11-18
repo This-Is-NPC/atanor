@@ -41,6 +41,25 @@ defmodule Atanor.WakeLogTest do
     end
   end
 
+  describe "wake_ms" do
+    test "the time of a wake is summed, and the longest is kept, in the runtime sample" do
+      node = Node.start(workers: [Manifests.jobs("jobs")])
+      on_exit(fn -> Node.stop(node) end)
+      wake_ms = fn -> RuntimeSample.sample(node.name, System.tmp_dir!()).wake_ms end
+      before = wake_ms.()
+      assert %{total: total, max: longest} = before
+
+      event = [:alambique, :cell, :wake]
+      measurements = %{duration: 123_456 * 1_000_000}
+      WakeLog.handle(event, measurements, %{cell: "rooms.a", result: :ok}, node.name)
+      WakeLog.handle(event, measurements, %{cell: "rooms.a", result: :error}, node.name)
+
+      # Other wakes in this VM can add to the sum, never take from it.
+      assert wake_ms.().total >= total + 123_456
+      assert wake_ms.().max >= max(longest, 123_456)
+    end
+  end
+
   test "attaching twice keeps one handler" do
     assert :ok = WakeLog.attach(:wake_log_test)
     assert :ok = WakeLog.attach(:wake_log_test)
