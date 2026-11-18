@@ -138,7 +138,10 @@ and then:
 2. `manifest` creates the manifest list `ghcr.io/this-is-npc/atanor:<version>` and `:latest`
    from the two digests.
 3. `attach-tarballs` attaches the tarballs to the GitHub Release.
-4. `check-public` logs out of GHCR (it uses an empty `DOCKER_CONFIG`) and pulls
+4. `attach-scoreboard` builds the [scoreboard](../examples/scoreboard/README.md) WASM worker with
+   `scripts/pack-scoreboard` and attaches `atanor-scoreboard-<version>.tar.gz` (with a `.sha256` file), so a
+   user with only the image can deploy a worker with state ([how-to-operate-atanor.md](how-to-operate-atanor.md#test-data)).
+5. `check-public` logs out of GHCR (it uses an empty `DOCKER_CONFIG`) and pulls
    `ghcr.io/this-is-npc/atanor:<version>` anonymously. A pushed package is private until its owner
    changes it, and a private image answers `denied` to everyone else. The job fails then, with a message
    that says so. The first release after a new package fails here until the owner makes the package

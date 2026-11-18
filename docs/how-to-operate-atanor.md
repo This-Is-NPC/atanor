@@ -173,6 +173,25 @@ one cell per room, and a node of an image built from this repository (`docker bu
 [README](../README.md#run-it-in-1-minute); names are shortened here (`store`, `node-a`). Three rooms are
 written, and a fingerprint is taken: the rows and a hash of them, read through the worker.
 
+The scoreboard needs no build toolchain. Each release attaches it, already compiled, as
+`atanor-scoreboard-VERSION.tar.gz` (with a `.sha256`); the version below is the one of the image you run.
+Download it, then deploy it as in step 5 of the [README quick start](../README.md#run-it-in-1-minute), with the
+directory `scoreboard` in place of `atanor-hello`:
+
+```sh
+VERSION=0.4.1 # x-release-please-version
+curl -fsSLO "https://github.com/This-Is-NPC/atanor/releases/download/v$VERSION/atanor-scoreboard-$VERSION.tar.gz"
+curl -fsSL "https://github.com/This-Is-NPC/atanor/releases/download/v$VERSION/atanor-scoreboard-$VERSION.tar.gz.sha256" | sha256sum -c -
+tar -xzf "atanor-scoreboard-$VERSION.tar.gz"
+docker run --rm --network atanor-net -v "$PWD/atanor-secrets:/run/secrets:ro" -v "$PWD/scoreboard:/w:ro" \
+  -e ATANOR_S3_ENDPOINT=http://atanor-store:8333 \
+  -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret_key \
+  "$IMAGE" deploy /w --bucket s3://atanor --activate
+```
+
+To build it yourself instead (needs Rust, see [how-to-build-and-test.md](how-to-build-and-test.md)), run
+`mise run build:scoreboard` in a clone and deploy `examples/scoreboard`.
+
 ```sh
 fp() { for room in alpha beta gamma; do
   body=$(curl -s -H "host: scoreboard.localhost" "http://127.0.0.1:$PORT/rooms/$room/writes?limit=1000")
