@@ -131,7 +131,9 @@ write a worker and run a local node first, see
    configured paths. The node polls their size, mtime and digest every
    `tls.reload_ms` (5 000 by default), and new handshakes use the new pair
    while established connections keep their session. A replacement that does
-   not load keeps the previous certificate and logs a warning. To reload at
+   not load keeps the previous certificate and logs a warning. A certificate
+   that is expired, not yet valid or within `tls.expiry_warn_days` (14 by
+   default) of its expiry loads and is served, with a warning in the log. To reload at
    once, call the admin API:
 
    ```sh

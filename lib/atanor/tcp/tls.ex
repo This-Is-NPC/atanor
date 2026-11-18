@@ -19,14 +19,16 @@ defmodule Atanor.TCP.TLS do
   (5 000 by default) and reloads them when they change. An invalid new
   certificate keeps the previous one, logs a warning and is reported by
   `[:atanor, :tls, :reload]`. `POST /listeners/:name/reload-tls` reloads one
-  listener at once. Side effects are reported by `[:atanor, :tls, :handshake]`
+  listener at once. A certificate that is expired, not yet valid or within
+  `tls.expiry_warn_days` (14) of its expiry is served with a warning and
+  reported by `[:atanor, :tls, :validity]`. Side effects are reported by `[:atanor, :tls, :handshake]`
   (with `mode: :implicit` or `:starttls`) and `[:atanor, :tls, :starttls]`.
   """
   use GenServer
 
   require Logger
 
-  @defaults %{handshake_timeout_ms: 10_000, reload_ms: 5_000, verify: :verify_none}
+  @defaults %{handshake_timeout_ms: 10_000, reload_ms: 5_000, verify: :verify_none, expiry_warn_days: 14}
 
   @keys [
     :certfile,
@@ -37,7 +39,8 @@ defmodule Atanor.TCP.TLS do
     :verify,
     :fail_if_no_peer_cert,
     :handshake_timeout_ms,
-    :reload_ms
+    :reload_ms,
+    :expiry_warn_days
   ]
   @key_entries [:RSAPrivateKey, :ECPrivateKey, :DSAPrivateKey, :PrivateKeyInfo]
 
@@ -69,6 +72,7 @@ defmodule Atanor.TCP.TLS do
     verify = Keyword.get(opts, :verify, @defaults.verify)
     handshake_timeout_ms = Keyword.get(opts, :handshake_timeout_ms, @defaults.handshake_timeout_ms)
     reload_ms = Keyword.get(opts, :reload_ms, @defaults.reload_ms)
+    expiry_warn_days = Keyword.get(opts, :expiry_warn_days, @defaults.expiry_warn_days)
 
     check!(is_binary(certfile) and certfile != "", listener, "tls :certfile is required")
     check!(is_binary(keyfile) and keyfile != "", listener, "tls :keyfile is required")
@@ -110,6 +114,7 @@ defmodule Atanor.TCP.TLS do
 
     check!(positive_integer?(handshake_timeout_ms), listener, "tls :handshake_timeout_ms must be a positive integer")
     check!(positive_integer?(reload_ms), listener, "tls :reload_ms must be a positive integer")
+    check!(positive_integer?(expiry_warn_days), listener, "tls :expiry_warn_days must be a positive integer")
 
     tls = %{
       certfile: certfile,
@@ -120,7 +125,8 @@ defmodule Atanor.TCP.TLS do
       verify: verify,
       fail_if_no_peer_cert: fail_if_no_peer_cert,
       handshake_timeout_ms: handshake_timeout_ms,
-      reload_ms: reload_ms
+      reload_ms: reload_ms,
+      expiry_warn_days: expiry_warn_days
     }
 
     case load(tls) do
@@ -253,6 +259,7 @@ defmodule Atanor.TCP.TLS do
     # reports) holds only what reloads need.
     for {name, entry} <- entries do
       :ets.insert(table, {name, entry})
+      report_validity(config.name, name, entry)
       schedule(name, entry.reload_ms)
     end
 
@@ -278,6 +285,7 @@ defmodule Atanor.TCP.TLS do
   def handle_info({:poll, listener}, state) do
     entry = state.entries[listener]
     schedule(listener, entry.reload_ms)
+    state = recheck_validity(state, listener)
 
     if changed?(entry) do
       {_result, state} = reload_entry(state, listener, :poll)
@@ -304,6 +312,7 @@ defmodule Atanor.TCP.TLS do
         entry = build_entry(listener, entry.mode, entry.source, material, signature)
         :ets.insert(table(state.config.name), {listener, entry})
         Logger.info("atanor: reloaded the TLS certificate of listener #{listener}")
+        report_validity(state.config.name, listener, entry)
         emit(state, listener, cause, :ok)
         {:ok, %{state | entries: Map.put(state.entries, listener, Map.delete(entry, :ssl))}}
 
@@ -319,6 +328,20 @@ defmodule Atanor.TCP.TLS do
 
         emit(state, listener, cause, {:error, reason})
         {{:error, reason}, %{state | entries: Map.put(state.entries, listener, entry)}}
+    end
+  end
+
+  # A certificate that goes stale while it is served: warn once per change of status, not every poll.
+  defp recheck_validity(state, listener) do
+    entry = Map.fetch!(state.entries, listener)
+    status = validity_status(entry.validity, entry.source.expiry_warn_days, System.os_time(:second))
+
+    if status == entry.validity_status do
+      state
+    else
+      entry = %{entry | validity_status: status}
+      report_validity(state.config.name, listener, entry)
+      %{state | entries: Map.put(state.entries, listener, entry)}
     end
   end
 
@@ -344,7 +367,9 @@ defmodule Atanor.TCP.TLS do
       ssl: material.ssl,
       timeout: source.handshake_timeout_ms,
       reload_ms: source.reload_ms,
-      signature: signature
+      signature: signature,
+      validity: material.validity,
+      validity_status: validity_status(material.validity, source.expiry_warn_days, System.os_time(:second))
     }
   end
 
@@ -356,8 +381,72 @@ defmodule Atanor.TCP.TLS do
          {:ok, key} <- private_key(tls.keyfile),
          {:ok, cacerts} <- optional_certificates(tls.cacertfile),
          :ok <- check_key(certs, key) do
-      {:ok, %{ssl: ssl_options(certs, key, cacerts, tls)}}
+      {:ok, %{ssl: ssl_options(certs, key, cacerts, tls), validity: validity(hd(certs))}}
     end
+  end
+
+  @epoch :calendar.datetime_to_gregorian_seconds({{1970, 1, 1}, {0, 0, 0}})
+
+  # `{not_before, not_after}` of a certificate, in Unix seconds.
+  defp validity(der) do
+    {:OTPCertificate, tbs, _algorithm, _signature} = :public_key.pkix_decode_cert(der, :otp)
+    {:Validity, not_before, not_after} = elem(tbs, 5)
+    {unix(not_before), unix(not_after)}
+  end
+
+  defp unix({:utcTime, [y1, y2 | rest]}) do
+    year = List.to_integer([y1, y2])
+    unix(if(year >= 50, do: 1900 + year, else: 2000 + year), rest)
+  end
+
+  defp unix({:generalTime, [y1, y2, y3, y4 | rest]}), do: unix(List.to_integer([y1, y2, y3, y4]), rest)
+
+  defp unix(year, [m1, m2, d1, d2, h1, h2, i1, i2, s1, s2 | _zone]) do
+    [month, day, hour, minute, second] =
+      Enum.map([[m1, m2], [d1, d2], [h1, h2], [i1, i2], [s1, s2]], &List.to_integer/1)
+
+    :calendar.datetime_to_gregorian_seconds({{year, month, day}, {hour, minute, second}}) - @epoch
+  end
+
+  defp validity_status({not_before, not_after}, days, now) do
+    cond do
+      now < not_before -> :not_yet_valid
+      now > not_after -> :expired
+      not_after - now < days * 86_400 -> :expiring
+      true -> :ok
+    end
+  end
+
+  # Logs a warning unless the certificate is in its validity window with more than `expiry_warn_days`
+  # left, and reports `[:atanor, :tls, :validity]`. The certificate is served in every case.
+  defp report_validity(instance, listener, entry) do
+    {not_before, not_after} = entry.validity
+    status = entry.validity_status
+    ends = DateTime.to_iso8601(DateTime.from_unix!(not_after))
+
+    case status do
+      :ok ->
+        :ok
+
+      :expired ->
+        Logger.warning("atanor: the TLS certificate of listener #{listener} expired at #{ends}")
+
+      :not_yet_valid ->
+        Logger.warning(
+          "atanor: the TLS certificate of listener #{listener} is not valid before #{DateTime.to_iso8601(DateTime.from_unix!(not_before))}"
+        )
+
+      :expiring ->
+        Logger.warning("atanor: the TLS certificate of listener #{listener} expires at #{ends}")
+    end
+
+    :telemetry.execute([:atanor, :tls, :validity], %{seconds_left: not_after - System.os_time(:second)}, %{
+      instance: instance,
+      listener: listener,
+      status: status,
+      not_after: not_after,
+      node: node()
+    })
   end
 
   defp ssl_options(certs, key, cacerts, tls) do
@@ -462,7 +551,8 @@ defmodule Atanor.TCP.TLS do
         derive_ec(params, private)
 
       other ->
-        {:error, {:unsupported_key, other}}
+        # Only the type: the decoded key holds the private numbers.
+        {:error, {:unsupported_key, if(is_tuple(other) and tuple_size(other) > 0, do: elem(other, 0), else: :unknown)}}
     end
   rescue
     _ -> {:error, :unsupported_key}

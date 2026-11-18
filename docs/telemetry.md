@@ -255,6 +255,12 @@ node that ran it.
 | `[:atanor, :tls, :handshake]` | `duration` | `instance`, `listener`, `node`, `mode`: `:implicit` or `:starttls`, `result`: `:ok` or `{:error, reason}` |
 | `[:atanor, :tls, :starttls]` | `count` (1) | as above, without `mode`: one STARTTLS upgrade was attempted |
 | `[:atanor, :tls, :reload]` | `count` (1) | `instance`, `listener`, `node`, `cause`: `:poll` or `:admin`, `result`: `:ok` or `{:error, reason}` (the previous certificate stays in service) |
+| `[:atanor, :tls, :validity]` | `seconds_left` (negative once expired) | `instance`, `listener`, `node`, `not_after` (Unix seconds), `status`: `:ok`, `:expiring` (within `tls.expiry_warn_days`, 14 by default), `:expired` or `:not_yet_valid` |
+
+`:validity` is emitted when the listener starts, after each successful reload
+and whenever the status of the served certificate changes between polls. Each
+status other than `:ok` also logs a warning; the certificate is served in every
+case.
 
 An implicit TLS connection emits one `:handshake` and no `:starttls`; a
 STARTTLS upgrade emits both. The events are emitted by the handshake itself,

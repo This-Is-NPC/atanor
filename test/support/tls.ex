@@ -51,6 +51,30 @@ defmodule Atanor.Test.TLS do
     %{certfile: certfile, keyfile: keyfile, cn: cn, der: der!(certfile)}
   end
 
+  @doc """
+  Generates a certificate valid from `not_before` to `not_after` (`{year, month, day}` dates, 13:00 UTC),
+  signed by a throwaway root. Returns the same map as `generate!/4`.
+  """
+  def generate_dated!(dir, name, {not_before, not_after}) do
+    certfile = Path.join(dir, "#{name}-cert.pem")
+    keyfile = Path.join(dir, "#{name}-key.pem")
+
+    %{server_config: config} =
+      :public_key.pkix_test_data(%{
+        server_chain: %{
+          root: [key: {:rsa, 2048, 65_537}],
+          intermediates: [],
+          peer: [key: {:rsa, 2048, 65_537}, validity: {not_before, not_after}]
+        },
+        client_chain: %{root: [], intermediates: [], peer: []}
+      })
+
+    {:RSAPrivateKey, key_der} = config[:key]
+    File.write!(certfile, :public_key.pem_encode([{:Certificate, config[:cert], :not_encrypted}]))
+    File.write!(keyfile, :public_key.pem_encode([{:RSAPrivateKey, key_der, :not_encrypted}]))
+    %{certfile: certfile, keyfile: keyfile, cn: name, der: config[:cert]}
+  end
+
   @doc "A self-signed CA certificate and key, for client-certificate tests."
   def generate_ca!(dir, name \\ "ca") do
     certfile = Path.join(dir, "#{name}-cert.pem")
