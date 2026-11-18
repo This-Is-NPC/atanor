@@ -280,9 +280,11 @@ defmodule Atanor.Admission do
   `refused` under its reason: `memory`, `disk` and `in_flight` at the ingress, then `wake_gate` (the cell calls
   that would have woken a cell while the memory gate was refusing), `queue_timeout` (waited past
   `http: [queue_wait_ms:]`), `worker_queue` (the WASM queue was full), `nested_calls` (calls between workers
-  refused at `max_nested_calls`), `awake_limit` (the awake cells are at their ceiling), `busy` and `disk_full`.
-  Every other 503 the HTTP layer answers is in `refused.unavailable`, and `unavailable_by_reason` has the same
-  count by reason (`owner_unreachable`, `fenced`, `unknown_outcome`, `overloaded_unattributed`, ...).
+  refused at `max_nested_calls`), `awake_limit` (the awake cells are at their ceiling, or the wake slots and queue are full: Alambique's bare
+  `{:error, :overloaded}`, also when it refuses the wake of a cell that a request is looking up), `busy` and
+  `disk_full`. Every other 503 the HTTP layer answers is in `refused.unavailable`, and `unavailable_by_reason`
+  has the same count by reason (`owner_unreachable`, `fenced`, `unknown_outcome`, `overloaded_unattributed`,
+  ...); `overloaded_unattributed` is a 503 `overloaded` whose gate is unknown.
   """
   @spec stats(atom) :: map
   def stats(name) do

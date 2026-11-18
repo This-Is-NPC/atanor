@@ -180,8 +180,9 @@ the limit or more (design §4.3,
 
 * `admission.refused` counts every 503 the HTTP layer answers, once each: `memory`, `disk`, `in_flight`,
   `queue_timeout`, `worker_queue`, `nested_calls`, `wake_gate`, `awake_limit`, `busy` and `disk_full` for the
-  overload refusals, and `unavailable` for every other 503. A 503 `overloaded` that names no gate counts as
-  `unavailable`.
+  overload refusals, and `unavailable` for every other 503. `awake_limit` also counts a wake that Alambique
+  refuses because its wake slots and queue are full. A 503 `overloaded` that names no gate counts as
+  `unavailable` (`unavailable_by_reason.overloaded_unattributed`).
 * `admission.unavailable_by_reason` splits `refused.unavailable` by the `reason` of the answer: for example
   `owner_unreachable`, `fenced`, `owner_unknown`, `store_unavailable`, `deployment_unavailable`, `draining`,
   `unknown_outcome`, `keys_unavailable` (a 503 of an `auth:` route) and `overloaded_unattributed` (an
