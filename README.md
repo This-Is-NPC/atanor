@@ -259,6 +259,10 @@ To develop Atanor ([how to build and test](docs/how-to-build-and-test.md)):
   paragraphs of [docs/design.md](docs/design.md) (for example the failover
   window of [§8.10](docs/design.md#810-acting-on-a-confirmed-failure)).
 - The memory of a node grows with its awake cells ([configuration](docs/configuration.md#cells-limits-memory-and-store-requests)).
+  One lab VM measured a node in 1 CPU and 512 MB at about 590 native requests a second, 3300 idle WebSockets and
+  about 400 hot cells, and in 2 CPUs and 2 GB at 1641, 22500 and 2438
+  ([measured results](docs/how-to-run-the-load-tests.md#measured-results)). They are not guarantees: run the round
+  on your hardware before you size.
 - A file system that stalls writes slows the cells and the store; see
   [the container cluster guide](docs/how-to-run-a-cluster-in-containers.md#keeping-the-data-in-memory).
 - A new build of the nodes replaces the whole cluster at once: Atanor has no

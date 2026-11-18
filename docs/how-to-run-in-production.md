@@ -96,9 +96,9 @@ HAProxy, which the [container cluster](how-to-run-a-cluster-in-containers.md) al
    limit of its container ([cells, limits and memory](configuration.md#cells-limits-memory-and-store-requests)). The
    data directory `/var/lib/atanor/cells` holds local copies of cells: give it a disk, not a RAM file system, unless
    you accept the trade ([how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md#keeping-the-data-in-memory)).
-   There are no measured sizes for a release yet: [how-to-run-the-load-tests.md](how-to-run-the-load-tests.md) is the harness
-   that measures requests a second, idle WebSockets and hot cells in 1 CPU and 512 MB or 2 CPUs and 2 GB. Run it on
-   your hardware before you size.
+   [How to run the load tests](how-to-run-the-load-tests.md#measured-results) lists what one lab VM measured for
+   requests a second, idle WebSockets and hot cells in 1 CPU and 512 MB or 2 CPUs and 2 GB. Those are measurements
+   of one host, not guarantees: run the round on your hardware before you size.
 
 ## Check it
 
