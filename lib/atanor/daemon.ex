@@ -112,6 +112,10 @@ defmodule Atanor.Daemon do
      "The whole time a client may take to send the headers of a request, HTTP/1 (`http: [header_timeout_ms:]`). Default 10000."},
     {"ATANOR_HTTP_BODY_TIMEOUT_MS", :integer,
      "The whole time a client may take to send the body of a request, HTTP/1 (`http: [body_timeout_ms:]`). Default 30000."},
+    {"ATANOR_WEBSOCKET_COMPRESS", :boolean,
+     "Whether WebSockets may negotiate permessage-deflate (`websocket: [compress:]`). Default false: a small compressed frame can inflate far past `max_frame_bytes`."},
+    {"ATANOR_WEBSOCKET_ALLOWED_ORIGINS", :origins,
+     "Comma-separated `Origin` values a WebSocket upgrade may carry (`websocket: [allowed_origins:]`); any other gets 403. Default: any."},
     {"ATANOR_ADMIN_HEADER_TIMEOUT_MS", :integer,
      "The same for the admin API (`admin: [header_timeout_ms:]`). Default 10000."},
     {"ATANOR_ADMIN_BODY_TIMEOUT_MS", :integer,
@@ -468,6 +472,15 @@ defmodule Atanor.Daemon do
         else: {:error, "must be 1 to 64 letters, digits, '.', '_' or '-'"}
       )
 
+  defp parse(:origins, text) do
+    origins = text |> String.split(",") |> Enum.map(&String.trim/1)
+
+    if "" in origins,
+      do:
+        {:error, "must be origins separated by commas, for example https://app.example.com,https://admin.example.com"},
+      else: {:ok, origins}
+  end
+
   defp parse(:boolean, text) when text in ["true", "false"], do: {:ok, text == "true"}
   defp parse(:boolean, _text), do: {:error, "must be true or false"}
 
@@ -575,6 +588,10 @@ defmodule Atanor.Daemon do
         max_moves_per_s: v["ATANOR_REBALANCE_MAX_MOVES_PER_S"],
         start_delay_ms: v["ATANOR_REBALANCE_START_DELAY_MS"]
       )
+      |> put_group(:websocket,
+        compress: v["ATANOR_WEBSOCKET_COMPRESS"],
+        allowed_origins: v["ATANOR_WEBSOCKET_ALLOWED_ORIGINS"]
+      )
       |> put_group(:http,
         queue_wait_ms: v["ATANOR_HTTP_QUEUE_WAIT_MS"],
         max_connections: v["ATANOR_HTTP_MAX_CONNECTIONS"],
@@ -650,6 +667,10 @@ defmodule Atanor.Daemon do
   end
 
   defp shown(name, :listen, parsed, _env), do: with({ip, port} <- parsed[name], do: "#{:inet.ntoa(ip)}:#{port}")
+
+  defp shown(name, :origins, parsed, _env),
+    do: with(origins when origins != nil <- parsed[name], do: Enum.join(origins, ","))
+
   defp shown(name, _type, parsed, _env), do: with(value when value != nil <- parsed[name], do: to_string(value))
 
   defp blank(nil), do: nil

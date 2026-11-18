@@ -25,7 +25,7 @@ defmodule Atanor.HTTP do
   alias Atanor.Diagnostics.Breadcrumb
   alias Atanor.HTTP.{Deadline, Socket}
 
-  @rejections %{400 => "bad_request", 404 => "not_found", 413 => "payload_too_large"}
+  @rejections %{400 => "bad_request", 403 => "forbidden", 404 => "not_found", 413 => "payload_too_large"}
 
   @impl true
   def init(opts), do: Keyword.fetch!(opts, :name)
@@ -251,6 +251,25 @@ defmodule Atanor.HTTP do
   defp reason_name(reason), do: inspect(reason)
 
   defp serve_socket(conn, env, config) do
+    if origin_allowed?(conn, config.websocket.allowed_origins) do
+      upgrade_socket(conn, env, config)
+    else
+      reject(conn, 403, :origin_not_allowed, env)
+    end
+  end
+
+  # No list: any origin. A request without `Origin` is not from a browser page, which is what the list guards.
+  defp origin_allowed?(_conn, nil), do: true
+
+  defp origin_allowed?(conn, allowed) do
+    case get_req_header(conn, "origin") do
+      [] -> true
+      [origin] -> String.downcase(origin) in allowed
+      _ -> false
+    end
+  end
+
+  defp upgrade_socket(conn, env, config) do
     request = request(conn, "")
 
     # The bound of `route_key/2` is for plain requests: a socket is served by the owner.
@@ -271,7 +290,8 @@ defmodule Atanor.HTTP do
     options = [
       timeout: config.websocket.idle_timeout_ms,
       max_frame_size: config.websocket.max_frame_bytes,
-      max_fragmented_message_size: config.websocket.max_frame_bytes
+      max_fragmented_message_size: config.websocket.max_frame_bytes,
+      compress: config.websocket.compress
     ]
 
     WebSockAdapter.upgrade(conn, Socket, Map.put(arg, :expires_at, token_expiry(conn)), options)

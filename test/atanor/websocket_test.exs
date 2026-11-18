@@ -169,6 +169,48 @@ defmodule Atanor.WebSocketTest do
     end
   end
 
+  describe "compression and origins" do
+    # The status line and headers the server answers a plain upgrade with.
+    defp handshake(node, headers) do
+      {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", node.port, [:binary, active: false])
+
+      :ok =
+        :gen_tcp.send(
+          socket,
+          "GET / HTTP/1.1\r\nhost: 127.0.0.1\r\nupgrade: websocket\r\nconnection: Upgrade\r\n" <>
+            "sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n" <>
+            Enum.map_join(headers, "", fn {name, value} -> "#{name}: #{value}\r\n" end) <> "\r\n"
+        )
+
+      {:ok, head} = :gen_tcp.recv(socket, 0, 2_000)
+      :gen_tcp.close(socket)
+      String.downcase(head)
+    end
+
+    @deflate {"sec-websocket-extensions", "permessage-deflate"}
+
+    test "permessage-deflate is not offered by default, and is with compress: true" do
+      node = start([manifest()])
+      head = handshake(node, [@deflate])
+      assert head =~ "http/1.1 101"
+      refute head =~ "permessage-deflate"
+
+      node = start([manifest()], websocket: [compress: true])
+      assert handshake(node, [@deflate]) =~ "permessage-deflate"
+    end
+
+    test "an origin outside allowed_origins is refused, inside accepted, unset accepts all" do
+      node = start([manifest()], websocket: [allowed_origins: ["https://app.example.com"]])
+      assert handshake(node, [{"origin", "https://evil.example"}]) =~ "http/1.1 403"
+      assert handshake(node, [{"origin", "https://app.example.com"}]) =~ "http/1.1 101"
+      assert handshake(node, [{"origin", "HTTPS://App.Example.com"}]) =~ "http/1.1 101"
+      assert handshake(node, []) =~ "http/1.1 101"
+
+      node = start([manifest()])
+      assert handshake(node, [{"origin", "https://evil.example"}]) =~ "http/1.1 101"
+    end
+  end
+
   # Reads until the server closes the socket; true when the close code is `code`.
   defp closed_with?(client, code) do
     case WSClient.recv(client, 5_000) do
