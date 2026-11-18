@@ -1,5 +1,6 @@
 defmodule Atanor.JobsTripsTest do
-  use ExUnit.Case, async: true
+  # Not async: the commit events are VM-wide, and a concurrent test would add its own transactions to the count.
+  use ExUnit.Case, async: false
 
   import Atanor.Test.Await
 
