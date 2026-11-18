@@ -205,6 +205,39 @@ jobs:
         working-directory: ${{ runner.temp }}/tarballs
         run: gh release upload "$TAG" ./*.tar.gz ./*.tar.gz.sha256 --clobber --repo "$GITHUB_REPOSITORY"
 
+  # The scoreboard example, compiled, so a user with only the image can deploy a worker with state
+  # (docs/how-to-operate-atanor.md). scripts/pack-scoreboard is the one implementation; its test deploys the result.
+  attach-scoreboard:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+      VERSION: ${{ needs.release-please.outputs.version }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          persist-credentials: false
+
+      - name: Install Rust from mise.toml
+        uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+        with:
+          install: true
+          install_args: rust
+          cache: true
+
+      - name: Pack the scoreboard
+        run: mise exec rust -- scripts/pack-scoreboard "$RUNNER_TEMP/scoreboard" "$VERSION"
+
+      - name: Attach it to the GitHub Release
+        working-directory: ${{ runner.temp }}/scoreboard
+        run: gh release upload "$TAG" ./*.tar.gz ./*.tar.gz.sha256 --clobber --repo "$GITHUB_REPOSITORY"
+
   # A pushed package is private until its owner makes it public; a private one answers "denied" to users.
   check-public:
     needs: [release-please, manifest]

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Pack the scoreboard example for a release: builds it (scripts/build-scoreboard) and writes
+# OUT_DIR/atanor-scoreboard-VERSION.tar.gz (a directory `scoreboard/` with atanor.json and
+# scoreboard.wasm, ready for `atanor deploy`) and its .sha256. Safe to rerun.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+out="$(mkdir -p "${1:?usage: pack-scoreboard OUT_DIR VERSION}" && cd "$1" && pwd)"
+version="${2:?usage: pack-scoreboard OUT_DIR VERSION}"
+app="$root/examples/scoreboard"
+name="atanor-scoreboard-$version.tar.gz"
+
+"$root/scripts/build-scoreboard" >/dev/null
+stage="$(mktemp -d)"
+trap 'rm -rf "$stage"' EXIT
+mkdir "$stage/scoreboard"
+cp "$app/atanor.json" "$app/scoreboard.wasm" "$stage/scoreboard/"
+tar --owner=0 --group=0 --numeric-owner --sort=name --mtime=@0 -C "$stage" -czf "$out/$name" scoreboard
+(cd "$out" && sha256sum "$name" >"$name.sha256")
+echo "packed $out/$name ($(wc -c <"$out/$name") bytes)"

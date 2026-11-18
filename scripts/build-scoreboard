@@ -9,5 +9,5 @@ app="$root/examples/scoreboard"
 "$root/scripts/wasm-guest-deps" "$app/guest"
 cd "$app/guest"
 cargo build --release --quiet --target wasm32-wasip2
-cp target/wasm32-wasip2/release/scoreboard_guest.wasm "$app/scoreboard.wasm"
+cp "${CARGO_TARGET_DIR:-target}"/wasm32-wasip2/release/scoreboard_guest.wasm "$app/scoreboard.wasm"
 echo "built examples/scoreboard/scoreboard.wasm ($(wc -c <"$app/scoreboard.wasm") bytes)"
