@@ -170,21 +170,16 @@ defmodule Atanor.Jobs do
     with {:ok, {listed, fired}} <- claim_candidates(instance, cell, config, now),
          candidates =
            Enum.filter(listed, fn [_, worker | _] -> match?({:ok, _}, Registry.deployment(instance, worker)) end),
-         {:ok, claimed} <- claim(instance, cell, candidates, config) do
+         {:ok, {claimed, rearm_result}} <- claim(instance, cell, candidates, config, alarm_at, listed != []) do
+      apply_rearm(instance, cell, rearm_result)
+
       for {job, lease} <- claimed do
         deployment = deployment!(instance, job.worker)
         start(instance, cell, {job, lease}, deployment, config)
       end
 
       _ = fired
-
-      delay =
-        if (listed != [] and candidates == []) or (candidates != [] and claimed == []), do: config.jobs.wait_ms, else: 0
-
-      case rearm(instance, cell, alarm_at, delay) do
-        :ok -> :ok
-        {:error, _} = error -> error
-      end
+      :ok
     end
   end
 
@@ -417,7 +412,8 @@ defmodule Atanor.Jobs do
     end)
   end
 
-  defp claim(instance, cell, candidates, config) do
+  # Re-arms `@jobs` in the claim transaction, so a scan costs one cell transaction, not two.
+  defp claim(instance, cell, candidates, config, alarm_at, listed?) do
     # The node that runs the claim, which awaits the attempt: not the cell owner whose transaction records it.
     by = Atom.to_string(node())
 
@@ -462,13 +458,16 @@ defmodule Atanor.Jobs do
                  end
              end)
 
-           Enum.reverse(claimed)
+           claimed = Enum.reverse(claimed)
+           wait? = (listed? and candidates == []) or (candidates != [] and claimed == [])
+           Schema.ensure!(tx)
+           {claimed, rearm_tx(tx, instance, cell, alarm_at, if(wait?, do: config.jobs.wait_ms, else: 0))}
          end) do
-      {:ok, claimed} ->
+      {:ok, {claimed, rearm_result}} ->
         claimed_ids = MapSet.new(claimed, fn {[id | _], _} -> id end)
         for {id, worker, _row} <- selected, not MapSet.member?(claimed_ids, id), do: Slots.release(instance, worker)
         jobs = for {row, lease} <- claimed, do: {job_from_row(row, cell), lease}
-        {:ok, jobs}
+        {:ok, {jobs, rearm_result}}
 
       {:error, reason} ->
         for {_id, worker, _row} <- selected, do: Slots.release(instance, worker)

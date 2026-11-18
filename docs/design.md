@@ -4200,7 +4200,12 @@ the next job in its own transaction. What is left is one finish transaction per
 job, one segment upload per transaction; transactions that queue together share
 an upload (0.32 uploads per job at concurrency 4, 0.10 to 0.12 at 16). A
 coalesced finish would save at best about 0.07 of 0.75 requests, and at
-concurrency 1 it cannot batch anything, so it is not built. Exactly-one
+concurrency 1 it cannot batch anything, so it is not built. The claim also
+re-arms `@jobs` inside its own transaction: a separate re-arm transaction used
+to follow it and ran beside the handler, costing one more segment upload
+whenever it did not share one with the handler's first commit (a job is six cell
+transactions, not seven, in `test/atanor/jobs_trips_test.exs`; the saving per
+job is up to one upload, and the index put and delete are unchanged). Exactly-one
 completion and the fence rest on the finish being conditional on `state =
 'running' AND claimed_until_ms = <lease>` and the claim on `WHERE state =
 'pending' ... OR (state = 'running' AND claimed_until_ms <= now)`. The property
@@ -4805,8 +4810,8 @@ controls all three.
 
 `Atanor.Alarms.fire/4` branches on `@jobs` before resolving a deployment; the
 normal conditional claim still decides which scheduler fires. The handler
-calls `Atanor.Jobs.run/3`, which claims due jobs, starts tasks and re-arms
-`@jobs`. `Dispatch.internal/3` forwards the internal call to the cell owner
+calls `Atanor.Jobs.run/3`, which claims due jobs and re-arms `@jobs` in the
+same cell transaction, then starts the tasks. `Dispatch.internal/3` forwards the internal call to the cell owner
 when the scheduler is elsewhere. `Alarms.pending/3` hides `@jobs`, and no
 alarm event is emitted for it. A scheduler that lost the claim sees a
 different `at_ms`; the conditional job claim makes a second runner harmless.
