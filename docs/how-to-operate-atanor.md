@@ -119,13 +119,15 @@ without `owners/` a cell namespace has no owner. Not copied, by design: the secr
 **How to copy.** Any S3 client works. The commands below use the AWS CLI from the `amazon/aws-cli` image,
 in the same Docker network as the store. They fit the
 [README quick start](../README.md#run-it-in-1-minute), run from the directory where you ran it: the network
-`atanor-net`, the store `atanor-store:8333`, the bucket `atanor` with no prefix, and the keys in
+`atanor-net`, the store `atanor-store:8333`, the bucket `atanor` (the node keeps its objects under the default prefix `atanor`, so they sit at
+`atanor/...` inside it; the copy takes the whole bucket either way), and the keys in
 `atanor-secrets/access_key` and `atanor-secrets/secret_key`. For another setup, change those names.
 
 The function `s3` runs one AWS CLI command. The keys reach the container as environment variables, so they
 show in `docker inspect` while it runs. `--user` makes the files in `backup/` yours, not root's; `HOME=/tmp`
 gives that user a writable home. On the host, `backup/` is the backup directory and `backup/bucket` holds the
-copy; in the container the same directory is `/b`.
+copy; in the container the same directory is `/b`. The first call pulls `amazon/aws-cli` (about 85 s on a
+2 vCPU VM, 2026-11-18).
 
 ```sh
 mkdir -p backup
@@ -142,8 +144,13 @@ s3 s3 sync s3://atanor /b/bucket     # back up: bucket to the host
 s3 s3 sync /b/bucket s3://atanor     # restore: host to the bucket
 ```
 
-The restore needs a store that is running with its bucket created, as in step 3 of the quick start. When
-you are done, remove `backup/` and the image (`docker rmi amazon/aws-cli`). The measurements below were taken
+The restore needs a store that is running with its bucket created, as in step 3 of the quick start. Start
+the new node on an empty `data_dir` that the node's user (uid 10001) can write: a named volume
+(`-v atanor-data:/var/lib/atanor/cells`) is. A host directory that does not exist yet is not: Docker creates
+it as root, and the node exits with `data_dir_unusable` (`Permission denied`); create it first and
+`chown 10001` it. When you are done, remove `backup/`, the image (`docker rmi amazon/aws-cli`), and the
+volumes the removed containers left (`docker volume ls`, then `docker volume rm`): `docker rm -f` without `-v`
+keeps a container's anonymous volume. The measurements below were taken
 with MinIO's `mc mirror`, whose progress tables they show; `s3 s3 sync` makes the same copy and prints
 other lines.
 
@@ -262,7 +269,8 @@ exited 0
 ```
 
 Then the node and the store were removed, a new store was started and its bucket created, the copy was mirrored
-back, and a new node was started on a new, empty `data_dir`:
+back, and a new node was started on a new, empty `data_dir` (here a host directory, which uid 10001 must be able to write; see
+[how to copy](#back-up-and-restore) for a named volume instead):
 
 ```sh
 docker rm -f node-d store                # the disaster
