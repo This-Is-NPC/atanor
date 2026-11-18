@@ -18,9 +18,9 @@ defmodule Atanor.WakeLog do
   @doc false
   # Counts the wake that succeeded (`wakes` of `GET /runtime`), then logs a slow one.
   def handle(_event, %{duration: duration} = measurements, %{cell: cell} = meta, name) do
-    if name && meta[:result] == :ok, do: Atanor.Admission.wake(name)
-
     ms = System.convert_time_unit(duration, :native, :millisecond)
+    if name && meta[:result] == :ok, do: Atanor.Admission.wake(name, ms)
+
     store_ms = System.convert_time_unit(Map.get(measurements, :store_time, 0), :native, :millisecond)
 
     if ms >= @slow_ms do

@@ -195,6 +195,9 @@ the limit or more (design §4.3,
 * `wakes` is the number of cells woken on this node since it started, counted from Alambique's
   `[:alambique, :cell, :wake]` event with `result: :ok`. The event names no instance, so a VM that runs more
   than one instance counts the wakes of all of them in each.
+* `wake_ms` is the time those wakes took, from the `duration` of the same event: `total` (the sum, in
+  milliseconds) and `max` (the longest wake). `total / wakes` is the mean wake. It does not include the time
+  a wake waited for a slot.
 * `hibernations.compaction` counts the cells hibernated on this node since it started, by the outcome of the
   compaction Alambique runs on the WAL tail before it releases the lease: `none` (not tried, or the call had
   less than `release_reserve_ms` left), `done`, `deadline` (`release_deadline_ms` passed and the cell was

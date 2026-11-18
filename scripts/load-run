@@ -705,6 +705,7 @@ def eviction_evidence(awake_start, awake_end, admission, samples=()):
     seen = [p["hibernated"] for s in samples if isinstance(p := (s.get("runtime") or {}).get("pressure"), dict) and isinstance(p.get("hibernated"), int)]
     return {"counter_in_runtime": False, "cells_awake_start": awake_start, "cells_awake_end": awake_end, "cells_awake_change": change,
             "pressure_hibernated": seen[-1] - seen[0] if seen else None, "wakes": counter_growth([(s.get("runtime") or {}).get("wakes") for s in samples]),
+            "wake_ms": counter_growth([((s.get("runtime") or {}).get("wake_ms") or {}).get("total") for s in samples]),
             "compaction": compaction_growth([s.get("runtime") for s in samples]),
             "disk_used_max_pct_of_budget": admission.get("disk_used_max_pct_of_budget"), "disk_budget_bytes": admission.get("disk_budget_bytes")}
 

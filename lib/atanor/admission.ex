@@ -67,7 +67,9 @@ defmodule Atanor.Admission do
   @compaction_error 22
   @tail_max 23
   @warned_at 24
-  @counters 24
+  @wake_ms_total 25
+  @wake_ms_max 26
+  @counters 26
   @warn_every_ms 1_000
   @deadline {__MODULE__, :deadline}
 
@@ -227,18 +229,31 @@ defmodule Atanor.Admission do
   end
 
   @doc false
-  # Counts a cell woken on this node (`wakes/1`). A node that is stopping has no counters left.
-  @spec wake(atom) :: :ok
-  def wake(name) do
+  # Counts a cell woken on this node (`wakes/1`) and the `ms` the wake took (`wake_ms/1`). A node that is
+  # stopping has no counters left.
+  @spec wake(atom, non_neg_integer) :: :ok
+  def wake(name, ms) do
     case :persistent_term.get({__MODULE__, name}, nil) do
-      nil -> :ok
-      handle -> :atomics.add(handle.counters, @wakes, 1)
+      nil ->
+        :ok
+
+      %{counters: counters} ->
+        :atomics.add(counters, @wakes, 1)
+        :atomics.add(counters, @wake_ms_total, ms)
+        put_max(counters, @wake_ms_max, ms)
     end
   end
 
   @doc "The cells woken on this node since it started."
   @spec wakes(atom) :: non_neg_integer
   def wakes(name), do: :atomics.get(handle(name).counters, @wakes)
+
+  @doc "The time the wakes of `wakes/1` took: the sum and the longest one, in milliseconds."
+  @spec wake_ms(atom) :: %{total: non_neg_integer, max: non_neg_integer}
+  def wake_ms(name) do
+    counters = handle(name).counters
+    %{total: :atomics.get(counters, @wake_ms_total), max: :atomics.get(counters, @wake_ms_max)}
+  end
 
   @compaction_counters %{
     none: @compaction_none,
