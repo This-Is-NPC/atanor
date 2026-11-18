@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/This-Is-NPC/atanor/compare/v0.4.0...v0.4.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **readme:** undo the release version replace ([9ec7cbb](https://github.com/This-Is-NPC/atanor/commit/9ec7cbb4400c65ae5b8992e04ebe387a2437aa1c))
+
 ## [0.4.0](https://github.com/This-Is-NPC/atanor/compare/v0.3.0...v0.4.0) (2026-11-18)
 
 
