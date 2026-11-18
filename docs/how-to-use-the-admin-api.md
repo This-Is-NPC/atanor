@@ -137,7 +137,10 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    {"nodes":{"a@myhost":{"release":{"id":"image-sha"},"status":"ok","workers":[{"error":null,"worker":"hello","head":"8e86f9a...","applied":"8e86f9a...","serving":"8e86f9a..."}]}},"partial":false}
    ```
 
-   (Ids and the `release` fields are shortened here.) With several nodes there is one entry per node. A node
+   (Ids and the `release` fields are shortened here. A worker whose head the
+   node could not apply has a stable code in `error`, for example
+   `module_not_loaded`, and a fixed English text in `reason`; the cause is in
+   the node log.) With several nodes there is one entry per node. A node
    that does not answer within 5 seconds appears as `{"status":"error",
    "reason":"..."}` and `partial` is `true`. `release` is the build that node
    reported (`release: [id: ...]`, design §17.1).
@@ -562,7 +565,9 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
   after `sweeps.retention_ms` (30 days); raise the option or wait.
 - **An operation is 400 `invalid_operation`.** A selector namespace is not
   granted, the action is missing, or `rate_per_s`, `concurrency` or
-  `page_size` is above the instance's `sweeps:` bound.
+  `page_size` is above the instance's `sweeps:` bound. When the store could not
+  record the operation, the `reason` is `the operation could not be started;
+  see the node log`.
 - **`/rehearsals` is 400 `invalid_rehearsal`.** The message names the field:
   `sample_size`, `max_cells` and `timeout_ms` cannot exceed the node's
   `rehearsal:` bounds, and unknown fields are refused.

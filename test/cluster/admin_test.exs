@@ -49,7 +49,7 @@ defmodule Atanor.Cluster.AdminTest do
     assert {200, %{"partial" => true, "nodes" => nodes}} = admin(c, :n1, "/deployments")
     n2 = Atom.to_string(Cluster.node(c, :n2))
     assert %{"status" => "error", "reason" => reason} = nodes[n2]
-    assert reason =~ "timeout"
+    assert reason == "the node did not answer in time"
     assert %{"status" => "ok"} = nodes[Atom.to_string(Cluster.node(c, :n1))]
 
     {:ok, :ok} = Cluster.call(c, :n2, :sys, :resume, [watcher])

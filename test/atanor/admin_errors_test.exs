@@ -83,6 +83,50 @@ defmodule Atanor.AdminErrorsTest do
     assert {409, %{"error" => "invalid_state"}} = answer(node, :post, "/operations/#{id}/resume", "{}")
   end
 
+  # A reason is fixed text for people: no Elixir terms, no echo of what failed.
+  defp assert_plain_reason(body, reason) do
+    assert body["reason"] == reason
+    refute inspect(body) =~ "SENTINEL"
+    refute Jason.encode!(body) =~ ~r/%\{|\{:/
+  end
+
+  test "an operation the store could not record is 400 with a fixed reason", %{node: node} do
+    {_module, config} = node.store
+    MemoryStore.inject(config, kind: :error, ops: [:put], key: ~r{operations/}, reason: {:http, 500, "SENTINEL"})
+
+    attrs = %{
+      "selector" => %{"kind" => "namespace", "namespace" => "jobs"},
+      "action" => %{"worker" => "jobs", "kind" => "x", "payload_base64" => Base.encode64("x")}
+    }
+
+    assert {400, %{"error" => "invalid_operation"} = body} = answer(node, :post, "/operations", Jason.encode!(attrs))
+    assert_plain_reason(body, "the operation could not be started; see the node log")
+  end
+
+  # A single node has no peer to fail, so the 504 itself is covered on a cluster (test/cluster/admin_test.exs).
+  test "why a node could not be queried is a fixed text, whatever the term" do
+    alias Atanor.Admin.Reason
+
+    assert Reason.unreachable({:error, {:erpc, :noconnection}}) == "the node is not connected"
+    assert Reason.unreachable({:error, {:erpc, :timeout}}) == "the node did not answer in time"
+    assert Reason.unreachable({:exit, {{:timeout, {GenServer, :call, [self(), :status, 5000]}}, []}}) =~ "in time"
+    assert Reason.unreachable({:error, %{status: 500, body: "SENTINEL"}}) == "the node could not be queried"
+  end
+
+  test "a head that was not applied shows a stable code and a fixed reason" do
+    node = Node.start(workers: [], admin: [token: @token, port: 0], listeners: %{"smtp" => 0})
+    on_exit(fn -> Node.stop(node) end)
+    bad = Manifests.probe("bad", module: Atanor.Test.LineWorker, tcp: ["nolistener"])
+    assert %{error: {:listener_not_configured, "nolistener"}} = Manifests.forge_head(node, bad)
+
+    assert {200, %{"error" => "listener_not_configured"} = body} = answer(node, :get, "/workers/bad/status")
+    assert_plain_reason(body, "the node has no such listener")
+
+    {200, %{"nodes" => nodes}} = answer(node, :get, "/deployments")
+    [%{"workers" => [worker]}] = Map.values(nodes)
+    assert %{"error" => "listener_not_configured", "reason" => "the node has no such listener"} = worker
+  end
+
   test "a store that fails is a 503 that does not echo the store", %{node: node} do
     {_module, config} = node.store
     secret = {:http, 500, "AKID-SENTINEL"}

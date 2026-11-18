@@ -19,6 +19,7 @@ defmodule Atanor.Overview do
     TCP
   }
 
+  alias Atanor.Admin.Reason
   alias Atanor.Deployments.Watcher
 
   @doc "The nodes of the instance."
@@ -202,13 +203,15 @@ defmodule Atanor.Overview do
     workers =
       for {worker, %{head: head, applied: applied, error: error}} <- Enum.sort(status) do
         active = with {:ok, deployment} <- Registry.deployment(name, worker), do: deployment.id
+        {code, reason} = Reason.applied(error)
 
         %{
           worker: worker,
           head: head,
           applied: applied,
           serving: if(is_binary(active), do: active),
-          error: error && inspect(error)
+          error: code,
+          reason: reason
         }
       end
 
@@ -286,7 +289,7 @@ defmodule Atanor.Overview do
       for {node, result} <- Enum.zip(nodes, results), into: %{} do
         case result do
           {:ok, report} -> {Atom.to_string(node), Map.put(report, :status, :ok)}
-          {_class, reason} -> {Atom.to_string(node), %{status: :error, reason: inspect(reason)}}
+          {_class, reason} -> {Atom.to_string(node), %{status: :error, reason: Reason.unreachable({:error, reason})}}
         end
       end
 

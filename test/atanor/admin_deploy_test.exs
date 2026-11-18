@@ -142,8 +142,20 @@ defmodule Atanor.AdminDeployTest do
         request(node, :post, "/workers/w/packages", body: junk, headers: [{"x-package-sha256", hash}])
 
       assert response.status == 422
-      assert %{"error" => "invalid_package"} = json(response)
+      assert json(response) == %{"error" => "invalid_package", "reason" => "the bytes are not an Atanor package"}
       assert {:ok, [], nil} = Store.list(node.name, "packages/")
+    end
+
+    test "a manifest over the node's bound is refused with a fixed reason, not an Elixir term" do
+      node = start(package: [max_manifest_bytes: 10])
+      response = upload(node, package())
+
+      assert response.status == 422
+
+      assert json(response) == %{
+               "error" => "invalid_package",
+               "reason" => "the manifest is larger than the node allows"
+             }
     end
 
     test "a package of another worker is rejected" do
