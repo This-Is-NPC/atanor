@@ -22,6 +22,8 @@ step "formatting"
 scripts/format-check
 step "docs links"
 scripts/link-check
+step "README markers"
+scripts/readme-check
 step "quick suite"
 mise run test
 if [[ ${ATANOR_CHECK_CLUSTER:-0} == 1 ]]; then
