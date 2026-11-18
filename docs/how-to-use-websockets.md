@@ -112,6 +112,24 @@ its token passes, even if frames keep arriving; the client connects again with
 a fresh token. This holds for callback workers; a plug worker upgrades inside
 its Plug and keeps its own rules.
 
+Two limits are not enforced by Atanor:
+
+- **No `Origin` check.** The upgrade accepts any `Origin`. A page on another
+  site can open a socket from a visitor's browser to your route, with the
+  cookies the browser holds for your host. A route with an `:auth` rule that
+  reads a bearer token is not exposed this way, because a page cannot add that
+  header to a socket. A route that trusts cookies is. Workaround: check
+  `Origin` in `ws_init` (`Atanor.Request.header(request, "origin")`), or have the balancer
+  refuse upgrades from other origins.
+- **Compressed messages can inflate.** The server accepts `permessage-deflate`
+  when the client offers it (the default of its HTTP server; Atanor does not
+  turn it off). `max_frame_bytes` bounds the frame as received, so a small
+  compressed frame can become a much larger message in memory; a reviewer
+  measured about 25 times (not re-measured here). Each socket is limited to
+  `max_frames_per_s` frames, but the inflated size is not counted. Workaround:
+  keep `max_frame_bytes` low enough that 25 times it fits your memory per
+  socket, and size `http: [max_connections:]` for that.
+
 ## Troubleshooting
 
 - **`{:error, {:not_granted, :sockets}}`** Add `"sockets": true` to the

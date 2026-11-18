@@ -70,7 +70,12 @@ usage. `atanor help COMMAND` prints the same options as this page.
 Checks the token against the node (`GET /heads`) and stores it in the profile.
 The token comes from `ATANOR_TOKEN` or, without it, one line on standard input
 (at a terminal the prompt is on standard error and what you type is not
-shown; a pipe is read without a prompt). A token the
+shown; a pipe is read without a prompt). The command does not check that the
+terminal really stopped echoing: where the terminal refuses raw mode and
+`stty -echo` fails, the token may show as you type (the exit status of `stty`
+is ignored).
+Give it with `ATANOR_TOKEN` or a pipe there, and not with a screen recording
+or a shared screen on. A token the
 node refuses is not stored. A plain `http://` URL to a host other than
 loopback is refused before the token is sent, because it would cross the
 network in clear; `--insecure` allows it and prints a warning.

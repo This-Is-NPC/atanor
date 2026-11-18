@@ -32,7 +32,9 @@ HAProxy, which the [container cluster](how-to-run-a-cluster-in-containers.md) al
    requests, with their `Authorization` headers, cross it. Open 4369 and 9100 to 9110 between the nodes
    only (a security group, a firewall rule, a Docker network that has no published ports for them). Give the
    cookie its own random value, never the admin token, and pass it as a file:
-   `ATANOR_COOKIE_FILE=/run/secrets/cookie`. If the network between the nodes is not private, use TLS
+   `ATANOR_COOKIE_FILE=/run/secrets/cookie`. Never give the cookie as a command-line argument
+   (`--cookie` of `mix atanor.dev` or of Alambique's Mix tasks): every user of the host sees arguments in the
+   process list; use `RELEASE_COOKIE` or `ALAMBIQUE_COOKIE` in the environment. If the network between the nodes is not private, use TLS
    distribution ([how-to-run-a-cluster.md](how-to-run-a-cluster.md), "TLS distribution";
    [design §4.3, "what the cookie protects"](design.md#43-limits-on-cell-calls-and-their-errors)).
 
@@ -81,7 +83,9 @@ HAProxy, which the [container cluster](how-to-run-a-cluster-in-containers.md) al
    4001 if operators or CI reach it from outside, with its own host name and a firewall allowing only them. Atanor
    terminates TLS itself only for TCP listeners that a worker claims (`tls_mode: :implicit` or `:starttls`,
    [how-to-serve-tcp.md](how-to-serve-tcp.md)). Behind a balancer a worker sees the balancer's address; read the
-   client address from the header the balancer sets.
+   client address from the header the balancer sets. Atanor does not warn when a listener's certificate is
+   about to expire, and a reload loads an expired one without complaint: monitor the expiry from outside
+   ([design §7.3, "Limits of TLS reload"](design.md#73-tcp-and-websockets)).
 
 7. **Enforce the limits that a balancer does better.** The ingress bounds each read and each listener, but it has no
    deadline for a whole request and no limit per client address. Set header and body timeouts and a per-address
