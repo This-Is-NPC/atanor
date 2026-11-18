@@ -83,8 +83,10 @@ HAProxy, which the [container cluster](how-to-run-a-cluster-in-containers.md) al
    4001 if operators or CI reach it from outside, with its own host name and a firewall allowing only them. Atanor
    terminates TLS itself only for TCP listeners that a worker claims (`tls_mode: :implicit` or `:starttls`,
    [how-to-serve-tcp.md](how-to-serve-tcp.md)). Behind a balancer a worker sees the balancer's address; read the
-   client address from the header the balancer sets. Atanor does not warn when a listener's certificate is
-   about to expire, and a reload loads an expired one without complaint: monitor the expiry from outside
+   client address from the header the balancer sets. Atanor logs a warning when a listener's certificate
+   is expired, not yet valid or expires within `tls.expiry_warn_days` (14 by default), at start, at each reload
+   and when the status changes, and it still serves that certificate. Alert on that log line, and keep a probe
+   from outside that reads the served certificate's `notAfter`
    ([design §7.3, "Limits of TLS reload"](design.md#73-tcp-and-websockets)).
 
 7. **Enforce the limits that a balancer does better.** The ingress bounds each read and each listener, but it has no

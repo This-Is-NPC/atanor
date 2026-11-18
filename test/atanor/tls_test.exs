@@ -492,6 +492,104 @@ defmodule Atanor.TLSTest do
     assert %{status: 404} = post.("nope")
   end
 
+  test "a key of an unrecognised shape is named by type, never printed", %{dir: dir, cert: cert} do
+    node = start(cert, :implicit, [admin: [token: @token, port: 0]], reload_ms: 60_000)
+    odd = Path.join(dir, "x25519-key.pem")
+    {_, 0} = System.cmd("openssl", ["genpkey", "-algorithm", "x25519", "-out", odd], stderr_to_stdout: true)
+    # The private key bytes as they would be printed by `inspect/1`.
+    {:PrivateKeyInfo, _, _, secret, _, _} = :public_key.pem_entry_decode(hd(:public_key.pem_decode(File.read!(odd))))
+    printed = secret |> :binary.bin_to_list() |> Enum.take(6) |> Enum.join(", ")
+    File.cp!(odd, cert.keyfile)
+
+    log =
+      capture_log(fn ->
+        url = "http://127.0.0.1:#{Atanor.admin_port(node.name)}/listeners/smtp/reload-tls"
+        response = Req.post!(url, headers: [{"authorization", "Bearer " <> @token}], retry: false, decode_body: false)
+        assert response.status == 422
+        reason = Jason.decode!(response.body)["reason"]
+        assert reason == "unsupported private key type :PrivateKeyInfo"
+        refute reason =~ printed
+      end)
+
+    assert log =~ "unsupported private key type :PrivateKeyInfo"
+    refute log =~ printed
+  end
+
+  describe "certificate validity" do
+    defp dated(dir, name, from_days, to_days) do
+      today = Date.utc_today()
+      date = fn days -> today |> Date.add(days) |> Date.to_erl() end
+      TLS.generate_dated!(dir, name, {date.(from_days), date.(to_days)})
+    end
+
+    defp capture_start(cert, tls_opts \\ []) do
+      capture_log(fn -> start(cert, :implicit, [], tls_opts) end)
+    end
+
+    test "warns about an expired, a not yet valid and an expiring certificate, and still serves them", %{dir: dir} do
+      expired = dated(dir, "expired", -10, -2)
+      assert capture_start(expired) =~ "TLS certificate of listener smtp expired at"
+
+      future = dated(dir, "future", 5, 30)
+      assert capture_start(future) =~ "TLS certificate of listener smtp is not valid before"
+
+      soon = dated(dir, "soon", -1, 5)
+      assert capture_start(soon) =~ "TLS certificate of listener smtp expires at"
+
+      node = start(expired, :implicit)
+      socket = connect(node)
+      assert line(:ssl, socket) == "220 smtp ready"
+      assert peer_der(socket) == expired.der
+    end
+
+    test "expiry_warn_days moves the threshold", %{dir: dir} do
+      soon = dated(dir, "soon", -1, 5)
+      refute capture_start(soon, expiry_warn_days: 2) =~ "expires at"
+      assert capture_start(soon, expiry_warn_days: 30) =~ "expires at"
+    end
+
+    test "a long-lived certificate gives no warning", %{dir: dir} do
+      far = TLS.generate_dated!(dir, "far", {Date.to_erl(Date.add(Date.utc_today(), -1)), {2060, 1, 1}})
+      log = capture_start(far)
+      refute log =~ "expire"
+      refute log =~ "not valid"
+    end
+
+    test "a reload warns and reports the validity", %{dir: dir} do
+      cert = TLS.generate_dated!(dir, "live", {Date.to_erl(Date.add(Date.utc_today(), -1)), {2060, 1, 1}})
+
+      :telemetry.attach(
+        "tls-validity",
+        [:atanor, :tls, :validity],
+        fn event, measurements, meta, pid -> send(pid, {:telemetry, event, measurements, meta}) end,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach("tls-validity") end)
+      node = start(cert, :implicit, [admin: [token: @token, port: 0]], reload_ms: 60_000)
+      assert_receive {:telemetry, _, %{seconds_left: left}, %{listener: "smtp", status: :ok}}, 5_000
+      assert left > 14 * 86_400
+
+      expired = dated(dir, "expired", -10, -2)
+      TLS.install!(expired, cert)
+
+      log =
+        capture_log(fn ->
+          url = "http://127.0.0.1:#{Atanor.admin_port(node.name)}/listeners/smtp/reload-tls"
+          assert %{status: 200} = Req.post!(url, headers: [{"authorization", "Bearer " <> @token}], retry: false)
+        end)
+
+      assert log =~ "expired at"
+
+      assert_receive {:telemetry, _, %{seconds_left: left},
+                      %{listener: "smtp", status: :expired, not_after: not_after}},
+                     5_000
+
+      assert left < 0
+      assert is_integer(not_after)
+    end
+  end
+
   test "a reload of a listener without TLS is refused", %{cert: cert} do
     node =
       Node.start(

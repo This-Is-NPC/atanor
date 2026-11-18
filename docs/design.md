@@ -1553,24 +1553,22 @@ not, so the per-handshake options cover every client.
 
 **Limits of TLS reload.**
 
-* *No check of the validity dates.* A load checks only that the key belongs to
-  the first certificate (`check_key/2` in `lib/atanor/tcp/tls.ex`). An expired or
-  not-yet-valid certificate loads, is logged as a reload and is served, and the
-  reload logs no warning before a certificate expires. Scenario: a renewal job
-  fails, the file keeps its old content, and clients start to refuse the
-  listener on the day it expires, with nothing in the node log. Workaround:
-  monitor the expiry of the served certificate from outside (a probe that
-  connects to the port and reads `notAfter`), and alert well before it.
-* *A key error can print key material.* `format_error/1` renders
-  `{:unsupported_key, term}` with `inspect/1`. For a private key of a shape
-  Atanor does not recognise, `term` is the decoded key, so the warning in the
-  node log and the `reason` of a 422 `reload_failed` from
-  `POST /listeners/:name/reload-tls` can contain private key numbers. Expected
-  keys (RSA, ECDSA, EdDSA, DSA) never reach that branch; a key that does is
-  rare (inference: an unusual PEM entry type). Workaround: keep the node log and
-  the admin API private, and rotate a key whose
-  error text was logged or sent to a shared place. Proposed fix: print only the
-  type of the key.
+* *The validity dates warn but do not refuse.* A load checks that the key
+  belongs to the first certificate, and reads its `notBefore` and `notAfter`.
+  An expired or not-yet-valid certificate still loads and is served (a refusal
+  would take the listener down on the day of the expiry; the operator decides),
+  but the start, each reload and each change of status log a warning, as does a
+  certificate that expires within `tls.expiry_warn_days` (14 by default). The
+  watcher re-evaluates the status of the served certificate at every poll, so a
+  certificate that expires while the node runs warns once at the change, not
+  every poll. `[:atanor, :tls, :validity]` reports the status and `not_after`
+  ([telemetry.md](telemetry.md)). Only the first certificate of the file is
+  checked, not the chain. Keep an external probe that connects to the port and
+  reads `notAfter` as defense in depth: it also sees a node that is not running.
+* *A key error names only the type of the key.* An unsupported private key
+  shape is reported as `unsupported private key type :PrivateKeyInfo` (the
+  decoded term's tag), in the node log and in the `reason` of a 422
+  `reload_failed`. The key numbers are never printed.
 
 **Ranch protocols.** A `"protocol": "ranch"` route needs a worker that exports
 `ranch_protocol(env) :: {module, opts}`; without it the activation is refused
