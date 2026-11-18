@@ -6,7 +6,7 @@
   load_config.py --env FILE SCENARIO [MEASURE]   print the ATANOR_LOAD_* lines of the lab of a scenario (and the store of a measure)
 
 The defaults live here and nowhere else. The layout is documented key by key in load/rounds/example.toml. As a module:
-load_config(path) -> dict, resolve(raw) -> dict, plan(config, measure, scenario) -> dict, judging_of(config, measure) -> dict,
+load_config(path) -> dict, resolve(raw) -> dict, plan(config, measure, scenario) -> dict, judging_of(config, measure, load) -> dict,
 config_hash(config) -> str, case_hash(config, scenario, measure) -> str, case_list(config) -> [(scenario, measure)], plan_values,
 env_lines, dump_toml; ConfigError.problems lists every problem found.
 """
@@ -246,6 +246,7 @@ SCHEMA = Table({
         "join": criterion(rate=Leaf("float", 0.0, lo=0), factor=positive(1.5), warmup_s=Leaf("float", 30.0, lo=0), observe_s=positive(120),
                           node_wait_s=positive(90), node_timeout_s=positive(300), sample_s=positive(2)),
         "spread": Table({"tol_pct": pct(25), "hold": Leaf("int", 3, lo=1), "min_cells": Leaf("int", 10, lo=1)}),
+        "judging": Map(SCALE_LOADS, lambda _: Table(judging_children(sparse=True), sparse=True), "load"),
     }),
 })
 
@@ -475,10 +476,16 @@ def store_of(config, measure=None):
     return {**config["store"], **(config["measures"][measure]["store"] if measure else {})}
 
 
-def judging_of(config, measure=None):
-    """The [judging] rules for a measure: `measures.<measure>.judging` overrides the keys it gives, rule by rule."""
-    given = config["measures"][measure]["judging"] if measure else {}
-    return {name: {**rule, **given[name]} if isinstance(rule, dict) and name in given else given.get(name, rule) for name, rule in config["judging"].items()}
+def judging_of(config, measure=None, load=None):
+    """The [judging] rules for a measure: `measures.<measure>.judging` overrides the keys it gives, rule by rule; for a load of the scale,
+    `scale.judging.<load>` overrides those in turn (scale load > measure > round)."""
+    layers = [config["measures"][measure]["judging"]] if measure else []
+    if measure == "scale" and load:
+        layers.append(config["scale"]["judging"].get(load, {}))
+    rules = config["judging"]
+    for given in layers:
+        rules = {name: {**rule, **given[name]} if isinstance(rule, dict) and name in given else given.get(name, rule) for name, rule in rules.items()}
+    return rules
 
 
 def case_config(config, scenario, measure):
@@ -493,6 +500,8 @@ def case_config(config, scenario, measure):
         case["swap"] = config["swap"]
     else:
         case["scale"] = scale_of(config, scenario)
+        case["scale"].pop("judging")  # enters as the merged rules of the loads that have an override
+        case["load_judging"] = {load: judging_of(config, measure, load) for load in config["scale"]["loads"] if load in config["scale"]["judging"]}
         case["plans"] = {load: plan(config, load, scenario) for load in config["scale"]["loads"]}
     return case
 

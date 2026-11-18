@@ -69,6 +69,8 @@ scale_scenario = lc.scale_of(resolved("[round]\nscenarios = [\"A\", \"B\"]\n[sca
                                       "[scale.per_scenario.B.ceilings]\n\"http-native:1\" = 7\n"), "B")
 judging_override = resolved("[measures.ws.judging.p99]\nmax_ms = 400\n[measures.ws.judging.refused]\nenabled = false\n[measures.ws.judging]\nstall_repeats = 2\n")
 base_hash = hashes("", "A", "ws", "cells", "swap", "scale")
+scale_judging = resolved("[measures.scale.judging.p99]\nmax_ms = 400\n[measures.scale.judging.refused]\nmax_pct = 2\n"
+                         "[scale.judging.cells.p99]\nmax_ms = 900\n[scale.judging.cells.errors]\nenabled = false\n")
 plans = {f"{s}_{m}": lc.plan(official, m, s)["values"] for m in ("http-native", "ws", "cells", "http-wasm-jobs") for s in ("A", "B")}
 a, b = lc.config_hash(builtin), lc.config_hash(lc.resolve({"judging": {"p99": {"max_ms": 250}}}))
 c = lc.config_hash(lc.resolve({"judging": {"p99": {"max_ms": 300}}}))
@@ -149,4 +151,12 @@ print(json.dumps({
                         "hash_swap_same": lc.case_hash(judging_override, "A", "swap") == base_hash[2],
                         "bad": problems("[measures.ws.judging.p99]\nmax_ms = -1\nmax = 3\n[measures.ws.judging.nope]\nenabled = true\n"),
                         "round_trip": lc.resolve(tomllib.loads(lc.dump_toml(judging_override))) == judging_override},
+    # [scale.judging.LOAD]: scale load > measures.scale.judging > [judging]; only that load changes, and the hash sees it
+    "scale_judging": {"cells": [lc.judging_of(scale_judging, "scale", "cells")[k] for k in ("p99", "errors", "refused")],
+                      "http_native": [lc.judging_of(scale_judging, "scale", "http-native")[k] for k in ("p99", "errors", "refused")],
+                      "measure_only": lc.judging_of(scale_judging, "scale")["p99"], "other_measure": lc.judging_of(scale_judging, "cells", "cells")["p99"],
+                      "hash_changes": lc.case_hash(scale_judging, "A", "scale") != lc.case_hash(resolved("[measures.scale.judging.p99]\nmax_ms = 400\n[measures.scale.judging.refused]\nmax_pct = 2\n"), "A", "scale"),
+                      "hash_stable": hashes("", "A", "scale")[0] == base_hash[3], "hash_cells_same": lc.case_hash(scale_judging, "A", "cells") == lc.case_hash(resolved(""), "A", "cells"),
+                      "round_trip": lc.resolve(tomllib.loads(lc.dump_toml(scale_judging))) == scale_judging,
+                      "bad": problems("[scale.judging.cells.p99]\nmax_ms = -1\nmax = 3\n[scale.judging.cells.nope]\nenabled = true\n[scale.judging.ws.p99]\nmax_ms = 1\n")},
 }))

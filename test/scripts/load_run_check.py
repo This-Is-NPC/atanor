@@ -713,6 +713,20 @@ results["config_defaults"] = {"p99_off": math.isinf(given["p99_ms"]), "p99_on": 
                                                                       official["steps"] if "steps" in official else "none"]}
 
 
+# [scale.judging.LOAD]: each load of the scale ramps with its own rules; the others keep the measure's
+with open(os.path.join(work, "scale-judging.toml"), "w") as handle:
+    handle.write("[measures.scale.judging.p99]\nmax_ms = 400\n[scale.judging.cells.p99]\nmax_ms = 900\n[scale.judging.cells.errors]\nenabled = false\n")
+scale_args = argparse.Namespace(**m.config_defaults(lc.load_config(os.path.join(work, "scale-judging.toml")), "scale", "A", "c.toml"))
+ramped = {}
+real_fresh, real_round, real_ramp = m.fresh_cluster, m.Round, m.ramp
+m.fresh_cluster, m.Round = lambda nodes: {}, lambda a, info, stem=None: None
+m.ramp = lambda round_, a: ramped.setdefault(a.measure, (a.p99_ms, a.judge_errors)) and {}
+for scaled in ("cells", "http-native"):
+    m.scale_config(scale_args, scaled, 1, None, None)
+m.fresh_cluster, m.Round, m.ramp = real_fresh, real_round, real_ramp
+results["scale_judging"] = {"ramped": ramped, "args": [scale_args.p99_ms, scale_args.judge_errors]}
+
+
 def errors_scenario(name, judged):
     real = m.Round.run_generators
     m.Round.run_generators = lambda self, value, sampler: [{**DOCUMENT, "statuses": {"200": 9, "500": 1}, "hist": {"5": 10}}]

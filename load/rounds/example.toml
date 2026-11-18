@@ -245,6 +245,8 @@ ceiling_factors = [0.75, 1.0, 1.25, 1.5]   # steps as fractions of a ceiling giv
 # ceiling_factors = [1.0, 1.5]
 # [scale.per_scenario.B.ceilings]
 # "http-native:1" = 1500
+# [scale.judging.cells.p99]   # [scale.judging.LOAD.RULE]: the rules of one load of the scale, over [measures.scale.judging] and [judging]
+# max_ms = 500
 
 [scale.join]          # the 2nd and later nodes start under a fixed rate; the time until the load spreads is measured
 enabled = true
