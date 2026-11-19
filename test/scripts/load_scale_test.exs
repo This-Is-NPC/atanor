@@ -271,7 +271,10 @@ defmodule Atanor.LoadScaleTest do
     # the report: the gain per node and the join
     {report, 0} = System.cmd("python3", ["-I", "scripts/load-report", ramp["dir"]], stderr_to_stdout: true)
     assert report =~ "### scale"
-    assert report =~ "Node versions: node-1 atanor 0.7.0 / alambique 0.14.0"
+
+    assert report =~
+             "Node versions: node-1 atanor 0.7.0 / alambique 0.14.0, node-2 atanor 0.7.0 / alambique 0.14.1, node-3 atanor 0.7.0 / alambique 0.14.0."
+
     assert report =~ "| http-native | 2 | 195 | 1.95x | 2x | 97% | yes |"
     assert report =~ "| http-native | 3 | 244 | 2.44x | 3x | 81% | yes |"
     assert report =~ "#### http-native on 3 nodes"

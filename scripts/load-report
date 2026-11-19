@@ -184,13 +184,18 @@ def scale_section(steps, summary, joins):
 
 
 def versions_line(steps):
-    """`Node versions: node-1 atanor 0.7.0 / alambique 0.14.0, ...` from the first step that has them (`per_node` of a cluster step, else `runtime`); None when no node reported them."""
+    """`Node versions: node-1 atanor 0.7.0 / alambique 0.14.0, node-2 ...` for every node any step saw (`per_node` of a cluster step, else `runtime`); a node whose versions changed between steps lists each value, joined by "and". None when no node reported them."""
+    seen = {}
     for s in steps:
         nodes = {n: p.get("versions") for n, p in (s.get("per_node") or {}).items()} or {"node": (s.get("runtime") or {}).get("versions")}
-        nodes = {n: v for n, v in nodes.items() if v}
-        if nodes:
-            return "Node versions: " + ", ".join(f"{n} atanor {v.get('atanor')} / alambique {v.get('alambique')}" for n, v in sorted(nodes.items())) + "."
-    return None
+        for n, v in nodes.items():
+            text = v and f"atanor {v.get('atanor')} / alambique {v.get('alambique')}"
+            if text and text not in seen.get(n, []):
+                seen.setdefault(n, []).append(text)
+    if not seen:
+        return None
+    order = sorted(seen, key=lambda n: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", n)])
+    return "Node versions: " + ", ".join(f"{n} {' and '.join(seen[n])}" for n in order) + "."
 
 
 def report(directory):
