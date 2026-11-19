@@ -148,7 +148,9 @@ defmodule Atanor.HTTPIngressTest do
 
     # Four slow connections that the listener holds at once. The deadline runs from each accept, so on a
     # starved host the first can be cut before the last is accepted: then they are closed and opened again.
-    defp open_slow(port, listener) do
+    defp open_slow(port, listener, attempts \\ 5) do
+      assert attempts > 0, "the listener never held the four slow connections at once"
+
       slow =
         for _ <- 1..4 do
           {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
@@ -160,7 +162,7 @@ defmodule Atanor.HTTPIngressTest do
         slow
       else
         Enum.each(slow, &:gen_tcp.close/1)
-        open_slow(port, listener)
+        open_slow(port, listener, attempts - 1)
       end
     end
 
@@ -169,7 +171,7 @@ defmodule Atanor.HTTPIngressTest do
         {:ok, pids} when length(pids) == 4 ->
           true
 
-        _ when is_integer(deadline) ->
+        _ ->
           System.monotonic_time(:millisecond) < deadline and (Process.sleep(10) || full?(listener, deadline))
       end
     end
