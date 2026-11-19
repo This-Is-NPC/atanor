@@ -178,6 +178,16 @@ defmodule Atanor.LoadConfigTest do
     assert bad =~ "node.compaction.concurrency" and bad =~ "node.compaction.hold_bytes"
     assert bad =~ "node.compaction.release_on: unknown key" and bad =~ "node.store.pool_size"
     assert bad =~ "node.store.pool_timeout_ms" and bad =~ "node.store.bogus: unknown key"
+
+    # steps.reset_each_step: off by default, settable for one scenario; only the hash of the case that sets it changes (018f hashes pinned as before the option)
+    x = r["reset_each_step"]
+    assert x["default"] == false and x["plan_has_no_key"]
+    assert x["old_hashes"] == ["5347ec0e9ca0cdd9", "e4de6dd0a98f94af", "a5922958882b75ff"]
+    assert x["scenario_only"] == [false, true]
+    assert x["hash"] == %{"jobs_B_changes" => true, "jobs_A_same" => true, "ws_B_same" => true, "measure_wide" => true}
+    assert x["round_trip"]
+    bad = Enum.join(x["bad"], "\n")
+    assert bad =~ "measures.ws.steps.reset_each_step: expected true or false" and bad =~ "measures.swap.steps"
   end
 
   test "the names shared with Alambique, host.timeout_s and the judging of one measure", %{dir: dir} do

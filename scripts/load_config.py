@@ -145,6 +145,7 @@ def steps_table(start, maximum, sparse=False):
         "duration_s": Leaf("float", 180.0, lo=0, open_lo=True),
         "refine": Leaf("int", 3, lo=0),
         "confirm": Leaf("bool", True),
+        "reset_each_step": Leaf("bool", False),
     }, sparse)
 
 
@@ -303,6 +304,11 @@ def plan(config, measure, scenario):
     """The step plan of a ramp measure in a scenario: its `steps` with the overrides of `per_scenario`."""
     entry = config["measures"][measure]
     return {**entry["steps"], **entry["per_scenario"].get(scenario, {})}
+
+
+def hashed_plan(config, measure, scenario):
+    """`plan` as hashed: `reset_each_step` is left out while false, so a round that does not set it keeps its hash."""
+    return {k: v for k, v in plan(config, measure, scenario).items() if k != "reset_each_step" or v}
 
 
 def steps_of(ceiling, factors):
@@ -505,14 +511,14 @@ def case_config(config, scenario, measure):
     case = {"scenario": scenario, "scenario_settings": config["scenarios"][scenario], "store": store_of(config, measure), "balancer": config["balancer"],
             "node": node_of(config), "judging": judging_of(config, measure), "generator": config["generator"], "workload": config["workload"], "measure": measure}
     if measure in RAMP_MEASURES:
-        case["plan"] = plan(config, measure, scenario)
+        case["plan"] = hashed_plan(config, measure, scenario)
     elif measure == "swap":
         case["swap"] = config["swap"]
     else:
         case["scale"] = scale_of(config, scenario)
         case["scale"].pop("judging")  # enters as the merged rules of the loads that have an override
         case["load_judging"] = {load: judging_of(config, measure, load) for load in config["scale"]["loads"] if load in config["scale"]["judging"]}
-        case["plans"] = {load: plan(config, load, scenario) for load in config["scale"]["loads"]}
+        case["plans"] = {load: hashed_plan(config, load, scenario) for load in config["scale"]["loads"]}
     return case
 
 

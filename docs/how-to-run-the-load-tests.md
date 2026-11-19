@@ -153,9 +153,11 @@ bisects `refine` times between the last good and the failing value. `kind = "lad
 (strictly growing). `kind = "ceiling"` runs a ladder of `factors` (75%, 100%, 125%, 150%) times `ceiling`, the
 ceiling that an earlier round found: it is the exploration round, a short check of the steps around a known
 ceiling (set `duration_s = 75`, `refine = 0` and `confirm = false` for the 75 s, no-refine, no-confirm
-version). `confirm = true` repeats the best good step once on a fresh node. `per_scenario.A` or `.B`
-overrides any key of `steps` for that scenario; the scale measure takes `ceilings` and `ceiling_factors`
-per scenario with `[scale.per_scenario.A]`.
+version). `confirm = true` repeats the best good step once on a fresh node. `reset_each_step = true` (default
+`false`) starts every step of the measure on a fresh node and an empty store (see "Reset before every step"
+below). `per_scenario.A` or `.B` overrides any key of `steps` for that scenario; the scale measure takes
+`ceilings` and `ceiling_factors` per scenario with `[scale.per_scenario.A]`. A `reset_each_step` left at
+`false` does not change the hash of the step files, so the rounds before it keep theirs.
 
 **Judging rules.** `[judging]` has one table per rule, each with `enabled` and its limits; a rule that is off is not
 judged. A limit is exclusive: a step fails or is INVALID when it goes above it (below it, for a minimum).
@@ -437,6 +439,32 @@ latency applied again, the workers deployed again). A refine on the node that ju
 collapse (memory not given back, a full store, retries), not the rate. Each step file records `fresh_node`
 (`true` for those steps) and `reset_s`, the seconds the reset took. A confirmation after a ramp that never failed
 keeps the warm node. A node that stopped still ends the round.
+
+**Reset before every step.** The store of a ramp accumulates: in round 018f the store container (disk backing,
+memory limit 2 GiB) reached 2044 MB of 2048 MB by the third step of scenario B, so the last steps of
+`http-wasm-jobs` were limited by the store and not by the node. With `reset_each_step = true` for a measure
+(`[measures.http-wasm-jobs.per_scenario.B]`, as in [load/rounds/026.toml](../load/rounds/026.toml)), `load-run` runs the
+same `scripts/load-env reset` as above before every step, the first and the confirmation included. The
+store container and its volume are removed and created again, so its memory starts at zero. The bucket
+one-shot container creates the bucket, and the nodes start again, so no node keeps cells whose data lived in the
+old store. `cluster-up` returns when the nodes are healthy and the balancer serves, which needs the store and
+the bucket (the nodes start after the bucket container exits successfully). A step that stalls and is repeated
+resets again; a step reused by `--skip-done` does not. Each step file has `fresh_node` and `reset_s` as for
+the refine steps. Plan 1 to 2 minutes per reset (see the timings below). The reset itself runs only in a real
+lab: the tests stub it.
+
+**The bucket and its garbage.** Each ramp step records `store.bucket` and `store.garbage`, read from the store at
+its end. `store.bucket` is `{bytes, objects, start_bytes, start_objects, groups, truncated}`: the objects and
+bytes of the lab bucket at the end and at the start of the step, and `groups`, the same at the end counted by the
+first two key segments (`atanor/cells`, `atanor/packages`, `atanor/alarms`, ...; the layout is in
+[design.md](design.md#5-deployments-and-the-store-layout)). `load-run` lists the bucket with S3 `ListObjectsV2` (1000
+keys a page, at most 200 pages; `truncated` is true past that) from inside the store container, with the store's
+own credentials, so it works when the node is gone. `store.garbage` is `{incomplete_uploads, total}`: the
+multipart uploads that were started and never completed (`ListMultipartUploads`). That is the only garbage
+defined for sure: the layout of the cells' objects belongs to Alambique and does not mark the objects of a
+deleted cell, so orphaned cell objects are not counted; compare `groups` between steps to see them. A non-zero
+`total` adds a note to the step, and `report.md` shows a bucket table per measure (objects and MB at the start and
+at the end, the garbage in bold when it is not 0). A bucket that cannot be read leaves both keys out.
 
 Each sample also reads the node's `GET /runtime` ([admin API](how-to-use-the-admin-api.md)) with a 3 second
 timeout. The step file keeps `runtime`: the `versions` the node runs (`atanor` and `alambique`, `null` for a node that does not report them; `per_node` repeats them for each node of a cluster, and `report.md` prints every node of the measure under it as `Node versions: ...`, one entry per distinct value when a node changed between steps); the largest of each VM memory type (`memory_max_bytes`), of the

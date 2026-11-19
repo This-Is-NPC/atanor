@@ -69,6 +69,8 @@ scale_scenario = lc.scale_of(resolved("[round]\nscenarios = [\"A\", \"B\"]\n[sca
                                       "[scale.per_scenario.B.ceilings]\n\"http-native:1\" = 7\n"), "B")
 judging_override = resolved("[measures.ws.judging.p99]\nmax_ms = 400\n[measures.ws.judging.refused]\nenabled = false\n[measures.ws.judging]\nstall_repeats = 2\n")
 base_hash = hashes("", "A", "ws", "cells", "swap", "scale")
+reset_b_base = resolved("[round]\nscenarios = [\"A\", \"B\"]\n")
+reset_b = resolved("[round]\nscenarios = [\"A\", \"B\"]\n[measures.http-wasm-jobs.per_scenario.B]\nreset_each_step = true\n")
 scale_judging = resolved("[measures.scale.judging.p99]\nmax_ms = 400\n[measures.scale.judging.refused]\nmax_pct = 2\n"
                          "[scale.judging.cells.p99]\nmax_ms = 900\n[scale.judging.cells.errors]\nenabled = false\n")
 plans = {f"{s}_{m}": lc.plan(official, m, s)["values"] for m in ("http-native", "ws", "cells", "http-wasm-jobs") for s in ("A", "B")}
@@ -148,6 +150,18 @@ print(json.dumps({
                      "hash_default_as_before": lc.config_hash({**lc.case_config(builtin, "A", "ws"), "node": {"http_max_connections": 0}}) == base_hash[0],
                      "round_trip": lc.resolve(tomllib.loads(lc.dump_toml(node_set))) == node_set,
                      "bad": problems("[node.compaction]\nconcurrency = -1\nhold_bytes = \"big\"\nrelease_on = 4\n[node.store]\npool_size = 1.5\npool_timeout_ms = -1\nbogus = 1\n")},
+    # steps.reset_each_step (per measure, per scenario): off by default and then absent from the hash, so the rounds before it keep theirs
+    "reset_each_step": {
+        "default": lc.plan(builtin, "http-wasm-jobs", "A")["reset_each_step"],
+        "plan_has_no_key": "reset_each_step" not in lc.case_config(builtin, "A", "ws")["plan"],
+        "old_hashes": [lc.case_hash(official, "A", "ws")[:16], lc.case_hash(official, "B", "http-wasm-jobs")[:16], lc.case_hash(official, "A", "scale")[:16]],
+        "scenario_only": [lc.plan(reset_b, "http-wasm-jobs", s)["reset_each_step"] for s in ("A", "B")],
+        "hash": {"jobs_B_changes": lc.case_hash(reset_b, "B", "http-wasm-jobs") != lc.case_hash(reset_b_base, "B", "http-wasm-jobs"),
+                 "jobs_A_same": lc.case_hash(reset_b, "A", "http-wasm-jobs") == lc.case_hash(reset_b_base, "A", "http-wasm-jobs"),
+                 "ws_B_same": lc.case_hash(reset_b, "B", "ws") == lc.case_hash(reset_b_base, "B", "ws"),
+                 "measure_wide": lc.case_hash(resolved("[measures.ws.steps]\nreset_each_step = true\n"), "A", "ws") != base_hash[0]},
+        "round_trip": lc.resolve(tomllib.loads(lc.dump_toml(reset_b))) == reset_b,
+        "bad": problems("[measures.ws.steps]\nreset_each_step = \"yes\"\n[measures.swap.steps]\nreset_each_step = true\n")},
     "official_plan_values":lc.plan_values(lc.plan(official, "http-wasm", "A"))[:3],
     # the names shared with Alambique, host.timeout_s and the per-measure judging
     "renames": {"data_tmpfs": [builtin["scenarios"]["A"]["data_tmpfs"], builtin["scenarios"]["B"]["data_tmpfs"]], "timeout_s": builtin["host"]["timeout_s"],

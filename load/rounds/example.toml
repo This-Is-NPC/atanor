@@ -82,9 +82,11 @@ max = 20000.0       # bisect: last step to try
 duration_s = 180.0  # seconds of load per step
 refine = 3          # bisections after the first failing step; 0 skips them
 confirm = true      # repeat the best good step once on a fresh node to confirm it
+reset_each_step = false  # true: every step starts on a fresh node and an empty store (the store's memory grows over the steps of a ramp); every ramp measure has it
 # [measures.http-native.per_scenario.B]
 # kind = "ladder"
 # values = [1125, 1500, 1875, 2250]
+# reset_each_step = true
 
 [measures.http-wasm]
 run_on = []

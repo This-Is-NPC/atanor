@@ -117,6 +117,20 @@ def admission_rows(steps, summary):
     return rows
 
 
+def bucket_rows(steps):
+    """The lab bucket at the start and at the end of each step that recorded it: objects, MB, and the garbage found at the end."""
+    mb = lambda n: None if n is None else n / 1048576
+    rows = []
+    for s in steps:
+        store = s.get("store") or {}
+        bucket, garbage = store.get("bucket"), store.get("garbage") or {}
+        if bucket:
+            rows.append([s["step"], f"{s['value']:g}", f"{num(bucket['start_objects'], 0)} / {num(bucket['objects'], 0)}" + (" (truncated)" if bucket.get("truncated") else ""),
+                         f"{num(mb(bucket['start_bytes']))} / {num(mb(bucket['bytes']))}", f"**{garbage['total']} GARBAGE**" if garbage.get("total") else "0"])
+    return rows
+
+
+BUCKET_HEADER = ["step", "value", "bucket objects start / end", "bucket MB start / end", "garbage (incomplete multipart uploads)"]
 CALL_REFUSALS = ("wake_gate", "awake_limit", "busy", "disk_full", "queue_timeout", "worker_queue", "nested_calls")
 ADMISSION_HEADER = ["step", "value", "refused: memory / in-flight / disk",
                     "refused after admission: wake gate / awake limit / busy / disk full / queue timeout / worker queue / nested calls", "refusing seen", "in-flight max", "store tmpfs / disk max %", "store S3 5xx",
@@ -246,6 +260,8 @@ def report(directory):
                 out += [table(pairs, ["cost per unit", "value"]), ""] if pairs else ["No approved step: the first step already failed or was invalid.", ""]
                 rows = admission_rows(mine, summary)
                 out += [table(rows, ADMISSION_HEADER), ""] if rows else []
+                rows = bucket_rows(mine)
+                out += [table(rows, BUCKET_HEADER), ""] if rows else []
             if summary and measure != "scale":
                 stop =summary.get("stopped_by") or summary.get("invalid") or ("ceiling reached without a failure" if summary.get("ceiling_reached") else "none")
                 out += [f"Ramp stopped by: **{stop}**" + (f" (invalid: {summary['invalid']})" if summary.get("invalid") and summary.get("stopped_by") else "")
