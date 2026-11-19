@@ -6,7 +6,7 @@ defmodule Atanor.OverloadLogTest do
   use ExUnit.Case, async: false
 
   alias Atanor.{Admission, Cell, OverloadLog, Registry}
-  alias Atanor.Test.Manifests
+  alias Atanor.Test.{Await, Manifests}
   alias AtanorTestkit.Node
 
   test "a refused wake counts under the reason of the event, beside awake_limit" do
@@ -27,6 +27,8 @@ defmodule Atanor.OverloadLogTest do
     assert {:error, :overloaded} = Cell.owner(node.name, {"notes", "cold"})
     Alambique.Admission.release(config)
 
+    # Alambique replies to the refused wake before it emits the event, so the count lands just after.
+    Await.until(fn -> Admission.stats(node.name).awake_limit_by.wait_expired == 1 end)
     assert %{wait_expired: 1, no_wait: 0} = Admission.stats(node.name).awake_limit_by
   end
 
