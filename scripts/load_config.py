@@ -223,7 +223,9 @@ SCHEMA = Table({
     "store": Table({"backing": Leaf("str", "tmpfs", choices=("tmpfs", "disk")), "tmpfs_size": Leaf("size", "1g"), "memory": Leaf("size", "2g"),
                     "cpus": positive(2), "latency_ms": Leaf("float", 25.0, lo=0)}),
     "balancer": Table({"cpus": positive(2), "memory": Leaf("size", "512m")}),
-    "node": Table({"http_max_connections": Leaf("int", 0, lo=0)}),
+    "node": Table({"http_max_connections": Leaf("int", 0, lo=0),
+                   "compaction": Table({"hold_bytes": Leaf("int", 0, lo=0), "concurrency": Leaf("int", 0, lo=0), "urgent_concurrency": Leaf("int", 0, lo=0)}),
+                   "store": Table({"pool_size": Leaf("int", 0, lo=0)})}),
     "measures": Map(MEASURES, measure_table, "measure", fill=True),
     "judging": Table(judging_children()),
     "generator": Table({"rate_per_proc": positive(600), "conns_per_rate": positive(0.5), "timeout_s": positive(10), "grace_s": Leaf("float", 30.0, lo=0),
@@ -488,12 +490,19 @@ def judging_of(config, measure=None, load=None):
     return rules
 
 
+def node_of(config):
+    """[node] as hashed: the keys left at 0 (the node's default) in `compaction` and `store` are left out, so a round that does not set them keeps its hash."""
+    node = config["node"]
+    return {"http_max_connections": node["http_max_connections"],
+            **{name: given for name in ("compaction", "store") if (given := {k: v for k, v in node[name].items() if v})}}
+
+
 def case_config(config, scenario, measure):
     """What affects the results of a case, and nothing else: the scenario, the store (with the measure's override), the balancer, the node,
     the judging (with the measure's overrides), the generator, the workload, the measure's plan and, for the swap and the scale, their
     sections. Not `output`, `host` or `round` (the other measures' plans and the timeouts do not change what a step measures)."""
     case = {"scenario": scenario, "scenario_settings": config["scenarios"][scenario], "store": store_of(config, measure), "balancer": config["balancer"],
-            "node": config["node"], "judging": judging_of(config, measure), "generator": config["generator"], "workload": config["workload"], "measure": measure}
+            "node": node_of(config), "judging": judging_of(config, measure), "generator": config["generator"], "workload": config["workload"], "measure": measure}
     if measure in RAMP_MEASURES:
         case["plan"] = plan(config, measure, scenario)
     elif measure == "swap":
@@ -514,11 +523,15 @@ def case_hash(config, scenario, measure):
 def env_lines(config, scenario, measure=None):
     """{ATANOR_LOAD_NAME: value} of the lab of a scenario, with the store of a measure. The scale measure sets its own number of nodes."""
     scenario_settings, store, balancer = config["scenarios"][scenario], store_of(config, measure), config["balancer"]
-    cap = config["node"]["http_max_connections"]
+    node = config["node"]
+    cap = node["http_max_connections"]
     lines = {"CPUS": f"{scenario_settings['cpus']:g}", "MEMORY": scenario_settings["memory"], "TMPFS_SIZE": scenario_settings["data_tmpfs"],
              "STORE_DISK": "1" if store["backing"] == "disk" else "0", "STORE_TMPFS_SIZE": store["tmpfs_size"], "STORE_MEMORY": store["memory"],
              "STORE_CPUS": f"{store['cpus']:g}", "STORE_LATENCY_MS": f"{store['latency_ms']:g}", "LB_CPUS": f"{balancer['cpus']:g}", "LB_MEMORY": balancer["memory"],
              "HTTP_MAX_CONNECTIONS": str(cap) if cap else ""}
+    for name, value in (("COMPACTION_HOLD_BYTES", node["compaction"]["hold_bytes"]), ("COMPACTION_CONCURRENCY", node["compaction"]["concurrency"]),
+                        ("COMPACTION_URGENT_CONCURRENCY", node["compaction"]["urgent_concurrency"]), ("S3_POOL_SIZE", node["store"]["pool_size"])):
+        lines[name] = str(value) if value else ""
     if measure != "scale":
         lines["NODES"] = str(scenario_settings["nodes"])
     return {f"ATANOR_LOAD_{k}": v for k, v in lines.items()}

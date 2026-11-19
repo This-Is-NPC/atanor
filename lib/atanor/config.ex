@@ -466,6 +466,8 @@ defmodule Atanor.Config do
     compaction: [
       hold_bytes: :non_negative,
       hold_object_bytes: :non_negative,
+      concurrency: :positive,
+      urgent_concurrency: :non_negative,
       snapshot_ratio: :ratio,
       snapshot_keep_ms: :non_negative,
       snapshot_interval_ms: :positive,

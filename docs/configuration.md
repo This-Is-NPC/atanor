@@ -113,6 +113,8 @@ Rules:
 | `ATANOR_MEMORY_LIMIT` | `memory_limit` | the cgroup limit | The memory the node may use (`memory: [limit_bytes:]`). Bytes, or a number with `k`, `m` or `g` (powers of 1024). |
 | `ATANOR_DISK_LIMIT` | `disk_limit` | 80% of the file system | The disk budget of the data directory (`disk: [max_bytes:]`). Same units. |
 | `ATANOR_WAL_LIMIT` | `wal_limit` | derived from the disk budget | The write-ahead log a node may hold (`alambique: [wal: [max_bytes:]]`). Same units. |
+| `ATANOR_S3_POOL_SIZE` | `s3_pool_size` | Alambique's (256) | The connections the S3 store may hold open at once (`pool_size:` of the store); see [the pool](#cells-limits-memory-and-store-requests). |
+| `ATANOR_COMPACTION_HOLD_BYTES`, `ATANOR_COMPACTION_CONCURRENCY`, `ATANOR_COMPACTION_URGENT_CONCURRENCY` | `compaction_hold_bytes`, `compaction_concurrency`, `compaction_urgent_concurrency` | Alambique's (32 MiB, 2, 4) | `alambique: [compaction: [hold_bytes:, concurrency:, urgent_concurrency:]]`: the memory for the files cells just replicated (bytes, or a number with `k`, `m` or `g`; 0 turns it off), the compactions that run at once (1 or more), and the passes added for a cell at its cap (0 or more). |
 | `ATANOR_RELEASE` | `release` | `atanor-<version>` | The release id reported by `GET /deployments`. |
 | `ATANOR_LEASE_TTL_MS` | `lease_ttl_ms` | Alambique's | The cell lease time to live (`alambique: [lease_ttl_ms:]`). |
 | `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY` | `shutdown_ms`, `drain_timeout_ms`, `drain_concurrency` | 75000, 15000, 64 | `stop:` ([above](#the-instance)). The grace period of a stop must exceed the first ([rule](#the-stop-grace-period)). |

@@ -75,6 +75,9 @@ plans = {f"{s}_{m}": lc.plan(official, m, s)["values"] for m in ("http-native", 
 a, b = lc.config_hash(builtin), lc.config_hash(lc.resolve({"judging": {"p99": {"max_ms": 250}}}))
 c = lc.config_hash(lc.resolve({"judging": {"p99": {"max_ms": 300}}}))
 
+NODE_ENV = ["ATANOR_LOAD_COMPACTION_HOLD_BYTES", "ATANOR_LOAD_COMPACTION_CONCURRENCY", "ATANOR_LOAD_COMPACTION_URGENT_CONCURRENCY", "ATANOR_LOAD_S3_POOL_SIZE"]
+node_set = resolved("[node.compaction]\nhold_bytes = 67108864\nconcurrency = 4\nurgent_concurrency = 8\n[node.store]\npool_size = 512\n")
+
 print(json.dumps({
     "example_is_default": example == builtin, "official": {"plans": plans, "http_wasm": lc.plan(official, "http-wasm", "A")["kind"], "scale": official["scale"],
                                                           "scale_run_on": official["measures"]["scale"]["run_on"], "store": official["store"]["backing"],
@@ -137,7 +140,13 @@ print(json.dumps({
     "toml_round_trip": [lc.resolve(tomllib.loads(lc.dump_toml(c))) == c for c in (builtin, official, example, store_override, resolved("[scale.ceilings]\n\"cells:1\" = 5\n"))],
     "env_scale_no_nodes": ["ATANOR_LOAD_NODES" in lc.env_lines(official, "A", "scale"), lc.env_lines(official, "A", "ws")["ATANOR_LOAD_NODES"]],
     "env_cap": [lc.env_lines(builtin, "A")["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"], lc.env_lines(official, "B", "ws")["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"]],
-    "official_plan_values": lc.plan_values(lc.plan(official, "http-wasm", "A"))[:3],
+    # [node.compaction] and [node.store]: env lines, validation, and a hash that only sees what is set
+    "node_options": {"env_default": [lc.env_lines(builtin, "A")[k] for k in NODE_ENV], "env_set": [lc.env_lines(node_set, "A", "ws")[k] for k in NODE_ENV],
+                     "hash_set_changes": lc.case_hash(node_set, "A", "ws") != base_hash[0],
+                     "hash_default_as_before": lc.config_hash({**lc.case_config(builtin, "A", "ws"), "node": {"http_max_connections": 0}}) == base_hash[0],
+                     "round_trip": lc.resolve(tomllib.loads(lc.dump_toml(node_set))) == node_set,
+                     "bad": problems("[node.compaction]\nconcurrency = -1\nhold_bytes = \"big\"\nmerge_concurrency = 4\n[node.store]\npool_size = 1.5\npool_timeout_ms = 1\n")},
+    "official_plan_values":lc.plan_values(lc.plan(official, "http-wasm", "A"))[:3],
     # the names shared with Alambique, host.timeout_s and the per-measure judging
     "renames": {"data_tmpfs": [builtin["scenarios"]["A"]["data_tmpfs"], builtin["scenarios"]["B"]["data_tmpfs"]], "timeout_s": builtin["host"]["timeout_s"],
                 "min_available_gib": builtin["judging"]["host_memory"]["min_available_gib"],

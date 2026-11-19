@@ -50,6 +50,14 @@ memory = "512m"    # memory limit of the load balancer
 [node]
 http_max_connections = 0   # http.max_connections of a node; 0 keeps the node's default (16384); ws steps need it above the highest step
 
+[node.compaction]   # Alambique's compaction on a node; 0 keeps its default
+hold_bytes = 0          # memory for the files cells just replicated (default 33554432, 32 MiB)
+concurrency = 0         # compactions that run at once (default 2)
+urgent_concurrency = 0  # passes added for a cell at its cap (default 4)
+
+[node.store]        # the S3 store of a node; 0 keeps its default
+pool_size = 0           # connections the store may hold open (default 256)
+
 # The step plan of each measure. `kind = "bisect"` grows from start by factor up to max, and after the first failure bisects
 # `refine` times between the last good and the failing step. `kind = "ladder"` runs the fixed `values` (strictly growing) instead.
 # `kind = "ceiling"` runs a ladder of `factors` times `ceiling` (rounded): the exploration of a ceiling found by an earlier round.

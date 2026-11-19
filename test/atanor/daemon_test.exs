@@ -84,6 +84,10 @@ defmodule Atanor.DaemonTest do
           "ATANOR_REBALANCE_START_DELAY_MS" => "45000",
           "ATANOR_HTTP_QUEUE_WAIT_MS" => "2500",
           "ATANOR_HTTP_MAX_CONNECTIONS" => "70000",
+          "ATANOR_COMPACTION_HOLD_BYTES" => "64m",
+          "ATANOR_COMPACTION_CONCURRENCY" => "4",
+          "ATANOR_COMPACTION_URGENT_CONCURRENCY" => "8",
+          "ATANOR_S3_POOL_SIZE" => "512",
           "ATANOR_HTTP_HEADER_TIMEOUT_MS" => "4000",
           "ATANOR_HTTP_BODY_TIMEOUT_MS" => "9000",
           "ATANOR_ADMIN_HEADER_TIMEOUT_MS" => "3000",
@@ -106,6 +110,10 @@ defmodule Atanor.DaemonTest do
       assert opts[:alambique][:wal][:max_bytes] == 64 * 1_048_576
       assert opts[:alambique][:node_id] == "node-a"
       assert opts[:alambique][:lease_ttl_ms] == 20_000
+      assert opts[:alambique][:compaction] == [hold_bytes: 67_108_864, concurrency: 4, urgent_concurrency: 8]
+      assert {Alambique.Store.S3, %{pool_size: 512}} = opts[:store]
+      assert errors(env(%{"ATANOR_COMPACTION_CONCURRENCY" => "0"})) =~ "concurrency"
+      assert errors(env(%{"ATANOR_S3_POOL_SIZE" => "many"})) =~ "ATANOR_S3_POOL_SIZE"
       assert opts[:alambique][:registry] == [advertise: "atanor@node-a.example", ttl_ms: 9_000, renew_ms: 1_500]
 
       assert {config.stop.shutdown_ms, config.stop.drain_timeout_ms, config.stop.drain_concurrency} ==

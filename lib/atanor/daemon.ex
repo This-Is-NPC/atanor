@@ -100,6 +100,14 @@ defmodule Atanor.Daemon do
      "The bytes of write-ahead log a node may hold. Default: derived from the disk budget."},
     {"ATANOR_RELEASE", :string, "The release id. Default `atanor-<version>`."},
     {"ATANOR_LEASE_TTL_MS", :integer, "The cell lease time to live. Default: Alambique's."},
+    {"ATANOR_S3_POOL_SIZE", :integer,
+     "The connections the S3 store may hold open at once (`pool_size:` of the store). Default: Alambique's, 256."},
+    {"ATANOR_COMPACTION_HOLD_BYTES", :bytes,
+     "The memory for the files cells just replicated (`compaction: [hold_bytes:]`); 0 turns it off. Default: Alambique's, 32 MiB."},
+    {"ATANOR_COMPACTION_CONCURRENCY", :integer,
+     "The compactions that run at once (`compaction: [concurrency:]`). Default: Alambique's, 2."},
+    {"ATANOR_COMPACTION_URGENT_CONCURRENCY", :integer,
+     "The passes added to it for a cell at its cap (`compaction: [urgent_concurrency:]`). Default: Alambique's, 4."},
     {"ATANOR_SHUTDOWN_MS", :integer, "The bound of a whole drain (`stop.shutdown_ms`). Default 75000."},
     {"ATANOR_DRAIN_TIMEOUT_MS", :integer, "The bound of one cell's handoff in a drain. Default 15000."},
     {"ATANOR_DRAIN_CONCURRENCY", :integer, "The cells handed off at once in a drain. Default 64."},
@@ -137,6 +145,12 @@ defmodule Atanor.Daemon do
   @secrets for {name, type, _} <- @keys, type in [:secret, :token], do: name
   @boot for {name, :boot, _} <- @keys, do: name
   @store_key "ATANOR_STORE"
+  # The `alambique: [compaction: [...]]` option each variable sets.
+  @compaction_keys [
+    hold_bytes: "ATANOR_COMPACTION_HOLD_BYTES",
+    concurrency: "ATANOR_COMPACTION_CONCURRENCY",
+    urgent_concurrency: "ATANOR_COMPACTION_URGENT_CONCURRENCY"
+  ]
   # The path of the file, read before the loader runs.
   @config_var "ATANOR_CONFIG"
 
@@ -547,8 +561,13 @@ defmodule Atanor.Daemon do
     region = v["ATANOR_S3_REGION"] || v["AWS_REGION"] || v["AWS_DEFAULT_REGION"] || @default_region
     config = Map.merge(%{region: region, bucket: bucket}, credential_options(aws))
 
-    {{Alambique.Store.S3,
-      if(v["ATANOR_S3_ENDPOINT"], do: Map.put(config, :endpoint, v["ATANOR_S3_ENDPOINT"]), else: config)}, prefix}
+    config =
+      for {key, name} <- [endpoint: "ATANOR_S3_ENDPOINT", pool_size: "ATANOR_S3_POOL_SIZE"],
+          value = v[name],
+          into: config,
+          do: {key, value}
+
+    {{Alambique.Store.S3, config}, prefix}
   end
 
   defp options(v, aws, advertise) do
@@ -575,6 +594,12 @@ defmodule Atanor.Daemon do
         lease_ttl_ms: v["ATANOR_LEASE_TTL_MS"],
         node_id: v["ATANOR_NODE_ID"],
         wal: for(bytes <- [v["ATANOR_WAL_LIMIT"]], bytes, do: {:max_bytes, bytes}),
+        compaction:
+          for(
+            {key, name} <- @compaction_keys,
+            value = v[name],
+            do: {key, value}
+          ),
         registry: registry(v, advertise)
       )
       |> put_group(:stop,

@@ -142,7 +142,7 @@ unknown key, a wrong type or a value out of range is refused with a suggestion.
 | `[host]` | `ssh`, `repo`, `results` and `timeout_s` of `--remote`, `--status` and `--fetch`. |
 | `[scenarios.A]`, `[scenarios.B]` | The node: `cpus`, `memory`, `data_tmpfs` (the size of its data tmpfs) and `nodes`. |
 | `[store]`, `[balancer]` | The store's `backing` (`tmpfs` or `disk`), `tmpfs_size`, `memory`, `cpus`, `latency_ms`; the balancer's `cpus` and `memory`. |
-| `[node]` | `http_max_connections` (0 keeps the node's 16384). |
+| `[node]`, `[node.compaction]`, `[node.store]` | `http_max_connections` (0 keeps the node's 16384). `[node.compaction]` sets `hold_bytes`, `concurrency` and `urgent_concurrency` of Alambique's compaction, and `[node.store]` sets `pool_size` of the S3 store; 0 keeps Alambique's default (32 MiB, 2, 4 and 256). They reach the node as `ATANOR_COMPACTION_*` and `ATANOR_S3_POOL_SIZE` ([configuration.md](configuration.md)). A key left at 0 does not change the hash of the step files. |
 | `[measures.NAME]` | `run_on`; `steps` and `per_scenario.A/B` (the plan); `store` and `judging` overrides for that measure. |
 | `[judging]` | The criteria and the INVALID rules (below). |
 | `[generator]`, `[workload]` | The load generator (`rate_per_proc`, `conns_per_rate`, `timeout_s`, `grace_s`, `sample_s`) and the work (`write_ratio`, `cells`, `warmup`, `cell_period_s`, `cells_conns`, `open_rate`, `ws_interval_s`, `worker`). |

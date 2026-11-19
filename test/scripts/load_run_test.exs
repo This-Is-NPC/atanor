@@ -706,12 +706,12 @@ defmodule Atanor.LoadRunTest do
   test "load-env takes the lab's settings from the round config for a scenario and a measure", %{dir: dir} do
     File.write!(
       Path.join(dir, "round.toml"),
-      "[store]\nlatency_ms = 7\n[measures.ws.store]\nbacking = \"disk\"\n[node]\nhttp_max_connections = 99999\n[scenarios.B]\nnodes = 2\n"
+      "[store]\nlatency_ms = 7\n[measures.ws.store]\nbacking = \"disk\"\n[node]\nhttp_max_connections = 99999\n[node.compaction]\nhold_bytes = 67108864\n[node.store]\npool_size = 512\n[scenarios.B]\nnodes = 2\n"
     )
 
     env = fn scenario, measure ->
       script =
-        "source scripts/load-common; echo \"$LOAD_SCENARIO $LOAD_CPUS $LOAD_MEMORY $LOAD_STORE_LATENCY_MS $LOAD_STORE_DISK $LOAD_NODES $ATANOR_CLUSTER_HTTP_MAX_CONNECTIONS\""
+        "source scripts/load-common; echo \"$LOAD_SCENARIO $LOAD_CPUS $LOAD_MEMORY $LOAD_STORE_LATENCY_MS $LOAD_STORE_DISK $LOAD_NODES $ATANOR_CLUSTER_HTTP_MAX_CONNECTIONS [$ATANOR_CLUSTER_COMPACTION_HOLD_BYTES|$ATANOR_CLUSTER_COMPACTION_CONCURRENCY|$ATANOR_CLUSTER_S3_POOL_SIZE]\""
 
       {out, 0} =
         System.cmd("bash", ["-c", script],
@@ -729,9 +729,10 @@ defmodule Atanor.LoadRunTest do
     end
 
     # the config replaces the ATANOR_LOAD_* it names (ATANOR_LOAD_CPUS=9 here); the store of a measure follows its override
-    assert env.("A", "http-native") == "A 1 512m 7 0 1 99999"
-    assert env.("A", "ws") == "A 1 512m 7 1 1 99999"
-    assert env.("B", "cells") == "B 2 2g 7 0 2 99999"
+    # the compaction and the pool options reach the cluster's variables (empty when not set)
+    assert env.("A", "http-native") == "A 1 512m 7 0 1 99999 [67108864||512]"
+    assert env.("A", "ws") == "A 1 512m 7 1 1 99999 [67108864||512]"
+    assert env.("B", "cells") == "B 2 2g 7 0 2 99999 [67108864||512]"
   end
 
   test "a stall of the harness's own ticker next to an open breaker marks a stop of the whole VM", %{dir: dir} do
