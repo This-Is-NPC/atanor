@@ -468,6 +468,9 @@ defmodule Atanor.Config do
       hold_object_bytes: :non_negative,
       concurrency: :positive,
       urgent_concurrency: :non_negative,
+      merge_concurrency: :positive,
+      release_concurrency: :positive,
+      release_on: :release_on,
       snapshot_ratio: :ratio,
       snapshot_keep_ms: :non_negative,
       snapshot_interval_ms: :positive,
@@ -1170,6 +1173,9 @@ defmodule Atanor.Config do
   defp limit?(:boolean, value), do: is_boolean(value)
   defp limit?(:other_tables, value), do: value in [:capture, :skip]
 
+  defp limit?(:release_on, value),
+    do: is_list(value) and value -- [:request, :shutdown, :evict, :idle, :frozen] == []
+
   # The rules of Alambique's own check: names are non-empty valid strings, a selection is a boolean or a list
   # of exactly one `omit:` or `only:` with a list of column names.
   defp limit?(:tables, tables) when is_map(tables),
@@ -1189,6 +1195,7 @@ defmodule Atanor.Config do
   defp must(:ratio), do: "a number above 0"
   defp must(:boolean), do: "true or false"
   defp must(:other_tables), do: ":capture or :skip"
+  defp must(:release_on), do: "a list of :request, :shutdown, :evict, :idle and :frozen"
 
   defp must(:tables),
     do:

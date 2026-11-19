@@ -75,7 +75,8 @@ defmodule Atanor.Admission do
   @overloaded_wait_expired 30
   @overloaded_crowded 31
   @overloaded_max_children 32
-  @counters 32
+  @compaction_busy 33
+  @counters 33
   @warn_every_ms 1_000
   @deadline {__MODULE__, :deadline}
 
@@ -266,6 +267,7 @@ defmodule Atanor.Admission do
     done: @compaction_done,
     deadline: @compaction_deadline,
     deadline_error: @compaction_deadline_error,
+    busy: @compaction_busy,
     error: @compaction_error
   }
 
@@ -313,7 +315,7 @@ defmodule Atanor.Admission do
     :ok
   end
 
-  @doc "The hibernations on this node since it started, by compaction outcome, and the longest tail left after one."
+  @doc "The hibernations on this node since it started, by compaction outcome (`busy`: refused by `release_concurrency`), and the longest tail left after one."
   @spec hibernations(atom) :: %{compaction: %{atom => non_neg_integer}, tail_max: non_neg_integer}
   def hibernations(name) do
     counters = handle(name).counters

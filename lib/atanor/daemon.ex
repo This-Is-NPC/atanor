@@ -102,6 +102,12 @@ defmodule Atanor.Daemon do
     {"ATANOR_LEASE_TTL_MS", :integer, "The cell lease time to live. Default: Alambique's."},
     {"ATANOR_S3_POOL_SIZE", :integer,
      "The connections the S3 store may hold open at once (`pool_size:` of the store). Default: Alambique's, 256."},
+    {"ATANOR_S3_POOL_TIMEOUT_MS", :integer,
+     "How long a request may wait for a free connection of the S3 pool (`pool_timeout:` of the store). Default: Alambique's, 2000."},
+    {"ATANOR_COMPACTION_MERGE_CONCURRENCY", :integer,
+     "The merges of one level that run at once in a compaction pass (`compaction: [merge_concurrency:]`). Default: Alambique's, 4."},
+    {"ATANOR_COMPACTION_RELEASE_CONCURRENCY", :integer,
+     "The cells of the node that compact their tail at a release at once (`compaction: [release_concurrency:]`); a cell that finds no place in its budget is released with `busy`. Default: Alambique's, 4."},
     {"ATANOR_COMPACTION_HOLD_BYTES", :bytes,
      "The memory for the files cells just replicated (`compaction: [hold_bytes:]`); 0 turns it off. Default: Alambique's, 32 MiB."},
     {"ATANOR_COMPACTION_CONCURRENCY", :integer,
@@ -149,7 +155,9 @@ defmodule Atanor.Daemon do
   @compaction_keys [
     hold_bytes: "ATANOR_COMPACTION_HOLD_BYTES",
     concurrency: "ATANOR_COMPACTION_CONCURRENCY",
-    urgent_concurrency: "ATANOR_COMPACTION_URGENT_CONCURRENCY"
+    urgent_concurrency: "ATANOR_COMPACTION_URGENT_CONCURRENCY",
+    merge_concurrency: "ATANOR_COMPACTION_MERGE_CONCURRENCY",
+    release_concurrency: "ATANOR_COMPACTION_RELEASE_CONCURRENCY"
   ]
   # The path of the file, read before the loader runs.
   @config_var "ATANOR_CONFIG"
@@ -562,7 +570,11 @@ defmodule Atanor.Daemon do
     config = Map.merge(%{region: region, bucket: bucket}, credential_options(aws))
 
     config =
-      for {key, name} <- [endpoint: "ATANOR_S3_ENDPOINT", pool_size: "ATANOR_S3_POOL_SIZE"],
+      for {key, name} <- [
+            endpoint: "ATANOR_S3_ENDPOINT",
+            pool_size: "ATANOR_S3_POOL_SIZE",
+            pool_timeout: "ATANOR_S3_POOL_TIMEOUT_MS"
+          ],
           value = v[name],
           into: config,
           do: {key, value}

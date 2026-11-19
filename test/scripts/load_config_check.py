@@ -75,8 +75,10 @@ plans = {f"{s}_{m}": lc.plan(official, m, s)["values"] for m in ("http-native", 
 a, b = lc.config_hash(builtin), lc.config_hash(lc.resolve({"judging": {"p99": {"max_ms": 250}}}))
 c = lc.config_hash(lc.resolve({"judging": {"p99": {"max_ms": 300}}}))
 
-NODE_ENV = ["ATANOR_LOAD_COMPACTION_HOLD_BYTES", "ATANOR_LOAD_COMPACTION_CONCURRENCY", "ATANOR_LOAD_COMPACTION_URGENT_CONCURRENCY", "ATANOR_LOAD_S3_POOL_SIZE"]
-node_set = resolved("[node.compaction]\nhold_bytes = 67108864\nconcurrency = 4\nurgent_concurrency = 8\n[node.store]\npool_size = 512\n")
+NODE_ENV = ["ATANOR_LOAD_COMPACTION_" + k for k in ("HOLD_BYTES", "CONCURRENCY", "URGENT_CONCURRENCY", "MERGE_CONCURRENCY", "RELEASE_CONCURRENCY")] + \
+           ["ATANOR_LOAD_S3_POOL_SIZE", "ATANOR_LOAD_S3_POOL_TIMEOUT_MS"]
+node_set = resolved("[node.compaction]\nhold_bytes = 67108864\nconcurrency = 4\nurgent_concurrency = 8\nmerge_concurrency = 6\nrelease_concurrency = 2\n"
+                    "[node.store]\npool_size = 512\npool_timeout_ms = 3000\n")
 
 print(json.dumps({
     "example_is_default": example == builtin, "official": {"plans": plans, "http_wasm": lc.plan(official, "http-wasm", "A")["kind"], "scale": official["scale"],
@@ -145,7 +147,7 @@ print(json.dumps({
                      "hash_set_changes": lc.case_hash(node_set, "A", "ws") != base_hash[0],
                      "hash_default_as_before": lc.config_hash({**lc.case_config(builtin, "A", "ws"), "node": {"http_max_connections": 0}}) == base_hash[0],
                      "round_trip": lc.resolve(tomllib.loads(lc.dump_toml(node_set))) == node_set,
-                     "bad": problems("[node.compaction]\nconcurrency = -1\nhold_bytes = \"big\"\nmerge_concurrency = 4\n[node.store]\npool_size = 1.5\npool_timeout_ms = 1\n")},
+                     "bad": problems("[node.compaction]\nconcurrency = -1\nhold_bytes = \"big\"\nrelease_on = 4\n[node.store]\npool_size = 1.5\npool_timeout_ms = -1\nbogus = 1\n")},
     "official_plan_values":lc.plan_values(lc.plan(official, "http-wasm", "A"))[:3],
     # the names shared with Alambique, host.timeout_s and the per-measure judging
     "renames": {"data_tmpfs": [builtin["scenarios"]["A"]["data_tmpfs"], builtin["scenarios"]["B"]["data_tmpfs"]], "timeout_s": builtin["host"]["timeout_s"],

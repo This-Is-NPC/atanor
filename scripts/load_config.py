@@ -224,8 +224,9 @@ SCHEMA = Table({
                     "cpus": positive(2), "latency_ms": Leaf("float", 25.0, lo=0)}),
     "balancer": Table({"cpus": positive(2), "memory": Leaf("size", "512m")}),
     "node": Table({"http_max_connections": Leaf("int", 0, lo=0),
-                   "compaction": Table({"hold_bytes": Leaf("int", 0, lo=0), "concurrency": Leaf("int", 0, lo=0), "urgent_concurrency": Leaf("int", 0, lo=0)}),
-                   "store": Table({"pool_size": Leaf("int", 0, lo=0)})}),
+                   "compaction": Table({"hold_bytes": Leaf("int", 0, lo=0), "concurrency": Leaf("int", 0, lo=0), "urgent_concurrency": Leaf("int", 0, lo=0),
+                                         "merge_concurrency": Leaf("int", 0, lo=0), "release_concurrency": Leaf("int", 0, lo=0)}),
+                   "store": Table({"pool_size": Leaf("int", 0, lo=0), "pool_timeout_ms": Leaf("int", 0, lo=0)})}),
     "measures": Map(MEASURES, measure_table, "measure", fill=True),
     "judging": Table(judging_children()),
     "generator": Table({"rate_per_proc": positive(600), "conns_per_rate": positive(0.5), "timeout_s": positive(10), "grace_s": Leaf("float", 30.0, lo=0),
@@ -529,9 +530,9 @@ def env_lines(config, scenario, measure=None):
              "STORE_DISK": "1" if store["backing"] == "disk" else "0", "STORE_TMPFS_SIZE": store["tmpfs_size"], "STORE_MEMORY": store["memory"],
              "STORE_CPUS": f"{store['cpus']:g}", "STORE_LATENCY_MS": f"{store['latency_ms']:g}", "LB_CPUS": f"{balancer['cpus']:g}", "LB_MEMORY": balancer["memory"],
              "HTTP_MAX_CONNECTIONS": str(cap) if cap else ""}
-    for name, value in (("COMPACTION_HOLD_BYTES", node["compaction"]["hold_bytes"]), ("COMPACTION_CONCURRENCY", node["compaction"]["concurrency"]),
-                        ("COMPACTION_URGENT_CONCURRENCY", node["compaction"]["urgent_concurrency"]), ("S3_POOL_SIZE", node["store"]["pool_size"])):
-        lines[name] = str(value) if value else ""
+    for table, prefix in (("compaction", "COMPACTION"), ("store", "S3")):
+        for key, value in node[table].items():
+            lines[f"{prefix}_{key.upper()}"] = str(value) if value else ""
     if measure != "scale":
         lines["NODES"] = str(scenario_settings["nodes"])
     return {f"ATANOR_LOAD_{k}": v for k, v in lines.items()}
