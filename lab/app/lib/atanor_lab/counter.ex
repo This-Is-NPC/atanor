@@ -67,6 +67,8 @@ defmodule AtanorLab.Counter do
     rows(env, Enum.at(cells, String.to_integer(index)))
   end
 
+  def handle_request(_request, _env), do: json(404, %{error: "not_found"})
+
   defp rows(env, cell) do
     case Env.query(env, cell, "SELECT id, n, node FROM log ORDER BY id") do
       {:ok, %{rows: rows}} -> json(200, %{node: node(), rows: rows})
@@ -80,8 +82,6 @@ defmodule AtanorLab.Counter do
     {:ok, address} = Env.partition(env, {"p" <> n, cell}, key)
     address
   end
-
-  def handle_request(_request, _env), do: json(404, %{error: "not_found"})
 
   # A WebSocket on `/c/CELL` (the hot_cell scenario): "join" attaches it to the cell, "w N" appends N, "r" counts.
   @impl true
