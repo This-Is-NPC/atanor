@@ -656,6 +656,50 @@ def counter_growth(values):
     return seen[-1] - seen[0] if seen else None
 
 
+def wake_refusals(runtime):
+    """The wakes Alambique refused so far (`admission.awake_limit_by`, every reason summed), cumulative; None when the node does not report it."""
+    by_reason = ((runtime or {}).get("admission") or {}).get("awake_limit_by")
+    ints = [v for v in by_reason.values() if isinstance(v, int)] if isinstance(by_reason, dict) else []
+    return sum(ints) if ints else None
+
+
+def cold_start(points):
+    """Splits the wake refusals of one node into the cold start and the steady state. `points` are its readings in order, `(t, wakes, refused)`,
+    both counters cumulative. The cold start lasts while the node keeps waking cells: it ends at the last reading before the first one where
+    `wakes` did not grow (`ended` is false when it grew until the last reading). Returns `{end_t, ended, cold, steady}` (refusals counted
+    up to `end_t`, and after it), or None with fewer than two readings of both counters."""
+    seen = [p for p in points if isinstance(p[1], int) and isinstance(p[2], int)]
+    if len(seen) < 2:
+        return None
+    stall = next((j for j in range(1, len(seen)) if seen[j][1] == seen[j - 1][1]), None)
+    end = len(seen) - 1 if stall is None else stall - 1
+    return {"end_t": seen[end][0], "ended": stall is not None, "cold": seen[end][2] - seen[0][2], "steady": seen[-1][2] - seen[end][2]}
+
+
+def cold_start_summary(per_node, t0):
+    """`{cold_start, steady, cold_start_end_s, cold_start_ended, nodes}` from `{node: cold_start(points)}` (the refusals summed; the end is the
+    latest of the nodes, seconds from `t0`); None when no node reports both counters."""
+    known = {n: c for n, c in per_node.items() if c}
+    if not known:
+        return None
+    return {"cold_start": sum(c["cold"] for c in known.values()), "steady": sum(c["steady"] for c in known.values()),
+            "cold_start_end_s": round(max(c["end_t"] for c in known.values()) - t0, 1), "cold_start_ended": all(c["ended"] for c in known.values()),
+            "nodes": {n: {"cold_start": c["cold"], "steady": c["steady"], "cold_start_end_s": round(c["end_t"] - t0, 1)} for n, c in sorted(known.items())}}
+
+
+def step_wake_refusals(samples):
+    """The wake refusals of a step split into the cold start and the steady state (`cold_start`), per node and summed; None when no node reports
+    `wakes` and `admission.awake_limit_by`. A step that starts with its cells awake (a warm-up) has no wakes in its first interval: all steady."""
+    if not samples:
+        return None
+    cluster = [s for s in samples if s.get("node_runtimes") is not None]
+    if cluster:
+        runtimes = {n: [(s["t"], s["node_runtimes"].get(n, (None, None))[0]) for s in cluster] for n in cluster[-1]["node_keys"]}
+    else:
+        runtimes = {"node": [(s["t"], s.get("runtime")) for s in samples]}
+    return cold_start_summary({n: cold_start([(t, (r or {}).get("wakes"), wake_refusals(r)) for t, r in reads]) for n, reads in runtimes.items()}, samples[0]["t"])
+
+
 def compaction_growth(runtimes):
     """{outcome: growth of the hibernations by release compaction outcome (`hibernations.compaction` of /runtime)} plus `tail_max` (the longest WAL
     tail the node found, last reading); None when no reading reports it (an older node)."""
@@ -1289,7 +1333,7 @@ class Round:
                   "value": value, "duration_s": a.step_s, "store_latency_ms": info["store_latency_ms"], "store_backing": info.get("store_backing", "tmpfs"), "command": a.command,
                   "http_max_connections": http_max_connections(), "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
-                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "per_node": None, "statuses_503_by_reason": {}, "refusals": None, "evictions": None, "store_stall": None, "store": None, "cells_awake": None, "store_rtt_ms": None, "opening": None,
+                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "per_node": None, "statuses_503_by_reason": {}, "refusals": None, "wake_refusals": None, "evictions": None, "store_stall": None, "store": None, "cells_awake": None, "store_rtt_ms": None, "opening": None,
                   "valid": valid, "status": status, "stop_reason": reason, "criteria": [], "started_at": began, "node_stopped": bool(dead), "notes": [], "first_attempt": None, "diagnostics": list(diagnostics),
                   "config_hash": getattr(a, "config_hash", None)}
         if merged is None:
@@ -1320,6 +1364,7 @@ class Round:
         if note:
             record["notes"].append(note)
         record["refusals"] = refusals_503(merged["statuses"], samples)
+        record["wake_refusals"] = step_wake_refusals(samples)
         record["evictions"] = eviction_evidence(self.awake_start, record["cells_awake"], record["admission"], samples)
         refusals, answers_503 = record["refusals"], refused_of(merged["statuses"])[1]
         if refusals is None and answers_503:
@@ -1670,6 +1715,7 @@ class SpreadPoller(threading.Thread):
             try:
                 reads = node_runtimes(self.info, 2)
                 self.samples.append({"t": time.time(), **spread_sample(self.info), "rebalance": rebalance_state(reads),
+                                     "wakes": {n: (r or {}).get("wakes") for n, (r, _) in reads.items()}, "wake_refused": {n: wake_refusals(r) for n, (r, _) in reads.items()},
                                      "runtime_errors": {n: error for n, (_, error) in reads.items() if error}})
             except Exception as error:  # a reading is lost, not the join
                 say(f"spread sample failed: {error}")
@@ -1713,6 +1759,31 @@ def runtime_failures(window):
     return found
 
 
+def join_cold_starts(samples):
+    """{node: cold_start(...)} over every reading of the join: a node's cold start is counted once, from its first reading, not once per window."""
+    names = sorted({n for s in samples for n in s.get("wakes") or {}})
+    return {n: cold_start([(s["t"], (s.get("wakes") or {}).get(n), (s.get("wake_refused") or {}).get(n)) for s in samples]) for n in names}
+
+
+def window_split(window, series, colds, t0):
+    """`(wake refusals, backend 5xx)` of a window, each `{cold_start, steady}` or None when not known: the refusals counted between its first and
+    last reading of each node, those up to the node's cold start end being the cold ones; the 5xx of its readings up to the latest end."""
+    cold = steady = 0
+    known = False
+    for n, c in colds.items():
+        points = [(s["t"], v) for s in window if isinstance(v := (s.get("wake_refused") or {}).get(n), int)]
+        if not c or len(points) < 2:
+            continue
+        inside = [v for t, v in points if t <= c["end_t"]]
+        part = inside[-1] - points[0][1] if inside else 0
+        known, cold, steady = True, cold + part, steady + points[-1][1] - points[0][1] - part
+    ends = [c["end_t"] for c in colds.values() if c]
+    fives = [(e["t"], e["new_5xx"]) for e in series if e["new_5xx"] is not None]
+    end = round(max(ends) - t0, 1) if ends else None
+    five = None if end is None or not fives else {"cold_start": sum(v for t, v in fives if t <= end), "steady": sum(v for t, v in fives if t > end)}
+    return {"cold_start": cold, "steady": steady} if known else None, five
+
+
 def join_windows(poller, events, args, rate):
     """One entry per window: before the first join (1 node), then from each node's start to the next one's (the last to the end of the
     load). The spread time of a join is the seconds from `node-N` start (`join_start`) to the first of `hold` consecutive samples where every
@@ -1724,7 +1795,7 @@ def join_windows(poller, events, args, rate):
     bounds = [samples[0]["t"]] + [e["join_t"] for e in events] + [samples[-1]["t"] + 1e-6]
     tol, hold = args.spread_tol_pct / 100, args.spread_hold
     min_requests, min_cells = max(20, int(0.25 * rate * args.join_sample_s)), args.spread_min_cells
-    out = []
+    colds, out = join_cold_starts(samples), []
     for i, (start, end) in enumerate(zip(bounds, bounds[1:])):
         nodes, event = i + 1, events[i - 1] if i else None
         names = [f"node-{n}" for n in range(1, nodes + 1)]
@@ -1734,6 +1805,7 @@ def join_windows(poller, events, args, rate):
                  "cells_in_band_s": None, "request_share_end": None, "cells_share_end": None, "ready_s": None if event is None else event["ready_s"],
                  "rebalance": None if event is None else event.get("rebalance"), "rebalance_observed": None if event is None else event.get("rebalance_observed"),
                  "runtime_failures": runtime_failures(window), "samples": window_series(window, samples[0]["t"])}
+        entry["wake_refusals"], entry["backend_5xx"] = window_split(window, entry["samples"], colds, samples[0]["t"])
         if event is not None:
             first_in_band = spread_time([(s["t"], s["cells"]) for s in window if s.get("cells")], names, tol, 1, min_cells)
             entry["cells_in_band_s"] = None if first_in_band is None else round(first_in_band - start, 1)
@@ -1771,7 +1843,7 @@ def join(args, rate, nodes_max):
         say(f"scale join at {rate} req/s: {done['status']}, done before (config_hash {done['config_hash'][:8]})")
         return done
     record = {"schema": JOIN_SCHEMA, "measure": "scale", "phase": "join", "unit": "req/s", "rate": rate, "nodes_max": nodes_max, "command": args.command, "config_hash": getattr(args, "config_hash", None),
-              "tolerance_pct": args.spread_tol_pct, "hold_samples": args.spread_hold, "sample_s": args.join_sample_s, "windows": [], "generator": None,
+              "tolerance_pct": args.spread_tol_pct, "hold_samples": args.spread_hold, "sample_s": args.join_sample_s, "windows": [], "wake_refusals": None, "generator": None,
               "host": {}, "valid": True, "status": "ok", "stop_reason": None, "notes": [], "diagnostics": [], "started_at": time.time()}
     try:
         info = fresh_cluster(1)
@@ -1848,6 +1920,7 @@ def join(args, rate, nodes_max):
                                "status_503": merged["statuses"].get("503 retry-after", 0) + merged["statuses"].get("503 no retry-after", 0),
                                "statuses_503_by_reason": merged["reasons_503"]}
     record["windows"] = join_windows(poller, events, args, rate)
+    record["wake_refusals"] = cold_start_summary(join_cold_starts(poller.samples), poller.samples[0]["t"]) if poller.samples else None
     mean, busy = join_host_load(samples, events, args.sample_s)
     record["host"] = {"net_load_mean": mean, "busy_cores_mean": busy, "available_gb_min": round(min(s["host"]["available_gb"] for s in samples), 1)}
     if events and all(v is None for e in events for v in (e.get("rebalance") or {}).values()):
@@ -1902,7 +1975,7 @@ def scale(args):
         advice = f"the lab did not hold {args.max_nodes} nodes: rerun with --max-nodes {fit}" if fit else "not even one node ran without an INVALID step: the host is over its limit"
     return {"approved": None, "confirmed": None, "stopped_by": None, "invalid": invalids[0]["reason"] if invalids else None, "invalids": invalids,
             "max_nodes": args.max_nodes, "largest_fit": fit, "advice": advice, "cpu_cores_host": CORES, "ceilings": ceilings, "gain": gains,
-            "configs": configs, "join": None if joined is None else {k: joined[k] for k in ("status", "stop_reason", "rate", "windows", "generator")}, "join_note": note}
+            "configs": configs, "join": None if joined is None else {k: joined[k] for k in ("status", "stop_reason", "rate", "windows", "wake_refusals", "generator")}, "join_note": note}
 
 
 def judging_args(j):

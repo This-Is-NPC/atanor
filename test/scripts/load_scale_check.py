@@ -9,7 +9,9 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -437,4 +439,50 @@ m.fresh_cluster = lambda nodes: (_ for _ in ()).throw(m.LabError("the lab did no
 record, _ = run_join("join_lab")
 m.fresh_cluster = real_cluster
 results["join_lab"] = {"status": record["status"], "reason": record["stop_reason"]}
+
+# The wake refusals split into the cold start and the steady state: a node's cold start lasts while its `wakes` grows. Node-1 wakes in the first
+# two intervals (refusing 700 then 200 wakes) and then only refuses 5 more; node-2 is warm (wakes never grow): all steady; node-3 does not report.
+def node_read(wakes, refused):
+    return ({"wakes": wakes, "admission": {"awake_limit_by": {"queue_full": refused - 10, "wait_expired": 10}}}, None)
+
+
+series_1 = [(0, 0, 0), (2, 30, 700), (4, 64, 900), (6, 64, 903), (8, 64, 905)]
+steps = [{"t": 100.0 + t, "node_keys": {"node-1": "node", "node-2": "extra1", "node-3": "extra2"},
+          "node_runtimes": {"node-1": node_read(w, r), "node-2": node_read(7, 40 + i), "node-3": ({}, None)}} for i, (t, w, r) in enumerate(series_1)]
+split = m.step_wake_refusals(steps)
+results["cold_split"] = {"summed": [split["cold_start"], split["steady"], split["cold_start_end_s"], split["cold_start_ended"]], "nodes": split["nodes"],
+                         "single": m.step_wake_refusals([{"t": 5.0 + t, "runtime": node_read(w, r)[0]} for t, w, r in series_1])["nodes"],
+                         "never_stops": m.cold_start([(0, 0, 0), (2, 5, 10), (4, 9, 12)]), "one_reading": m.cold_start([(0, 0, 0)]),
+                         "unreported": m.step_wake_refusals([{"t": 1.0, "runtime": {}}, {"t": 2.0, "runtime": {}}])}
+
+# The same for a join: node-2 appears in the third reading (its cold start is its own); window 1 has the cold start of node-1, window 2 only steady
+# refusals of node-1 and the cold start of node-2. The 5xx of the readings up to the latest end are cold start.
+def poll(t, w1, r1, w2=None, r2=None):
+    return {"t": 200.0 + t, "backend": {"hrsp_5xx": 0}, "rebalance": {}, "runtime_errors": {}, "requests": {"node-1": 0, "node-2": 0}, "cells": None,
+            "wakes": {"node-1": w1, "node-2": w2}, "wake_refused": {"node-1": r1, "node-2": r2}}
+
+
+readings = [poll(0, 0, 0), poll(2, 40, 700), poll(4, 64, 911), poll(6, 64, 911), poll(8, 64, 913, 0, 0), poll(10, 64, 915, 10, 30), poll(12, 64, 916, 10, 31)]
+for reading, five in zip(readings, (0, 698, 911, 911, 915, 920, 921)):
+    reading["backend"]["hrsp_5xx"] = five
+joined_args = make_args(os.path.join(work, "cold_join"))
+join_poller = type("Poller", (), {"samples": readings})()
+windows = m.join_windows(join_poller, [{"nodes": 2, "join_t": 200.0 + 7.0, "ready_s": 1.0, "ready_t": 208.0}], joined_args, RATE)
+results["cold_join"] = {"summary": m.cold_start_summary(m.join_cold_starts(readings), 200.0),
+                        "windows": [[w["wake_refusals"], w["backend_5xx"]] for w in windows]}
+
+# The report shows both numbers: next to a step, in the join windows and for the whole join.
+report_dir = os.path.join(work, "report")
+shutil.copytree(os.path.join(work, "ramp"), report_dir)
+step_file = os.path.join(report_dir, "A", "scale", "http-native-n1", "step-50.json")
+with open(step_file) as file:
+    step_record = json.load(file)
+step_record["wake_refusals"] = split
+os.makedirs(os.path.join(report_dir, "A", "scale", "join"), exist_ok=True)
+m.write_json(step_file, step_record)
+m.write_json(os.path.join(report_dir, "A", "scale", "join", "step-2000.json"),
+             {"schema": "atanor-load-join-1", "scenario": "A", "measure": "scale", "phase": "join", "status": "ok", "stop_reason": None, "rate": 2000.0, "tolerance_pct": 25.0, "hold_samples": 3, "sample_s": 2.0,
+              "windows": [{**w, "backend": None} for w in windows], "wake_refusals": results["cold_join"]["summary"], "generator": {}, "notes": []})
+report = subprocess.run([sys.executable, "-I", f"{repo}/scripts/load-report", report_dir], capture_output=True, text=True)
+results["report"] = {"status": report.returncode, "lines": [l for l in report.stdout.splitlines() if "wake refusals" in l.lower()], "stderr": report.stderr[-300:]}
 print(json.dumps(results))
