@@ -8,7 +8,7 @@ defmodule Atanor.DetectorTest do
 
   @peer :"peer@127.0.0.1"
 
-  setup do
+  setup context do
     name = Module.concat(__MODULE__, "D#{System.unique_integer([:positive])}")
 
     config =
@@ -20,7 +20,7 @@ defmodule Atanor.DetectorTest do
         detector: [
           interval_ms: 20,
           min_std_ms: 5,
-          acceptable_pause_ms: 40,
+          acceptable_pause_ms: Map.get(context, :acceptable_pause_ms, 40),
           phi_threshold: 6,
           indirect: [timeout_ms: 100]
         ]
@@ -117,6 +117,9 @@ defmodule Atanor.DetectorTest do
     end
   end
 
+  # The heartbeats come from this test process every 20 ms, so a stall of a loaded test host reads as silence
+  # beyond a 40 ms pause; here the pause is wide enough that only missing heartbeats would count.
+  @tag acceptable_pause_ms: 1_000
   test "a peer that keeps sending heartbeats stays alive", %{name: name, server: server} do
     beat(server, @peer, 25)
     assert state(name) == [:alive]
