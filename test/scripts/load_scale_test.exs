@@ -230,6 +230,48 @@ defmodule Atanor.LoadScaleTest do
     assert r["join_no_budgets"]["budgets"] == %{"node-1" => :null, "node-2" => :null}
     refute Enum.any?(r["join_no_budgets"]["notes"], &(&1 =~ "disk_budget_bytes"))
 
+    # wake refusals: the cold start lasts while the node's `wakes` grows (node-1: 900 refused until t=4, 5 after); a warm node (node-2) is all steady;
+    # a node without the counters is left out; the same for one node's /runtime, and a node that wakes until the end is all cold start
+    cold = r["cold_split"]
+    assert cold["summed"] == [900, 9, 4.0, true]
+
+    assert cold["nodes"] == %{
+             "node-1" => %{"cold_start" => 900, "steady" => 5, "cold_start_end_s" => 4.0},
+             "node-2" => %{"cold_start" => 0, "steady" => 4, "cold_start_end_s" => 0.0}
+           }
+
+    assert cold["single"] == %{"node" => %{"cold_start" => 900, "steady" => 5, "cold_start_end_s" => 4.0}}
+    assert cold["never_stops"] == %{"end_t" => 4, "ended" => false, "cold" => 12, "steady" => 0}
+    assert cold["one_reading"] == :null and cold["unreported"] == :null
+
+    # in a join each node's cold start is its own: window 1 has node-1's, window 2 node-1's steady refusals and node-2's cold start; the 5xx follow the latest end
+    join = r["cold_join"]
+
+    assert join["summary"]["cold_start"] == 941 and join["summary"]["steady"] == 6 and
+             join["summary"]["cold_start_end_s"] == 10.0
+
+    assert join["summary"]["nodes"]["node-2"] == %{"cold_start" => 30, "steady" => 1, "cold_start_end_s" => 10.0}
+
+    assert join["windows"] == [
+             [%{"cold_start" => 911, "steady" => 0}, %{"cold_start" => 911, "steady" => 0}],
+             [%{"cold_start" => 30, "steady" => 4}, %{"cold_start" => 5, "steady" => 1}]
+           ]
+
+    # the report shows both numbers next to the step, in the join windows and for the join
+    assert r["report"]["status"] == 0, r["report"]["stderr"]
+
+    assert Enum.any?(
+             r["report"]["lines"],
+             &(&1 == "- step 1 (50): wake refusals: 900 at cold start (until t=4.0 s), 9 steady")
+           )
+
+    assert Enum.any?(
+             r["report"]["lines"],
+             &(&1 == "Wake refusals of the join: 941 at cold start (until t=10.0 s), 6 steady.")
+           )
+
+    assert Enum.any?(r["report"]["lines"], &(&1 =~ "wake refusals: cold start / steady"))
+
     # the rebalance of a window is read mid-plan and at its end (later moves); a silent node is named with its error; an ok join keeps the evidence
     end_ = r["join_end"]
     assert end_["status"] == "ok"

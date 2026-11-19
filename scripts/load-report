@@ -141,6 +141,20 @@ def per_node(counts, share):
     return " / ".join(f"{num(counts[n])} ({100 * (share or {}).get(n, 0):.0f}%)" if share else num(counts[n]) for n in sorted(counts))
 
 
+def wake_text(split):
+    """`911 at cold start (until t=6.6 s), 0 steady` from a `wake_refusals` record (a step or the join); None when the file has none."""
+    if not split:
+        return None
+    until = f"until t={num(split['cold_start_end_s'])} s" + ("" if split.get("cold_start_ended", True) else ", wakes never stopped")
+    return f"{num(split['cold_start'], 0)} at cold start ({until}), {num(split['steady'], 0)} steady"
+
+
+def window_wake_text(w):
+    """The refusals and backend 5xx of a join window as `cold start / steady`; `-` when not known."""
+    cells = [f"{num(x['cold_start'], 0)} / {num(x['steady'], 0)}" if x else "-" for x in (w.get("wake_refusals"), w.get("backend_5xx"))]
+    return cells
+
+
 def scale_section(steps, summary, joins):
     """The gain per node, the spread of the load over the nodes at each ceiling, the steps of each configuration and the join step."""
     out = []
@@ -166,7 +180,10 @@ def scale_section(steps, summary, joins):
                 table(rows, ["load", "nodes", "requests per node (share)", "deviation", "cells awake per node (share)", "deviation"]), ""]
     for load in sorted({s["load"] for s in steps}):
         for nodes in sorted({s["nodes"] for s in steps if s["load"] == load}):
-            out += [f"#### {load} on {nodes} node{'s' if nodes > 1 else ''}", "", table(step_rows([s for s in steps if s["load"] == load and s["nodes"] == nodes]), HEADER), ""]
+            mine = [s for s in steps if s["load"] == load and s["nodes"] == nodes]
+            out += [f"#### {load} on {nodes} node{'s' if nodes > 1 else ''}", "", table(step_rows(mine), HEADER), ""]
+            lines = [f"- step {s['step']} ({s['value']:g}): wake refusals: {text}" for s in mine if (text := wake_text(s.get("wake_refusals")))]
+            out += ["Wake refusals of each step, the cold start apart from the steady state:", "", *lines, ""] if lines else []
     for j in joins:
         g = j.get("generator") or {}
         rows = []
@@ -174,10 +191,12 @@ def scale_section(steps, summary, joins):
             b = w.get("backend") or {}
             rows.append([w["nodes"], f"{num(w['start_s'])} - {num(w['end_s'])}", num(w.get("ready_s")), num(w.get("requests_spread_s")), num(w.get("cells_spread_s")),
                          f"{num(b.get('stot'), 0)} / {num(b.get('hrsp_5xx'), 0)} / {num(b.get('econ'), 0)} / {num(b.get('eresp'), 0)}",
+                         *window_wake_text(w),
                          "-" if not w.get("rebalance") else ", ".join(f"{n}: {json.dumps(v)}" for n, v in w["rebalance"].items())])
         out += [f"#### Join at {num(j.get('rate'), 0)} req/s: {j['status'].upper()}" + (f" ({j['stop_reason']})" if j.get("stop_reason") else ""), "",
                 f"Spread: every node within {j.get('tolerance_pct'):g}% of 1/N for {j.get('hold_samples')} readings {j.get('sample_s'):g} s apart; seconds counted from the start of the node. `null` (-): it never held in the window, or the field is missing.", "",
-                table(rows, ["nodes", "window s", "node ready after s", "requests spread s", "cells spread s", "requests / 5xx / conn errors / response errors (balancer)", "rebalance state (/runtime)"]), "",
+                table(rows, ["nodes", "window s", "node ready after s", "requests spread s", "cells spread s", "requests / 5xx / conn errors / response errors (balancer)", "wake refusals: cold start / steady", "balancer 5xx: cold start / steady", "rebalance state (/runtime)"]), "",
+                *([f"Wake refusals of the join: {text}.", ""] if (text := wake_text(j.get("wake_refusals"))) else []),
                 f"Generator: sent {num(g.get('sent'), 0)}, completed {num(g.get('completed'), 0)}, 503 {num(g.get('status_503'), 0)}, errors {', '.join(f'{k} x{n}' for k, n in (g.get('errors') or {}).items()) or 'none'}.", ""]
         out += [f"Note: {n}" for n in j.get("notes") or []] + [""] * bool(j.get("notes"))
     return out
