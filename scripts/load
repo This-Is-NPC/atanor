@@ -50,7 +50,7 @@ def describe(config, scenario, measure):
         p = load_config.plan(config, measure, scenario)
         values = load_config.plan_values(p)
         extra = p["refine"] + (1 if p["confirm"] else 0)
-        return {"kind": p["kind"], "values": values, "max_steps": len(values) + extra, "extra": f"{p['refine']} refine, {'1' if p['confirm'] else 'no'} confirm",
+        return {"kind": p["kind"], "values": values, "max_steps": len(values) + extra, "extra": f"{p['refine']} refine, {'1' if p['confirm'] else 'no'} confirm" + (", store reset before each step" if p["reset_each_step"] else ""),
                 "step_s": p["duration_s"], "unit": load_config.UNITS[measure]}
     if measure == "swap":
         swap = config["swap"]

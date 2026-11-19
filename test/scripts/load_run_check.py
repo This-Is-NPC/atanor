@@ -232,7 +232,7 @@ def ramp_scenario(name, dies_at, before=None):
 
 results["ramp"] = ramp_scenario("ramp", dies_at=2)
 # After a failing step the refine and confirm steps run on a fresh node (a stubbed reset); ramp steps and a clean confirmation do not.
-def fresh_scenario(name, slow_call, no_confirm=False, refine=2):
+def fresh_scenario(name, slow_call, no_confirm=False, refine=2, reset_each_step=False):
     container()
     resets, runs = [], []
 
@@ -247,7 +247,7 @@ def fresh_scenario(name, slow_call, no_confirm=False, refine=2):
     m.load_env = lambda *a: resets.append(a[0]) or (info if a[0] == "info" else "")
     m.Round.run_generators = generators
     try:
-        args.measure, args.steps, args.refine, args.no_confirm = "http-native", "10,20", refine, no_confirm
+        args.measure, args.steps, args.refine, args.no_confirm, args.reset_each_step = "http-native", "10,20", refine, no_confirm, reset_each_step
         summary = m.ramp(round_, args)
     finally:
         m.load_env, m.Round.run_generators = real_load_env, real_generators
@@ -262,6 +262,52 @@ def fresh_scenario(name, slow_call, no_confirm=False, refine=2):
 results["fresh_after_fail"] = fresh_scenario("fresh_after_fail", slow_call=2)
 results["fresh_never_failed"] = fresh_scenario("fresh_never_failed", slow_call=0)
 results["no_confirm"] = fresh_scenario("no_confirm", slow_call=2, no_confirm=True, refine=0)
+# steps.reset_each_step: every step of the measure, the ramp's and the confirmation, starts on a reset lab; off, only the fresh ones do.
+results["reset_each_step"] = fresh_scenario("reset_each_step", slow_call=0, reset_each_step=True)
+
+# The bucket as the store lists it (ListObjectsV2 in two pages, ListMultipartUploads): objects, bytes, counts by prefix, garbage.
+S3 = "http://s3.amazonaws.com/doc/2006-03-01/"
+PAGE_1 = (f'<ListBucketResult xmlns="{S3}"><IsTruncated>true</IsTruncated><NextContinuationToken>a/b=</NextContinuationToken>'
+          "<Contents><Key>atanor/cells/x/1</Key><Size>100</Size></Contents><Contents><Key>atanor/cells/x/2</Key><Size>200</Size></Contents>"
+          "<Contents><Key>atanor/packages/abc</Key><Size>1048576</Size></Contents></ListBucketResult>")
+PAGE_2 = (f'<ListBucketResult xmlns="{S3}"><IsTruncated>false</IsTruncated>'
+          "<Contents><Key>atanor/alarms/1/2/3</Key><Size>0</Size></Contents></ListBucketResult>")
+UPLOADS = (f'<ListMultipartUploadsResult xmlns="{S3}"><Upload><Key>atanor/cells/x/3</Key><UploadId>u1</UploadId></Upload>'
+           "<Upload><Key>atanor/cells/x/4</Key><UploadId>u2</UploadId></Upload></ListMultipartUploadsResult>")
+queries = []
+
+
+def bucket_fetch(garbage):
+    def fetch(query):
+        queries.append(query)
+        if query == "uploads":
+            return UPLOADS if garbage else f'<ListMultipartUploadsResult xmlns="{S3}"></ListMultipartUploadsResult>'
+        return PAGE_2 if "continuation-token=a%2Fb%3D" in query else PAGE_1
+    return fetch
+
+
+usage, clean = m.bucket_usage(bucket_fetch(True)), m.bucket_usage(bucket_fetch(False))
+
+
+def broken(query):
+    raise OSError("store unreachable")
+
+
+# A step records the bucket at its end and start, and notes garbage; a bucket that cannot be read leaves the record as it was.
+bucket_round, _ = new_round("bucket")
+bucket_round.bucket_start = clean
+bucket_round.bucket = lambda: usage
+noted = {"store": {}, "notes": []}
+bucket_round.add_bucket(noted)
+bucket_round.bucket = lambda: None
+unread = {"store": {}, "notes": []}
+bucket_round.add_bucket(unread)
+report_spec = importlib.util.spec_from_loader("load_report", importlib.machinery.SourceFileLoader("load_report", f"{repo}/scripts/load-report"))
+report = importlib.util.module_from_spec(report_spec)
+report_spec.loader.exec_module(report)
+step = {"step": 1, "value": 10.0, "store": noted["store"]}
+results["bucket"] = {"usage": usage, "clean_garbage": clean["garbage"], "queries": queries, "broken": m.bucket_usage(broken), "not_xml": m.bucket_usage(lambda q: "<oops"),
+                     "noted": noted, "unread": unread, "rows": report.bucket_rows([step]), "no_rows": report.bucket_rows([{"step": 2, "value": 20.0, "store": None}])}
 
 # A stall of the lab is judged on the generator's lag and on one jump of the node's CPU throttling against its usual growth.
 def throttled(*values):

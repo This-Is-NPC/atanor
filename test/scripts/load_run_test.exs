@@ -279,6 +279,41 @@ defmodule Atanor.LoadRunTest do
     assert r["no_confirm"]["steps"] == [["ramp", "ok", false, false], ["ramp", "fail", false, false]]
     assert r["no_confirm"]["resets"] == []
 
+    # steps.reset_each_step: the lab is reset before every step, the first and the confirmation included
+    assert r["reset_each_step"]["steps"] == [
+             ["ramp", "ok", true, true],
+             ["ramp", "ok", true, true],
+             ["confirm", "ok", true, true]
+           ]
+
+    assert r["reset_each_step"]["resets"] == ["reset", "info", "reset", "info", "reset", "info"]
+
+    # the bucket as listed over two pages: objects, bytes, counts by prefix and the garbage (multipart uploads never completed)
+    b = r["bucket"]
+    assert b["usage"]["objects"] == 4 and b["usage"]["bytes"] == 1_048_876 and b["usage"]["truncated"] == false
+
+    assert b["usage"]["groups"] == %{
+             "atanor/alarms" => %{"objects" => 1, "bytes" => 0},
+             "atanor/cells" => %{"objects" => 2, "bytes" => 300},
+             "atanor/packages" => %{"objects" => 1, "bytes" => 1_048_576}
+           }
+
+    assert b["usage"]["garbage"] == %{"incomplete_uploads" => 2, "total" => 2}
+    assert b["clean_garbage"] == %{"incomplete_uploads" => 0, "total" => 0}
+
+    assert Enum.take(b["queries"], 3) == [
+             "list-type=2&max-keys=1000",
+             "list-type=2&max-keys=1000&continuation-token=a%2Fb%3D",
+             "uploads"
+           ]
+
+    assert b["broken"] == :null and b["not_xml"] == :null
+    assert b["noted"]["store"]["bucket"]["objects"] == 4 and b["noted"]["store"]["bucket"]["start_bytes"] == 1_048_876
+    assert b["noted"]["store"]["garbage"]["total"] == 2
+    assert b["noted"]["notes"] == ["store garbage: 2 incomplete multipart uploads in the bucket"]
+    assert b["unread"] == %{"store" => %{}, "notes" => []}
+    assert b["rows"] == [[1, "10", "4 / 4", "1.0 / 1.0", "**2 GARBAGE**"]] and b["no_rows"] == []
+
     assert r["runtime_garbage"]["record"]["runtime"] == :null
     assert r["runtime_garbage"]["record"]["status"] == "ok"
 

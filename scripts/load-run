@@ -26,7 +26,8 @@ stops, except a store that stalls in both attempts: the step then fails, `store:
 judging.delivery (INVALID, the round stops: the generator or the host, not the node). A node that stopped is judged first and still records
 the store's tmpfs share. The host swap used is only recorded. A container that may swap refuses the run before the first step.
 After the first failing step the ramp refines between the last good value and the failing one (`refine` bisections, each on a fresh node and
-store), then repeats the best good step once to confirm it, also fresh.
+store), then repeats the best good step once to confirm it, also fresh. With steps.reset_each_step every step is fresh. Each step records the
+lab bucket's objects and bytes and its garbage (`store.bucket`, `store.garbage`).
 
 Exit status: 1 when a step ended INVALID (the lab, not the node: there is no verdict) and, for swap, which is a single
 check and not a ramp, also when it failed; 0 when the measure recorded a verdict, a failed step or a stopped node included.
@@ -43,7 +44,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -228,6 +231,60 @@ def s3_counters(store_ip):
     except (OSError, http.client.HTTPException, ValueError):
         return None
     return trips, traffic, errors
+
+
+BUCKET_NAME = os.environ.get("ATANOR_CLUSTER_BUCKET", "atanor")  # as cluster/compose.yml names it
+LISTING_PAGES = 200  # of 1000 keys: a bigger bucket is reported as truncated
+S3_GET = 'curl -sSf -m 20 --aws-sigv4 aws:amz:us-east-1:s3 --user "$(cat /run/secrets/s3_access_key):$(cat /run/secrets/s3_secret_key)" "http://127.0.0.1:8333/$1?$2"'
+
+
+def s3_get(store, query):
+    """The body of a GET of the lab bucket (`?QUERY`), asked from inside the store container with its own credentials; OSError when it fails."""
+    out = subprocess.run(["docker", "exec", store, "sh", "-c", S3_GET, "_", BUCKET_NAME, query], capture_output=True, text=True, timeout=SIDE_TIMEOUT_S)
+    if out.returncode:
+        raise OSError(out.stderr.strip()[-200:] or f"curl exited {out.returncode}")
+    return out.stdout
+
+
+def s3_elements(text, tag):
+    """(the elements named `tag` of an S3 XML answer, namespace dropped, as {child: text}; the root's own children likewise); ValueError if not XML."""
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as error:
+        raise ValueError(str(error)) from error
+    local = lambda element: element.tag.rpartition("}")[2]
+    return [{local(c): c.text or "" for c in e} for e in root.iter() if local(e) == tag], {local(c): c.text or "" for c in root}
+
+
+def bucket_group(key):
+    """The first two segments of an object key (`atanor/cells`): what the objects of a step are counted by."""
+    return "/".join(key.split("/")[:2])
+
+
+def bucket_usage(fetch):
+    """The lab bucket as `fetch(query) -> XML text` lists it, or None when it cannot be read:
+    {objects, bytes, groups: {prefix: {objects, bytes}}, truncated, garbage: {incomplete_uploads, total}}.
+    Garbage is what no live cell or worker needs; Alambique's layout does not tell orphaned objects from live ones, so only the multipart
+    uploads that were started and never completed count (docs/how-to-run-the-load-tests.md). `truncated`: the listing stopped at LISTING_PAGES."""
+    groups, objects, size, token, truncated = {}, 0, 0, None, False
+    try:
+        for _ in range(LISTING_PAGES):
+            contents, meta = s3_elements(fetch("list-type=2&max-keys=1000" + (f"&continuation-token={urllib.parse.quote(token, safe='')}" if token else "")), "Contents")
+            for entry in contents:
+                n = int(entry.get("Size", 0))
+                group = groups.setdefault(bucket_group(entry["Key"]), {"objects": 0, "bytes": 0})
+                group["objects"], group["bytes"] = group["objects"] + 1, group["bytes"] + n
+                objects, size = objects + 1, size + n
+            token = meta.get("NextContinuationToken")
+            if meta.get("IsTruncated") != "true" or not token:
+                break
+        else:
+            truncated = True
+        uploads = len(s3_elements(fetch("uploads"), "Upload")[0])
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+        return None
+    return {"objects": objects, "bytes": size, "groups": dict(sorted(groups.items())), "truncated": truncated,
+            "garbage": {"incomplete_uploads": uploads, "total": uploads}}
 
 
 def admin_get(info, path, timeout):
@@ -1153,6 +1210,7 @@ class Round:
         self.attempts = {}  # value -> how many steps of that value this round ran: a confirmation of a measured value is repetition 2
         self.stem = stem  # the scale measure: its step files and records are of "scale", whatever load the step runs
         self.awake_start = None  # the cells awake when the step began
+        self.bucket_start = None  # the bucket as listed when the step began (bucket_usage)
         self.tag = f"s{int(time.time()) % 100000}"  # one name space per run: the cells of a smaller step stay hot in a larger one
 
     def target(self):
@@ -1227,6 +1285,10 @@ class Round:
         self.info.update(json.loads(load_env("info")))
         return round(time.time() - began, 1)
 
+    def bucket(self):
+        """The lab bucket's objects, bytes and garbage now (bucket_usage); None when the store cannot be read."""
+        return bucket_usage(lambda query: s3_get(self.info["store"]["id"], query))
+
     def step(self, value, phase, fresh=False):
         a = self.args
         check_deadline(a)
@@ -1260,6 +1322,7 @@ class Round:
     def run_once(self, value, phase, fresh):
         """One attempt of a step: the reset of a fresh node, the quiet wait and the run; the record, not yet written."""
         a = self.args
+        fresh = fresh or getattr(a, "reset_each_step", False)  # steps.reset_each_step: every step starts on a new node and an empty store
         reset_s = self.reset() if fresh else None
         quiet, load = wait_quiet(a, self.info)
         if quiet:
@@ -1305,6 +1368,7 @@ class Round:
         sampler = Sampler(info, a.sample_s, spread=bool(self.stem))
         self.awake_start = cells_awake(info)
         s3_before = s3_counters(info["store"]["ip"])
+        self.bucket_start = self.bucket()
         sampler.samples.append(sampler.take())
         sampler.start()
         began = time.time()
@@ -1324,6 +1388,18 @@ class Round:
         if result["status"] == "fail" and not files:  # a failed step keeps the node's whole log too
             result["diagnostics"] = save_node_diagnostics(self.base(value, phase), info["node"]["id"], node_state(info["node"]["id"]), info["store"])
         return result
+
+    def add_bucket(self, record):
+        """`store.bucket` (the bucket's objects and bytes at the end of the step and at its start) and `store.garbage` of a record, with a note when
+        there is garbage; nothing when the store has no summary or the bucket cannot be read."""
+        end, start = (self.bucket() if record["store"] is not None else None), self.bucket_start or {}
+        if end is None:
+            return
+        record["store"]["bucket"] = {"bytes": end["bytes"], "objects": end["objects"], "start_bytes": start.get("bytes"), "start_objects": start.get("objects"),
+                                     "groups": end["groups"], "truncated": end["truncated"]}
+        record["store"]["garbage"] = end["garbage"]
+        if end["garbage"]["total"]:
+            record["notes"].append(f"store garbage: {end['garbage']['incomplete_uploads']} incomplete multipart uploads in the bucket")
 
     def record(self, value, phase, merged, samples, s3, status, reason, valid=True, host_override=None, began=None, gens=None, sampler=None,
                dead=None, diagnostics=()):
@@ -1359,6 +1435,7 @@ class Round:
                                  "release_lag_p99_ms": None if merged["release_lag_p99"] is None else round(merged["release_lag_p99"], 1), "cpu_cores": usage["cpu"]["generator_cores"]},
                       cells_awake=None if dead else cells_awake(self.info), store_rtt_ms=None if dead else store_rtt(),
                       distribution=distribution(samples, [n["name"] for n in info.get("nodes") or []]))
+        self.add_bucket(record)
         record["per_node"] = per_node_summary(samples)
         note = budget_note({n: p["disk_budget_bytes"] for n, p in (record["per_node"] or {}).items()})
         if note:
@@ -2022,7 +2099,7 @@ def config_defaults(config, measure, scenario, path):
     }
     if measure in load_config.RAMP_MEASURES:
         p = load_config.plan(config, measure, scenario)
-        found.update(step_s=p["duration_s"], factor=p["factor"], start=p["start"], max=p["max"], refine=p["refine"], no_confirm=not p["confirm"],
+        found.update(step_s=p["duration_s"], reset_each_step=p["reset_each_step"], factor=p["factor"], start=p["start"], max=p["max"], refine=p["refine"], no_confirm=not p["confirm"],
                      steps=",".join(str(v) for v in load_config.plan_values(p)) if p["kind"] != "bisect" else None)
     return found
 
