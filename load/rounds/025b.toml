@@ -1,0 +1,43 @@
+# Round 025b: round 025 on the new Alambique pin, with the compaction and the S3 pool of the nodes set by this file.
+# hold_bytes is 64 MiB, twice the default: a node of scenario A has 512 MiB and its pressure mark is about 402 MB (node-1 already
+# hibernated 25 cells under pressure in round 025), so it goes no higher. Every key not set keeps the default of Alambique 0.14.0
+# (merge_concurrency 4, release_concurrency 4, pool_timeout 2000 ms) or of example.toml.
+
+[round]
+scenarios = ["A"]
+measures = ["scale"]
+
+[output]
+name = "025b"
+
+[store]
+backing = "disk"
+
+[node]
+http_max_connections = 40000   # as 018f
+
+[node.compaction]
+hold_bytes = 67108864   # 64 MiB (default 32 MiB)
+concurrency = 4         # default 2
+urgent_concurrency = 8  # default 4
+
+[node.store]
+pool_size = 512         # default 256
+
+[judging.host_memory]
+min_available_gib = 1.0
+
+[measures.http-native.steps]
+duration_s = 30.0
+confirm = false
+
+[scale]
+max_nodes = 2
+loads = ["http-native"]
+ceiling_factors = [0.5]
+
+[scale.ceilings]
+"http-native:1" = 600
+
+[scale.join]
+rate = 900.0
