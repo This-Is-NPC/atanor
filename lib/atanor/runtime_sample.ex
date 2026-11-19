@@ -15,6 +15,7 @@ defmodule Atanor.RuntimeSample do
     infos = process_infos()
 
     %{
+      versions: %{atanor: vsn(:atanor), alambique: vsn(:alambique)},
       memory: Map.new(:erlang.memory()),
       process_count: :erlang.system_info(:process_count),
       port_count: :erlang.system_info(:port_count),
@@ -33,6 +34,8 @@ defmodule Atanor.RuntimeSample do
       store: Atanor.Overview.store_breakers(name)
     }
   end
+
+  defp vsn(app), do: if(vsn = Application.spec(app, :vsn), do: to_string(vsn))
 
   defp ets_top do
     words = :erlang.system_info(:wordsize)

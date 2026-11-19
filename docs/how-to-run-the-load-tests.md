@@ -439,7 +439,7 @@ collapse (memory not given back, a full store, retries), not the rate. Each step
 keeps the warm node. A node that stopped still ends the round.
 
 Each sample also reads the node's `GET /runtime` ([admin API](how-to-use-the-admin-api.md)) with a 3 second
-timeout. The step file keeps `runtime`: the largest of each VM memory type (`memory_max_bytes`), of the
+timeout. The step file keeps `runtime`: the `versions` the node runs (`atanor` and `alambique`, `null` for a node that does not report them; `per_node` repeats them for each node of a cluster, and `report.md` prints them under each measure as `Node versions: ...`); the largest of each VM memory type (`memory_max_bytes`), of the
 process count and of the cgroup `anon`, `shmem`, `file` and `sock`; `oom_kill` at the end; and, in `at_peak`,
 the top processes (by memory and by message queue) and ETS tables of the sample where `memory.current` was
 highest. It is `null` when no sample answered (a saturated or dead node), and the step is judged as before.

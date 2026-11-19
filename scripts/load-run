@@ -534,7 +534,7 @@ def runtime_summary(samples):
     cgroup = lambda r, key: ((r.get("cgroup") or {}).get("stat") or {}).get(key)
     peak = max(seen, key=lambda s: (s.get("node") or {}).get("memory_current") or 0)["runtime"]
     events = (runtimes[-1].get("cgroup") or {}).get("events") or {}
-    return {"samples": len(seen),
+    return {"samples": len(seen), "versions": runtimes[-1].get("versions"),  # atanor and alambique of the node; None for an older node
             "memory_max_bytes": {k: largest((r.get("memory") or {}).get(k) for r in runtimes) for k in sorted({k for r in runtimes for k in r.get("memory") or {}})},
             "process_count_max": largest(r.get("process_count") for r in runtimes),
             "cgroup_max_bytes": {k: largest(cgroup(r, k) for r in runtimes) for k in ("anon", "shmem", "file", "sock")},
@@ -611,7 +611,7 @@ def node_entries(sample):
 def per_node_summary(samples):
     """Per node of a cluster over a step: the node's CPU throttling (`throttled_ms`: growth, and `throttled_jump_ms`: the largest between two samples),
     the most requests in flight (`in_flight_max`), the refusals it counted (`refused`) and the samples in which its /runtime did not answer
-    (`runtime_failed`, with the last `runtime_error`). None outside the scale measure."""
+    (`runtime_failed`, with the last `runtime_error`) and the node's `versions` (atanor, alambique). None outside the scale measure."""
     seen = [s for s in samples if s.get("node_runtimes") is not None]
     if not seen:
         return None
@@ -621,7 +621,8 @@ def per_node_summary(samples):
         throttled = [t for t in ((s.get(key) or {}).get("throttled_s") for s in seen) if t is not None]
         reads = [s["node_runtimes"].get(name, (None, "no reading")) for s in seen]
         admissions = [r["admission"] for r, _ in reads if isinstance((r or {}).get("admission"), dict)]
-        out[name] = {"throttled_ms": round((throttled[-1] - throttled[0]) * 1000) if throttled else None,
+        out[name] = {"versions": next((r["versions"] for r, _ in reversed(reads) if isinstance((r or {}).get("versions"), dict)), None),
+                     "throttled_ms": round((throttled[-1] - throttled[0]) * 1000) if throttled else None,
                      "throttled_jump_ms": round(max((b - a for a, b in zip(throttled, throttled[1:])), default=0) * 1000) if throttled else None,
                      "in_flight_max": max((a.get("in_flight") or 0 for a in admissions), default=None), "refused": refused_delta(admissions),
                      "unavailable_by_reason": reasons_delta(admissions), "awake_limit_by": reasons_delta(admissions, "awake_limit_by"), "wakes": counter_growth([(r or {}).get("wakes") for r, _ in reads]),
