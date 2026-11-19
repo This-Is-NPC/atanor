@@ -245,11 +245,17 @@ results["target"] = [list(probe.target()), list(plain.target()), probe.gen_comma
 
 
 # A cluster ramp: the ceiling of N nodes is CAP x N; a larger configuration starts at the ceiling of one node fewer; the gain follows.
+def versions_by_ip(ip, reader):
+    """Node 2 runs another Alambique than the rest, so the report must list every node."""
+    return {"versions": {"atanor": "0.7.0", "alambique": "0.14.1" if ip.endswith(".2") else "0.14.0"}}
+
+
 def run_scale(name, busy_at=None, **over):
     out = os.path.join(work, name)
-    lab.update(busy_at=busy_at, cells_mode="rebalance", runtime={"versions": {"atanor": "0.7.0", "alambique": "0.14.0"}}, resets=[])
+    lab.update(busy_at=busy_at, cells_mode="rebalance", runtime={}, resets=[], by_ip=versions_by_ip)
     args = make_args(out, **over)
     summary = m.scale(args)
+    lab["by_ip"] = None
     m.write_json(m.result_file(args, "A", "scale", "summary"), {**summary, "scenario": "A", "measure": "scale", "command": "test"})  # what main() writes
     return summary, out
 
