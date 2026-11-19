@@ -217,7 +217,7 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    (`replicas`); `{"enabled":false}` when the loop is off
    ([how-to-place-hot-cells.md](how-to-place-hot-cells.md)).
 
-   `GET /runtime` shows what this node's memory is made of: the VM memory by type,
+   `GET /runtime` names the versions the node runs (`versions`: `atanor` and `alambique`) and shows what its memory is made of: the VM memory by type,
    the biggest ETS tables and processes (by message queue and by memory), the cgroup
    counters (`memory.current`, `memory.stat`, `oom_kill`), the Wasm gauges and the
    admission counters (`admission`: requests in flight, refusals by reason (`refused`: `memory`, `disk`,

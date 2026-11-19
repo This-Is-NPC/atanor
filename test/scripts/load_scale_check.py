@@ -48,7 +48,7 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 m.HERE, m.ROOT, m.CORES = fake, work, 8
 
-lab = {"nodes": 1, "running": False, "busy_at": None, "force_busy": False, "cells_mode": "rebalance", "runtime": {}, "req": {}, "last": None, "seen": {}, "errors": 0,
+lab = {"nodes": 1, "running": False, "busy_at": None, "force_busy": False, "cells_mode": "rebalance", "runtime": {"versions": {"atanor": "0.7.0", "alambique": "0.14.0"}}, "req": {}, "last": None, "seen": {}, "errors": 0,
        "resets": [], "silent": set()}
 lock = threading.Lock()
 
@@ -247,7 +247,7 @@ results["target"] = [list(probe.target()), list(plain.target()), probe.gen_comma
 # A cluster ramp: the ceiling of N nodes is CAP x N; a larger configuration starts at the ceiling of one node fewer; the gain follows.
 def run_scale(name, busy_at=None, **over):
     out = os.path.join(work, name)
-    lab.update(busy_at=busy_at, cells_mode="rebalance", runtime={}, resets=[])
+    lab.update(busy_at=busy_at, cells_mode="rebalance", runtime={"versions": {"atanor": "0.7.0", "alambique": "0.14.0"}}, resets=[])
     args = make_args(out, **over)
     summary = m.scale(args)
     m.write_json(m.result_file(args, "A", "scale", "summary"), {**summary, "scenario": "A", "measure": "scale", "command": "test"})  # what main() writes
@@ -395,7 +395,8 @@ def by_ip_new(ip, reader):
     first = counts_new[ip, reader] == 1
     if ip.endswith(".2"):
         return {"admission": {"in_flight": 0, "refused": {"busy": 0}, "disk_used_bytes": 10 * MB, "disk_budget_bytes": 200 * MB}}
-    return {"admission": {"in_flight": 0, "refused": {"unavailable": 0 if first else 3}, "unavailable_by_reason": {"store_unavailable": 0 if first else 2, "breaker_open": 0 if first else 1},
+    return {"versions": {"atanor": "0.7.0", "alambique": "0.14.0"},
+            "admission": {"in_flight": 0, "refused": {"unavailable": 0 if first else 3}, "unavailable_by_reason": {"store_unavailable": 0 if first else 2, "breaker_open": 0 if first else 1},
                           "disk_used_bytes": 10 * MB, "disk_budget_bytes": 100 * MB}, "wakes": 5 if first else 12}
 
 

@@ -61,6 +61,7 @@ defmodule Atanor.LoadRunTest do
     runtime = r["runtime_ok"]["record"]["runtime"]
     n = r["runtime_ok"]["calls"]
     assert runtime["samples"] == n and n >= 2
+    assert runtime["versions"] == %{"atanor" => "0.7.0", "alambique" => "0.14.0"}
     assert runtime["memory_max_bytes"]["total"] == 100 * n
     assert runtime["memory_max_bytes"]["binary"] == 30
     assert runtime["process_count_max"] == 50 + n

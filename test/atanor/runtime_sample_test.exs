@@ -2,6 +2,18 @@ defmodule Atanor.RuntimeSampleTest do
   use ExUnit.Case, async: true
 
   alias Atanor.RuntimeSample
+  alias Atanor.Test.Manifests
+  alias AtanorTestkit.Node
+
+  test "the sample names the versions of Atanor and Alambique the node runs" do
+    node = Node.start(workers: [Manifests.jobs("jobs")])
+    on_exit(fn -> Node.stop(node) end)
+
+    %{versions: versions} = RuntimeSample.sample(node.name, System.tmp_dir!())
+    assert versions.atanor == to_string(Application.spec(:atanor, :vsn))
+    assert versions.alambique == to_string(Application.spec(:alambique, :vsn))
+    assert versions.alambique =~ ~r/^\d+\.\d+\.\d+/
+  end
 
   test "the top processes are filled past processes that died after the scan" do
     pids = for _ <- 1..15, do: spawn(fn -> Process.sleep(:infinity) end)

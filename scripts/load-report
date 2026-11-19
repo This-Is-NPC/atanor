@@ -183,6 +183,16 @@ def scale_section(steps, summary, joins):
     return out
 
 
+def versions_line(steps):
+    """`Node versions: node-1 atanor 0.7.0 / alambique 0.14.0, ...` from the first step that has them (`per_node` of a cluster step, else `runtime`); None when no node reported them."""
+    for s in steps:
+        nodes = {n: p.get("versions") for n, p in (s.get("per_node") or {}).items()} or {"node": (s.get("runtime") or {}).get("versions")}
+        nodes = {n: v for n, v in nodes.items() if v}
+        if nodes:
+            return "Node versions: " + ", ".join(f"{n} atanor {v.get('atanor')} / alambique {v.get('alambique')}" for n, v in sorted(nodes.items())) + "."
+    return None
+
+
 def report(directory):
     steps, baselines, summaries, joins = load(directory)
     if not steps:
@@ -199,6 +209,7 @@ def report(directory):
                 continue
             summary, baseline = summaries.get((scenario, measure)), baselines.get((scenario, measure))
             out += [f"### {measure} ({mine[0]['unit']})", ""]
+            out += [line, ""] if (line := versions_line(mine)) else []
             if measure == "scale":
                 out += scale_section(mine, summary, [j for j in joins if j["scenario"] == scenario])
                 if summary and summary.get("advice"):
