@@ -146,13 +146,9 @@ defmodule Atanor.HTTPIngressTest do
       assert Enum.all?(results, cut?)
     end
 
-    test "slow headers on the admin listener are cut and do not lock out a valid token" do
-      # The deadline must outlast opening the four connections, or a slow host cuts the first before the last
-      # is counted and the listener is never seen full.
-      node = start(admin: [token: "t", port: 0, max_connections: 4, acceptors: 2, header_timeout_ms: 3_000])
-      port = Atanor.admin_port(node.name)
-      listener = Atanor.Admin.listener(node.name)
-
+    # Four slow connections that the listener holds at once. The deadline runs from each accept, so on a
+    # starved host the first can be cut before the last is accepted: then they are closed and opened again.
+    defp open_slow(port, listener) do
       slow =
         for _ <- 1..4 do
           {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
@@ -160,8 +156,31 @@ defmodule Atanor.HTTPIngressTest do
           socket
         end
 
+      if full?(listener, System.monotonic_time(:millisecond) + 2_000) do
+        slow
+      else
+        Enum.each(slow, &:gen_tcp.close/1)
+        open_slow(port, listener)
+      end
+    end
+
+    defp full?(listener, deadline) do
+      case ThousandIsland.connection_pids(listener) do
+        {:ok, pids} when length(pids) == 4 ->
+          true
+
+        _ when is_integer(deadline) ->
+          System.monotonic_time(:millisecond) < deadline and (Process.sleep(10) || full?(listener, deadline))
+      end
+    end
+
+    test "slow headers on the admin listener are cut and do not lock out a valid token" do
+      node = start(admin: [token: "t", port: 0, max_connections: 4, acceptors: 2, header_timeout_ms: 3_000])
+      port = Atanor.admin_port(node.name)
+      listener = Atanor.Admin.listener(node.name)
+
+      slow = open_slow(port, listener)
       on_exit(fn -> Enum.each(slow, &:gen_tcp.close/1) end)
-      Await.until(fn -> length(elem(ThousandIsland.connection_pids(listener), 1)) == 4 end)
 
       # The listener is full: the operator waits for a slot while the others keep sending.
       operator =
