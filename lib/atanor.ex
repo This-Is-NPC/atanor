@@ -411,7 +411,8 @@ defmodule Atanor do
       and `max_object_bytes: 268_435_456`. Shapes are checked at start; design §4.3,
       docs/how-to-follow-cell-changes.md.
       `compaction` takes `concurrency: 2` (positive), `urgent_concurrency: 4`,
-      `snapshot_ratio: 2.0`, `snapshot_interval_ms:
+      `merge_concurrency: 4`, `release_concurrency: 4` (positive), `release_on: [:request,
+      :shutdown, :evict, :idle]` (a list of those and `:frozen`), `snapshot_ratio: 2.0`, `snapshot_interval_ms:
       604_800_000`, `snapshot_keep_ms: 259_200_000`, `delete_superseded: true`
       and `max_level: 2`; `restore` takes `edge_bytes: 65_536`,
       `fetch_concurrency: 16` and `max_inflight_bytes: 67_108_864`; `lazy_restore`

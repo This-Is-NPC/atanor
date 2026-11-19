@@ -207,12 +207,15 @@ the limit or more (design §4.3,
   compaction Alambique runs on the WAL tail before it releases the lease: `none` (not tried, or the call had
   less than `release_reserve_ms` left), `done`, `deadline` (the deadline passed and the cell was released with
   its chain partly merged; the merges already made stay), `deadline_error` (the deadline passed while the cell's
-  files were being listed, before the chain was known) and `error` (the pass failed and the cell was released
-  anyway). `hibernations.tail_max` is the longest tail, in level-0 files, that was left after a release
+  files were being listed, before the chain was known), `busy` (the node already had `release_concurrency` cells
+  compacting and none freed a place inside the budget, so the cell was released without a pass and its chain was
+  not looked at: `tail` is 0; Alambique 0.14.0) and `error` (the pass failed and the cell was released anyway).
+  The event's `reason` is `:idle`, `:request`, `:shutdown`, `:evict` (the room another wake needed; before 0.14.0 it
+  was `:request`) or `:frozen`; Atanor counts by outcome only and prints the reason in its warning. `hibernations.tail_max` is the longest tail, in level-0 files, that was left after a release
   compaction (before Alambique 0.13.0 it was the tail found before it). They come from
   Alambique's `[:alambique, :cell, :hibernate]` event, which every hibernation emits (idle, on request, at
   shutdown), and the event names no instance, so a VM that runs more than one instance counts all of them in
-  each. A `deadline`, `deadline_error` or `error` also logs `atanor: release compaction of "<cell>" ended with ...`, at most once
+  each. A `deadline`, `deadline_error`, `busy` or `error` also logs `atanor: release compaction of "<cell>" ended with ...`, at most once
   per second per node.
 
 ## WASM events

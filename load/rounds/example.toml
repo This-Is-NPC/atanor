@@ -54,9 +54,12 @@ http_max_connections = 0   # http.max_connections of a node; 0 keeps the node's 
 hold_bytes = 0          # memory for the files cells just replicated (default 33554432, 32 MiB)
 concurrency = 0         # compactions that run at once (default 2)
 urgent_concurrency = 0  # passes added for a cell at its cap (default 4)
+merge_concurrency = 0   # merges of one level that run at once in a pass (default 4)
+release_concurrency = 0 # cells of the node that compact their tail at a release at once; the others are released as `busy` (default 4)
 
 [node.store]        # the S3 store of a node; 0 keeps its default
 pool_size = 0           # connections the store may hold open (default 256)
+pool_timeout_ms = 0     # how long a request waits for a free connection before it fails and is retried (default 2000)
 
 # The step plan of each measure. `kind = "bisect"` grows from start by factor up to max, and after the first failure bisects
 # `refine` times between the last good and the failing step. `kind = "ladder"` runs the fixed `values` (strictly growing) instead.

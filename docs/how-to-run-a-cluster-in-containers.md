@@ -68,7 +68,7 @@ Set these in the environment of `mise run`; the defaults are in `compose.yml`.
 | `ATANOR_CLUSTER_STOP_GRACE` | 90s | Time `docker stop` waits for a node to drain; derived from `ATANOR_CLUSTER_SHUTDOWN_MS` (else `ATANOR_SHUTDOWN_MS`, 75 s) plus 15 s. A value at or below the drain, or one that is not seconds, `90s` or `2m`, is refused by the scripts ([rule](configuration.md#the-stop-grace-period)). |
 | `ATANOR_CLUSTER_SHUTDOWN_MS`, `_DRAIN_TIMEOUT_MS`, `_DRAIN_CONCURRENCY` | node defaults (75000, 15000, 64) | The node's `stop.shutdown_ms`, `drain_timeout_ms` and `drain_concurrency`. |
 | `ATANOR_CLUSTER_HTTP_MAX_CONNECTIONS` | node default (16384) | The node's [`ATANOR_HTTP_MAX_CONNECTIONS`](configuration.md). |
-| `ATANOR_CLUSTER_COMPACTION_HOLD_BYTES`, `_COMPACTION_CONCURRENCY`, `_COMPACTION_URGENT_CONCURRENCY`, `ATANOR_CLUSTER_S3_POOL_SIZE` | node defaults | The node's `ATANOR_COMPACTION_*` and [`ATANOR_S3_POOL_SIZE`](configuration.md). |
+| `ATANOR_CLUSTER_COMPACTION_HOLD_BYTES`, `_COMPACTION_CONCURRENCY`, `_COMPACTION_URGENT_CONCURRENCY`, `_COMPACTION_MERGE_CONCURRENCY`, `_COMPACTION_RELEASE_CONCURRENCY`, `ATANOR_CLUSTER_S3_POOL_SIZE`, `_S3_POOL_TIMEOUT_MS` | node defaults | The node's `ATANOR_COMPACTION_*` and [`ATANOR_S3_POOL_SIZE`](configuration.md). |
 | `ATANOR_CLUSTER_BUILD_JOBS` | 6 | Cargo jobs while building. |
 | `ATANOR_CLUSTER_RELEASE` | commit, plus `-dirty` | The release id nodes report (`GET /deployments`). |
 | `ATANOR_CLUSTER_UP_TIMEOUT` | 300 | Seconds `cluster:up` waits. |

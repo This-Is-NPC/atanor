@@ -227,7 +227,7 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    by reason: `no_wait`, `queue_full`, `wait_expired`, `crowded` and `max_children`), the last
    working set, the disk use of `data_dir` against its budget, and whether the node is refusing, see
    [configuration](configuration.md)), `wakes` (cells woken since the node started), `wake_ms` (the time those wakes took: `total` and `max`, in milliseconds), `hibernations` (cells hibernated, by the outcome of
-   the compaction before their release: `compaction` with `none`, `done`, `deadline`, `deadline_error` and `error`, and
+   the compaction before their release: `compaction` with `none`, `done`, `deadline`, `deadline_error`, `busy` and `error`, and
    `tail_max`, the longest WAL tail left after a release compaction), `pressure` (cells
    hibernated by memory pressure), `store`, the circuit breaker of
    each store location as in `/health`, and `consent`: which of `hosts`, `http_allow` and `namespaces` the

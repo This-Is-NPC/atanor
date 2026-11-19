@@ -113,8 +113,8 @@ Rules:
 | `ATANOR_MEMORY_LIMIT` | `memory_limit` | the cgroup limit | The memory the node may use (`memory: [limit_bytes:]`). Bytes, or a number with `k`, `m` or `g` (powers of 1024). |
 | `ATANOR_DISK_LIMIT` | `disk_limit` | 80% of the file system | The disk budget of the data directory (`disk: [max_bytes:]`). Same units. |
 | `ATANOR_WAL_LIMIT` | `wal_limit` | derived from the disk budget | The write-ahead log a node may hold (`alambique: [wal: [max_bytes:]]`). Same units. |
-| `ATANOR_S3_POOL_SIZE` | `s3_pool_size` | Alambique's (256) | The connections the S3 store may hold open at once (`pool_size:` of the store); see [the pool](#cells-limits-memory-and-store-requests). |
-| `ATANOR_COMPACTION_HOLD_BYTES`, `ATANOR_COMPACTION_CONCURRENCY`, `ATANOR_COMPACTION_URGENT_CONCURRENCY` | `compaction_hold_bytes`, `compaction_concurrency`, `compaction_urgent_concurrency` | Alambique's (32 MiB, 2, 4) | `alambique: [compaction: [hold_bytes:, concurrency:, urgent_concurrency:]]`: the memory for the files cells just replicated (bytes, or a number with `k`, `m` or `g`; 0 turns it off), the compactions that run at once (1 or more), and the passes added for a cell at its cap (0 or more). |
+| `ATANOR_S3_POOL_SIZE`, `ATANOR_S3_POOL_TIMEOUT_MS` | `s3_pool_size`, `s3_pool_timeout_ms` | Alambique's (256, 2000) | `pool_size:` and `pool_timeout:` of the S3 store: the connections it may hold open at once, and the milliseconds a request may wait for a free one before it fails and is retried; see [the pool](#cells-limits-memory-and-store-requests). |
+| `ATANOR_COMPACTION_HOLD_BYTES`, `ATANOR_COMPACTION_CONCURRENCY`, `ATANOR_COMPACTION_URGENT_CONCURRENCY`, `ATANOR_COMPACTION_MERGE_CONCURRENCY`, `ATANOR_COMPACTION_RELEASE_CONCURRENCY` | `compaction_hold_bytes`, `compaction_concurrency`, `compaction_urgent_concurrency`, `compaction_merge_concurrency`, `compaction_release_concurrency` | Alambique's (32 MiB, 2, 4, 4, 4) | `alambique: [compaction: [hold_bytes:, concurrency:, urgent_concurrency:, merge_concurrency:, release_concurrency:]]`: the memory for the files cells just replicated (bytes, or a number with `k`, `m` or `g`; 0 turns it off), the compactions that run at once (1 or more), the passes added for a cell at its cap (0 or more), the merges of one level that run at once in a pass (1 or more), and the cells of the node that compact their tail at a release at once (1 or more; see the notes on `compaction` below). |
 | `ATANOR_RELEASE` | `release` | `atanor-<version>` | The release id reported by `GET /deployments`. |
 | `ATANOR_LEASE_TTL_MS` | `lease_ttl_ms` | Alambique's | The cell lease time to live (`alambique: [lease_ttl_ms:]`). |
 | `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY` | `shutdown_ms`, `drain_timeout_ms`, `drain_concurrency` | 75000, 15000, 64 | `stop:` ([above](#the-instance)). The grace period of a stop must exceed the first ([rule](#the-stop-grace-period)). |
@@ -250,6 +250,16 @@ Atanor passes through.
   (the default 15,000 leaves 10,000 over). The container's grace period and
   `stop: [shutdown_ms:]` stay as they are
   ([design §8.11](design.md#811-draining-and-stopping-gracefully)).
+- `compaction: [release_concurrency:, release_on:]` (4 and `[:request,
+  :shutdown, :evict, :idle]`) bound and choose the release compactions.
+  `release_concurrency` is how many cells of the node compact their tail at
+  once; a cell that finds no place inside its budget is released at once, with
+  the outcome `busy` (counted in `hibernations.compaction`, [telemetry](telemetry.md)).
+  `release_on` lists the reasons of a hibernation that compact first
+  (`:request`, `:shutdown`, `:evict`, `:idle`, `:frozen`); `:evict` is the room
+  another wake needed. `compaction: [merge_concurrency:]` (4) is the merges of
+  a level a pass runs in parallel. A longer list or a bigger number costs more
+  requests to the store.
 - `replicas: [poll_max_ms:]` (5,000) and `query: [reflink:]` (`true`) pass
   through to Alambique unchecked.
 

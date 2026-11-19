@@ -85,6 +85,16 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
 
     assert config.alambique_opts[:compaction] == [hold_bytes: 0, hold_object_bytes: 0]
     assert config.alambique_opts[:feed][:object_batches] == 4
+
+    release = [
+      concurrency: 4,
+      urgent_concurrency: 0,
+      merge_concurrency: 6,
+      release_concurrency: 2,
+      release_on: [:request, :evict, :frozen]
+    ]
+
+    assert build(compaction: release).alambique_opts[:compaction] == release
     assert config.alambique_opts[:feed][:linger_ms] == 0
     assert config.alambique_opts[:feed][:stop_publish_ms] == 0
     assert build(feed: [window_ms: 5_000]).alambique_opts[:feed][:window_ms] == 5_000
@@ -172,6 +182,12 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
           [compaction: [hold_bytes: -1]],
           [compaction: [hold_object_bytes: 1.5]],
           [compaction: [budget: 1]],
+          [compaction: [concurrency: 0]],
+          [compaction: [urgent_concurrency: -1]],
+          [compaction: [merge_concurrency: 0]],
+          [compaction: [release_concurrency: 0]],
+          [compaction: [release_on: [:never]]],
+          [compaction: [release_on: :idle]],
           [compaction: [snapshot_ratio: 0]],
           [compaction: [snapshot_ratio: "2"]],
           [compaction: [snapshot_keep_ms: -1]],

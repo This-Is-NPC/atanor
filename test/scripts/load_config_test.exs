@@ -171,13 +171,13 @@ defmodule Atanor.LoadConfigTest do
 
     # the compaction and the S3 pool of a node reach the lab as env lines; at 0 they are empty and the hash is as before
     n = r["node_options"]
-    assert n["env_default"] == ["", "", "", ""]
-    assert n["env_set"] == ["67108864", "4", "8", "512"]
+    assert n["env_default"] == List.duplicate("", 7)
+    assert n["env_set"] == ["67108864", "4", "8", "6", "2", "512", "3000"]
     assert n["hash_set_changes"] and n["hash_default_as_before"] and n["round_trip"]
     bad = Enum.join(n["bad"], "\n")
     assert bad =~ "node.compaction.concurrency" and bad =~ "node.compaction.hold_bytes"
-    assert bad =~ "node.compaction.merge_concurrency: unknown key" and bad =~ "node.store.pool_size"
-    assert bad =~ "node.store.pool_timeout_ms: unknown key"
+    assert bad =~ "node.compaction.release_on: unknown key" and bad =~ "node.store.pool_size"
+    assert bad =~ "node.store.pool_timeout_ms" and bad =~ "node.store.bogus: unknown key"
   end
 
   test "the names shared with Alambique, host.timeout_s and the judging of one measure", %{dir: dir} do

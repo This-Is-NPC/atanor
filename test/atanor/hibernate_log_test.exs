@@ -22,9 +22,9 @@ defmodule Atanor.HibernateLogTest do
       node = Node.start(workers: [Manifests.jobs("jobs")])
       on_exit(fn -> Node.stop(node) end)
       before = hibernations(node.name)
-      assert %{compaction: %{none: _, done: _, deadline: _, deadline_error: _, error: _}, tail_max: _} = before
+      assert %{compaction: %{none: _, done: _, deadline: _, deadline_error: _, busy: _, error: _}, tail_max: _} = before
 
-      for outcome <- [:none, :done, :deadline, :deadline_error, :error],
+      for outcome <- [:none, :done, :deadline, :deadline_error, :busy, :error],
           do: hibernate(node.name, outcome, "jobs.counted", 7, 1)
 
       hibernate(node.name, :done, "jobs.counted", 3, 1)
@@ -34,6 +34,7 @@ defmodule Atanor.HibernateLogTest do
       assert now.compaction.done >= before.compaction.done + 2
       assert now.compaction.deadline >= before.compaction.deadline + 1
       assert now.compaction.deadline_error >= before.compaction.deadline_error + 1
+      assert now.compaction.busy >= before.compaction.busy + 1
       assert now.compaction.error >= before.compaction.error + 1
       assert now.tail_max >= 7
     end
@@ -59,6 +60,15 @@ defmodule Atanor.HibernateLogTest do
     test "a compaction cut while listing is logged" do
       log = capture_log(fn -> hibernate(nil, :deadline_error, "jobs.listing", 0, 3_000) end)
       assert log =~ ~s(release compaction of "jobs.listing" ended with deadline_error after 3000 ms)
+    end
+
+    test "a compaction refused by release_concurrency is logged without a tail, with the reason of the hibernation" do
+      measurements = %{tail: 0, compact_duration: 2_000 * 1_000_000, duration: 1}
+      meta = %{cell: "jobs.busy", reason: :evict, compaction: :busy}
+      log = capture_log(fn -> HibernateLog.handle(@event, measurements, meta, nil) end)
+      assert log =~ ~s(release compaction of "jobs.busy" ended with busy after 2000 ms)
+      assert log =~ "release_concurrency" and log =~ "(reason evict)"
+      refute log =~ "WAL files left"
     end
 
     test "a failed compaction is logged" do
