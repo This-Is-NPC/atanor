@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.0](https://github.com/This-Is-NPC/atanor/compare/v0.6.0...v0.7.0) (2026-11-19)
+
+
+### Features
+
+* **telemetry:** count deadline_error and overload reasons ([20a2a49](https://github.com/This-Is-NPC/atanor/commit/20a2a490c6af03f4cb4c0020a9671275028f1c73))
+
+
+### Bug Fixes
+
+* **cells:** default the move release deadline ([bacacf7](https://github.com/This-Is-NPC/atanor/commit/bacacf725bdcf7f7d448ae69463055a6391321e3))
+
+
+### Performance Improvements
+
+* **cells:** give the move its own release budget ([7b3fafe](https://github.com/This-Is-NPC/atanor/commit/7b3fafeb8ca9d526fdb258bbd19ed1fdfb6cb336))
+
 ## [0.6.0](https://github.com/This-Is-NPC/atanor/compare/v0.5.0...v0.6.0) (2026-11-18)
 
 

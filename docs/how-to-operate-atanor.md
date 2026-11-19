@@ -179,7 +179,7 @@ Download it, then deploy it as in step 5 of the [README quick start](../README.m
 directory `scoreboard` in place of `atanor-hello`:
 
 ```sh
-VERSION=0.6.0 # x-release-please-version
+VERSION=0.7.0 # x-release-please-version
 curl -fsSLO "https://github.com/This-Is-NPC/atanor/releases/download/v$VERSION/atanor-scoreboard-$VERSION.tar.gz"
 curl -fsSL "https://github.com/This-Is-NPC/atanor/releases/download/v$VERSION/atanor-scoreboard-$VERSION.tar.gz.sha256" | sha256sum -c -
 tar -xzf "atanor-scoreboard-$VERSION.tar.gz"
