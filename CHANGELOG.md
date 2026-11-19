@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.8.0](https://github.com/This-Is-NPC/atanor/compare/v0.7.0...v0.8.0) (2026-11-19)
+
+
+### Features
+
+* **deps:** move to alambique 0.14.0 ([3c650f1](https://github.com/This-Is-NPC/atanor/commit/3c650f1823a3191e4a3646784fac9acafd338172))
+* **load:** record the node versions ([07f5a99](https://github.com/This-Is-NPC/atanor/commit/07f5a99a6d702a0d0f026def349a62d967ba4956))
+* **load:** set the node compaction by config ([6c8b6a9](https://github.com/This-Is-NPC/atanor/commit/6c8b6a94e8a7b8f8ea8fe37ffb04aff595adc041))
+* **load:** split cold-start wake refusals ([130f2ec](https://github.com/This-Is-NPC/atanor/commit/130f2ecf4f63dd1ac3196c6b26f7eb95d890affb))
+
+
+### Bug Fixes
+
+* **load:** list every node's versions ([4c426b2](https://github.com/This-Is-NPC/atanor/commit/4c426b2f20467b7e3ce0ae219d84f2d097d10dec))
+
+
+### Performance Improvements
+
+* **load:** add the 025b round ([6e8ef03](https://github.com/This-Is-NPC/atanor/commit/6e8ef03dfd7c32a8f792cfd5f31bcaaccce256e8))
+
 ## [0.7.0](https://github.com/This-Is-NPC/atanor/compare/v0.6.0...v0.7.0) (2026-11-19)
 
 
