@@ -141,7 +141,7 @@ unknown key, a wrong type or a value out of range is refused with a suggestion.
 | `[output]` | `dir`, or `name` for `load/results/NAME`; without either, `load/results/` plus a time stamp. |
 | `[host]` | `ssh`, `repo`, `results` and `timeout_s` of `--remote`, `--status` and `--fetch`. |
 | `[scenarios.A]`, `[scenarios.B]` | The node: `cpus`, `memory`, `data_tmpfs` (the size of its data tmpfs) and `nodes`. |
-| `[store]`, `[balancer]` | The store's `backing` (`tmpfs` or `disk`), `tmpfs_size`, `memory`, `cpus`, `latency_ms`; the balancer's `cpus` and `memory`. |
+| `[store]`, `[balancer]` | The store's `backing` (`nocow`, the default, `tmpfs` or `disk`; [the three](#where-the-store-keeps-its-data)), `nocow_dir`, `tmpfs_size`, `memory`, `cpus`, `latency_ms`; the balancer's `cpus` and `memory`. |
 | `[node]`, `[node.compaction]`, `[node.store]` | `http_max_connections` (0 keeps the node's 16384) and `erl_flags` (extra Erlang VM flags such as `+SDio 2 +S 1:1`, passed as `ERL_ZFLAGS`; `""` adds none). `[node.compaction]` sets `hold_bytes`, `concurrency`, `urgent_concurrency`, `merge_concurrency` and `release_concurrency` of Alambique's compaction, and `[node.store]` sets `pool_size` and `pool_timeout_ms` of the S3 store; 0 keeps Alambique's default (32 MiB, 2, 4, 4, 4, 256 and 2000 ms). They reach the node as `ATANOR_COMPACTION_*` and `ATANOR_S3_POOL_*` ([configuration.md](configuration.md)). A key left at 0 (or `erl_flags` at `""`) does not change the hash of the step files. |
 | `[measures.NAME]` | `run_on`; `steps` and `per_scenario.A/B` (the plan); `store` and `judging` overrides for that measure. |
 | `[judging]` | The criteria and the INVALID rules (below). |
@@ -294,7 +294,7 @@ host (`ATANOR_CLUSTER_UP_TIMEOUT`, `ATANOR_CLUSTER_BUILD_JOBS`, `ATANOR_LAB_DIR`
 | Node | One container, `cpus` and `mem_limit` from the scenario (A: 1 and 512 MB; B: 2 and 2 GB), no peers. |
 | Service data | The node's data directory is a tmpfs (`scenarios.S.data_tmpfs`: 256 MB in scenario A, 1 GB in B). The node derives its disk budget from the size of that file system, and its disk reclaim puts idle cells to sleep at 70% of the budget; B's `cells` step grew the data by 191 MB, so a 256 MB tmpfs (a budget of 205 MB) made the reclaim hibernate cells (1315 awake of 1500) and the step was judged on wake churn. A tmpfs counts against its container's memory limit, so the container's limit (`mem_limit` and `memswap_limit`) is the scenario memory **plus** the tmpfs size (scenario A: 512 + 256 = 768 MB; B: 2048 + 1024 = 3072 MB), so that a full tmpfs cannot get the node OOM-killed. Every node of a cluster gets the same tmpfs, the ones `load-env add-node` starts for the join included. A step or join on 2 or more nodes records each node's `disk_budget_bytes` (`per_node`, and `disk_budget_bytes` in the join file) and adds the note `nodes differ in disk_budget_bytes: node-1 N, node-2 M` when they are not equal. The node itself is given the scenario memory as its limit (`ATANOR_MEMORY_LIMIT`), not the container limit, so its gates and the awake and WASM waiting limits it derives from the limit are those of a 512 MB (A) or 2 GB (B) machine. The tmpfs is a lab stand-in for the disk of a real machine; the node's working set counts it, so a tmpfs that fills takes memory from the 512 MB, which is conservative. `shmem`, the tmpfs, is reported apart. |
 | No swap | Every measured container has `memswap_limit` equal to `mem_limit`, so it cannot swap (zram or disk swap on the host would void the memory numbers). `load-run` checks `docker inspect` (`Memory` set and `MemorySwap` equal to it) and, when readable, the cgroup's `memory.swap.max` (0) before the first step, and refuses to run otherwise (`scripts/load-env check-swap`). |
-| Store | SeaweedFS in its own container (`store.cpus`, `store.memory` plus its tmpfs of `store.tmpfs_size`, outside the node's limit), data in tmpfs, or on the host's disk with `store.backing = "disk"` ([when to use it](#when-the-store-fills-its-tmpfs)). |
+| Store | SeaweedFS in its own container (`store.cpus`, `store.memory` plus its tmpfs of `store.tmpfs_size`, outside the node's limit), data in a nodatacow host directory (the default), in tmpfs, or in a Docker volume on the host's disk ([the three](#where-the-store-keeps-its-data)). |
 | Store latency | `tc netem delay` of `store.latency_ms` (25) on the store's network interface, so every answer the store sends waits that long: each trip costs 25 ms more. The node image has `tc`; `atanor-load-tc` joins the store's network namespace with `NET_ADMIN`, applies the qdisc and exits. The qdisc needs no root on the host. A request on a warm connection pays the latency once; a `curl` that opens a connection pays it twice, because the handshake answer waits too. The lab start checks that the round trip from the node to the store grew by at least 80% of the added latency and every step records it (`store_rtt_ms`). Both time the second of two requests of one `curl` run, on the reused connection, which is the cost of one trip as the node pays it; the line reads `store round trip from the node, on a reused connection: A ms -> B ms`. |
 | Balancer | HAProxy (`balancer.cpus`) is in the path for `swap` and `scale`. The other measures send to the node's address. |
 | Generator | `scripts/load-gen`, outside the node's limit: Python `asyncio`, open loop, keep-alive connections, one process per about 600 req/s (`generator.rate_per_proc`). Latency counts from the scheduled time of a request. |
@@ -355,7 +355,7 @@ and `/proc/meminfo`. Per step, in this order (the limits are the `[judging]` rul
    store is not recorded as a failure of the node. It applies to ramp, refine and confirm steps and to the swap. A
    node that stopped (step 4) is still judged first; the store's share is then added to the `notes` of the step. The
    step file records it as `store.tmpfs_max_pct` of `store.tmpfs_size_mb`. Size the tmpfs with `store.tmpfs_size`.
-   With `store.backing = "disk"` there is no store tmpfs to judge; the same verdict is made on the share of the
+   With `store.backing = "nocow"` or `"disk"` there is no store tmpfs to judge; the same verdict is made on the share of the
    store's filesystem used (`store_fill.max_disk_pct`), for example `store disk 93% > 90%`.
 6. **Stall.** The step is INVALID, with a reason that starts with `stall:`, when the lab stopped for a moment
    and failed the step by chance: the generator's own lag p99 (`generator.release_lag_p99_ms` in the step file,
@@ -480,7 +480,7 @@ Every step file also keeps the evidence to tell what the admission gate did, one
 - `series`: a list of integer entries, `null` where a source did not answer. `t` is the seconds since the first sample; `memory_current`, `shmem`, `anon` and `inactive_file` come from the node's cgroup; `working_set`, `refusing` (0 or 1), `in_flight`, `refused_memory`, `refused_in_flight` and `refused_disk` from the node's admission (`runtime.admission`, counters since the node started); `beam_total`, `beam_processes`, `beam_binary`, `process_count` and `oom_kill` from the VM and the cgroup events; `store_memory_current`, `store_shmem` (the store's tmpfs use), `store_limit` and `store_s3_errors` (S3 requests the store answered 5xx, from its metrics, since it started) from the store; `store_breaker_open` (1 when a store breaker of the node was open or half-open in that sample, from `runtime.store`) and `node_throttled_ms` (the node cgroup's CPU throttled time since it started, `cpu.stat`) place a stall in the step. `stalls` in the step file tells a stop of the whole VM from a node or store fault: `ticker_stalls` are the times (seconds from the first sample, as `t` of `series`) when a 0.1 s sleep of the harness's own process overshot by a second or more, `breaker_open_at_s` the samples with an open breaker, and `vm_pause_suspected` is true when a stall came within 10 s before the first of them. Together with a high `generator.release_lag_p99_ms`, it points at the VM and not at the node or the store. The node log has the breaker opening and closing with their times (`atanor: store breaker open ...`) and the store errors behind it.
 - `admission`: the thresholds the node judged against (`limit_bytes`, `refuse_at_bytes`, `max_in_flight`, `disk_budget_bytes`), the refusals counted in the step by reason (`refused`, last sample minus first), `refusing_seen`, and the largest `in_flight` and `working_set_max_bytes`. `null` without `/runtime`.
 - `runtime.cgroup_memory_max_bytes`: `memory.max` as the node sees it.
-- `store_backing` (`tmpfs` or `disk`, from `load-env info`) and `store.backing`: where the store's data was.
+- `store_backing` (`nocow`, `tmpfs` or `disk`, from `load-env info`) and `store.backing`: where the store's data was. With `nocow`, `store.nocow` says whether the C attribute was in effect (`false` only on a filesystem without copy-on-write).
 - `store`: `memory_max_mb`, `limit_mb`, `tmpfs_max_mb`, `tmpfs_size_mb`, `tmpfs_max_pct` (the store's tmpfs fill) and `s3_errors` in the step; on disk, `tmpfs_max_pct` is null and `disk_used_max_mb`, `disk_free_min_mb` and `disk_max_pct` (from `df /data` in the store container) take its place.
 - `refusals`: the 503 answers of the step set against every refusal counter the node reports (`runtime.admission.refused`: `memory`, `disk`, `in_flight`, `wake_gate`, `awake_limit`, `busy`, `disk_full`, `queue_timeout`, `worker_queue`, `nested_calls`, `unavailable`, whatever the node counts, summed over the nodes of a cluster; `unavailable` counts the 503 `unavailable` answers, so those 503s are attributed). `answers_503` are the 503s the generator saw, `by_cause` the growth of each counter, `attributed` their sum and `unattributed` the 503 answers no counter grew for (`max(answers_503 - attributed, 0)`; the counters count calls, so `attributed` may exceed the answers). `notes` says how many stayed unattributed, or that there was no `/runtime` reading. `admission.refused` keeps only the causes the node reports, and `admission.refused_unreported` lists the known ones it does not (an older node), so a missing counter is not read as 0. `admission.awake_limit_by` is the growth over the step of the node's `awake_limit_by` in `/runtime` (the wakes Alambique refused, by reason: `no_wait`, `queue_full`, `wait_expired`, `crowded`, `max_children`), `null` for an older node.
 - `statuses_503_by_reason` (step) and `generator.statuses_503_by_reason` (join): the 503 answers by the reason in their JSON body, `error/reason` such as `overloaded/memory`, `overloaded/queue_timeout` or `unavailable/store_unavailable` (`unknown` for a body without one). The generator (`reasons_503` in its document) parses only the bodies of 503 answers, so the other requests cost nothing more. The status counts keep `503 retry-after` and `503 no retry-after`.
@@ -706,25 +706,48 @@ duration_s = 15.0
 refine = 0
 ```
 
-## When the store fills its tmpfs
+## Where the store keeps its data
 
-**The question:** a step ended INVALID with `store tmpfs 9x% > 90%`: how do I measure on a store that does not fill?
+**The question:** which `store.backing` do I pick, and what do I do when a step ended INVALID with `store tmpfs 9x% > 90%`?
 
-The store's tmpfs is 1 GB (`store.tmpfs_size`). When a step fills it, run the whole round again, scenarios A and B,
-with the store on the host's disk. Mixing backings inside one round would make the numbers incomparable.
+`[store] backing` takes three values. Mixing backings inside one round would make the numbers incomparable, and numbers of
+different backings are not comparable with each other.
 
-1. Set `backing = "disk"` in `[store]` of the round file and check that the host has free disk for the store's
-   volume (the store keeps its data in the volume `store-data` of the project until the lab is removed).
+| `backing` | Where the store's `/data` is | Use it |
+|---|---|---|
+| `nocow` (default) | A directory of the host, `store.nocow_dir`, with the C attribute (nodatacow). | Normally. The store does not take memory from the lab, and on btrfs copy-on-write does not stall it. |
+| `tmpfs` | Memory, `store.tmpfs_size` (1 GB), counted in the store's memory limit. | When the host's disk must not be touched. A step that fills it is INVALID. |
+| `disk` | The Docker volume `store-data` on the host's disk (`/`, root-only), until the lab is removed. | When you need the Docker-managed volume. On btrfs it is copy-on-write. |
+
+Why `nocow`: with the store in tmpfs, scenario B has only about 200 MiB above the memory floor. A store on a btrfs
+volume stalls the whole store for 1 to 4 s under its small synchronous writes (copy-on-write), and those stalls
+fail steps. nodatacow turns copy-on-write off for the files of the directory (and so their zstd compression).
+
+1. Optional: choose the directory in `[store]`. The default is `${XDG_CACHE_HOME:-$HOME/.cache}/atanor-load/store`. It is
+   machine-specific and not part of the case hash, so changing it does not make step files look foreign. Check that the
+   host has free disk for the store.
 
    ```toml
    [store]
-   backing = "disk"
+   backing = "nocow"
+   nocow_dir = "/home/me/atanor-store"   # absolute; empty: the default
    ```
 
-2. Run the round as usual. The node's data stays in tmpfs, so its memory accounting is unchanged, and the 25 ms added per store trip stays.
-3. Read the backing in `scripts/load-env info` (`store_backing`), in every step file (`store_backing`, `store.backing`) and in the report ("store on disk"). A step is INVALID when the store's filesystem passes 90% used.
+2. Run the round as usual. `load-env up` (and each reset) runs `scripts/load-store-dir prepare`: it creates the directory
+   if missing, sets `chattr +C` on it while it is empty and checks with `lsattr -d`. On btrfs a failure stops the run with
+   a clear error. On another filesystem there is no copy-on-write to disable, so it goes on and logs the note.
+   It marks the directory as the lab's with the file `.atanor-load-store`. A marked directory is emptied first, so the
+   store starts empty even after a run that stopped before `down`. A non-empty directory without the mark is refused and
+   never emptied: set `nocow_dir` to an empty or new directory.
+3. The store container writes as root. To leave no root-owned files, `load-env down` and every reset empty the marked
+   directory through a throwaway container of the store's image (`scripts/load-store-dir clean`), keeping the directory,
+   its attribute and the mark. A new store starts empty at every reset.
+4. Read the backing in `scripts/load-env info` (`store_backing`, `store_nocow`), in every step file (`store_backing`,
+   `store.backing`, `store.nocow`) and in the report ("store on a nodatacow directory"). A step is INVALID when the
+   store's filesystem passes 90% used (`store_fill.max_disk_pct`).
 
-A disk-backed store may answer faster or slower than a tmpfs one, so numbers of the two backings are not comparable with each other.
+The node's data stays in tmpfs for every backing, so its memory accounting is unchanged, and the 25 ms added per store trip stays.
+Moving a round that relied on the old default (tmpfs) to the new one changes its `config_hash`; set `backing = "tmpfs"` to keep the old hash.
 
 ## Troubleshooting
 

@@ -1,0 +1,11 @@
+# Added by scripts/cluster-common when ATANOR_CLUSTER_STORE_NOCOW_DIR is set, after compose.tmpfs.yml: the data of
+# the store is that host directory, which scripts/load-store-dir made nodatacow (no copy-on-write stalls on btrfs).
+# The nodes keep their tmpfs.
+services:
+  store:
+    tmpfs: !reset []
+    volumes: !override
+      - type: bind
+        source: ${ATANOR_CLUSTER_STORE_NOCOW_DIR:?}
+        target: /data
+        bind: {create_host_path: false}

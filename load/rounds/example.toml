@@ -37,8 +37,9 @@ data_tmpfs = "1g"
 nodes = 1
 
 [store]
-backing = "tmpfs"   # tmpfs, or disk for the host's disk (when a step fills the store's tmpfs)
-tmpfs_size = "1g"   # size of the store's tmpfs (ignored on disk)
+backing = "nocow"   # nocow: a host directory with copy-on-write off; tmpfs; or disk: the Docker volume on the host's disk
+nocow_dir = ""      # the nocow directory, absolute; empty: ${XDG_CACHE_HOME:-$HOME/.cache}/atanor-load/store (machine-specific, not hashed)
+tmpfs_size = "1g"   # size of the store's tmpfs (ignored unless backing is tmpfs)
 memory = "2g"       # memory limit of the store, besides its tmpfs
 cpus = 2.0          # CPU limit of the store
 latency_ms = 25.0   # delay added to every trip from a node to the store; 0 adds none

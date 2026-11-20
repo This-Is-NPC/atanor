@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# The host directory of a nodatacow store (store.backing = "nocow"): prepare DIR | clean DIR | status DIR.
+#   prepare  create DIR if missing and set the C attribute (nodatacow) on it while it is empty, then verify it with lsattr.
+#            On btrfs a failure is an error. On another filesystem there is no copy-on-write to disable: it goes on and says so.
+#            It marks DIR as a store directory of the load lab (the file MARK). A marked DIR is emptied, so the store starts
+#            empty as on a fresh volume, even after a run that did not reach `down`. A non-empty DIR without MARK is refused.
+#   clean    empty a marked DIR, keeping DIR, its C attribute and MARK. The store container writes as root, so a throwaway
+#            container of the store's image does it. A DIR without MARK is never emptied.
+#   status   print true when DIR has the C attribute, else false.
+# Safe to rerun; touches only DIR.
+set -euo pipefail
+cluster_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/cluster
+MARK=.atanor-load-store
+
+die() { echo "load-store-dir: $*" >&2; exit 1; }
+[[ $# -eq 2 ]] || die "usage: load-store-dir prepare|clean|status DIR"
+action=$1 dir=${2%/}
+[[ $dir == /?* && $dir != "${HOME%/}" ]] || die "refusing '$2': the store directory must be absolute, and neither / nor \$HOME"
+
+has_c() { lsattr -d "$dir" 2>/dev/null | awk '{ exit $1 !~ /C/ }'; }
+
+# The store's image: the override of the cluster scripts, else the one pinned in cluster/compose.yml.
+store_image() {
+  echo "${ATANOR_CLUSTER_STORE_IMAGE:-$(sed -n 's/.*ATANOR_CLUSTER_STORE_IMAGE:-\([^}]*\)}.*/\1/p' "$cluster_dir/compose.yml" | head -n 1)}"
+}
+
+# Empty a marked DIR (all but MARK); a DIR without MARK must already be empty.
+empty() {
+  [[ -d $dir && -n $(ls -A "$dir") ]] || return 0
+  [[ -f $dir/$MARK ]] || die "$dir is not empty and is not a store directory of the load lab (no $MARK): refusing to touch it; set store.nocow_dir to an empty or new directory"
+  [[ -n $(ls -A "$dir" | grep -vxF "$MARK") ]] || return 0
+  local image
+  image=$(store_image)
+  [[ -n $image ]] || die "cannot find the store's image in cluster/compose.yml"
+  docker run --rm --network none -v "$dir:/data" --entrypoint sh "$image" -c "find /data -mindepth 1 ! -path /data/$MARK -delete"
+}
+
+case $action in
+  prepare)
+    mkdir -p "$dir"
+    fstype=$(stat -f -c %T "$dir")
+    empty
+    if has_c; then
+      echo "store directory $dir: nodatacow already set ($fstype)"
+    elif chattr +C "$dir" 2>/dev/null && has_c; then
+      echo "store directory $dir: nodatacow set ($fstype)"
+    elif [[ $fstype == btrfs ]]; then
+      die "cannot set nodatacow (chattr +C) on $dir, which is on btrfs: the store would be copy-on-write; use another directory (store.nocow_dir) on a filesystem you own"
+    else
+      echo "store directory $dir: $fstype has no copy-on-write to disable (chattr +C not applied); going on without it" >&2
+    fi
+    touch "$dir/$MARK" ;;
+  clean) empty ;;
+  status)
+    if has_c; then echo true; else echo false; fi ;;
+  *) die "unknown action '$action': prepare, clean or status" ;;
+esac

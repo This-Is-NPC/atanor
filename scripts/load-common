@@ -28,12 +28,15 @@ LOAD_TMPFS_SIZE=$ATANOR_LOAD_TMPFS_SIZE               # the node's data dir (sce
 LOAD_STORE_TMPFS_SIZE=$ATANOR_LOAD_STORE_TMPFS_SIZE   # the store's data; its limit is its memory plus this
 # store.backing = "disk" keeps the node's data in tmpfs and puts the store's data on the host's disk (for a step that fills the store's tmpfs).
 LOAD_STORE_DISK=$ATANOR_LOAD_STORE_DISK
-[[ $LOAD_STORE_DISK == 0 ]] || LOAD_STORE_TMPFS_SIZE=0
+# store.backing = "nocow" (the default) puts it in a host directory with the C attribute (nodatacow), against the stalls of btrfs.
+LOAD_STORE_NOCOW_DIR=$ATANOR_LOAD_STORE_NOCOW_DIR
+[[ $LOAD_STORE_DISK == 0 && -z $LOAD_STORE_NOCOW_DIR ]] || LOAD_STORE_TMPFS_SIZE=0
+if [[ $LOAD_STORE_DISK == 1 ]]; then LOAD_STORE_BACKING=disk; elif [[ -n $LOAD_STORE_NOCOW_DIR ]]; then LOAD_STORE_BACKING=nocow; else LOAD_STORE_BACKING=tmpfs; fi
 
 # The cluster settings of the scenario: the scenario's nodes (the scale measure sets ATANOR_LOAD_NODES), data in tmpfs, a balancer that is not the limit.
 LOAD_NODES=${ATANOR_LOAD_NODES:-1}
 [[ $LOAD_NODES =~ ^([1-9]|10)$ ]] || { echo "ATANOR_LOAD_NODES must be 1 to 10" >&2; exit 1; }
-export ATANOR_CLUSTER_NODES=$LOAD_NODES ATANOR_CLUSTER_TMPFS=1 ATANOR_CLUSTER_STORE_DISK=$LOAD_STORE_DISK
+export ATANOR_CLUSTER_NODES=$LOAD_NODES ATANOR_CLUSTER_TMPFS=1 ATANOR_CLUSTER_STORE_DISK=$LOAD_STORE_DISK ATANOR_CLUSTER_STORE_NOCOW_DIR=$LOAD_STORE_NOCOW_DIR
 # The nodes run the harness image that load-env builds, in every compose call and throwaway container of the load
 # environment: without it compose falls back to atanor-cluster-node:local, an image without the native worker.
 export ATANOR_CLUSTER_IMAGE=atanor-cluster-load:local

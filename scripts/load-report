@@ -249,7 +249,7 @@ def report(directory):
         limits = next((s["limits"] for s in steps if s["scenario"] == scenario and s["limits"].get("memory_mb")), {})
         latency = next(s["store_latency_ms"] for s in steps if s["scenario"] == scenario)
         backing = next(s.get("store_backing", "tmpfs") for s in steps if s["scenario"] == scenario)
-        out += [f"## Scenario {scenario}", "", f"Node limits: {num(limits.get('cpus'), 1)} CPU and {num(limits.get('memory_mb'), 0)} MB (scenario memory; the cgroup limit adds the tmpfs); store {'on disk' if backing == 'disk' else 'in tmpfs'} with {latency} ms added per trip.", ""]
+        out += [f"## Scenario {scenario}", "", f"Node limits: {num(limits.get('cpus'), 1)} CPU and {num(limits.get('memory_mb'), 0)} MB (scenario memory; the cgroup limit adds the tmpfs); store {({'disk': 'on disk', 'nocow': 'on a nodatacow directory'}).get(backing, 'in tmpfs')} with {latency} ms added per trip.", ""]
         for measure in ("http-native", "http-wasm", "http-wasm-jobs", "ws", "cells", "swap", "scale"):
             mine = [s for s in steps if s["scenario"] == scenario and s["measure"] == measure]
             if not mine:

@@ -521,7 +521,7 @@ class Sampler(threading.Thread):
         if self.spread:  # the scale measure: where the requests and the cells are
             sample["spread"] = spread_sample(self.info)
             sample["node_runtimes"], sample["node_keys"] = node_runtimes(self.info, 3), node_cgroup_keys(self.info)  # every node's own /runtime and throttling
-        if self.info.get("store_backing") == "disk":
+        if self.info.get("store_backing") in ("disk", "nocow"):
             sample["store_disk"] = store_disk(self.info["store"]["id"])
         counters = s3_counters(self.info["store"]["ip"])
         sample["s3_errors"] = int(counters[2]) if counters else None
@@ -907,8 +907,8 @@ def judge_store_stall(evidence):
     return None
 
 
-def store_summary(samples, tmpfs_bytes, backing="tmpfs"):
-    """The store container's memory, its backing, its tmpfs (shmem) against the tmpfs size, its disk use when on disk, and the S3 5xx answered during the step."""
+def store_summary(samples, tmpfs_bytes, backing="tmpfs", nocow=None):
+    """The store container's memory, its backing (`nocow`: whether the C attribute was in effect on a nocow store), its tmpfs (shmem) against the tmpfs size, its disk use when on disk, and the S3 5xx answered during the step."""
     mem = [s["store"] for s in samples if s.get("store")]
     errors = [s["s3_errors"] for s in samples if s.get("s3_errors") is not None]
     if not mem:
@@ -918,7 +918,7 @@ def store_summary(samples, tmpfs_bytes, backing="tmpfs"):
     disks = [s["store_disk"] for s in samples if s.get("store_disk")]
     disk = {"disk_used_max_mb": mb(max(u for u, _ in disks)), "disk_free_min_mb": mb(min(a for _, a in disks)),
             "disk_max_pct": round(100 * max(u / (u + a) for u, a in disks), 1)} if disks else {}
-    return {"backing": backing, **disk, "memory_max_mb": mb(max(m["memory_current"] for m in mem)), "limit_mb": mb(mem[-1]["limit"]) if mem[-1]["limit"] else None,
+    return {"backing": backing, **({"nocow": nocow} if backing == "nocow" else {}), **disk, "memory_max_mb": mb(max(m["memory_current"] for m in mem)), "limit_mb": mb(mem[-1]["limit"]) if mem[-1]["limit"] else None,
             "tmpfs_max_mb": mb(shmem), "tmpfs_size_mb": mb(tmpfs_bytes) if tmpfs_bytes else None,
             "tmpfs_max_pct": round(100 * shmem / tmpfs_bytes, 1) if tmpfs_bytes else None,
             "s3_errors": errors[-1] - errors[0] if errors else None}
@@ -1433,7 +1433,7 @@ class Round:
                                  "latency_ms": latency_block(opening["hist"], opening["max_ms"])}
         record.update(statuses=merged["statuses"], statuses_503_by_reason=merged["reasons_503"], cpu=usage["cpu"], memory=usage["memory"], fds=usage["fds"], host=usage["host"], swap_usage=usage["swap_usage"],
                       runtime=runtime_summary(samples), series=series(samples), stalls=stall_summary(samples, sampler.stalls if sampler else []), admission=admission_summary(samples),
-                      store=store_summary(samples, info.get("store_tmpfs_bytes"), info.get("store_backing", "tmpfs")),
+                      store=store_summary(samples, info.get("store_tmpfs_bytes"), info.get("store_backing", "tmpfs"), info.get("store_nocow")),
                       latency_ms=latency_block(judged["hist"], judged["max_ms"]),
                       status_503={"with_retry_after": merged["statuses"].get("503 retry-after", 0), "without_retry_after": merged["statuses"].get("503 no retry-after", 0)},
                       limits={"cpus": usage["cpu"]["node_limit_cores"], "memory_mb": usage["memory"]["limit_mb"]},
@@ -1678,7 +1678,7 @@ def swap(round_, args, info):
                        "unknown": result.get("unknown"), "phases": phases, "a_exit_code": result.get("a_exit_code")},
               "cpu": usage["cpu"], "memory": usage["memory"], "fds": usage["fds"], "s3": {}, "host": usage["host"], "swap_usage": usage["swap_usage"], "limits": {},
               "valid": bool(result), "status": "fail" if reasons else "ok", "stop_reason": "; ".join(reasons) or None, "started_at": began}
-    record["store"] = store_summary(samples, info.get("store_tmpfs_bytes"), info.get("store_backing", "tmpfs"))
+    record["store"] = store_summary(samples, info.get("store_tmpfs_bytes"), info.get("store_backing", "tmpfs"), info.get("store_nocow"))
     swapped = judge_swap(usage, args.max_generator_swap_mb, args.max_host_swap_growth_mb) if usage["swap_usage"] else None
     full = judge_store(record["store"], args.max_store_tmpfs_pct, args.max_store_disk_pct)
     if swapped or full:
