@@ -163,6 +163,13 @@ def wake_text(split):
     return f"{num(split['cold_start'], 0)} at cold start ({until}), {num(split['steady'], 0)} steady"
 
 
+def stall_text(evidence):
+    """`12 slow store requests, slowest 1061 ms, 12 within 5 s` from a `store_stall` record; None when it is off, not read or had no slow request."""
+    if not evidence or not evidence.get("slow_requests"):
+        return None
+    return f"{evidence['slow_requests']} slow store requests, slowest {evidence['max_ms']} ms, {evidence['window_requests']} within {evidence['window_s']:g} s"
+
+
 def window_wake_text(w):
     """The refusals and backend 5xx of a join window as `cold start / steady`; `-` when not known."""
     cells = [f"{num(x['cold_start'], 0)} / {num(x['steady'], 0)}" if x else "-" for x in (w.get("wake_refusals"), w.get("backend_5xx"))]
@@ -198,6 +205,8 @@ def scale_section(steps, summary, joins):
             out += [f"#### {load} on {nodes} node{'s' if nodes > 1 else ''}", "", table(step_rows(mine), HEADER), ""]
             lines = [f"- step {s['step']} ({s['value']:g}): wake refusals: {text}" for s in mine if (text := wake_text(s.get("wake_refusals")))]
             out += ["Wake refusals of each step, the cold start apart from the steady state:", "", *lines, ""] if lines else []
+            lines = [f"- step {s['step']} ({s['value']:g}): {text}" for s in mine if (text := stall_text(s.get("store_stall")))]
+            out += ["Slow node-to-store requests of each step:", "", *lines, ""] if lines else []
     for j in joins:
         g = j.get("generator") or {}
         rows = []
@@ -256,6 +265,8 @@ def report(directory):
                 out += [swap_section(mine), ""]
             else:
                 out += [table(step_rows(mine), HEADER), ""]
+                lines = [f"- step {s['step']} ({s['value']:g}): {text}" for s in mine if (text := stall_text(s.get("store_stall")))]
+                out += ["Slow node-to-store requests of each step:", "", *lines, ""] if lines else []
                 pairs = cost(measure, mine, baseline, summary)
                 out += [table(pairs, ["cost per unit", "value"]), ""] if pairs else ["No approved step: the first step already failed or was invalid.", ""]
                 rows = admission_rows(mine, summary)
