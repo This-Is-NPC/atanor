@@ -38,7 +38,7 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
         release_reserve_ms: 0
       ],
       replicas: [poll_max_ms: 2_000],
-      lazy_restore: [verify_reads: true],
+      lazy_restore: [verify_reads: true, verify_writes: false],
       query: [reflink: false]
     ]
 
@@ -52,7 +52,8 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
           [compaction: [release_deadline_ms: -1]],
           [compaction: [release_reserve_ms: 1.5]],
           [sql: [script_timeout_ms: -1]],
-          [lazy_restore: [verify_reads: 1]]
+          [lazy_restore: [verify_reads: 1]],
+          [lazy_restore: [verify_writes: 1]]
         ] do
       assert_raise ArgumentError, fn -> build(bad) end
     end
