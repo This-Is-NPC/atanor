@@ -56,6 +56,21 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
     end
   end
 
+  test "the default statement slots keep a thread free on small nodes" do
+    slots = for dio <- [1, 2, 3, 4, 5, 10], do: Config.default_statement_slots(dio)
+    assert slots == [1, 2, 2, 2, 3, 8]
+  end
+
+  test "the statement slots follow the dirty IO threads unless the operator sets them" do
+    dio = :erlang.system_info(:dirty_io_schedulers)
+    unset = build(sql: [script_timeout_ms: 5_000]).alambique_opts[:sql]
+
+    assert unset[:max_concurrent_statements] == Config.default_statement_slots(dio)
+    assert unset[:script_timeout_ms] == 5_000
+    assert build([]).alambique_opts[:sql][:max_concurrent_statements] == Config.default_statement_slots(dio)
+    assert build(sql: [max_concurrent_statements: 7]).alambique_opts[:sql][:max_concurrent_statements] == 7
+  end
+
   test "the registry is off by default and its options are checked" do
     assert build([]).alambique_opts[:registry] == nil
     assert build(registry: false).alambique_opts[:registry] == false
