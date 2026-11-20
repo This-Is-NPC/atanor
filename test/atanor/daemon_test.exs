@@ -89,6 +89,7 @@ defmodule Atanor.DaemonTest do
           "ATANOR_COMPACTION_URGENT_CONCURRENCY" => "8",
           "ATANOR_COMPACTION_MERGE_CONCURRENCY" => "6",
           "ATANOR_COMPACTION_RELEASE_CONCURRENCY" => "2",
+          "ATANOR_LAZY_RESTORE_MIN_BYTES" => "0",
           "ATANOR_S3_POOL_SIZE" => "512",
           "ATANOR_S3_POOL_TIMEOUT_MS" => "3000",
           "ATANOR_HTTP_HEADER_TIMEOUT_MS" => "4000",
@@ -123,6 +124,7 @@ defmodule Atanor.DaemonTest do
                  release_concurrency: 2
                ]
 
+      assert opts[:alambique][:lazy_restore] == [min_bytes: 0]
       assert {Alambique.Store.S3, %{pool_size: 512, pool_timeout: 3_000}} = opts[:store]
       assert errors(env(%{"ATANOR_COMPACTION_RELEASE_CONCURRENCY" => "0"})) =~ "release_concurrency"
       assert errors(env(%{"ATANOR_COMPACTION_CONCURRENCY" => "0"})) =~ "concurrency"

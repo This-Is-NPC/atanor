@@ -114,6 +114,8 @@ defmodule Atanor.Daemon do
      "The compactions that run at once (`compaction: [concurrency:]`). Default: Alambique's, 2."},
     {"ATANOR_COMPACTION_URGENT_CONCURRENCY", :integer,
      "The passes added to it for a cell at its cap (`compaction: [urgent_concurrency:]`). Default: Alambique's, 4."},
+    {"ATANOR_LAZY_RESTORE_MIN_BYTES", :bytes,
+     "The size from which a cell's files are restored lazily, page by page (`lazy_restore: [min_bytes:]`); 0 makes every restore lazy. Default: Alambique's, 4 MiB."},
     {"ATANOR_SHUTDOWN_MS", :integer, "The bound of a whole drain (`stop.shutdown_ms`). Default 75000."},
     {"ATANOR_DRAIN_TIMEOUT_MS", :integer, "The bound of one cell's handoff in a drain. Default 15000."},
     {"ATANOR_DRAIN_CONCURRENCY", :integer, "The cells handed off at once in a drain. Default 64."},
@@ -612,6 +614,7 @@ defmodule Atanor.Daemon do
             value = v[name],
             do: {key, value}
           ),
+        lazy_restore: for(bytes <- [v["ATANOR_LAZY_RESTORE_MIN_BYTES"]], bytes, do: {:min_bytes, bytes}),
         registry: registry(v, advertise)
       )
       |> put_group(:stop,

@@ -28,6 +28,7 @@ defmodule Atanor.RuntimeSample do
       admission: Atanor.Admission.stats(name),
       wakes: Atanor.Admission.wakes(name),
       wake_ms: Atanor.Admission.wake_ms(name),
+      lazy_restores: Atanor.Admission.lazy_restores(name),
       hibernations: Atanor.Admission.hibernations(name),
       pressure: Atanor.Pressure.stats(name),
       wasm: wasm(),
