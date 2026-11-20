@@ -894,8 +894,11 @@ defmodule Atanor.LoadRunTest do
       mib = 1_048_576
       node_a = (512 + 256) * mib
       store = (2048 + 1024) * mib
-      assert {[node, st, scenario, node_limit], 0} = limits(dir, "", "A")
+      assert {[node, st, scenario, node_limit], 0} = limits(dir, "[store]\nbacking = \"tmpfs\"\n", "A")
       assert {node, st, scenario} == {"#{node_a}", "#{store}", "#{512 * mib}"}
+      # a store that is not in tmpfs has no tmpfs to add
+      assert {[_, st, _, _], 0} = limits(dir, "", "A")
+      assert st == "#{2048 * mib}"
       # the node's own limit is the scenario memory, not the container limit with the tmpfs
       assert node_limit == "#{512 * mib}"
 

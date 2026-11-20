@@ -119,6 +119,12 @@ print(json.dumps({
                        "env_ws": lc.env_lines(store_override, "A", "ws")["ATANOR_LOAD_STORE_DISK"], "env_cells": lc.env_lines(store_override, "A", "cells")["ATANOR_LOAD_STORE_DISK"],
                        "latency_ws": lc.env_lines(store_override, "A", "ws")["ATANOR_LOAD_STORE_LATENCY_MS"],
                        "hash_ws_changes": lc.case_hash(store_override, "A", "ws") != base_hash[0], "hash_cells_same": lc.case_hash(store_override, "A", "cells") == base_hash[1]},
+    # store.nocow_dir is machine-specific: it enters no hash and the env lines carry it for a nocow store only
+    "nocow": {"hash_same": hashes("[store]\nnocow_dir = \"/srv/store\"\n", "A", "ws") == base_hash[:1],
+              "hash_backing_changes": hashes("[store]\nbacking = \"tmpfs\"\n", "A", "ws") != base_hash[:1],
+              "env_dir": lc.env_lines(resolved("[store]\nnocow_dir = \"/srv/store\"\n"), "A")["ATANOR_LOAD_STORE_NOCOW_DIR"],
+              "env_tmpfs": lc.env_lines(resolved("[store]\nbacking = \"tmpfs\"\nnocow_dir = \"/srv/store\"\n"), "A")["ATANOR_LOAD_STORE_NOCOW_DIR"],
+              "relative": problems("[store]\nnocow_dir = \"store\"\n")},
     "store_override_bad": problems("[measures.ws.store]\nbacking = \"usb\"\nmemory = \"1g\"\n"),
     # the timeouts, the connection cap of ws, the ceiling kind
     "timeout_low": problems("[round]\nmeasures = [\"ws\"]\nstep_timeout_s = 100\n"),

@@ -120,8 +120,13 @@ defmodule Atanor.LoadConfigTest do
     assert s["env_ws"] == "1" and s["env_cells"] == "0" and s["latency_ws"] == "2.5"
     assert s["hash_ws_changes"] and s["hash_cells_same"]
 
+    n = r["nocow"]
+    assert n["hash_same"] and n["hash_backing_changes"]
+    assert n["env_dir"] == "/srv/store" and n["env_tmpfs"] == ""
+    assert n["relative"] == ["store.nocow_dir: 'store' is not an absolute path (or empty, for the default directory)"]
+
     assert r["store_override_bad"] == [
-             "measures.ws.store.backing: 'usb' is not one of tmpfs, disk",
+             "measures.ws.store.backing: 'usb' is not one of nocow, tmpfs, disk",
              "measures.ws.store.memory: unknown key, expected one of backing, tmpfs_size, latency_ms"
            ]
 
@@ -266,8 +271,16 @@ defmodule Atanor.LoadConfigTest do
     assert "ATANOR_LOAD_STORE_DISK=1" in lines and "ATANOR_LOAD_STORE_LATENCY_MS=7" in lines
     assert "ATANOR_LOAD_NODES=1" in lines and "ATANOR_LOAD_HTTP_MAX_CONNECTIONS=''" in lines
 
-    {out, 0} = System.cmd("python3", ["-I", "scripts/load_config.py", "--env", file, "A", "scale"])
+    assert "ATANOR_LOAD_STORE_NOCOW_DIR=''" in lines
+
+    # the default backing is nocow, in ${XDG_CACHE_HOME:-$HOME/.cache}/atanor-load/store
+    {out, 0} =
+      System.cmd("python3", ["-I", "scripts/load_config.py", "--env", file, "A", "scale"],
+        env: [{"XDG_CACHE_HOME", "/tmp/xdg-cache"}]
+      )
+
     assert "ATANOR_LOAD_STORE_DISK=0" in String.split(out, "\n", trim: true)
+    assert "ATANOR_LOAD_STORE_NOCOW_DIR=/tmp/xdg-cache/atanor-load/store" in String.split(out, "\n", trim: true)
     refute out =~ "ATANOR_LOAD_NODES"
 
     {out, status} = System.cmd("python3", ["-I", "scripts/load_config.py", "--env", file, "C"], stderr_to_stdout: true)

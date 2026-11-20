@@ -32,6 +32,8 @@ UNITS = {"http-native": "req/s", "http-wasm": "req/s", "http-wasm-jobs": "req/s"
 FACTORS = [0.75, 1.0, 1.25, 1.5]  # the steps of a ceiling plan, as fractions of its ceiling
 SIZE = re.compile(r"^[0-9]+[kmg]?b?$", re.IGNORECASE)  # as size_bytes of scripts/load-common
 CEILING_KEY = re.compile(r"^([a-z-]+):([0-9]+)$")
+BACKINGS = ("nocow", "tmpfs", "disk")
+ABSOLUTE_PATH = re.compile(r"^(?:|/.+)$")  # store.nocow_dir: empty (the default directory) or absolute
 ERL_FLAGS = re.compile(r"^(?:|(?:\+[A-Za-z]+|[A-Za-z0-9:_.]+)(?: (?:\+[A-Za-z]+|[A-Za-z0-9:_.]+))*)$")  # `+SDio 2 +S 1:1`; it ends up in an env var
 
 
@@ -49,9 +51,10 @@ class Leaf:
     """One value: `kind` int, float, bool, str, size or list; `lo`/`hi` bound a number (`open_lo`: lo itself is out); `choices`
     restrict a str or the items of a list; `item` is the kind of the items of a list."""
 
-    def __init__(self, kind, default, lo=None, hi=None, open_lo=False, choices=None, item=None, nonempty=False, ascending=False, pattern=None):
+    def __init__(self, kind, default, lo=None, hi=None, open_lo=False, choices=None, item=None, nonempty=False, ascending=False, pattern=None, expected=None):
         self.kind, self.default, self.lo, self.hi, self.open_lo = kind, default, lo, hi, open_lo
         self.choices, self.item, self.nonempty, self.ascending, self.pattern = choices, item, nonempty, ascending, pattern
+        self.expected = expected  # what a `pattern` accepts, for the problem text
 
     def range_text(self):
         parts = []
@@ -92,7 +95,7 @@ class Leaf:
                 problems.append(f"{path}: {value!r} is not one of {', '.join(self.choices)}")
                 return None
             if self.pattern and not self.pattern.match(value):
-                problems.append(f"{path}: {value!r} is not a list of Erlang flags, use words, numbers and `+flag` separated by single spaces (+SDio 2 +S 1:1)")
+                problems.append(f"{path}: {value!r} is not {self.expected}")
                 return None
             return value
         return self.check_list(path, value, problems)
@@ -155,7 +158,7 @@ def steps_table(start, maximum, sparse=False):
 
 def store_override():
     """The keys of [store] a measure may override for its own runs."""
-    return Table({"backing": Leaf("str", "tmpfs", choices=("tmpfs", "disk")), "tmpfs_size": Leaf("size", "1g"), "latency_ms": Leaf("float", 25.0, lo=0)},
+    return Table({"backing": Leaf("str", "nocow", choices=BACKINGS), "tmpfs_size": Leaf("size", "1g"), "latency_ms": Leaf("float", 25.0, lo=0)},
                  sparse=True)
 
 
@@ -225,10 +228,11 @@ SCHEMA = Table({
     "output": Table({"dir": Leaf("str", ""), "name": Leaf("str", "")}),
     "host": Table({"ssh": Leaf("str", ""), "repo": Leaf("str", ""), "results": Leaf("str", ""), "timeout_s": positive(172800)}),
     "scenarios": Map(SCENARIOS, lambda key: scenario_table(1, "512m", "256m") if key == "A" else scenario_table(2, "2g", "1g"), "scenario", fill=True),
-    "store": Table({"backing": Leaf("str", "tmpfs", choices=("tmpfs", "disk")), "tmpfs_size": Leaf("size", "1g"), "memory": Leaf("size", "2g"),
-                    "cpus": positive(2), "latency_ms": Leaf("float", 25.0, lo=0)}),
+    "store": Table({"backing": Leaf("str", "nocow", choices=BACKINGS), "nocow_dir": Leaf("str", "", pattern=ABSOLUTE_PATH, expected="an absolute path (or empty, for the default directory)"), "tmpfs_size": Leaf("size", "1g"),
+                    "memory": Leaf("size", "2g"), "cpus": positive(2), "latency_ms": Leaf("float", 25.0, lo=0)}),
     "balancer": Table({"cpus": positive(2), "memory": Leaf("size", "512m")}),
-    "node": Table({"http_max_connections": Leaf("int", 0, lo=0), "erl_flags": Leaf("str", "", pattern=ERL_FLAGS),
+    "node": Table({"http_max_connections": Leaf("int", 0, lo=0), "erl_flags": Leaf("str", "", pattern=ERL_FLAGS,
+                                                       expected="a list of Erlang flags, use words, numbers and `+flag` separated by single spaces (+SDio 2 +S 1:1)"),
                    "compaction": Table({"hold_bytes": Leaf("int", 0, lo=0), "concurrency": Leaf("int", 0, lo=0), "urgent_concurrency": Leaf("int", 0, lo=0),
                                          "merge_concurrency": Leaf("int", 0, lo=0), "release_concurrency": Leaf("int", 0, lo=0)}),
                    "store": Table({"pool_size": Leaf("int", 0, lo=0), "pool_timeout_ms": Leaf("int", 0, lo=0)})}),
@@ -512,7 +516,7 @@ def case_config(config, scenario, measure):
     """What affects the results of a case, and nothing else: the scenario, the store (with the measure's override), the balancer, the node,
     the judging (with the measure's overrides), the generator, the workload, the measure's plan and, for the swap and the scale, their
     sections. Not `output`, `host` or `round` (the other measures' plans and the timeouts do not change what a step measures)."""
-    case = {"scenario": scenario, "scenario_settings": config["scenarios"][scenario], "store": store_of(config, measure), "balancer": config["balancer"],
+    case = {"scenario": scenario, "scenario_settings": config["scenarios"][scenario], "store": {k: v for k, v in store_of(config, measure).items() if k != "nocow_dir"}, "balancer": config["balancer"],
             "node": node_of(config), "judging": judging_of(config, measure), "generator": config["generator"], "workload": config["workload"], "measure": measure}
     if measure in RAMP_MEASURES:
         case["plan"] = hashed_plan(config, measure, scenario)
@@ -531,13 +535,20 @@ def case_hash(config, scenario, measure):
     return config_hash(case_config(config, scenario, measure))
 
 
+def nocow_dir(store):
+    """The directory of a nocow store: `nocow_dir`, else ${XDG_CACHE_HOME:-$HOME/.cache}/atanor-load/store. Machine-specific, so not hashed."""
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return store["nocow_dir"] or os.path.join(cache, "atanor-load", "store")
+
+
 def env_lines(config, scenario, measure=None):
     """{ATANOR_LOAD_NAME: value} of the lab of a scenario, with the store of a measure. The scale measure sets its own number of nodes."""
     scenario_settings, store, balancer = config["scenarios"][scenario], store_of(config, measure), config["balancer"]
     node = config["node"]
     cap = node["http_max_connections"]
     lines = {"CPUS": f"{scenario_settings['cpus']:g}", "MEMORY": scenario_settings["memory"], "TMPFS_SIZE": scenario_settings["data_tmpfs"],
-             "STORE_DISK": "1" if store["backing"] == "disk" else "0", "STORE_TMPFS_SIZE": store["tmpfs_size"], "STORE_MEMORY": store["memory"],
+             "STORE_DISK": "1" if store["backing"] == "disk" else "0", "STORE_NOCOW_DIR": nocow_dir(store) if store["backing"] == "nocow" else "",
+             "STORE_TMPFS_SIZE": store["tmpfs_size"], "STORE_MEMORY": store["memory"],
              "STORE_CPUS": f"{store['cpus']:g}", "STORE_LATENCY_MS": f"{store['latency_ms']:g}", "LB_CPUS": f"{balancer['cpus']:g}", "LB_MEMORY": balancer["memory"],
              "HTTP_MAX_CONNECTIONS": str(cap) if cap else "", "ERL_FLAGS": node["erl_flags"]}
     for table, prefix in (("compaction", "COMPACTION"), ("store", "S3")):
