@@ -242,6 +242,10 @@ defmodule Atanor.LoadScaleTest do
 
     assert cold["single"] == %{"node" => %{"cold_start" => 900, "steady" => 5, "cold_start_end_s" => 4.0}}
     assert cold["never_stops"] == %{"end_t" => 4, "ended" => false, "cold" => 12, "steady" => 0}
+    # the cold start begins at the first wake: readings before it (dense sampling) do not end it
+    assert cold["dense_opening"] == %{"end_t" => 1.0, "ended" => true, "cold" => 156, "steady" => 2}
+    # a warm node that wakes nothing in its first interval has no cold start, even if it wakes cells later
+    assert cold["warm_churn"] == %{"end_t" => 0, "ended" => true, "cold" => 0, "steady" => 9}
     assert cold["one_reading"] == :null and cold["unreported"] == :null
 
     # in a join each node's cold start is its own: window 1 has node-1's, window 2 node-1's steady refusals and node-2's cold start; the 5xx follow the latest end

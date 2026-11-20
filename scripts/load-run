@@ -723,12 +723,20 @@ def wake_refusals(runtime):
 def cold_start(points):
     """Splits the wake refusals of one node into the cold start and the steady state. `points` are its readings in order, `(t, wakes, refused)`,
     both counters cumulative. The cold start lasts while the node keeps waking cells: it ends at the last reading before the first one where
-    `wakes` did not grow (`ended` is false when it grew until the last reading). Returns `{end_t, ended, cold, steady}` (refusals counted
-    up to `end_t`, and after it), or None with fewer than two readings of both counters."""
+    `wakes` did not grow (`ended` is false when it grew until the last reading). A node that has woken nothing yet (`wakes` 0 at its first
+    reading: fresh, or joining) starts its cold start at its first wake, so the readings before it (dense sampling reads the opening before
+    anything woke) do not end it; if it never wakes, all is steady. A node with cells already woken (a warm-up) has no cold start when its first
+    interval wakes nothing, even if it wakes cells later (churn). One flat reading ends the cold start, whatever the sampling.
+    Returns `{end_t, ended, cold, steady}` (refusals counted up to `end_t`, and after it), or None with fewer than two readings of both counters."""
     seen = [p for p in points if isinstance(p[1], int) and isinstance(p[2], int)]
     if len(seen) < 2:
         return None
-    stall = next((j for j in range(1, len(seen)) if seen[j][1] == seen[j - 1][1]), None)
+    first = 1
+    if seen[0][1] == 0:
+        first = next((j for j in range(1, len(seen)) if seen[j][1] > 0), None)
+        if first is None:
+            return {"end_t": seen[0][0], "ended": True, "cold": 0, "steady": seen[-1][2] - seen[0][2]}
+    stall = next((j for j in range(first, len(seen)) if seen[j][1] <= seen[j - 1][1]), None)
     end = len(seen) - 1 if stall is None else stall - 1
     return {"end_t": seen[end][0], "ended": stall is not None, "cold": seen[end][2] - seen[0][2], "steady": seen[-1][2] - seen[end][2]}
 
@@ -746,7 +754,7 @@ def cold_start_summary(per_node, t0):
 
 def step_wake_refusals(samples):
     """The wake refusals of a step split into the cold start and the steady state (`cold_start`), per node and summed; None when no node reports
-    `wakes` and `admission.awake_limit_by`. A step that starts with its cells awake (a warm-up) has no wakes in its first interval: all steady."""
+    `wakes` and `admission.awake_limit_by`. A step that starts with its cells awake (a warm-up) never grows `wakes`: all steady."""
     if not samples:
         return None
     cluster = [s for s in samples if s.get("node_runtimes") is not None]

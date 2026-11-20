@@ -453,6 +453,10 @@ split = m.step_wake_refusals(steps)
 results["cold_split"] = {"summed": [split["cold_start"], split["steady"], split["cold_start_end_s"], split["cold_start_ended"]], "nodes": split["nodes"],
                          "single": m.step_wake_refusals([{"t": 5.0 + t, "runtime": node_read(w, r)[0]} for t, w, r in series_1])["nodes"],
                          "never_stops": m.cold_start([(0, 0, 0), (2, 5, 10), (4, 9, 12)]), "one_reading": m.cold_start([(0, 0, 0)]),
+                         # round 026 (scale, 0.2 s sampling): three readings before the first wake, then wakes and refusals grow, then flat
+                         "dense_opening": m.cold_start([(0.0, 0, 0), (0.2, 0, 0), (0.4, 0, 0), (0.6, 40, 60), (0.8, 90, 156), (1.0, 452, 156), (1.2, 452, 156), (1.4, 452, 158)]),
+                         # a warm node (cells woken before the step) that wakes nothing in its first interval and then churns: all steady
+                         "warm_churn": m.cold_start([(0, 64, 0), (2, 64, 1), (4, 80, 5), (6, 95, 9), (8, 95, 9)]),
                          "unreported": m.step_wake_refusals([{"t": 1.0, "runtime": {}}, {"t": 2.0, "runtime": {}}])}
 
 # The same for a join: node-2 appears in the third reading (its cold start is its own); window 1 has the cold start of node-1, window 2 only steady
