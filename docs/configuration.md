@@ -253,10 +253,10 @@ region), `session_token:` and a credentials function in its own config, which
 Atanor passes through.
 
 - `sql: [max_concurrent_statements:]` is the most reads that run on a node at
-  once. Default: the dirty IO schedulers minus two, but at least `min(dirty IO schedulers, 2)`, so 1, 2, 2, 2,
-  3 ... 8 for 1, 2, 3, 4, 5 ... 10 schedulers. Alambique's own default stops at 1, and a node with two
-  threads refused 2.2% of its reads as `busy` whenever a write ran on the other thread. A read over the limit
-  is a 503 `overloaded`. Give the option to override it. The daemon sizes the schedulers to the CPU quota
+  once. Default (Alambique's, as of 0.15.0): `max(dirty IO - 2, min(dirty IO, 2))`, so 1, 2, 2, 2,
+  3 ... 8 for 1, 2, 3, 4, 5 ... 10 dirty IO schedulers. It keeps two slots on a two-thread node, where one slot
+  refused 2.2% of the reads as `busy` whenever a write ran on the other thread. A read over the limit
+  is a 503 `overloaded`. A value you give wins. The daemon sizes the schedulers to the CPU quota
   ([Dirty IO threads and the CPU quota](#dirty-io-threads-and-the-cpu-quota)).
 - `sql: [script_timeout_ms:]` (60,000) bounds a migration, a script and
   Alambique's own statements.

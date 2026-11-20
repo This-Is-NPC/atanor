@@ -551,7 +551,6 @@ defmodule Atanor.Config do
     memory = memory!(opts[:memory])
     {alambique, awake_source} = awake_budget(Keyword.get(opts, :alambique, []), memory)
     alambique = wake_budget(alambique, memory)
-    alambique = statement_slots(alambique, :erlang.system_info(:dirty_io_schedulers))
     disk = disk!(opts[:disk], opts[:data_dir])
     alambique = Atanor.Disk.alambique_options(alambique, disk.budget, disk.sample_ms)
     user_feed = Keyword.get(Keyword.get(opts, :alambique, []), :feed, [])
@@ -1065,23 +1064,6 @@ defmodule Atanor.Config do
     check!(rehearsal.sample_size <= rehearsal.max_cells, ":rehearsal :sample_size must not exceed :max_cells")
     check!(rehearsal.timeout_ms < rehearsal.stale_ms, ":rehearsal :timeout_ms must be less than :stale_ms")
     rehearsal
-  end
-
-  @doc """
-  The statement slots Atanor gives Alambique on a VM with `dirty_io` dirty IO schedulers: `max(dirty_io - 2, min(dirty_io, 2))`.
-  Alambique's own default, `max(dirty_io - 2, 1)`, leaves one slot on two threads, so a read is refused `:busy`
-  whenever another statement, a write included, runs on the second thread.
-  """
-  @spec default_statement_slots(pos_integer) :: pos_integer
-  def default_statement_slots(dirty_io), do: max(dirty_io - 2, min(dirty_io, 2))
-
-  # An operator's `sql: [max_concurrent_statements:]` always wins.
-  defp statement_slots(alambique, dirty_io) do
-    sql = Keyword.get(alambique, :sql, [])
-
-    if Keyword.has_key?(sql, :max_concurrent_statements),
-      do: alambique,
-      else: Keyword.put(alambique, :sql, [{:max_concurrent_statements, default_statement_slots(dirty_io)} | sql])
   end
 
   defp settings!(nil, defaults, _option), do: defaults

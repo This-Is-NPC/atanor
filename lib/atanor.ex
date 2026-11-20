@@ -374,7 +374,7 @@ defmodule Atanor do
       and keep Alambique's defaults: `sql: [statement_timeout_ms: 10_000,
       script_timeout_ms: 60_000, max_result_rows: 100_000, max_result_bytes: 67_108_864,
       max_concurrent_statements: max(dirty IO schedulers - 2, min(dirty IO schedulers, 2))]`
-      (Atanor sets the last unless you do; the daemon sizes the dirty IO schedulers to the CPU quota,
+      (Alambique's default as of 0.15.0; a value you give wins; the daemon sizes the dirty IO schedulers to the CPU quota,
       `rel/env.sh.eex`) (a statement over
       one gives the worker `{:error, :statement_timeout}` or
       `{:error, :result_too_large}`; a read over the concurrent limit gets
