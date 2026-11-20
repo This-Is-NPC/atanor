@@ -78,9 +78,10 @@ a, b = lc.config_hash(builtin), lc.config_hash(lc.resolve({"judging": {"p99": {"
 c = lc.config_hash(lc.resolve({"judging": {"p99": {"max_ms": 300}}}))
 
 NODE_ENV = ["ATANOR_LOAD_COMPACTION_" + k for k in ("HOLD_BYTES", "CONCURRENCY", "URGENT_CONCURRENCY", "MERGE_CONCURRENCY", "RELEASE_CONCURRENCY")] + \
-           ["ATANOR_LOAD_S3_POOL_SIZE", "ATANOR_LOAD_S3_POOL_TIMEOUT_MS"]
+           ["ATANOR_LOAD_S3_POOL_SIZE", "ATANOR_LOAD_S3_POOL_TIMEOUT_MS", "ATANOR_LOAD_ERL_FLAGS"]
 node_set = resolved("[node.compaction]\nhold_bytes = 67108864\nconcurrency = 4\nurgent_concurrency = 8\nmerge_concurrency = 6\nrelease_concurrency = 2\n"
-                    "[node.store]\npool_size = 512\npool_timeout_ms = 3000\n")
+                    "[node.store]\npool_size = 512\npool_timeout_ms = 3000\n[node]\nerl_flags = \"+SDio 2 +S 1:1\"\n")
+erl_bad = [problems(f"[node]\nerl_flags = {json.dumps(v)}\n") for v in ("+SDio 2; rm", "+S \"1\"", "$HOME", "a`b`", "+S 1\n+A 2", "+SDio  2", " +S 1", 5)]
 
 print(json.dumps({
     "example_is_default": example == builtin, "official": {"plans": plans, "http_wasm": lc.plan(official, "http-wasm", "A")["kind"], "scale": official["scale"],
@@ -149,6 +150,9 @@ print(json.dumps({
                      "hash_set_changes": lc.case_hash(node_set, "A", "ws") != base_hash[0],
                      "hash_default_as_before": lc.config_hash({**lc.case_config(builtin, "A", "ws"), "node": {"http_max_connections": 0}}) == base_hash[0],
                      "round_trip": lc.resolve(tomllib.loads(lc.dump_toml(node_set))) == node_set,
+                     "erl_flags": {"default": builtin["node"]["erl_flags"], "default_hash_as_before": "erl_flags" not in lc.case_config(builtin, "A", "ws")["node"],
+                                   "set_in_hash": lc.case_config(node_set, "A", "ws")["node"]["erl_flags"], "ok": problems("[node]\nerl_flags = \"+SDio 2 +S 1:1 +sbwt none\"\n"),
+                                   "empty_ok": problems("[node]\nerl_flags = \"\"\n"), "bad": [len(p) for p in erl_bad]},
                      "bad": problems("[node.compaction]\nconcurrency = -1\nhold_bytes = \"big\"\nrelease_on = 4\n[node.store]\npool_size = 1.5\npool_timeout_ms = -1\nbogus = 1\n")},
     # steps.reset_each_step (per measure, per scenario): off by default and then absent from the hash, so the rounds before it keep theirs
     "reset_each_step": {
