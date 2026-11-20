@@ -462,7 +462,13 @@ defmodule Atanor.Config do
     ],
     local_cache: [max_bytes: :positive, interval_ms: :positive],
     restore: [edge_bytes: :positive, fetch_concurrency: :positive, max_inflight_bytes: :positive],
-    lazy_restore: [min_bytes: :non_negative, concurrency: :positive, batch_bytes: :positive, miss_pages: :positive],
+    lazy_restore: [
+      min_bytes: :non_negative,
+      concurrency: :positive,
+      batch_bytes: :positive,
+      miss_pages: :positive,
+      verify_reads: :boolean
+    ],
     compaction: [
       hold_bytes: :non_negative,
       hold_object_bytes: :non_negative,
