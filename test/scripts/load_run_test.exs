@@ -177,6 +177,18 @@ defmodule Atanor.LoadRunTest do
              "tail_max" => 192
            }
 
+    # the lazy restores are the growth over the step, `ms_max` the node's longest; an older node reports none (null)
+    assert newer["lazy_restores"] == %{
+             "ok" => 2,
+             "error" => 1,
+             "pages" => 60,
+             "misses" => 6,
+             "ms_total" => 330,
+             "ms_max" => 200
+           }
+
+    assert refusals["lazy_restores"] == :null
+
     assert newer["statuses_503_by_reason"] == %{"unavailable/store_unavailable" => 7, "overloaded/busy" => 3}
 
     assert record["store"]["tmpfs_max_pct"] == 50.0
@@ -313,6 +325,19 @@ defmodule Atanor.LoadRunTest do
     assert b["noted"]["notes"] == ["store garbage: 2 incomplete multipart uploads in the bucket"]
     assert b["unread"] == %{"store" => %{}, "notes" => []}
     assert b["rows"] == [[1, "10", "4 / 4", "1.0 / 1.0", "**2 GARBAGE**"]] and b["no_rows"] == []
+
+    # the report: the lazy restores of each step with the latency tail, "none" in a step without, a line when no step had any, nothing from an older node
+    assert r["lazy_report"]["some"] == [
+             "Lazy restores of each step (misses: pages a query waited for):",
+             "",
+             "- step 1 (100): none; p99 40.0 ms, max 900.0 ms",
+             "- step 2 (200): 2 ok, 1 error, 60 pages, 6 misses, restore 330 ms in total, 200 ms the longest; p99 40.0 ms, max 900.0 ms",
+             ""
+           ]
+
+    assert [line] = Enum.take(r["lazy_report"]["none"], 1)
+    assert line =~ "No lazy restores in any step" and line =~ "min_bytes"
+    assert r["lazy_report"]["older_node"] == []
 
     assert r["runtime_garbage"]["record"]["runtime"] == :null
     assert r["runtime_garbage"]["record"]["status"] == "ok"
@@ -780,12 +805,12 @@ defmodule Atanor.LoadRunTest do
   test "load-env takes the lab's settings from the round config for a scenario and a measure", %{dir: dir} do
     File.write!(
       Path.join(dir, "round.toml"),
-      "[store]\nlatency_ms = 7\n[measures.ws.store]\nbacking = \"disk\"\n[node]\nhttp_max_connections = 99999\nerl_flags = \"+SDio 2 +S 1:1\"\n[node.compaction]\nhold_bytes = 67108864\n[node.store]\npool_size = 512\n[scenarios.B]\nnodes = 2\n"
+      "[store]\nlatency_ms = 7\n[measures.ws.store]\nbacking = \"disk\"\n[node]\nhttp_max_connections = 99999\nerl_flags = \"+SDio 2 +S 1:1\"\n[node.compaction]\nhold_bytes = 67108864\n[node.lazy_restore]\nmin_bytes = 0\n[node.store]\npool_size = 512\n[scenarios.B]\nnodes = 2\n"
     )
 
     env = fn scenario, measure ->
       script =
-        "source scripts/load-common; echo \"$LOAD_SCENARIO $LOAD_CPUS $LOAD_MEMORY $LOAD_STORE_LATENCY_MS $LOAD_STORE_DISK $LOAD_NODES $ATANOR_CLUSTER_HTTP_MAX_CONNECTIONS [$ATANOR_CLUSTER_COMPACTION_HOLD_BYTES|$ATANOR_CLUSTER_COMPACTION_CONCURRENCY|$ATANOR_CLUSTER_S3_POOL_SIZE] <$ATANOR_CLUSTER_ERL_ZFLAGS>\""
+        "source scripts/load-common; echo \"$LOAD_SCENARIO $LOAD_CPUS $LOAD_MEMORY $LOAD_STORE_LATENCY_MS $LOAD_STORE_DISK $LOAD_NODES $ATANOR_CLUSTER_HTTP_MAX_CONNECTIONS [$ATANOR_CLUSTER_COMPACTION_HOLD_BYTES|$ATANOR_CLUSTER_COMPACTION_CONCURRENCY|$ATANOR_CLUSTER_S3_POOL_SIZE] <$ATANOR_CLUSTER_ERL_ZFLAGS> {$ATANOR_CLUSTER_LAZY_RESTORE_MIN_BYTES}\""
 
       {out, 0} =
         System.cmd("bash", ["-c", script],
@@ -804,10 +829,10 @@ defmodule Atanor.LoadRunTest do
 
     # the config replaces the ATANOR_LOAD_* it names (ATANOR_LOAD_CPUS=9 here); the store of a measure follows its override
     # the compaction and the pool options reach the cluster's variables (empty when not set)
-    # erl_flags becomes ERL_ZFLAGS of the node (ATANOR_CLUSTER_ERL_ZFLAGS)
-    assert env.("A", "http-native") == "A 1 512m 7 0 1 99999 [67108864||512] <+SDio 2 +S 1:1>"
-    assert env.("A", "ws") == "A 1 512m 7 1 1 99999 [67108864||512] <+SDio 2 +S 1:1>"
-    assert env.("B", "cells") == "B 2 2g 7 0 2 99999 [67108864||512] <+SDio 2 +S 1:1>"
+    # erl_flags becomes ERL_ZFLAGS of the node (ATANOR_CLUSTER_ERL_ZFLAGS), lazy_restore.min_bytes its lazy restore threshold (0 is a value)
+    assert env.("A", "http-native") == "A 1 512m 7 0 1 99999 [67108864||512] <+SDio 2 +S 1:1> {0}"
+    assert env.("A", "ws") == "A 1 512m 7 1 1 99999 [67108864||512] <+SDio 2 +S 1:1> {0}"
+    assert env.("B", "cells") == "B 2 2g 7 0 2 99999 [67108864||512] <+SDio 2 +S 1:1> {0}"
   end
 
   test "a stall of the harness's own ticker next to an open breaker marks a stop of the whole VM", %{dir: dir} do

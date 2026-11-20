@@ -189,6 +189,14 @@ defmodule Atanor.LoadConfigTest do
     assert bad =~ "node.compaction.release_on: unknown key" and bad =~ "node.store.pool_size"
     assert bad =~ "node.store.pool_timeout_ms" and bad =~ "node.store.bogus: unknown key"
 
+    # node.lazy_restore.min_bytes: unset by default (-1: not in the hash, empty env line); 0 is a value (every restore lazy)
+    z = r["lazy_restore"]
+    assert z["default"] == -1 and z["env_default"] == "" and z["default_not_in_hash"]
+    assert z["env_zero"] == "0" and z["env_set"] == "1048576"
+    assert z["zero_in_hash"] == %{"min_bytes" => 0} and z["zero_changes_hash"] and z["round_trip"] == [true, true]
+    assert Enum.all?(z["bad"], &(length(&1) == 1))
+    assert Enum.join(List.flatten(z["bad"]), "\n") =~ "node.lazy_restore.min_bytes"
+
     # steps.reset_each_step: off by default, settable for one scenario; only the hash of the case that sets it changes (018f hashes pinned as before the option)
     x = r["reset_each_step"]
     assert x["default"] == false and x["plan_has_no_key"]

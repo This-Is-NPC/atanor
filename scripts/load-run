@@ -775,6 +775,20 @@ def compaction_growth(runtimes):
     return {**{k: v - (first.get(k) or 0) for k, v in last.items() if isinstance(v, int)}, "tail_max": seen[-1].get("tail_max")}
 
 
+LAZY_COUNTS = ("ok", "error", "pages", "misses", "ms_total")
+
+
+def lazy_restores_growth(runtimes):
+    """The lazy restores of a step (`lazy_restores` of /runtime): the growth of `ok`, `error`, `pages`, `misses` and `ms_total`, and `ms_max`, the longest
+    restore the node has run so far (0 when none ended in the step); None when no reading reports it (an older node)."""
+    seen = [x for r in runtimes if isinstance(x := (r or {}).get("lazy_restores"), dict)]
+    if not seen:
+        return None
+    first, last = seen[0], seen[-1]
+    grown = {k: (last.get(k) or 0) - (first.get(k) or 0) for k in LAZY_COUNTS}
+    return {**grown, "ms_max": (last.get("ms_max") or 0) if grown["ok"] + grown["error"] else 0}
+
+
 def budget_note(budgets):
     """A note when the nodes of a cluster do not report the same `disk_budget_bytes` ({node: bytes or None}); None when they agree or none is known:
     a node with another data dir limit hibernates cells at another point, so the nodes are not comparable."""
@@ -1415,7 +1429,7 @@ class Round:
                   "value": value, "duration_s": a.step_s, "store_latency_ms": info["store_latency_ms"], "store_backing": info.get("store_backing", "tmpfs"), "command": a.command,
                   "http_max_connections": http_max_connections(), "limits": {"cpus": None, "memory_mb": None}, "planned": None, "achieved": None, "achieved_ratio": None,
                   "latency_ms": {"p50": None, "p95": None, "p99": None, "max": None}, "statuses": {}, "status_503": {"with_retry_after": 0, "without_retry_after": 0},
-                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "per_node": None, "statuses_503_by_reason": {}, "refusals": None, "wake_refusals": None, "evictions": None, "store_stall": None, "store": None, "cells_awake": None, "store_rtt_ms": None, "opening": None,
+                  "cpu": {}, "memory": {}, "fds": {}, "s3": {}, "host": host_override or {}, "swap_usage": {}, "runtime": None, "series": [], "stalls": None, "admission": None, "per_node": None, "statuses_503_by_reason": {}, "refusals": None, "wake_refusals": None, "evictions": None, "lazy_restores": None, "store_stall": None, "store": None, "cells_awake": None, "store_rtt_ms": None, "opening": None,
                   "valid": valid, "status": status, "stop_reason": reason, "criteria": [], "started_at": began, "node_stopped": bool(dead), "notes": [], "first_attempt": None, "diagnostics": list(diagnostics),
                   "config_hash": getattr(a, "config_hash", None)}
         if merged is None:
@@ -1449,6 +1463,7 @@ class Round:
         record["refusals"] = refusals_503(merged["statuses"], samples)
         record["wake_refusals"] = step_wake_refusals(samples)
         record["evictions"] = eviction_evidence(self.awake_start, record["cells_awake"], record["admission"], samples)
+        record["lazy_restores"] = lazy_restores_growth([s.get("runtime") for s in samples])
         refusals, answers_503 = record["refusals"], refused_of(merged["statuses"])[1]
         if refusals is None and answers_503:
             record["notes"].append(f"{answers_503} 503 answers not attributed: no /runtime reading")

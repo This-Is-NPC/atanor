@@ -59,6 +59,9 @@ urgent_concurrency = 0  # passes added for a cell at its cap (default 4)
 merge_concurrency = 0   # merges of one level that run at once in a pass (default 4)
 release_concurrency = 0 # cells of the node that compact their tail at a release at once; the others are released as `busy` (default 4)
 
+[node.lazy_restore] # Alambique's lazy restore on a node
+min_bytes = -1          # size of a cell's files from which its restore is lazy (default 4194304, 4 MiB); 0 makes every restore lazy; -1 keeps the default
+
 [node.store]        # the S3 store of a node; 0 keeps its default
 pool_size = 0           # connections the store may hold open (default 256)
 pool_timeout_ms = 0     # how long a request waits for a free connection before it fails and is retried (default 2000)

@@ -81,6 +81,8 @@ NODE_ENV = ["ATANOR_LOAD_COMPACTION_" + k for k in ("HOLD_BYTES", "CONCURRENCY",
            ["ATANOR_LOAD_S3_POOL_SIZE", "ATANOR_LOAD_S3_POOL_TIMEOUT_MS", "ATANOR_LOAD_ERL_FLAGS"]
 node_set = resolved("[node.compaction]\nhold_bytes = 67108864\nconcurrency = 4\nurgent_concurrency = 8\nmerge_concurrency = 6\nrelease_concurrency = 2\n"
                     "[node.store]\npool_size = 512\npool_timeout_ms = 3000\n[node]\nerl_flags = \"+SDio 2 +S 1:1\"\n")
+lazy_zero = resolved("[node.lazy_restore]\nmin_bytes = 0\n")
+lazy_set = resolved("[node.lazy_restore]\nmin_bytes = 1048576\n")
 erl_bad = [problems(f"[node]\nerl_flags = {json.dumps(v)}\n") for v in ("+SDio 2; rm", "+S \"1\"", "$HOME", "a`b`", "+S 1\n+A 2", "+SDio  2", " +S 1", 5)]
 
 print(json.dumps({
@@ -160,6 +162,13 @@ print(json.dumps({
                                    "set_in_hash": lc.case_config(node_set, "A", "ws")["node"]["erl_flags"], "ok": problems("[node]\nerl_flags = \"+SDio 2 +S 1:1 +sbwt none\"\n"),
                                    "empty_ok": problems("[node]\nerl_flags = \"\"\n"), "bad": [len(p) for p in erl_bad]},
                      "bad": problems("[node.compaction]\nconcurrency = -1\nhold_bytes = \"big\"\nrelease_on = 4\n[node.store]\npool_size = 1.5\npool_timeout_ms = -1\nbogus = 1\n")},
+    # [node.lazy_restore] min_bytes: unset (-1) by default, out of the hash and an empty env line; 0 is a value that reaches both
+    "lazy_restore": {"default": builtin["node"]["lazy_restore"]["min_bytes"], "env_default": lc.env_lines(builtin, "A")["ATANOR_LOAD_LAZY_RESTORE_MIN_BYTES"],
+                     "env_zero": lc.env_lines(lazy_zero, "A")["ATANOR_LOAD_LAZY_RESTORE_MIN_BYTES"], "env_set": lc.env_lines(lazy_set, "A", "cells")["ATANOR_LOAD_LAZY_RESTORE_MIN_BYTES"],
+                     "default_not_in_hash": "lazy_restore" not in lc.case_config(builtin, "A", "cells")["node"],
+                     "zero_in_hash": lc.case_config(lazy_zero, "A", "cells")["node"]["lazy_restore"], "zero_changes_hash": lc.case_hash(lazy_zero, "A", "cells") != lc.case_hash(builtin, "A", "cells"),
+                     "round_trip": [lc.resolve(tomllib.loads(lc.dump_toml(c))) == c for c in (lazy_zero, lazy_set)],
+                     "bad": [problems(f"[node.lazy_restore]\nmin_bytes = {v}\n") for v in ("-2", "\"4m\"", "1.5")]},
     # steps.reset_each_step (per measure, per scenario): off by default and then absent from the hash, so the rounds before it keep theirs
     "reset_each_step": {
         "default": lc.plan(builtin, "http-wasm-jobs", "A")["reset_each_step"],

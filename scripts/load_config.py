@@ -235,6 +235,7 @@ SCHEMA = Table({
                                                        expected="a list of Erlang flags, use words, numbers and `+flag` separated by single spaces (+SDio 2 +S 1:1)"),
                    "compaction": Table({"hold_bytes": Leaf("int", 0, lo=0), "concurrency": Leaf("int", 0, lo=0), "urgent_concurrency": Leaf("int", 0, lo=0),
                                          "merge_concurrency": Leaf("int", 0, lo=0), "release_concurrency": Leaf("int", 0, lo=0)}),
+                   "lazy_restore": Table({"min_bytes": Leaf("int", -1, lo=-1)}),  # -1 keeps the node's default: 0 is a value (every restore lazy)
                    "store": Table({"pool_size": Leaf("int", 0, lo=0), "pool_timeout_ms": Leaf("int", 0, lo=0)})}),
     "measures": Map(MEASURES, measure_table, "measure", fill=True),
     "judging": Table(judging_children()),
@@ -506,9 +507,10 @@ def judging_of(config, measure=None, load=None):
 
 
 def node_of(config):
-    """[node] as hashed: `erl_flags` and the keys left at 0 (the node's default) in `compaction` and `store` are left out while unset, so a round that does not set them keeps its hash."""
+    """[node] as hashed: `erl_flags`, `lazy_restore.min_bytes` (-1) and the keys left at 0 (the node's default) in `compaction` and `store` are left out while unset, so a round that does not set them keeps its hash."""
     node = config["node"]
     return {"http_max_connections": node["http_max_connections"], **({"erl_flags": node["erl_flags"]} if node["erl_flags"] else {}),
+            **({"lazy_restore": node["lazy_restore"]} if node["lazy_restore"]["min_bytes"] >= 0 else {}),
             **{name: given for name in ("compaction", "store") if (given := {k: v for k, v in node[name].items() if v})}}
 
 
@@ -554,6 +556,7 @@ def env_lines(config, scenario, measure=None):
     for table, prefix in (("compaction", "COMPACTION"), ("store", "S3")):
         for key, value in node[table].items():
             lines[f"{prefix}_{key.upper()}"] = str(value) if value else ""
+    lines["LAZY_RESTORE_MIN_BYTES"] = str(node["lazy_restore"]["min_bytes"]) if node["lazy_restore"]["min_bytes"] >= 0 else ""
     if measure != "scale":
         lines["NODES"] = str(scenario_settings["nodes"])
     return {f"ATANOR_LOAD_{k}": v for k, v in lines.items()}
