@@ -467,7 +467,8 @@ defmodule Atanor.Config do
       concurrency: :positive,
       batch_bytes: :positive,
       miss_pages: :positive,
-      verify_reads: :boolean
+      verify_reads: :boolean,
+      verify_writes: :boolean
     ],
     compaction: [
       hold_bytes: :non_negative,
