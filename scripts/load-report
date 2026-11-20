@@ -170,6 +170,23 @@ def stall_text(evidence):
     return f"{evidence['slow_requests']} slow store requests, slowest {evidence['max_ms']} ms, {evidence['window_requests']} within {evidence['window_s']:g} s"
 
 
+def lazy_lines(steps):
+    """The lines of the cells measure about lazy restores, beside the latency tail of each step: what the node restored lazily (a read of such a cell
+    waits for its page on a dirty I/O thread) and p99 and max. Empty when no step has the record (an older node)."""
+    seen = [s for s in steps if s.get("lazy_restores") is not None]
+    if not seen:
+        return []
+    if not any(s["lazy_restores"]["ok"] + s["lazy_restores"]["error"] for s in seen):
+        return ["No lazy restores in any step: the cells were below `lazy_restore` `min_bytes` (4 MiB by default; `[node.lazy_restore] min_bytes = 0` makes every restore lazy).", ""]
+    lines = []
+    for s in seen:
+        z, lat = s["lazy_restores"], s["latency_ms"]
+        what = (f"{z['ok']} ok, {z['error']} error, {z['pages']} pages, {z['misses']} misses, restore {z['ms_total']} ms in total, {z['ms_max']} ms the longest"
+                if z["ok"] + z["error"] else "none")
+        lines.append(f"- step {s['step']} ({s['value']:g}): {what}; p99 {num(lat['p99'])} ms, max {num(lat['max'])} ms")
+    return ["Lazy restores of each step (misses: pages a query waited for):", "", *lines, ""]
+
+
 def window_wake_text(w):
     """The refusals and backend 5xx of a join window as `cold start / steady`; `-` when not known."""
     cells = [f"{num(x['cold_start'], 0)} / {num(x['steady'], 0)}" if x else "-" for x in (w.get("wake_refusals"), w.get("backend_5xx"))]
@@ -267,6 +284,7 @@ def report(directory):
                 out += [table(step_rows(mine), HEADER), ""]
                 lines = [f"- step {s['step']} ({s['value']:g}): {text}" for s in mine if (text := stall_text(s.get("store_stall")))]
                 out += ["Slow node-to-store requests of each step:", "", *lines, ""] if lines else []
+                out += lazy_lines(mine) if measure == "cells" else []
                 pairs = cost(measure, mine, baseline, summary)
                 out += [table(pairs, ["cost per unit", "value"]), ""] if pairs else ["No approved step: the first step already failed or was invalid.", ""]
                 rows = admission_rows(mine, summary)

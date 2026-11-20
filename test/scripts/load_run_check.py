@@ -309,6 +309,16 @@ step = {"step": 1, "value": 10.0, "store": noted["store"]}
 results["bucket"] = {"usage": usage, "clean_garbage": clean["garbage"], "queries": queries, "broken": m.bucket_usage(broken), "not_xml": m.bucket_usage(lambda q: "<oops"),
                      "noted": noted, "unread": unread, "rows": report.bucket_rows([step]), "no_rows": report.bucket_rows([{"step": 2, "value": 20.0, "store": None}])}
 
+# The report lists the lazy restores of each step of the cells measure beside its latency tail, and says when there were none.
+def lazy_step(n, lazy):
+    return {"step": n, "value": 100.0 * n, "latency_ms": {"p99": 40.0, "max": 900.0}, "lazy_restores": lazy}
+
+
+lazy = {"ok": 2, "error": 1, "pages": 60, "misses": 6, "ms_total": 330, "ms_max": 200}
+none = {"ok": 0, "error": 0, "pages": 0, "misses": 0, "ms_total": 0, "ms_max": 0}
+results["lazy_report"] = {"some": report.lazy_lines([lazy_step(1, none), lazy_step(2, lazy)]), "none": report.lazy_lines([lazy_step(1, none)]),
+                          "older_node": report.lazy_lines([lazy_step(1, None)])}
+
 # A stall of the lab is judged on the generator's lag and on one jump of the node's CPU throttling against its usual growth.
 def throttled(*values):
     return [{"node_throttled_ms": v} for v in values]
@@ -451,7 +461,10 @@ def refusal_scenario(name, grown, statuses=None, newer=False, reasons=None):
         pressure = {"hibernated": 7 if len(seen) > 1 else 3, "hibernate_at_bytes": 384 * MB}
         # A newer node also counts the release compaction outcomes: 2 cut by the deadline after the first reading, tail 192.
         hibernations = {"compaction": {"none": 1, "done": 5 if len(seen) > 1 else 3, "deadline": 2 if len(seen) > 1 else 0, "error": 0}, "tail_max": 192 if len(seen) > 1 else 6}
-        more = {"wakes": 20 if len(seen) > 1 else 5, "hibernations": hibernations} if newer else {}
+        # ... and the lazy restores: 3 ended after the first reading (1 in error), 60 pages, 6 misses, 330 ms, the longest 200 ms.
+        lazy = {"ok": 3 if len(seen) > 1 else 1, "error": 1 if len(seen) > 1 else 0, "pages": 80 if len(seen) > 1 else 20, "misses": 7 if len(seen) > 1 else 1,
+                "ms_total": 430 if len(seen) > 1 else 100, "ms_max": 200}
+        more = {"wakes": 20 if len(seen) > 1 else 5, "hibernations": hibernations, "lazy_restores": lazy} if newer else {}
         more_admission = {"unavailable_by_reason": {"store_unavailable": 4 if len(seen) > 1 else 1, "breaker_open": 2},
                                     "awake_limit_by": {"no_wait": 0, "wait_expired": 5 if len(seen) > 1 else 1}} if newer else {}
         return {"admission": {"in_flight": 3, "refused": counted, "disk_used_bytes": 50 * MB, "disk_budget_bytes": 100 * MB, **more_admission}, "pressure": pressure, **more}
@@ -465,7 +478,7 @@ def refusal_scenario(name, grown, statuses=None, newer=False, reasons=None):
     finally:
         measure[0] = "ws"
         m.Round.run_generators, m.admin_json = real, real_admin
-    return {k: record[k] for k in ("refusals", "notes", "admission", "evictions", "statuses_503_by_reason")}
+    return {k: record[k] for k in ("refusals", "notes", "admission", "evictions", "lazy_restores", "statuses_503_by_reason")}
 
 
 results["refusals"] = {"attributed": refusal_scenario("refusals_some", {"memory": 0, "wake_gate": 6, "busy": 1}),
