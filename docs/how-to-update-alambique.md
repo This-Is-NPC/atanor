@@ -48,7 +48,13 @@ on `:alambique` too. With the override both resolve to the pinned release.
      (cd $d && mise exec -- mix deps.update alambique alambique_testkit)
    done
    (cd lab/app && mise exec -- mix deps.update alambique)
+   for d in examples/live-counter cluster/load; do
+     (cd $d && mise exec -- mix deps.update alambique)
+   done
    ```
+
+   Every `mix.lock` of the repository names the tag of `alambique.ref`;
+   `test/atanor/alambique_pin_test.exs` fails on one that does not.
 
 3. Check that one Alambique is used and that it is the pinned release:
 
