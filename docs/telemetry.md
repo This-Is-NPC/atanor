@@ -203,6 +203,13 @@ the limit or more (design §4.3,
 * `wake_ms` is the time those wakes took, from the `duration` of the same event: `total` (the sum, in
   milliseconds) and `max` (the longest wake). `total / wakes` is the mean wake. It does not include the time
   a wake waited for a slot.
+* `lazy_restores` counts the restores that ended lazily on this node since it started, from Alambique's
+  `[:alambique, :replication, :hydrate]` event: `ok` and `error` (by the `result` of the event), `pages` (the
+  pages the restore fetched), `misses` (the pages a query waited for: such a read holds a dirty I/O thread until
+  the page comes from the store), `ms_total` (the sum of the `duration`, in milliseconds) and `ms_max` (the
+  longest). A cell is restored lazily only when its files are at least `lazy_restore: [min_bytes:]` (4 MiB by
+  default, `ATANOR_LAZY_RESTORE_MIN_BYTES`), so a node of small cells counts 0. As with `wakes`, the event names
+  no instance.
 * `hibernations.compaction` counts the cells hibernated on this node since it started, by the outcome of the
   compaction Alambique runs on the WAL tail before it releases the lease: `none` (not tried, or the call had
   less than `release_reserve_ms` left), `done`, `deadline` (the deadline passed and the cell was released with

@@ -76,7 +76,13 @@ defmodule Atanor.Admission do
   @overloaded_crowded 31
   @overloaded_max_children 32
   @compaction_busy 33
-  @counters 33
+  @lazy_ok 34
+  @lazy_error 35
+  @lazy_pages 36
+  @lazy_misses 37
+  @lazy_ms_total 38
+  @lazy_ms_max 39
+  @counters 39
   @warn_every_ms 1_000
   @deadline {__MODULE__, :deadline}
 
@@ -260,6 +266,40 @@ defmodule Atanor.Admission do
   def wake_ms(name) do
     counters = handle(name).counters
     %{total: :atomics.get(counters, @wake_ms_total), max: :atomics.get(counters, @wake_ms_max)}
+  end
+
+  @doc false
+  # Counts a lazy restore that ended (`lazy_restores/1`): its `result`, the `pages` it fetched, the `misses`
+  # (pages a query waited for) and the `ms` it took.
+  @spec lazy_restore(atom, atom, non_neg_integer, non_neg_integer, non_neg_integer) :: :ok
+  def lazy_restore(name, result, pages, misses, ms) do
+    case :persistent_term.get({__MODULE__, name}, nil) do
+      nil ->
+        :ok
+
+      %{counters: counters} ->
+        :atomics.add(counters, if(result == :ok, do: @lazy_ok, else: @lazy_error), 1)
+        :atomics.add(counters, @lazy_pages, pages)
+        :atomics.add(counters, @lazy_misses, misses)
+        :atomics.add(counters, @lazy_ms_total, ms)
+        put_max(counters, @lazy_ms_max, ms)
+    end
+  end
+
+  @doc "The lazy restores on this node since it started: how many ended `ok` and in `error`, their pages and misses, and the time they took (sum and longest, in milliseconds)."
+  @spec lazy_restores(atom) :: %{atom => non_neg_integer}
+  def lazy_restores(name) do
+    counters = handle(name).counters
+    get = &:atomics.get(counters, &1)
+
+    %{
+      ok: get.(@lazy_ok),
+      error: get.(@lazy_error),
+      pages: get.(@lazy_pages),
+      misses: get.(@lazy_misses),
+      ms_total: get.(@lazy_ms_total),
+      ms_max: get.(@lazy_ms_max)
+    }
   end
 
   @compaction_counters %{
