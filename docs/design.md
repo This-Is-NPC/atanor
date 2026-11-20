@@ -1098,7 +1098,7 @@ a `placement:` the operator also names the `meta_store:` that holds the rest:
 | `<prefix>/packages/<sha256>` | package bytes, written once with `If-None-Match: *` |
 | `<prefix>/owners/<namespace>` | the worker that owns a cell namespace, written once with `If-None-Match: *` (§3.3) |
 | `<prefix>/workers/<name>/head` | JSON: active id, previous ids, revision; replaced with `If-Match` |
-| `<prefix>/alarms/<minute>/<shard>/<at_ms>/<worker>/<cell-id>` | alarm and job index entries, empty objects (§7.4, §15.3) |
+| `<prefix>/alarms/<minute>/<at_ms>/<shard>/<worker>/<cell-id>` | alarm and job index entries, empty objects (§7.4, §15.3) |
 | `<prefix>/meta/alarms/shards` | the alarm shard count, written on the first start (§7.4) |
 | `<prefix>/operations/<id>` | one bulk-operation record and cursor (§15.6) |
 | `<prefix>/crashes/<node>/<id>` | one crash report (§17.2) |
@@ -1721,11 +1721,27 @@ fires on the next tick. Both need `alarms: true` and the cell's namespace grante
 
 The row in the cell's table `_atanor_alarms(worker, at_ms, payload, attempts)` is
 authoritative. The store's index holds one empty object per pending alarm, named
-`alarms/<minute>/<shard>/<at_ms>/<worker>/<cell-id>`, where `minute` is
-`at_ms / 60000` padded to 10 digits (lexicographic order is time order) and
-`shard` is the hash of the cell id modulo 64. It lets a scheduler find due
-alarms with list calls and without waking cells; the time in the name lets it skip
-alarms of the current minute that are not due yet without touching their cells.
+`alarms/<minute>/<at_ms>/<shard>/<worker>/<cell-id>`, where `minute` is
+`at_ms / 60000` padded to 10 digits, `at_ms` is padded to 15 digits (lexicographic
+order is time order, also inside a minute) and `shard` is the hash of the cell id
+modulo 64. It lets a scheduler find due alarms with list calls and without waking
+cells. The time comes before the shard so that the scan stops at the first key of
+the current minute that is not due: its cost follows the due entries, not the
+entries of the minute that wait (job leases are at now + `timeout_ms`). With the
+earlier layout the scan read them all: in the lab's jobs measure 255 of 9,891 LISTs
+took more than 1 s, growing from 1.0 to 1.8 s through the step.
+
+**Layout migration (0.9.0).** Releases before 0.9.0 wrote
+`alarms/<minute>/<shard>/<at_ms>/<worker>/<cell-id>`. This release still parses,
+fires and deletes such entries, and writes only the new layout; the next release
+drops the old one. The layouts are told apart by the width of the third segment (a
+15-digit time, never a shard). A padded time starts with `0`, so the old keys of a
+minute whose shard starts with 1 to 9 sort after all new keys of that minute. When
+a full page ends at a new key that is not due, the scan lists the rest of that
+minute once more (after `alarms/<minute>/0~`), so a due old key is never hidden
+behind a not-due new one; this is one extra LIST on a full page. Every delete uses
+the key that was read. Where only a time is known (a replaced or cancelled alarm,
+the `@jobs` entry that a rearm replaces) both layouts are deleted.
 
 **Write order.** `set_alarm` writes the index entry first, then the row in a cell
 transaction, then deletes the entry of the time it replaced. A crash between
@@ -1740,9 +1756,9 @@ for `timeout_ms` after it was written, which bounds a `set_alarm`. `cancel_alarm
 then its entry.
 
 **Scheduler.** Each node runs `Atanor.Alarms.Scheduler`, which every `tick_ms`
-(1,000) lists `alarms/` oldest first, up to the current minute, page by page.
-No cursor is kept: fired entries are deleted, so the next tick starts again at
-the oldest. Only the shards the node owns are fired: the schedulers of a prefix
+(1,000) lists `alarms/` oldest first, up to the current minute, page by page,
+and stops at the first key that is not due. No cursor is kept: fired entries are
+deleted, so the next tick starts again at the oldest. Only the shards the node owns are fired: the schedulers of a prefix
 are the members of the `:pg` group `{Atanor.Alarms, prefix}`, and a shard
 belongs to the member with the highest `phash2({shard, member})` (rendezvous
 hashing), so one node owns all and a node that leaves moves only its shards. Views
@@ -4790,7 +4806,7 @@ alarm. `@jobs.at_ms` is the minimum of a pending job's `due_at_ms`, a running
 job's `claimed_until_ms` and a cron `next_at_ms`.
 
 The store index entry
-`alarms/<minute>/<shard>/<at_ms>/@jobs/<cell-id>/<nonce>` is written before the
+`alarms/<minute>/<at_ms>/<shard>/@jobs/<cell-id>/<nonce>` is written before the
 row, as alarms do, with a random nonce that is also kept in the row's `payload`.
 Whoever moves or deletes the row deletes exactly that entry (`Jobs.apply_rearm/3`
 after the commit, `Alarms.claim/7` for the entry it scanned), so none is left

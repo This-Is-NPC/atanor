@@ -362,12 +362,13 @@ it: the room `delta`, copied that way with a writer running, came back with `{"l
 **Repair**, observed to work: put an empty-looking object at the key of the missing entry. Read the row from a
 copy of the cell (`mix alambique.restore rooms.delta out.db`, then
 `sqlite3 out.db 'select * from _atanor_alarms'`, or the file in `data_dir`), build the key
-`alarms/<minute, 10 digits>/<shard>/<at_ms>/@jobs/<namespace>.<key>/<nonce>` (`minute` is `at_ms / 60000`, `shard`
-is `:erlang.phash2("<namespace>.<key>", 64)`; the body is the time in milliseconds) and write it:
+`alarms/<minute, 10 digits>/<at_ms, 15 digits>/<shard>/@jobs/<namespace>.<key>/<nonce>` (`minute` is `at_ms / 60000`,
+`at_ms` is padded with zeros, `shard` is `:erlang.phash2("<namespace>.<key>", 64)`; the body is the time in
+milliseconds) and write it. Entries in the older layout (`<minute>/<shard>/<at_ms>`) are still read for one release:
 
 ```sh
 curl -sS -o /dev/null -w '%{http_code}\n' --aws-sigv4 aws:amz:us-east-1:s3 --user "$ACCESS:$SECRET" -X PUT \
-  --data "$(date +%s%3N)" "http://127.0.0.1:18433/atanor/atanor/alarms/0029913504/61/1794810284506/%40jobs/rooms.delta/3bd2283b"
+  --data "$(date +%s%3N)" "http://127.0.0.1:18433/atanor/atanor/alarms/0029913504/001794810284506/61/%40jobs/rooms.delta/3bd2283b"
 sleep 8; curl -s -H "host: scoreboard.localhost" http://127.0.0.1:14030/rooms/delta | jq -c '{last_seq,ranked_through}'
 ```
 

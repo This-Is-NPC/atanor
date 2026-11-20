@@ -5,7 +5,7 @@ defmodule Atanor.AlarmsTest do
   import Atanor.Test.Await
 
   alias Atanor.{Alarms, Cell, Env, Store}
-  alias Atanor.Test.{AlarmWorker, Manifests}
+  alias Atanor.Test.{AlarmWorker, CountingStore, Manifests}
   alias AlambiqueTestkit.{ManualClock, MemoryStore}
   alias AtanorTestkit.Node
 
@@ -122,6 +122,81 @@ defmodule Atanor.AlarmsTest do
       ManualClock.advance(world, 3_600_000)
       Alarms.run(node.name, fn _ -> true end)
       assert until(fn -> index(node) == [] end)
+    end
+  end
+
+  describe "the index layout" do
+    defp counted_store do
+      name = Module.concat(__MODULE__, "Store#{System.unique_integer([:positive])}")
+      {:ok, pid} = MemoryStore.start_link(name: name)
+      Process.unlink(pid)
+      # Registered before the node's own, so the node stops first.
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+      CountingStore.wrap({MemoryStore, MemoryStore.config(name)}, "alarms/")
+    end
+
+    test "a tick reads the due keys and one page, however many entries are not due" do
+      store = counted_store()
+      {node, _world} = start(store: store, alarms: [tick_ms: 3_600_000, page_size: 10])
+      handle = Store.handle(node.name)
+      config = Atanor.Registry.config(node.name)
+
+      for n <- 1..3, do: :ok = Alarms.put_index(handle, config, @start - 1_000, "clock", "clock.due#{n}")
+
+      tick = fn ->
+        CountingStore.reset_lists(store)
+        Alarms.run(node.name, fn _ -> true end)
+        CountingStore.lists(store)
+      end
+
+      # Job leases are at now + 30 s: not due, in the current minute.
+      for n <- 1..20, do: :ok = Alarms.put_index(handle, config, @start + 5_000 + n, "@jobs", "clock.nd#{n}")
+      {few_lists, few_keys} = tick.()
+
+      for n <- 21..400, do: :ok = Alarms.put_index(handle, config, @start + 5_000 + n, "@jobs", "clock.nd#{n}")
+      {many_lists, many_keys} = tick.()
+
+      # The first LIST, plus the one that looks for entries of the old layout.
+      assert {few_lists, few_keys} == {many_lists, many_keys}
+      assert many_lists <= 2
+      assert many_keys <= 10
+    end
+
+    # Writes the entry of `key` in the layout before 0.9.0 instead: shard before time.
+    defp to_legacy(node, id) do
+      store = Store.handle(node.name)
+      [key] = Enum.filter(index(node), &String.contains?(&1, "/#{id}"))
+      ["alarms", minute, at, shard, worker, id] = String.split(key, "/")
+      {:ok, body, _, _} = Store.get(store, key)
+      :ok = Store.delete(store, key)
+      legacy = Enum.join(["alarms", minute, shard, String.trim_leading(at, "0"), worker, id], "/")
+      {:ok, _} = Store.put(store, legacy, body)
+      legacy
+    end
+
+    test "entries of the old layout fire once next to new ones, and the ones not due stay" do
+      {node, world} = start(alarms: [page_size: 2])
+
+      for {key, at} <- [{"a", 1_000}, {"b", 1_000}, {"c", 15_000}, {"d", 15_000}],
+          do: set(node, key, @start + at, "p#{key}")
+
+      legacy = for key <- ["a", "c"], do: to_legacy(node, "clock.#{key}")
+      refute_receive {:alarm, _, _, _}, 100
+
+      ManualClock.advance(world, 2_000)
+      assert_receive {:alarm, "a", "pa", 1}, 5_000
+      assert_receive {:alarm, "b", "pb", 1}, 5_000
+      refute_receive {:alarm, _, _, _}, 300
+
+      assert until(fn -> length(index(node)) == 2 end)
+      assert Enum.any?(index(node), &(&1 == List.last(legacy)))
+      assert fires(node, "a") == ["pa"]
+      assert fires(node, "b") == ["pb"]
+
+      ManualClock.advance(world, 20_000)
+      assert_receive {:alarm, "c", "pc", 1}, 5_000
+      assert_receive {:alarm, "d", "pd", 1}, 5_000
+      assert until(fn -> index_empty?(node) end)
     end
   end
 
@@ -486,7 +561,7 @@ defmodule Atanor.AlarmsTest do
       set(node, "a", @start, "x")
 
       assert [key] = index(node)
-      shard = key |> String.split("/") |> Enum.at(2) |> String.to_integer()
+      shard = key |> String.split("/") |> Enum.at(3) |> String.to_integer()
       assert shard in 0..7
       assert Alarms.run(node.name, fn _ -> true end) == 1
       assert fires(node, "a") == ["x"]

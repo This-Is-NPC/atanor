@@ -81,7 +81,15 @@ defmodule Atanor.Jobs do
   defp delete_superseded(_instance, _cell, nil), do: :ok
 
   defp delete_superseded(instance, cell, {at, nonce}),
-    do: Alarms.delete_index(Store.handle(instance), Registry.config(instance), at, @jobs_worker, cell_id!(cell), nonce)
+    do:
+      Alarms.delete_previous_index(
+        Store.handle(instance),
+        Registry.config(instance),
+        at,
+        @jobs_worker,
+        cell_id!(cell),
+        nonce
+      )
 
   @doc "Enqueue a job in its own transaction, naming the worker directly."
   @spec enqueue_direct(atom, String.t(), Cell.address(), map) ::
@@ -878,7 +886,7 @@ defmodule Atanor.Jobs do
 
       {:deleted, current, nonce, rows} ->
         if rows > 0 and current,
-          do: Alarms.delete_index(Store.handle(instance), config, current, @jobs_worker, id, nonce)
+          do: Alarms.delete_previous_index(Store.handle(instance), config, current, @jobs_worker, id, nonce)
 
         :ok
 
@@ -887,7 +895,8 @@ defmodule Atanor.Jobs do
 
       {:moved, current, nonce, {next, new_nonce}, rows} ->
         if rows > 0 do
-          if current, do: Alarms.delete_index(Store.handle(instance), config, current, @jobs_worker, id, nonce)
+          if current,
+            do: Alarms.delete_previous_index(Store.handle(instance), config, current, @jobs_worker, id, nonce)
         else
           # Another writer moved the row first and its row names its own entry: the one written here, under
           # a nonce of its own, is referenced by no row.

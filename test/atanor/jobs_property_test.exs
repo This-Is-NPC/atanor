@@ -60,7 +60,8 @@ defmodule Atanor.JobsPropertyTest do
           assert at == Enum.min(due)
 
           assert {:ok, keys, _} = Store.list(Store.handle(node.name), "alarms/")
-          assert Enum.any?(keys, &(String.starts_with?(&1, "alarms/") and String.contains?(&1, "/#{at}/@jobs/jobs.p")))
+          padded = String.pad_leading("#{at}", 15, "0")
+          assert Enum.any?(keys, &(String.contains?(&1, "/#{padded}/") and String.contains?(&1, "/@jobs/jobs.p")))
         end
       after
         Node.stop(node)
