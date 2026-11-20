@@ -870,8 +870,8 @@ SLOW_STORE_LINE = re.compile(r"^(\d\d):(\d\d):(\d\d(?:\.\d+)?) .*HTTP request \w
 
 def store_stall(log, min_ms, min_requests):
     """Evidence of a store stall in a node's log: the node-to-store requests that took `min_ms` or more ("HTTP request PUT store:8333 took N ms"),
-    and the most of them within STORE_STALL_WINDOW_S seconds; `stalled` when that is `min_requests` or more. None without a slow request or when
-    `min_ms` is 0 (off). The log's clock is the time of day, so a window across midnight is not joined."""
+    and the most of them within STORE_STALL_WINDOW_S seconds; `stalled` when that is `min_requests` or more. None when `min_ms` is 0 (off); a log
+    without a slow request gives the clean evidence (`slow_requests` 0), so "read, nothing slow" differs from "not read". The log's clock is the time of day, so a window across midnight is not joined."""
     if not min_ms:
         return None
     slow = []
@@ -879,12 +879,10 @@ def store_stall(log, min_ms, min_requests):
         found = SLOW_STORE_LINE.match(line)
         if found and int(found[4]) >= min_ms:
             slow.append((int(found[1]) * 3600 + int(found[2]) * 60 + float(found[3]), int(found[4])))
-    if not slow:
-        return None
     times = [t for t, _ in slow]
-    window = max(sum(1 for u in times if t <= u < t + STORE_STALL_WINDOW_S) for t in times)
-    return {"slow_requests": len(slow), "max_ms": max(ms for _, ms in slow), "window_requests": window, "window_s": STORE_STALL_WINDOW_S,
-            "threshold_ms": min_ms, "min_requests": min_requests, "stalled": window >= min_requests}
+    window = max((sum(1 for u in times if t <= u < t + STORE_STALL_WINDOW_S) for t in times), default=0)
+    return {"slow_requests": len(slow), "max_ms": max((ms for _, ms in slow), default=0), "window_requests": window, "window_s": STORE_STALL_WINDOW_S,
+            "threshold_ms": min_ms, "min_requests": min_requests, "stalled": bool(slow) and window >= min_requests}
 
 
 def node_log_since(node, since):
@@ -1491,6 +1489,9 @@ class Round:
         if a.measure == "ws" and fd_max and fd_limit and fd_max >= a.fd_pct / 100 * fd_limit:
             criteria.append(f"file descriptors {fd_max} of {fd_limit}")
         record["criteria"] = list(criteria)
+        if a.max_store_stall_ms:  # the evidence of every attempt, read once, before any early verdict; only a step that would fail is judged on it
+            found = [store_stall(node_log_since(node, began or 0), a.max_store_stall_ms, a.store_stall_requests) for node in node_ids(info)]
+            record["store_stall"] = max(found, key=lambda e: (e["window_requests"], e["slow_requests"]), default=None)
         full = judge_store(record["store"], a.max_store_tmpfs_pct, a.max_store_disk_pct)
         if dead:  # before any invalid judgement: a node that stopped is the result
             if full:
@@ -1513,12 +1514,9 @@ class Round:
         stalled = judge_stall(gen["lag_p99_ms"] if gen["release_lag_p99_ms"] is None else gen["release_lag_p99_ms"], record["series"], a.max_lag_ms, a.max_throttle_jump_ms)
         if stalled:  # before the criteria: a stall fails a step by chance
             return {**record, "valid": False, "status": "invalid", "stop_reason": stalled}
-        if criteria and a.max_store_stall_ms:  # a step that would fail: was it the store? (the log is read only then)
-            found = [e for e in (store_stall(node_log_since(node, began or 0), a.max_store_stall_ms, a.store_stall_requests) for node in node_ids(info)) if e]
-            record["store_stall"] = max(found, key=lambda e: e["window_requests"], default=None)
-            stalled = judge_store_stall(record["store_stall"])
-            if stalled:
-                return {**record, "valid": False, "status": "invalid", "stop_reason": stalled}
+        stalled = judge_store_stall(record["store_stall"]) if criteria else None
+        if stalled:
+            return {**record, "valid": False, "status": "invalid", "stop_reason": stalled}
         if criteria:
             return {**record, "status": "fail", "stop_reason": "; ".join(criteria)}
         if record["achieved_ratio"] is not None and record["achieved_ratio"] < a.delivery:

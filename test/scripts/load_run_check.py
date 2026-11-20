@@ -402,13 +402,13 @@ BURST = slow_log(*(f"03:46:42.{900 + i:03d}" for i in range(12)))
 SPREAD = slow_log(*(f"03:{10 + i}:00.000" for i in range(12)))
 # A failing step whose node log shows a burst of slow store requests is INVALID ("stall:") and repeated once; a repeat that stalls too fails the
 # step on the store ("store:"), valid; a slow store spread over time, a few slow requests, requests under the limit and the check turned off leave the verdict (fail) as it was.
-def store_stall_scenario(name, logs, off=False):
+def store_stall_scenario(name, logs, off=False, passing=False):
     container()
     runs = []
 
     def generators(self, value, sampler):
         runs.append(value)
-        return [{**DOCUMENT, "statuses": {"200": 10}, "hist": {"9000": 10}}]
+        return [{**DOCUMENT, "statuses": {"200": 10}, "hist": {"5" if passing else "9000": 10}}]
 
     real = m.Round.run_generators, m.node_log_since
     round_, args = new_round(name)
@@ -429,7 +429,11 @@ results["store_slow_spread"] = store_stall_scenario("store_slow_spread", [SPREAD
 results["store_few_slow"] = store_stall_scenario("store_few_slow", [slow_log("03:46:42.900", "03:46:42.901")])
 results["store_fast"] = store_stall_scenario("store_fast", [slow_log("03:46:42.900", ms=999)])
 results["store_stall_off"] = store_stall_scenario("store_stall_off", [BURST], off=True)
-results["store_stall_pure"] = {"off": m.store_stall(BURST, 0, 10), "none": m.store_stall("", 1000, 10), "judge_none": m.judge_store_stall(None)}
+# every attempt carries the evidence: a passing step stays ok (not repeated) with slow requests; a clean log is "read, nothing slow", not None
+results["store_pass_slow"] = store_stall_scenario("store_pass_slow", [BURST], passing=True)
+results["store_pass_clean"] = store_stall_scenario("store_pass_clean", [slow_log()], passing=True)
+results["store_pass_off"] = store_stall_scenario("store_pass_off", [BURST], off=True, passing=True)
+results["store_stall_pure"] = {"off": m.store_stall(BURST, 0, 10), "none": m.store_stall("", 1000, 10), "judge_none": m.judge_store_stall(None), "judge_clean": m.judge_store_stall(m.store_stall("", 1000, 0))}
 
 
 # The 503 answers of a step are set against the refusal counters the node grew (all its causes); what no counter explains is counted and noted.

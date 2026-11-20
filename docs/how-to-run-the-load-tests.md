@@ -172,7 +172,7 @@ judged. A limit is exclusive: a step fails or is INVALID when it goes above it (
 | `fds` | `max_pct` (90) | FAIL: open descriptors share of the limit, `ws` |
 | `delivery` | `min_ratio` (0.95) | INVALID: achieved over planned, the generator or the host, not the node |
 | `store_fill` | `max_tmpfs_pct`, `max_disk_pct` (90) | INVALID: the store's tmpfs (on disk: its filesystem) share used at any sample |
-| `store_stall` | `min_ms` (1000), `min_requests` (10), `window_s` (5), `fail_on_repeat` (true) | INVALID `stall:` on a step that would fail: slow node-to-store requests in the node log; when both attempts stall the step FAILS with `store:` |
+| `store_stall` | `min_ms` (1000), `min_requests` (10), `window_s` (5), `fail_on_repeat` (true) | Slow node-to-store requests in the node log, recorded on every step (`store_stall`); INVALID `stall:` on a step that would fail; when both attempts stall the step FAILS with `store:` |
 | `generator_lag` | `max_ms` (50) | INVALID `stall:`: the generator's own release lag p99 |
 | `throttle` | `max_jump_ms` (5000), `jump_factor` (5) | INVALID `stall:`: growth of the node's CPU throttling between two samples, and this many times the median growth |
 | `host_load` | `max` (1), `quiet_window_s` (60), `quiet_max_wait_s` (1800) | The foreign load of the host: a step waits for it; a step whose mean exceeds `max` is INVALID |
@@ -372,13 +372,15 @@ and `/proc/meminfo`. Per step, in this order (the limits are the `[judging]` rul
 
    The store can stall too: a second where its answers all take about a second (observed: 64 node-to-store requests of
    1.0 to 1.1 s in the last second of a step, in-flight up to 225, p99 651 ms, while the rest of the step was healthy).
-   That is the store's fault, not the node's ceiling. When a step would fail on a criterion, `load-run` reads the node's
-   log from the start of the step (`docker logs --since`) and counts the lines `HTTP request PUT store:8333 took N ms`
-   with N at or above `store_stall.min_ms`. When `store_stall.min_requests` of them fall within `window_s`, the
-   step is INVALID with `stall: store stalled, N node-to-store requests took >= 1000 ms within 5 s (slowest M
-   ms)`. The evidence is `store_stall` in the step file (`slow_requests`, `max_ms`, `window_requests`, `window_s`,
-   `threshold_ms`, `min_requests`, `stalled`); it is `null` when the log showed no slow request, and a step that
-   passed is not read. Unlike the other INVALID verdicts, a stall repeats the step (`stall_repeats` times; a fresh
+   That is the store's fault, not the node's ceiling. On every attempt, `load-run` reads each node's log from the
+   start of the step (`docker logs --since`, once) and counts the lines `HTTP request PUT store:8333 took N ms`
+   with N at or above `store_stall.min_ms`. The evidence is `store_stall` in the step file (`slow_requests`, `max_ms`,
+   `window_requests`, `window_s`, `threshold_ms`, `min_requests`, `stalled`; the worst node's). A log without a slow
+   request gives `slow_requests: 0`, and `null` means the check is off, so "nothing slow" and "not read" differ. The
+   report lists the steps with slow requests under "Slow node-to-store requests of each step", passing steps
+   included. Only a step that would fail is judged on it: when `store_stall.min_requests` of the slow requests fall
+   within `window_s`, the step is INVALID with `stall: store stalled, N node-to-store requests took >= 1000 ms within
+   5 s (slowest M ms)`. A step that passes stays `ok`, stall or not. Unlike the other INVALID verdicts, a stall repeats the step (`stall_repeats` times; a fresh
    node when the step is fresh), so one chance event does not stop the round: the first attempt is kept in
    `first_attempt` of the step file and in `notes`. When the repeat is INVALID too, the usual INVALID path
    applies: the round stops and `load-run` exits 1. The exception is a store that stalls in both attempts (with

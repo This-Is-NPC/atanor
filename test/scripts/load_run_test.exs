@@ -401,7 +401,15 @@ defmodule Atanor.LoadRunTest do
     # a burst of slow node-to-store requests in the log of a failing step is a store stall: INVALID, repeated once, the evidence in the step file
     once = r["store_stall_once"]
     assert once["runs"] == [10, 10]
-    assert %{"status" => "fail", "valid" => true, "stop_reason" => "p99 " <> _, "store_stall" => :null} = once["first"]
+
+    assert %{
+             "status" => "fail",
+             "valid" => true,
+             "stop_reason" => "p99 " <> _,
+             "store_stall" => %{"slow_requests" => 0}
+           } =
+             once["first"]
+
     first = once["first"]["first_attempt"]
     assert first["status"] == "invalid"
 
@@ -441,9 +449,39 @@ defmodule Atanor.LoadRunTest do
     assert %{"slow_requests" => 2, "window_requests" => 2, "stalled" => false} =
              r["store_few_slow"]["first"]["store_stall"]
 
-    assert r["store_fast"]["first"]["store_stall"] == :null
+    # the evidence is read on every attempt: a log without a slow request is "read, nothing slow" (slow_requests 0), null is only "off"
+    assert %{"slow_requests" => 0, "max_ms" => 0, "window_requests" => 0, "stalled" => false} =
+             r["store_fast"]["first"]["store_stall"]
+
     assert r["store_stall_off"]["first"]["store_stall"] == :null
-    assert r["store_stall_pure"] == %{"off" => :null, "none" => :null, "judge_none" => :null}
+
+    assert r["store_stall_pure"] == %{
+             "off" => :null,
+             "none" => %{
+               "slow_requests" => 0,
+               "max_ms" => 0,
+               "window_requests" => 0,
+               "window_s" => 5.0,
+               "threshold_ms" => 1000.0,
+               "min_requests" => 10,
+               "stalled" => false
+             },
+             "judge_none" => :null,
+             "judge_clean" => :null
+           }
+
+    # a step that passes carries the evidence and stays ok, even when the slow requests are a stall: only a failing step is judged on it
+    slow = r["store_pass_slow"]
+    assert slow["summary"]["invalid"] == :null
+    assert %{"status" => "ok", "valid" => true, "stop_reason" => :null, "first_attempt" => :null} = slow["first"]
+
+    assert %{"slow_requests" => 12, "window_requests" => 12, "stalled" => true, "max_ms" => 1061} =
+             slow["first"]["store_stall"]
+
+    assert %{"status" => "ok", "slow_requests" => 0} =
+             Map.merge(r["store_pass_clean"]["first"], r["store_pass_clean"]["first"]["store_stall"])
+
+    assert r["store_pass_off"]["first"]["store_stall"] == :null
 
     # 503s over 1% of the answers fail a step (a criterion, not INVALID); 0.5% and exactly 1% pass; the useful rate leaves the 503s out
     refused = r["refused"]
