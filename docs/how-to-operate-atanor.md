@@ -458,6 +458,11 @@ Steps for a real upgrade:
 Not tested: a rolling upgrade of a cluster of three or more nodes in one group, and an upgrade under load.
 [how-to-replace-a-node.md](how-to-replace-a-node.md#steps) has the measured cost of a swap under load.
 
+**From 0.8 to 0.9: upgrade through 0.9.** 0.9.0 orders the alarm index keys by time inside a minute
+([design §7.4](design.md#74-alarms)). A 0.9 node reads and fires keys of both layouts; the release after it reads
+only the new one. During a rolling upgrade a node still on 0.8 does not fire the alarms that 0.9 nodes set; the 0.9
+nodes fire them. Do not skip 0.9 when you upgrade from 0.8.
+
 ## Common incidents
 
 ### The store breaker is open

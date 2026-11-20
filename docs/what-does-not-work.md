@@ -134,3 +134,16 @@ jobs `{"done":82,"pending":3,"running":1}` after more than 3 minutes, and `{"las
 when `alarms/` was copied last. The cell file held `@jobs|1794809947744|6b0c7899|0` and the bucket had no such
 index object. Writing the object made `ranked_through` equal `last_seq` within 8 s. A copy taken after `POST
 /drain` restored with every job run.
+
+## Dirty IO threads are not sized to the CPU quota on cgroup v1 hosts
+
+**What happens.** `rel/env.sh.eex` reads the CPU quota from cgroup v2 only. On a cgroup v1 host the node keeps the
+BEAM's 10 dirty IO threads whatever its quota, and Alambique's statement slots follow them (8). On a small quota their
+bursts can use up the CPU quota of each period: the node is throttled and its p99 grows.
+
+**Workaround.** Set the number yourself, for example `ERL_ZFLAGS="+SDio 1"` for a quota of 1 CPU
+([configuration.md](configuration.md#dirty-io-threads-and-the-cpu-quota)).
+
+**Evidence.** `daemon/rel/env.sh.eex` (`atanor_dio_flag`) and `test/scripts/node_env_test.exs`: a cgroup v1 line
+gives no flag. Under cgroup v2 with a quota of 1 CPU, the default 10 threads left the node throttled 150 to 173 s of
+180 s at 490 req/s; with 1 thread, about 40 s.
