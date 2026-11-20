@@ -131,6 +131,26 @@ Rules:
 | `ATANOR_REGISTRY_TTL_MS` | `registry_ttl_ms` | 15000 | How long the node's entry under `<prefix>/nodes/` is live without a renewal (`alambique: [registry: [ttl_ms:]]`). A node that stopped without leaving is forgotten after it plus the skew margin (2 s). It must exceed twice the skew margin and `ATANOR_REGISTRY_RENEW_MS`. |
 | `ATANOR_REGISTRY_RENEW_MS` | `registry_renew_ms` | 3000 | How often the node renews its entry and reads the peers; a new node is found within about this time (`registry: [renew_ms:]`). It costs two small requests per period per node. |
 
+### Dirty IO threads and the CPU quota
+
+The BEAM starts 10 dirty IO threads whatever the CPU limit of its container, and Alambique's SQLite calls run
+on them. Bursts across 10 threads use up a small CFS quota in each 100 ms period: with a quota of 1 CPU a
+node was throttled for 150 to 173 s of 180 s at 490 requests per second and missed its p99, and with one
+thread the same step passed with half the p99 and about 40 s of throttling.
+
+`rel/env.sh.eex` therefore adds `+SDio N` to the VM flags, with N the CPU quota of the process's cgroup
+rounded up, at least 1 (`cpu.max` `100000 100000` gives 1, `150000 100000` gives 2, `200000 100000` gives 2).
+It reads the cgroup from `/proc/self/cgroup` and `cpu.max` under `/sys/fs/cgroup`. Without a quota (`max`) it
+sets nothing and the BEAM keeps its 10. It reads cgroup v2 only: on a host with cgroup v1 it sets nothing, so
+give `+SDio` yourself there.
+
+To choose another number, set `+SDio` in `ERL_FLAGS`, `ERL_ZFLAGS` or `vm.args`, for example
+`ERL_ZFLAGS="+SDio 4"`. The VM reads `ERL_AFLAGS` (where the script puts its flag) first, then the command line
+and `vm.args`, then `ERL_FLAGS`, then `ERL_ZFLAGS`, and the last `+SDio` wins.
+
+The statement slots follow the dirty IO threads: see `sql: [max_concurrent_statements:]` in
+[Cells: limits](#cells-limits-memory-and-store-requests).
+
 ### The stop grace period
 
 A node drains for up to `stop.shutdown_ms` (75 s by default) after SIGTERM. Whatever stops it must wait longer,
@@ -233,8 +253,11 @@ region), `session_token:` and a credentials function in its own config, which
 Atanor passes through.
 
 - `sql: [max_concurrent_statements:]` is the most reads that run on a node at
-  once (default: the dirty IO schedulers minus two, at least 1). A read over it
-  is a 503 `overloaded`.
+  once. Default: the dirty IO schedulers minus two, but at least `min(dirty IO schedulers, 2)`, so 1, 2, 2, 2,
+  3 ... 8 for 1, 2, 3, 4, 5 ... 10 schedulers. Alambique's own default stops at 1, and a node with two
+  threads refused 2.2% of its reads as `busy` whenever a write ran on the other thread. A read over the limit
+  is a 503 `overloaded`. Give the option to override it. The daemon sizes the schedulers to the CPU quota
+  ([Dirty IO threads and the CPU quota](#dirty-io-threads-and-the-cpu-quota)).
 - `sql: [script_timeout_ms:]` (60,000) bounds a migration, a script and
   Alambique's own statements.
 - `compaction: [moved_scan_ms:, moved_scan_page:]` (60,000 and 100) set how
