@@ -29,3 +29,5 @@ erl_crash.dump*
 .env
 .env.*
 /load/results
+# A build copy left by an older image build; untracked, it made scripts/cluster-common tag every lab release -dirty.
+/cluster/.build/
