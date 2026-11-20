@@ -6,7 +6,7 @@ cluster of nodes, with compute and S3-compatible storage only. It is built on
 Alambique, which provides the cells, and it knows no product, organization,
 tenant or region.
 
-**Status:** version 0.8.0 <!-- x-release-please-version -->,
+**Status:** version 0.9.0 <!-- x-release-please-version -->,
 shipped as one daemon: a container image and a tarball ([install](#install)). The first
 release, 0.1.0, is from 2026-11-06; [CHANGELOG.md](CHANGELOG.md) lists every release and
 change. Open defects are in [docs/what-does-not-work.md](docs/what-does-not-work.md); the
@@ -33,8 +33,8 @@ needs the `export` again.
    image is published and pulls without a login; the clone is the tag of the same release.
 
    ```sh
-   export IMAGE=ghcr.io/this-is-npc/atanor:0.8.0 # x-release-please-version
-   git clone --depth 1 --branch v0.8.0 https://github.com/This-Is-NPC/atanor.git atanor-src # x-release-please-version
+   export IMAGE=ghcr.io/this-is-npc/atanor:0.9.0 # x-release-please-version
+   git clone --depth 1 --branch v0.9.0 https://github.com/This-Is-NPC/atanor.git atanor-src # x-release-please-version
    ```
 
    To run your own build instead, build the image from the clone and use it as `IMAGE` (about
@@ -191,7 +191,7 @@ rehearsal, an admin API, a CLI, telemetry and a read-only dashboard. The model i
 Atanor ships as one daemon, configured by `ATANOR_*` environment variables or a JSON file
 ([reference](docs/configuration.md#the-daemon-environment-and-file)).
 
-- **Container image (the default):** `docker pull ghcr.io/this-is-npc/atanor:0.8.0` <!-- x-release-please-version -->
+- **Container image (the default):** `docker pull ghcr.io/this-is-npc/atanor:0.9.0` <!-- x-release-please-version -->
   (`:latest` or a version tag), for linux/amd64 and linux/arm64. It pulls without a login. It starts
   a node with no argument and runs the `atanor` command for `deploy`, `status` and the rest.
 - **Tarball:** `atanor-<version>-linux-<arch>.tar.gz`, with its sha256, on each GitHub release from
