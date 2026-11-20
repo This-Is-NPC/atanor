@@ -148,6 +148,10 @@ To choose another number, set `+SDio` in `ERL_FLAGS`, `ERL_ZFLAGS` or `vm.args`,
 `ERL_ZFLAGS="+SDio 4"`. The VM reads `ERL_AFLAGS` (where the script puts its flag) first, then the command line
 and `vm.args`, then `ERL_FLAGS`, then `ERL_ZFLAGS`, and the last `+SDio` wins.
 
+An app whose release files `mix atanor.release` wrote before this script sized the dirty IO threads keeps its
+old copy of `rel/env.sh.eex`. Copy `rel/env.sh.eex` from the `atanor` dependency (`deps/atanor/daemon/rel/`), or
+run `mix atanor.release --force`, which also rewrites the `Dockerfile` and the entry point it generated.
+
 The statement slots follow the dirty IO threads: see `sql: [max_concurrent_statements:]` in
 [Cells: limits](#cells-limits-memory-and-store-requests).
 

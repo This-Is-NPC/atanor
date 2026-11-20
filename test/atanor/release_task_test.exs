@@ -131,4 +131,14 @@ defmodule Atanor.ReleaseTaskTest do
       assert_raise Mix.Error, ~r/usage/, fn -> run(dir, [atanor: []], ["--nope"]) end
     end
   end
+
+  # The apps of this repository that the task generated keep its copies: a change to daemon/rel that does not reach
+  # them would leave the load lab and the example running the old start script.
+  for app <- ["cluster/load", "examples/live-counter"],
+      file <- ["rel/env.sh.eex", "rel/overlays/bin/atanor-entrypoint"] do
+    test "#{app}/#{file} is the copy of daemon/#{file}" do
+      assert File.read!(Path.join([@repo, unquote(app), unquote(file)])) ==
+               File.read!(Path.join([@repo, "daemon", unquote(file)]))
+    end
+  end
 end
