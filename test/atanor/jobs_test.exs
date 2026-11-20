@@ -95,7 +95,7 @@ defmodule Atanor.JobsTest do
 
     {:ok, keys, _} = Atanor.Store.list(Atanor.Store.handle(node.name), "alarms/")
     assert [key] = Enum.filter(keys, &String.contains?(&1, "/@jobs/"))
-    assert String.contains?(key, "/#{@start + 100_000}/")
+    assert String.contains?(key, "/#{String.pad_leading("#{@start + 100_000}", 15, "0")}/")
   end
 
   test "an overdue wake whose index object is missing is put back by the next enqueue" do

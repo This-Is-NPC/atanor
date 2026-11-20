@@ -3,7 +3,16 @@ defmodule Atanor.Test.CountingStore do
   @behaviour Alambique.Store
 
   @doc "Wraps `{module, config}`; `reads/1` counts the `get` calls of keys with `fragment`."
-  def wrap({module, config}, fragment), do: {__MODULE__, {module, config, fragment, :counters.new(3, [])}}
+  def wrap({module, config}, fragment), do: {__MODULE__, {module, config, fragment, :counters.new(5, [])}}
+
+  @doc "The `list` calls whose prefix contains the fragment, and the keys they returned."
+  def lists({__MODULE__, {_, _, _, counter}}), do: {:counters.get(counter, 4), :counters.get(counter, 5)}
+
+  @doc "Zeroes the `list` counters."
+  def reset_lists({__MODULE__, {_, _, _, counter}}) do
+    :counters.put(counter, 4, 0)
+    :counters.put(counter, 5, 0)
+  end
 
   def reads({__MODULE__, {_, _, _, counter}}), do: :counters.get(counter, 1)
   def puts({__MODULE__, {_, _, _, counter}}), do: :counters.get(counter, 2)
@@ -32,7 +41,16 @@ defmodule Atanor.Test.CountingStore do
   def get_range({m, c, _, _}, key, offset, length), do: m.get_range(c, key, offset, length)
 
   @impl true
-  def list({m, c, _, _}, prefix, start_after, limit), do: m.list(c, prefix, start_after, limit)
+  def list({m, c, fragment, counter}, prefix, start_after, limit) do
+    result = m.list(c, prefix, start_after, limit)
+
+    if String.contains?(prefix, fragment) do
+      :counters.add(counter, 4, 1)
+      with {:ok, keys, _} <- result, do: :counters.add(counter, 5, length(keys))
+    end
+
+    result
+  end
 
   @impl true
   def delete({m, c, _, _}, key), do: m.delete(c, key)

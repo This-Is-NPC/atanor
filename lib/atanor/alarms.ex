@@ -2,8 +2,10 @@ defmodule Atanor.Alarms do
   @moduledoc """
   Alarms (design §7.4). A worker has at most one alarm per cell. The row in
   the cell's table `_atanor_alarms` is authoritative; the store holds an index
-  entry `alarms/<minute>/<shard>/<at_ms>/<worker>/<cell-id>` so due alarms are
-  found without waking cells.
+  entry `alarms/<minute>/<at_ms>/<shard>/<worker>/<cell-id>` so due alarms are
+  found without waking cells. The time is padded, so the scan stops at the first
+  key that is not due. Keys of the layout before 0.9.0 (shard before time) are
+  still read and deleted for one release.
 
   Writes put the index entry first, then the row, so a crash leaves at worst
   a stale entry. An entry fires only when the cell's row has the same time:
@@ -36,6 +38,7 @@ defmodule Atanor.Alarms do
   @shards_key "meta/alarms/shards"
   @table "_atanor_alarms"
   @jobs_worker "@jobs"
+  @at_width 15
 
   @doc "The reserved worker name of the jobs wake-up row."
   def jobs_worker, do: @jobs_worker
@@ -90,7 +93,7 @@ defmodule Atanor.Alarms do
                previous
              end)
            end) do
-      if previous != nil and previous != at_ms, do: delete_index(store, config(instance), previous, worker, id)
+      if previous != nil and previous != at_ms, do: delete_previous_index(store, config(instance), previous, worker, id)
       :ok
     end
   end
@@ -124,7 +127,7 @@ defmodule Atanor.Alarms do
                {:error, reason} -> if no_table?(reason), do: nil, else: Tx.rollback(tx, reason)
              end
            end) do
-      if previous != nil, do: delete_index(Store.handle(instance), config(instance), previous, worker, id)
+      if previous != nil, do: delete_previous_index(Store.handle(instance), config(instance), previous, worker, id)
       :ok
     end
   end
@@ -212,22 +215,57 @@ defmodule Atanor.Alarms do
     end
   end
 
-  defp page(instance, config, store, minute, now, owns?, after_key, fired) do
-    case Store.list(store, "alarms/", after_key, config.alarms.page_size) do
+  # Lists the index oldest first and fires the due entries. A key of the current minute that is not due ends
+  # the scan, because the keys of a minute are in time order. A key of the old layout (shard before time)
+  # that follows is listed on its own, for one release (design §7.4).
+  defp page(instance, config, store, minute, now, owns?, after_key, fired, prefix \\ "alarms/") do
+    page_size = config.alarms.page_size
+
+    case Store.list(store, prefix, after_key, page_size) do
       {:ok, [], _} ->
         fired
 
       {:ok, keys, _} ->
-        {due, rest} = Enum.split_while(keys, &(minute_of(&1) <= minute))
-        count = fire_all(instance, config, store, due, now, owns?)
+        eligible = Enum.take_while(keys, &(minute_of(&1) <= minute))
+        fired = fired + fire_all(instance, config, store, eligible, now, owns?)
+        last = List.last(keys)
+        next = if length(keys) == page_size, do: next_page(last, prefix, minute, now)
 
-        if rest == [] and length(keys) == config.alarms.page_size,
-          do: page(instance, config, store, minute, now, owns?, List.last(keys), fired + count),
-          else: fired + count
+        case next do
+          nil ->
+            fired
+
+          :legacy ->
+            page(
+              instance,
+              config,
+              store,
+              minute,
+              now,
+              owns?,
+              "alarms/#{pad(minute)}/0~",
+              fired,
+              "alarms/#{pad(minute)}/"
+            )
+
+          :on ->
+            page(instance, config, store, minute, now, owns?, last, fired, prefix)
+        end
 
       {:error, reason} ->
         Logger.warning("atanor: could not list the alarm index: #{inspect(reason)}")
         fired
+    end
+  end
+
+  # After a full page: stop past the current minute; at the first new-layout key that is not due, skip to the
+  # old-layout keys of the minute, which sort after the new ones (their shard starts with 1-9, a padded time
+  # with 0); otherwise page on.
+  defp next_page(last, prefix, minute, now) do
+    case parse(last) do
+      _ when prefix != "alarms/" -> :on
+      {:ok, %{layout: :new, at_ms: at_ms}} when at_ms > now -> :legacy
+      _ -> if minute_of(last) > minute, do: nil, else: :on
     end
   end
 
@@ -316,16 +354,14 @@ defmodule Atanor.Alarms do
   # is stale only once the entry is older than `timeout_ms`, which bounds a
   # `set_alarm`. A scan that finds an entry earlier leaves it for the next one.
   defp expire(store, config, entry) do
-    key = index_key(entry.at_ms, entry.worker, entry.id, config.alarms.shards, entry.nonce)
-
-    case Store.get(store, key) do
+    case Store.get(store, entry.key) do
       {:ok, body, _etag, _meta} ->
         written = with {ms, ""} <- Integer.parse(body), do: ms
 
         if is_integer(written) and now_ms(config) - written < config.alarms.timeout_ms do
           :skipped
         else
-          delete_index(store, config, entry.at_ms, entry.worker, entry.id, entry.nonce)
+          Store.delete(store, entry.key)
           :stale
         end
 
@@ -357,11 +393,11 @@ defmodule Atanor.Alarms do
           :skipped
 
         nil ->
-          delete_index(store, config, entry.at_ms, entry.worker, id, entry.nonce)
+          Store.delete(store, entry.key)
           :lost
 
         payload ->
-          delete_index(store, config, entry.at_ms, entry.worker, id, entry.nonce)
+          Store.delete(store, entry.key)
           fun.(%{entry | at_ms: lease}, payload, attempt)
       end
     else
@@ -461,20 +497,36 @@ defmodule Atanor.Alarms do
   defp config(instance), do: Registry.config(instance)
 
   @doc false
+  # An entry this node wrote, so in the current layout.
   def delete_index(store, config, at_ms, worker, id, nonce \\ nil),
     do: Store.delete(store, index_key(at_ms, worker, id, config.alarms.shards, nonce))
 
   @doc false
+  # An entry that may predate the layout of 0.9.0: deletes both keys. Drop the old one in the next release.
+  def delete_previous_index(store, config, at_ms, worker, id, nonce \\ nil) do
+    delete_index(store, config, at_ms, worker, id, nonce)
+    Store.delete(store, legacy_key(at_ms, worker, id, config.alarms.shards, nonce))
+  end
+
+  # `alarms/<minute>/<at_ms>/<shard>/<worker>/<id>[/<nonce>]`: the time is padded, so a minute is in time order.
+  @doc false
   def index_key(at_ms, worker, id, shards \\ @default_shards, nonce \\ nil),
-    do:
-      "alarms/#{pad(minute(at_ms))}/#{shard(id, shards)}/#{at_ms}/#{worker}/#{id}" <>
-        if(nonce, do: "/#{nonce}", else: "")
+    do: key("alarms/#{pad(minute(at_ms))}/#{pad(at_ms, @at_width)}/#{shard(id, shards)}", worker, id, nonce)
+
+  # The layout before 0.9.0: `alarms/<minute>/<shard>/<at_ms>/<worker>/<id>[/<nonce>]`.
+  defp legacy_key(at_ms, worker, id, shards, nonce),
+    do: key("alarms/#{pad(minute(at_ms))}/#{shard(id, shards)}/#{at_ms}", worker, id, nonce)
+
+  defp key(head, worker, id, nonce), do: "#{head}/#{worker}/#{id}" <> if(nonce, do: "/#{nonce}", else: "")
 
   defp parse(key) do
-    with ["alarms", _minute, shard, at_ms, worker, id | rest] <- String.split(key, "/"),
+    with ["alarms", _minute, third, fourth, worker, id | rest] <- String.split(key, "/"),
+         # The padded time tells the layouts apart: a shard is never that wide.
+         {layout, at_ms, shard} <-
+           if(byte_size(third) == @at_width, do: {:new, third, fourth}, else: {:legacy, fourth, third}),
          {at_ms, ""} <- Integer.parse(at_ms),
          {shard, ""} <- Integer.parse(shard) do
-      {:ok, %{at_ms: at_ms, shard: shard, worker: worker, id: id, nonce: List.first(rest)}}
+      {:ok, %{at_ms: at_ms, shard: shard, worker: worker, id: id, nonce: List.first(rest), key: key, layout: layout}}
     else
       _ -> :error
     end
@@ -482,7 +534,7 @@ defmodule Atanor.Alarms do
 
   defp minute_of("alarms/" <> rest), do: rest |> String.split("/", parts: 2) |> hd() |> String.to_integer()
   defp minute(at_ms), do: div(at_ms, 60_000)
-  defp pad(minute), do: minute |> Integer.to_string() |> String.pad_leading(10, "0")
+  defp pad(number, width \\ 10), do: number |> Integer.to_string() |> String.pad_leading(width, "0")
   @doc false
   def shard(id, shards \\ @default_shards), do: :erlang.phash2(id, shards)
 
