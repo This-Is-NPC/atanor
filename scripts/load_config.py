@@ -32,6 +32,7 @@ UNITS = {"http-native": "req/s", "http-wasm": "req/s", "http-wasm-jobs": "req/s"
 FACTORS = [0.75, 1.0, 1.25, 1.5]  # the steps of a ceiling plan, as fractions of its ceiling
 SIZE = re.compile(r"^[0-9]+[kmg]?b?$", re.IGNORECASE)  # as size_bytes of scripts/load-common
 CEILING_KEY = re.compile(r"^([a-z-]+):([0-9]+)$")
+ERL_FLAGS = re.compile(r"^(?:|(?:\+[A-Za-z]+|[A-Za-z0-9:_.]+)(?: (?:\+[A-Za-z]+|[A-Za-z0-9:_.]+))*)$")  # `+SDio 2 +S 1:1`; it ends up in an env var
 
 
 class ConfigError(Exception):
@@ -48,9 +49,9 @@ class Leaf:
     """One value: `kind` int, float, bool, str, size or list; `lo`/`hi` bound a number (`open_lo`: lo itself is out); `choices`
     restrict a str or the items of a list; `item` is the kind of the items of a list."""
 
-    def __init__(self, kind, default, lo=None, hi=None, open_lo=False, choices=None, item=None, nonempty=False, ascending=False):
+    def __init__(self, kind, default, lo=None, hi=None, open_lo=False, choices=None, item=None, nonempty=False, ascending=False, pattern=None):
         self.kind, self.default, self.lo, self.hi, self.open_lo = kind, default, lo, hi, open_lo
-        self.choices, self.item, self.nonempty, self.ascending = choices, item, nonempty, ascending
+        self.choices, self.item, self.nonempty, self.ascending, self.pattern = choices, item, nonempty, ascending, pattern
 
     def range_text(self):
         parts = []
@@ -89,6 +90,9 @@ class Leaf:
                 return None
             if self.choices and value not in self.choices:
                 problems.append(f"{path}: {value!r} is not one of {', '.join(self.choices)}")
+                return None
+            if self.pattern and not self.pattern.match(value):
+                problems.append(f"{path}: {value!r} is not a list of Erlang flags, use words, numbers and `+flag` separated by single spaces (+SDio 2 +S 1:1)")
                 return None
             return value
         return self.check_list(path, value, problems)
@@ -224,7 +228,7 @@ SCHEMA = Table({
     "store": Table({"backing": Leaf("str", "tmpfs", choices=("tmpfs", "disk")), "tmpfs_size": Leaf("size", "1g"), "memory": Leaf("size", "2g"),
                     "cpus": positive(2), "latency_ms": Leaf("float", 25.0, lo=0)}),
     "balancer": Table({"cpus": positive(2), "memory": Leaf("size", "512m")}),
-    "node": Table({"http_max_connections": Leaf("int", 0, lo=0),
+    "node": Table({"http_max_connections": Leaf("int", 0, lo=0), "erl_flags": Leaf("str", "", pattern=ERL_FLAGS),
                    "compaction": Table({"hold_bytes": Leaf("int", 0, lo=0), "concurrency": Leaf("int", 0, lo=0), "urgent_concurrency": Leaf("int", 0, lo=0),
                                          "merge_concurrency": Leaf("int", 0, lo=0), "release_concurrency": Leaf("int", 0, lo=0)}),
                    "store": Table({"pool_size": Leaf("int", 0, lo=0), "pool_timeout_ms": Leaf("int", 0, lo=0)})}),
@@ -498,9 +502,9 @@ def judging_of(config, measure=None, load=None):
 
 
 def node_of(config):
-    """[node] as hashed: the keys left at 0 (the node's default) in `compaction` and `store` are left out, so a round that does not set them keeps its hash."""
+    """[node] as hashed: `erl_flags` and the keys left at 0 (the node's default) in `compaction` and `store` are left out while unset, so a round that does not set them keeps its hash."""
     node = config["node"]
-    return {"http_max_connections": node["http_max_connections"],
+    return {"http_max_connections": node["http_max_connections"], **({"erl_flags": node["erl_flags"]} if node["erl_flags"] else {}),
             **{name: given for name in ("compaction", "store") if (given := {k: v for k, v in node[name].items() if v})}}
 
 
@@ -535,7 +539,7 @@ def env_lines(config, scenario, measure=None):
     lines = {"CPUS": f"{scenario_settings['cpus']:g}", "MEMORY": scenario_settings["memory"], "TMPFS_SIZE": scenario_settings["data_tmpfs"],
              "STORE_DISK": "1" if store["backing"] == "disk" else "0", "STORE_TMPFS_SIZE": store["tmpfs_size"], "STORE_MEMORY": store["memory"],
              "STORE_CPUS": f"{store['cpus']:g}", "STORE_LATENCY_MS": f"{store['latency_ms']:g}", "LB_CPUS": f"{balancer['cpus']:g}", "LB_MEMORY": balancer["memory"],
-             "HTTP_MAX_CONNECTIONS": str(cap) if cap else ""}
+             "HTTP_MAX_CONNECTIONS": str(cap) if cap else "", "ERL_FLAGS": node["erl_flags"]}
     for table, prefix in (("compaction", "COMPACTION"), ("store", "S3")):
         for key, value in node[table].items():
             lines[f"{prefix}_{key.upper()}"] = str(value) if value else ""

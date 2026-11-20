@@ -171,8 +171,13 @@ defmodule Atanor.LoadConfigTest do
 
     # the compaction and the S3 pool of a node reach the lab as env lines; at 0 they are empty and the hash is as before
     n = r["node_options"]
-    assert n["env_default"] == List.duplicate("", 7)
-    assert n["env_set"] == ["67108864", "4", "8", "6", "2", "512", "3000"]
+    assert n["env_default"] == List.duplicate("", 8)
+    assert n["env_set"] == ["67108864", "4", "8", "6", "2", "512", "3000", "+SDio 2 +S 1:1"]
+
+    # node.erl_flags: "" by default and then not in the hash; a quote, ;, $, a backtick, a newline or a double space is refused
+    e = n["erl_flags"]
+    assert e["default"] == "" and e["default_hash_as_before"] and e["set_in_hash"] == "+SDio 2 +S 1:1"
+    assert e["ok"] == [] and e["empty_ok"] == [] and e["bad"] == List.duplicate(1, 8)
     assert n["hash_set_changes"] and n["hash_default_as_before"] and n["round_trip"]
     bad = Enum.join(n["bad"], "\n")
     assert bad =~ "node.compaction.concurrency" and bad =~ "node.compaction.hold_bytes"

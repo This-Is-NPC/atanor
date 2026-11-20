@@ -113,6 +113,7 @@ services:
       ATANOR_COMPACTION_RELEASE_CONCURRENCY: ${ATANOR_CLUSTER_COMPACTION_RELEASE_CONCURRENCY:-}
       ATANOR_S3_POOL_SIZE: ${ATANOR_CLUSTER_S3_POOL_SIZE:-}
       ATANOR_S3_POOL_TIMEOUT_MS: ${ATANOR_CLUSTER_S3_POOL_TIMEOUT_MS:-}
+      ERL_ZFLAGS: ${ATANOR_CLUSTER_ERL_ZFLAGS:-}
     volumes: [/var/lib/atanor]
     depends_on:
       bucket: {condition: service_completed_successfully}

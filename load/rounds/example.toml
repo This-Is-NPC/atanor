@@ -49,6 +49,7 @@ memory = "512m"    # memory limit of the load balancer
 
 [node]
 http_max_connections = 0   # http.max_connections of a node; 0 keeps the node's default (16384); ws steps need it above the highest step
+erl_flags = ""             # extra Erlang VM flags of a node, like "+SDio 2 +S 1:1" (a diagnostic of the VM threads in a CPU-limited cgroup); "" adds none
 
 [node.compaction]   # Alambique's compaction on a node; 0 keeps its default
 hold_bytes = 0          # memory for the files cells just replicated (default 33554432, 32 MiB)
