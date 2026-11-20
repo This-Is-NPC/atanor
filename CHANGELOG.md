@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.9.0](https://github.com/This-Is-NPC/atanor/compare/v0.8.0...v0.9.0) (2026-11-20)
+
+
+### Features
+
+* **load:** keep the store on a nodatacow dir ([33aa6ee](https://github.com/This-Is-NPC/atanor/commit/33aa6ee5d08f37c03a94f1bb69a21a0b6acfa607))
+* **load:** pass erlang flags to the lab nodes ([4e11d57](https://github.com/This-Is-NPC/atanor/commit/4e11d5736d038a69b9b6371ee25ff0cbfdfc7a20))
+* **load:** record lazy restores per step ([98fa2ff](https://github.com/This-Is-NPC/atanor/commit/98fa2ff51ffe9cf9dc0c3543177aa84b94cae1e7))
+* **load:** record store stalls on every step ([adee238](https://github.com/This-Is-NPC/atanor/commit/adee238c0f9680bccc277cee71eb22147983899d))
+* **load:** reset and audit the store per step ([a1bdfb7](https://github.com/This-Is-NPC/atanor/commit/a1bdfb7f32044d12377f0c3f00bf189bb746db8d))
+* **runtime:** count lazy restores ([86aac49](https://github.com/This-Is-NPC/atanor/commit/86aac490e4ddfdfaf0c3adb76bf8e7db1da00326))
+
+
+### Bug Fixes
+
+* **alarms:** order index keys by time in a minute ([da80099](https://github.com/This-Is-NPC/atanor/commit/da8009970caf983000f8525d674349de2bd95639))
+* **config:** accept lazy_restore verify_writes ([1002c4c](https://github.com/This-Is-NPC/atanor/commit/1002c4c2d0e3302a5c7c9103aabd603a0b053f76))
+* **daemon:** size dirty io to the cpu quota ([31bb464](https://github.com/This-Is-NPC/atanor/commit/31bb46487f226d2db37c121c0ee8bd34f8230af9))
+* **load:** start the cold start at the first wake ([dd490d7](https://github.com/This-Is-NPC/atanor/commit/dd490d7f031e7c9dacbea42a2f2091fac316f7b8))
+* **release:** refresh the generated rel copies ([691beec](https://github.com/This-Is-NPC/atanor/commit/691beecd1ee57a2c17277a6e5150e8346f2505d4))
+* **sql:** keep statement slots on small nodes ([f5b644d](https://github.com/This-Is-NPC/atanor/commit/f5b644dc9b95e69b5cb02814b91ca95e5475e8b8))
+
+
+### Performance Improvements
+
+* **load:** add the 026 round ([3a9d2e1](https://github.com/This-Is-NPC/atanor/commit/3a9d2e125830457a502d34203b56337dc3791d49))
+* **load:** add the 026r round ([6b77301](https://github.com/This-Is-NPC/atanor/commit/6b77301ded0d26aec8f705c898d09cee882f0a44))
+* **load:** add the 027 round ([9d018e6](https://github.com/This-Is-NPC/atanor/commit/9d018e6517c65d1ad6a6eaf93139c810203330d3))
+
 ## [0.8.0](https://github.com/This-Is-NPC/atanor/compare/v0.7.0...v0.8.0) (2026-11-19)
 
 
