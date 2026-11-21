@@ -9,8 +9,7 @@ tenant or region.
 **Status:** version 0.9.0 <!-- x-release-please-version -->,
 shipped as one daemon: a container image and a tarball ([install](#install)). The first
 release, 0.1.0, is from 2026-11-06; [CHANGELOG.md](CHANGELOG.md) lists every release and
-change. Open defects are in [docs/what-does-not-work.md](docs/what-does-not-work.md); the
-limits of the design are in [Limitations](#limitations) and in [docs/design.md](docs/design.md).
+change.
 
 ## What it is for
 
@@ -253,36 +252,11 @@ To develop Atanor ([how to build and test](docs/how-to-build-and-test.md)):
   dashboard when you build the library yourself. The daemon image holds both.
 - Optional, for the end-to-end OIDC test only: set `MAESTRO_TESTKIT` to a checkout of the Maestro testkit.
 
-## Limitations
-
-- WASM workers cannot serve TCP yet, and cannot read the change feed
-  ([design §14.8](docs/design.md#148-alarms-sockets-and-what-is-left-out)).
-- Discovery trusts the bucket: whoever can write `<prefix>/nodes/` decides whom the
-  nodes dial, so write access to the bucket must be as trusted as the cluster
-  ([discovery](docs/configuration.md#discovery)).
-- Cluster behavior was measured on one machine: three nodes and one SeaweedFS
-  process in VMs on one host, with injected latency and loss, not a real network
-  or a replicated bucket ([the lab](docs/how-to-run-the-cluster-lab.md)). Run the
-  scenarios on your own network before sizing.
-- Other limits of the design, each with its workaround, are in the "Limits"
-  paragraphs of [docs/design.md](docs/design.md) (for example the failover
-  window of [§8.10](docs/design.md#810-acting-on-a-confirmed-failure)).
-- The memory of a node grows with its awake cells ([configuration](docs/configuration.md#cells-limits-memory-and-store-requests)).
-  One lab VM measured a node in 1 CPU and 512 MB at about 590 native requests a second, 3300 idle WebSockets and
-  about 400 hot cells, and in 2 CPUs and 2 GB at 1641, 22500 and 2438
-  ([measured results](docs/how-to-run-the-load-tests.md#measured-results)). They are not guarantees: run the round
-  on your hardware before you size.
-- A file system that stalls writes slows the cells and the store; see
-  [the container cluster guide](docs/how-to-run-a-cluster-in-containers.md#keeping-the-data-in-memory).
-- A new build of the nodes replaces the whole cluster at once: Atanor has no
-  canary for node releases yet, and one returns once compatibility between
-  releases is designed.
-- Open defects: [docs/what-does-not-work.md](docs/what-does-not-work.md).
-
 ## Documentation
 
 [docs/README.md](docs/README.md) maps every page. Start with:
 
+- [Plan capacity](docs/capacity.md): the requests, hot cells and WebSockets to plan per node, the users per node, and when to add one.
 - [Run it in production](docs/how-to-run-in-production.md): balancer, TLS, private network, credentials.
 - [Operate it](docs/how-to-operate-atanor.md): what to monitor and alert on, backup and restore, upgrades, common incidents.
 - [Deploy a worker](docs/how-to-deploy-a-worker.md) with the `atanor` command, through a node or straight into the bucket ([reference](docs/cli.md)).

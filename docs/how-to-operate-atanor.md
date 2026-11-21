@@ -355,7 +355,7 @@ jobs through the index under `alarms/` ([design §15.12](design.md#1512-the-clai
 and an enqueue left a wake that it believed had an entry alone. That was fixed: when the wake of a cell is overdue by
 more than `alarms.timeout_ms`, the next enqueue or re-arm of that cell checks the index object and puts it back if
 it is missing. What remains is a cell with pending jobs that gets no new enqueue: it stays stuck
-([what-does-not-work.md](what-does-not-work.md)). Enqueue a job to the cell, or use the repair below.
+([known-limitations.md](known-limitations.md)). Enqueue a job to the cell, or use the repair below.
 
 Copying `alarms/` last (a second `mc mirror` after the first, with `--exclude 'atanor/alarms/*'`; in the lab bucket the objects sat under the prefix `atanor`) did not avoid
 it: the room `delta`, copied that way with a writer running, came back with `{"last_seq":50,"ranked_through":44}`.
@@ -502,7 +502,7 @@ full or throttled bucket. The reason of each failure is in the log (`:timeout_re
 log line, the store's own health, and the network. Do not restart the nodes; they reconnect by themselves and
 the breaker closes after one good probe. If the failures say `{:http, 403}`, the credentials or the bucket policy
 changed. If a breaker opens once in a while under load with a healthy store, see the open entry in
-[what-does-not-work.md](what-does-not-work.md).
+[known-limitations.md](known-limitations.md).
 
 ### The disk is full
 

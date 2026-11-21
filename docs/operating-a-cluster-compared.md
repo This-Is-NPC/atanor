@@ -128,7 +128,7 @@ work to a vendor but do not remove the items.
    (inference); the difference is not measured.
 5. **A store restart pauses all writes for about 30 s.** Observed: cells were served
    again 32 and 34 s after the restart began. The store is one SeaweedFS process here,
-   not a replicated bucket ([the README](../README.md#limitations)).
+   not a replicated bucket ([known limitations](known-limitations.md#limits-of-the-design)).
 6. **The client must handle two kinds of failed answer.** A refused call (503 `unavailable`,
    including `fenced`) did not run; 503 `unknown_outcome` may have run and is not repeated by Atanor
    ([the design](design.md#84-when-the-node-is-lost)).
@@ -187,7 +187,7 @@ work to a vendor but do not remove the items.
    operator's.
 8. **Not measured beyond one machine.** All numbers come from 12 cores, one Docker host,
    one SeaweedFS process; a real network, a replicated bucket, long runs and more than 3
-   nodes were not tried ([the README](../README.md#limitations)).
+   nodes were not tried ([known limitations](known-limitations.md#limits-of-the-design)).
 
 ## Reading the result
 
@@ -202,4 +202,4 @@ the data on tmpfs or on a file system that does not stall.
 
 - [how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md) to repeat the runs.
 - The "Limits" paragraphs of [design.md](design.md) and
-  [what-does-not-work.md](what-does-not-work.md) (open defects) before relying on a guarantee.
+  [known-limitations.md](known-limitations.md) (open defects) before relying on a guarantee.
