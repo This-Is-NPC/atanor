@@ -405,7 +405,7 @@ results["refused"] = {
 
 def slow_log(*stamps, ms=1061):
     """A node log with one slow store request at each time of day in `stamps` and an unrelated line."""
-    return "03:42:20.822 [info] atanor: ready\n" + "".join(f"{s} [warning] atanor: HTTP request PUT store:8333 took {ms} ms\n" for s in stamps)
+    return "03:42:20.822 [info] atanor: ready\n" + "".join(f"{s} [warning] atanor: HTTP request PUT store:8333/atanor/atanor/cells/ took {ms} ms\n" for s in stamps)
 
 
 BURST = slow_log(*(f"03:46:42.{900 + i:03d}" for i in range(12)))

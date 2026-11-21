@@ -7,9 +7,9 @@ defmodule Atanor.StoreLogTest do
     capture_log(fn -> :telemetry.execute([:alambique | event], measurements, meta) end)
   end
 
-  defp finch(event, duration_ms, meta) do
+  defp finch(event, duration_ms, meta, request \\ Finch.build(:get, "http://store:8333/bucket/key")) do
     measurements = %{duration: System.convert_time_unit(duration_ms, :millisecond, :native)}
-    meta = Map.put(meta, :request, Finch.build(:get, "http://store:8333/bucket/key"))
+    meta = Map.put(meta, :request, request)
     capture_log(fn -> :telemetry.execute([:finch | event], measurements, meta) end)
   end
 
@@ -62,18 +62,38 @@ defmodule Atanor.StoreLogTest do
     error = %Mint.TransportError{reason: :closed}
 
     assert finch([:request, :stop], 12, %{result: {:error, error}}) =~
-             "HTTP request GET store:8333 failed after 12 ms: socket closed"
+             "HTTP request GET store:8333/bucket/ failed after 12 ms: socket closed"
 
     assert finch([:request, :exception], 30, %{kind: :exit, reason: :timeout}) =~
-             "HTTP request of GET store:8333 raised after 30 ms: {:exit, :timeout}"
+             "HTTP request of GET store:8333/bucket/ raised after 30 ms: {:exit, :timeout}"
 
     assert finch([:queue, :exception], 5000, %{kind: :exit, reason: :timeout}) =~
-             "HTTP queue of GET store:8333 raised after 5000 ms"
+             "HTTP queue of GET store:8333/bucket/ raised after 5000 ms"
 
     assert finch([:request, :stop], 1500, %{result: {:ok, %{status: 200}}}) =~
-             "HTTP request GET store:8333 took 1500 ms"
+             "HTTP request GET store:8333/bucket/ took 1500 ms"
 
     assert finch([:request, :stop], 20, %{result: {:ok, %{status: 200}}}) == ""
+  end
+
+  test "a slow request names its operation and the first folders of its key, never the object or the query" do
+    ok = %{result: {:ok, %{status: 200}}}
+
+    list =
+      "http://store:8333/atanor/?list-type=2&prefix=atanor%2Falarms%2F&max-keys=1000&start-after=atanor%2Falarms%2F0029921271%2Fx"
+
+    log = finch([:request, :stop], 2134, ok, Finch.build(:get, list))
+    assert log =~ "HTTP request LIST store:8333/atanor/?prefix=atanor/alarms/ took 2134 ms"
+    refute log =~ "0029921271"
+
+    cell = "http://store:8333/atanor/atanor/cells/rooms/s1-15/db?X-Amz-Signature=abc"
+    log = finch([:request, :stop], 1500, ok, Finch.build(:put, cell))
+    assert log =~ "HTTP request PUT store:8333/atanor/atanor/cells/ took 1500 ms"
+    refute log =~ "s1-15"
+    refute log =~ "Signature"
+
+    assert finch([:request, :stop], 1200, ok, Finch.build(:head, "http://store:8333/b/k")) =~
+             "HTTP request HEAD store:8333/b/ took 1200 ms"
   end
 
   test "a request refused by an open breaker, and a success, are not logged" do

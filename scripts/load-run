@@ -884,7 +884,7 @@ SLOW_STORE_LINE = re.compile(r"^(\d\d):(\d\d):(\d\d(?:\.\d+)?) .*HTTP request \w
 
 
 def store_stall(log, min_ms, min_requests):
-    """Evidence of a store stall in a node's log: the node-to-store requests that took `min_ms` or more ("HTTP request PUT store:8333 took N ms"),
+    """Evidence of a store stall in a node's log: the node-to-store requests that took `min_ms` or more ("HTTP request PUT store:8333/atanor/atanor/cells/ took N ms", the target as Atanor.StoreLog writes it),
     and the most of them within STORE_STALL_WINDOW_S seconds; `stalled` when that is `min_requests` or more. None when `min_ms` is 0 (off); a log
     without a slow request gives the clean evidence (`slow_requests` 0), so "read, nothing slow" differs from "not read". The log's clock is the time of day, so a window across midnight is not joined."""
     if not min_ms:
