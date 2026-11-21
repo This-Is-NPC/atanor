@@ -1,12 +1,87 @@
-# What does not work
+# Known limitations
 
-Defects that are still open. Each entry says what happens, what to do about it,
-and where the evidence is. Entries are removed when they are fixed. Limits that
-are choices of the design are in the "Limits" paragraphs of
-[design.md](design.md) and in the README's
-[Limitations](../README.md#limitations).
+**The question:** what does Atanor not do, or not do well yet, and what do I do about it? This page stands alone.
+It has three parts:
 
-## WASM throughput is about 5% below 0.2.0 after the admission change
+- the limits of the design;
+- what the load rounds found, with the conditions of the lab;
+- the defects that are still open.
+
+Each entry says what happens, what to do about it, and where the evidence is. Entries are removed when they are
+fixed. The "Limits" paragraphs of [design.md](design.md) have more limits of the design, each with its workaround.
+The numbers to plan with are in [capacity.md](capacity.md).
+
+## Limits of the design
+
+- **WASM workers cannot serve TCP yet, and cannot read the change feed**
+  ([design §14.8](design.md#148-alarms-sockets-and-what-is-left-out)).
+- **Discovery trusts the bucket.** Whoever can write `<prefix>/nodes/` decides whom the nodes dial, so write access
+  to the bucket must be as trusted as the cluster ([discovery](configuration.md#discovery)).
+- **Cluster behavior was measured on one machine.** The lab is three nodes and one SeaweedFS process in VMs on one
+  host, with injected latency and loss. It is not a real network or a replicated bucket
+  ([the lab](how-to-run-the-cluster-lab.md)). Run the scenarios on your own network before sizing.
+- **The memory of a node grows with its awake cells**
+  ([configuration](configuration.md#cells-limits-memory-and-store-requests)). Plan with [capacity.md](capacity.md).
+- **A file system that stalls writes slows the cells and the store**
+  ([the container cluster guide](how-to-run-a-cluster-in-containers.md#keeping-the-data-in-memory)).
+- **A new build of the nodes replaces the whole cluster at once.** Atanor has no canary for node releases yet. One
+  returns once compatibility between releases is designed.
+- **Upgrade from 0.8 through 0.9.** 0.9 changed the layout of the alarm index keys and reads both layouts. A 0.8 node
+  does not fire the alarms that 0.9 nodes set ([upgrades](how-to-operate-atanor.md#upgrade-to-a-new-version)).
+
+## What the load rounds found
+
+The go-live numbers of [capacity.md](capacity.md) come from rounds 018f, 026r and 027 (`load/rounds/`).
+
+**The lab:**
+
+- One VM with 4 vCPUs and about 5 GB of RAM ran the node, the load generator and the store.
+- Scenario A is a node limited to 1 CPU and 512 MB, and scenario B one limited to 2 CPUs and 2 GB.
+- The store is SeaweedFS on the same VM, with 25 ms added to every store trip:
+  - on the VM's disk in 018f;
+  - on a btrfs directory without copy-on-write (`nodatacow`) in 027.
+- Each step holds its rate for 180 s, and a value counts only if it passes twice.
+
+**What happens:**
+
+- **The values vary from round to round.** The same value passed once and failed its repeat minutes later in 5 of
+  the 7 ramps of round 027. Examples:
+  - A cells passed 397, then failed its repeat with p99 257 ms;
+  - B http-native passed 1406, then failed with 287 ms.
+  The highest values that passed varied, for example:
+  - A cells: 353 to 397;
+  - B cells: 1938 to 2438;
+  - B http-native: 1406 to 1641;
+  - A http-wasm: 375 to 450.
+- **The lab store stalls.** In some steps, store answers take 1 to 1.3 s for a few seconds, and a step that
+  falls on that window fails its p99. In round 027 this happened at 570 in A http-native, which still passed, and at
+  1500 in B http-native, where p99 reached 995 ms.
+- **A job-heavy app makes slow store reads.** With `http-wasm-jobs`, one store read at a time took 1 to 2.4 s, every
+  3 to 5 s, and grew longer over the 20 minutes of the measure. The other loads had at most 2 such reads.
+  - **Inference:** the pattern fits the listing of the alarm index on every tick. The node log now names the
+    operation of every slow store request, so the next round can confirm it.
+  - It was seen only on the lab's SeaweedFS.
+- **Refusals near the WASM ceiling.** A WASM node near its ceiling answers about 1% of requests with 503 `overloaded`
+  (`worker_queue`). In round 027, B http-wasm refused 1.0% at 1300 requests per second, and A refused 1.3% at 400.
+  Clients must retry a 503 that carries `Retry-After`.
+- **Answers held elsewhere during a node swap.** Replacing a node under load answers some requests with 503
+  `held_elsewhere` while the cells move: 212 answers in A at 68 requests per second, and 366 in B at 109, where the
+  swap took 11.8 s and p99 peaked at 593 ms. No acknowledged write was lost or duplicated.
+
+**Workaround.** Plan with the go-live numbers, which are 50% of the lowest value that passed. Retry the 503s that
+carry `Retry-After`. Run a round on your own hardware and store before you size above them
+([how-to-run-the-load-tests.md](how-to-run-the-load-tests.md)).
+
+**Evidence.**
+
+- The round files are in `load/rounds/`, and the measured values in
+  [how-to-run-the-load-tests.md](how-to-run-the-load-tests.md#measured-results).
+- Round 027 ran Atanor 0.9.0 and Alambique 0.15.0, on 2026-11-21.
+- A load round may lower a number of [capacity.md](capacity.md) and adds what it finds here.
+
+## Open defects
+
+### WASM throughput is about 5% below 0.2.0 after the admission change
 
 **What happens.** The hello guest over HTTP serves about 5% fewer requests/s
 than 0.2.0 with 32 clients on 12 threads, because each request costs about 9%
@@ -86,7 +161,7 @@ further. To reproduce, build each commit in its own worktree and run the
 command above alternately; the benchmark prints the CPU and switches per
 request.
 
-## The store breaker opened once for 5 seconds at 100 req/s in scenario A
+### The store breaker opened once for 5 seconds at 100 req/s in scenario A
 
 **What happens.** In one official load round (scenario A, node 1 CPU and 512 MB,
 store latency 25 ms), the step at 100 req/s for 180 s failed with p99 5,904.9 ms
@@ -115,7 +190,7 @@ and `detail`. The next load round will confirm whether that was the trigger;
 this entry stays open until then. The next occurrence names its cause. Until then: stall seen once between 72.3 s and 73.8 s of the step,
 requests in flight 2 to 50, generator lag p99 5,523.9 ms, node 0.31 and store 0.23 cores.
 
-## Pending jobs stay stuck in a restored cell that gets no new job
+### Pending jobs stay stuck in a restored cell that gets no new job
 
 **What happens.** A bucket copied while nodes serve (for example `mc mirror`) can hold a cell whose `@jobs` wake
 row names an index object under `alarms/` that the copy lacks, because the index and the cells are copied at
@@ -135,7 +210,7 @@ when `alarms/` was copied last. The cell file held `@jobs|1794809947744|6b0c7899
 index object. Writing the object made `ranked_through` equal `last_seq` within 8 s. A copy taken after `POST
 /drain` restored with every job run.
 
-## Dirty IO threads are not sized to the CPU quota on cgroup v1 hosts
+### Dirty IO threads are not sized to the CPU quota on cgroup v1 hosts
 
 **What happens.** `rel/env.sh.eex` reads the CPU quota from cgroup v2 only. On a cgroup v1 host the node keeps the
 BEAM's 10 dirty IO threads whatever its quota, and Alambique's statement slots follow them (8). On a small quota their
