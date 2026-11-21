@@ -148,6 +148,34 @@ def swap_section(steps):
     return table(rows, ["swap", "value"])
 
 
+def swap_note(summary):
+    """Where the rate of the swap came from, or why it did not run."""
+    if summary.get("status") == "not run":
+        return f"**The swap did not run:** {summary.get('not_run')}."
+    return f"Rate {num(summary['rate'], 0)} req/s, taken from {summary['rate_source']}." if summary.get("rate_source") else None
+
+
+def confirmation_lines(unit, steps, summary):
+    """The two numbers of a ramp, the highest step that passed once and the confirmed one, and what the confirmation found."""
+    good, approved, confirmed = summary.get("good"), summary.get("approved"), summary.get("confirmed")
+    if good is None:
+        return ["No approved step: the first step already failed or was invalid."]
+    out = [f"Highest step that passed once: **{good:g} {unit}**. Confirmed step (passed twice): "
+           + (f"**{approved:g} {unit}**." if confirmed else "**none**." if confirmed is False else "not confirmed (no confirmation repeat).")]
+    tried = [s for s in steps if s["phase"] == "confirm"]
+    if confirmed is None or not tried:
+        return out
+    first, lower = tried[0], tried[1:]
+    if first["status"] == "ok":
+        return out + ["Its confirmation passed."]
+    text = f"The confirmation of {first['value']:g} failed ({first['stop_reason'] or first['status']})."
+    if not lower:
+        text += " No descent ran: `confirm_descents` is 0, no lower step passed, or the results predate the descent."
+    else:
+        text += " The descent tried " + ", ".join(f"{s['value']:g} ({s['status']})" for s in lower) + (f"; {approved:g} passed twice." if confirmed else "; none passed twice.")
+    return out + [text]
+
+
 def per_node(counts, share):
     """"requests (share%)" of each node, in node order; "-" when unknown."""
     if not counts:
@@ -269,24 +297,25 @@ def report(directory):
         out += [f"## Scenario {scenario}", "", f"Node limits: {num(limits.get('cpus'), 1)} CPU and {num(limits.get('memory_mb'), 0)} MB (scenario memory; the cgroup limit adds the tmpfs); store {({'disk': 'on disk', 'nocow': 'on a nodatacow directory'}).get(backing, 'in tmpfs')} with {latency} ms added per trip.", ""]
         for measure in ("http-native", "http-wasm", "http-wasm-jobs", "ws", "cells", "swap", "scale"):
             mine = [s for s in steps if s["scenario"] == scenario and s["measure"] == measure]
-            if not mine:
-                continue
             summary, baseline = summaries.get((scenario, measure)), baselines.get((scenario, measure))
-            out += [f"### {measure} ({mine[0]['unit']})", ""]
+            if not mine and not (measure == "swap" and summary and summary.get("status") == "not run"):
+                continue
+            out += [f"### {measure} ({mine[0]['unit'] if mine else 'req/s'})", ""]
             out += [line, ""] if (line := versions_line(mine)) else []
             if measure == "scale":
                 out += scale_section(mine, summary, [j for j in joins if j["scenario"] == scenario])
                 if summary and summary.get("advice"):
                     out += [f"**INVALID: {summary['invalid']}.** {summary['advice']}.", ""]
             elif measure == "swap":
-                out += [swap_section(mine), ""]
+                out += ([swap_section(mine), ""] if mine else []) + ([note, ""] if summary and (note := swap_note(summary)) else [])
             else:
                 out += [table(step_rows(mine), HEADER), ""]
                 lines = [f"- step {s['step']} ({s['value']:g}): {text}" for s in mine if (text := stall_text(s.get("store_stall")))]
                 out += ["Slow node-to-store requests of each step:", "", *lines, ""] if lines else []
                 out += lazy_lines(mine) if measure == "cells" else []
                 pairs = cost(measure, mine, baseline, summary)
-                out += [table(pairs, ["cost per unit", "value"]), ""] if pairs else ["No approved step: the first step already failed or was invalid.", ""]
+                out += [*confirmation_lines(mine[0]["unit"], mine, summary or {}), ""]
+                out += [table(pairs, ["cost per unit", "value"]), ""] if pairs else []
                 rows = admission_rows(mine, summary)
                 out += [table(rows, ADMISSION_HEADER), ""] if rows else []
                 rows = bucket_rows(mine)
@@ -294,8 +323,7 @@ def report(directory):
             if summary and measure != "scale":
                 stop =summary.get("stopped_by") or summary.get("invalid") or ("ceiling reached without a failure" if summary.get("ceiling_reached") else "none")
                 out += [f"Ramp stopped by: **{stop}**" + (f" (invalid: {summary['invalid']})" if summary.get("invalid") and summary.get("stopped_by") else "")
-                        + ("; the round ended there: the node stopped" if summary.get("node_stopped") else "")
-                        + (f"; confirmation repeat: {'passed' if summary.get('confirmed') else 'failed'}" if summary.get("confirmed") is not None else ""), ""]
+                        + ("; the round ended there: the node stopped" if summary.get("node_stopped") else ""), ""]
             command = summary["command"] if summary else mine[0]["command"]
             out += ["Reproduce:", "", "```sh", command if command.startswith("mise run load -- ") else f"# run by a task that no longer exists: {command}", "```", ""]
     return "\n".join(out)

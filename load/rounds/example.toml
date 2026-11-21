@@ -87,6 +87,7 @@ max = 20000.0       # bisect: last step to try
 duration_s = 180.0  # seconds of load per step
 refine = 3          # bisections after the first failing step; 0 skips them
 confirm = true      # repeat the best good step once on a fresh node to confirm it
+confirm_descents = 2  # when that confirmation fails, lower steps that passed to confirm in turn (the highest that passes twice is the ceiling); 0 keeps one confirmation
 reset_each_step = false  # true: every step starts on a fresh node and an empty store (the store's memory grows over the steps of a ramp); every ramp measure has it
 # [measures.http-native.per_scenario.B]
 # kind = "ladder"
@@ -106,6 +107,7 @@ max = 20000.0
 duration_s = 180.0
 refine = 3
 confirm = true
+confirm_descents = 2
 
 [measures.http-wasm-jobs]
 run_on = []
@@ -120,6 +122,7 @@ max = 20000.0
 duration_s = 180.0
 refine = 3
 confirm = true
+confirm_descents = 2
 
 [measures.ws]
 run_on = []
@@ -134,6 +137,7 @@ max = 60000.0
 duration_s = 180.0
 refine = 3
 confirm = true
+confirm_descents = 2
 
 [measures.cells]
 run_on = []
@@ -148,6 +152,7 @@ max = 100000.0
 duration_s = 180.0
 refine = 3
 confirm = true
+confirm_descents = 2
 
 [measures.swap]
 run_on = []   # the swap and the scale measure have no steps plan: see [swap] and [scale]

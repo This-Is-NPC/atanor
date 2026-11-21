@@ -10,7 +10,7 @@ MEASURE is one of
   http-wasm-jobs  the same to the scoreboard, a WASM app that runs a ranking job per write   (stop: p99, 5xx, refused, errors)
   ws           open idle WebSocket connections with sparse messages                      (stop: memory, fds, refused)
   cells        cells kept hot at the same time                                           (stop: memory, p99, refused)
-  swap         replace the node by another under load at the last approved http-wasm-jobs rate (stop: loss, duplication, errors)
+  swap         replace the node by another under load at the confirmed (else the highest passed) http-wasm-jobs rate (stop: loss, duplication, errors)
   scale        the http-native and the cells ramps on 1, 2 and 3 nodes behind the load balancer (the ceiling of each, the gain over 1 node,
                the requests and awake cells per node), then a join: the 2nd and 3rd node start under a fixed rate and the time until the
                load spreads is measured (every ramp rule above applies; docs/how-to-run-the-load-tests.md)
@@ -26,11 +26,12 @@ stops, except a store that stalls in both attempts: the step then fails, `store:
 judging.delivery (INVALID, the round stops: the generator or the host, not the node). A node that stopped is judged first and still records
 the store's tmpfs share. The host swap used is only recorded. A container that may swap refuses the run before the first step.
 After the first failing step the ramp refines between the last good value and the failing one (`refine` bisections, each on a fresh node and
-store), then repeats the best good step once to confirm it, also fresh. With steps.reset_each_step every step is fresh. Each step records the
+store), then repeats the best good step once to confirm it, also fresh. A failed confirmation goes down to the next lower step that
+passed (`confirm_descents` times at most), each confirmed the same way; the ceiling is the highest step that passed twice. With steps.reset_each_step every step is fresh. Each step records the
 lab bucket's objects and bytes and its garbage (`store.bucket`, `store.garbage`).
 
 Exit status: 1 when a step ended INVALID (the lab, not the node: there is no verdict) and, for swap, which is a single
-check and not a ramp, also when it failed; 0 when the measure recorded a verdict, a failed step or a stopped node included.
+check and not a ramp, also when it failed (a swap with no rate to take does not run and exits 0); 0 when the measure recorded a verdict, a failed step or a stopped node included.
 """
 import argparse
 import copy
@@ -1601,15 +1602,26 @@ def ramp(round_, args):
                 node_stopped = r["node_stopped"]
                 break
         good = lo
-    confirmed = None
+    confirmed, tried, confirmed_at = None, [], None
     if good is not None and not stopped and not node_stopped and not args.no_confirm:
-        r = round_.step(good, "confirm", fresh=failed is not None)
-        steps.append(r)
-        confirmed = r["status"] == "ok"
-        stopped = r if r["status"] == "invalid" else None
+        # A failed confirmation goes down the ladder: the next lower steps that passed, at most `descents` of them, each confirmed on a fresh node.
+        passed = sorted({s["value"] for s in steps if s["status"] == "ok" and s["phase"] in ("ramp", "refine") and s["value"] < good}, reverse=True)
+        for v in [good] + passed[:args.descents]:
+            r = round_.step(v, "confirm", fresh=failed is not None or v != good)
+            steps.append(r)
+            tried.append(v)
+            if r["status"] == "ok":
+                confirmed_at = v
+                break
+            if r["status"] == "invalid":
+                stopped = r
+                break
+        confirmed = confirmed_at is not None
+    ceiling = confirmed_at if confirmed else good
     last_fail = next((s for s in reversed(steps) if s["status"] == "fail"), None)
-    best = next((s for s in reversed(steps) if s["status"] == "ok" and s["value"] == good), None)
-    return {"approved": good if confirmed or node_stopped else None, "confirmed": confirmed, "good": good, "distribution": best["distribution"] if best else None, "node_stopped": node_stopped or any(x["node_stopped"] for x in steps), "first_failure": failed,
+    best = next((s for s in reversed(steps) if s["status"] == "ok" and s["value"] == ceiling), None)
+    return {"approved": confirmed_at if confirmed else good if node_stopped else None, "confirmed": confirmed, "good": good, "confirm_tried": tried,
+            "distribution": best["distribution"] if best else None, "node_stopped": node_stopped or any(x["node_stopped"] for x in steps), "first_failure": failed,
             "stopped_by": last_fail["stop_reason"] if last_fail else None, "invalid": stopped["stop_reason"] if stopped else None,
             "ceiling_reached": failed is None and stopped is None and good is not None}
 
@@ -1624,16 +1636,28 @@ def swap_command(args, rate, run_dir):
 
 def exit_status(measure, summary):
     """1 when the measure has no trustworthy verdict (a step INVALID), and when the swap, a single check, did not pass; else 0."""
-    return 1 if summary.get("invalid") or (measure == "swap" and summary.get("status") != "ok") else 0
+    return 1 if summary.get("invalid") or (measure == "swap" and summary.get("status") not in ("ok", "not run")) else 0
+
+
+def swap_rate(args, scenario):
+    """(rate, where it comes from): swap.rate, else the confirmed step of http-wasm-jobs, else its highest step that passed; (None, why) when there is none."""
+    if args.rate:
+        return args.rate, "swap.rate"
+    found = result_file(args, scenario, "http-wasm-jobs", "summary")
+    summary = json.load(open(found)) if os.path.exists(found) else {}
+    if summary.get("approved"):
+        return summary["approved"], "the confirmed http-wasm-jobs step"
+    if summary.get("good"):
+        return summary["good"], "the highest http-wasm-jobs step that passed (not confirmed)"
+    return None, ("no http-wasm-jobs step passed" if summary else "no http-wasm-jobs result") + " and swap.rate is not set"
 
 
 def swap(round_, args, info):
-    rate = args.rate
+    rate, source = swap_rate(args, round_.scenario)
     if not rate:
-        found = result_file(args, round_.scenario, "http-wasm-jobs", "summary")
-        rate = json.load(open(found)).get("approved") if os.path.exists(found) else None
-    if not rate:
-        sys.exit("swap needs swap.rate: no approved http-wasm-jobs step in " + args.out)
+        say(f"swap did not run: {source}")
+        return {"approved": None, "confirmed": None, "stopped_by": None, "invalid": None, "status": "not run", "not_run": source}
+    say(f"swap at {rate} req/s, from {source}")
     check_deadline(args)
     round_.index += 1
     round_.attempts[rate] = 1
@@ -1641,12 +1665,12 @@ def swap(round_, args, info):
     if done:
         say(f"swap at {rate} req/s: {done['status']}, done before (config_hash {done['config_hash'][:8]})")
         return {"approved": rate if done["status"] == "ok" else None, "confirmed": None, "stopped_by": done["stop_reason"],
-                "invalid": None, "status": done["status"]}
+                "invalid": None, "status": done["status"], "rate": rate, "rate_source": source}
     quiet, load = wait_quiet(args, info)
     if not quiet:  # the swap is judged on its own checks, but it does not start on a busy host
         reason = busy_reason(load, args)
         say(reason)
-        return {"approved": None, "confirmed": None, "stopped_by": reason, "invalid": reason, "status": "invalid"}
+        return {"approved": None, "confirmed": None, "stopped_by": reason, "invalid": reason, "status": "invalid", "rate": rate, "rate_source": source}
     sampler = Sampler(info, args.sample_s)
     sampler.start()
     began = time.time()
@@ -1705,7 +1729,7 @@ def swap(round_, args, info):
     say(f"swap at {rate} req/s: {record['status']}" + (f" ({record['stop_reason']})" if record["stop_reason"] else "")
         + f"; swap {record['swap']['a_exit_s']} s, p99 peak {p99_peak} ms")
     return {"approved": rate if record["status"] == "ok" else None, "confirmed": None, "stopped_by": record["stop_reason"],
-            "invalid": record["stop_reason"] if record["status"] == "invalid" else None, "status": record["status"]}
+            "invalid": record["stop_reason"] if record["status"] == "invalid" else None, "status": record["status"], "rate": rate, "rate_source": source}
 
 
 # ---- the scale measure ---------------------------------------------------------------------------------
@@ -1752,7 +1776,8 @@ def scale_config(args, load, nodes, previous, given):
     a.start, a.max, a.factor = args.start or RAMPS[load][0], args.max or RAMPS[load][1], args.factor
     plan = (getattr(args, "load_plans", None) or {}).get(load)
     if plan:  # a config round: the ramp of the load as the config plans it for the scenario
-        a.step_s, a.refine, a.no_confirm, a.start, a.max, a.factor = plan["duration_s"], plan["refine"], not plan["confirm"], plan["start"], plan["max"], plan["factor"]
+        a.step_s, a.refine, a.no_confirm, a.descents, a.start, a.max, a.factor = (plan["duration_s"], plan["refine"], not plan["confirm"], plan["confirm_descents"],
+                                                                                    plan["start"], plan["max"], plan["factor"])
         a.steps = ",".join(str(v) for v in load_config.plan_values(plan)) if nodes == 1 and plan["kind"] != "bisect" else None
     if given:
         if (load, nodes) not in given:
@@ -2101,7 +2126,7 @@ def config_defaults(config, measure, scenario, path):
     join, spread = config["scale"]["join"], config["scale"]["spread"]
     found = {
         "out": load_config.output_dir(config, ROOT), "command": f"mise run load -- --config {path}",
-        "step_s": 0.0, "factor": 2.0, "start": None, "max": None, "steps": None, "refine": 0, "no_confirm": False,  # the ramp measures set their own below
+        "step_s": 0.0, "factor": 2.0, "start": None, "max": None, "steps": None, "refine": 0, "no_confirm": False, "descents": 0,  # the ramp measures set their own below
         "config_hash": load_config.case_hash(config, scenario, measure), "step_timeout": config["round"]["step_timeout_s"],
         **judging_args(load_config.judging_of(config, measure)),
         # [scale.judging.LOAD]: the rules of one load of the scale, over the measure's
@@ -2120,7 +2145,7 @@ def config_defaults(config, measure, scenario, path):
     }
     if measure in load_config.RAMP_MEASURES:
         p = load_config.plan(config, measure, scenario)
-        found.update(step_s=p["duration_s"], reset_each_step=p["reset_each_step"], factor=p["factor"], start=p["start"], max=p["max"], refine=p["refine"], no_confirm=not p["confirm"],
+        found.update(step_s=p["duration_s"], reset_each_step=p["reset_each_step"], factor=p["factor"], start=p["start"], max=p["max"], refine=p["refine"], no_confirm=not p["confirm"], descents=p["confirm_descents"],
                      steps=",".join(str(v) for v in load_config.plan_values(p)) if p["kind"] != "bisect" else None)
     return found
 
