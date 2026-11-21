@@ -405,7 +405,8 @@ and `/proc/meminfo`. Per step, in this order (the limits are the `[judging]` rul
    The store can stall too: a second where its answers all take about a second (observed: 64 node-to-store requests of
    1.0 to 1.1 s in the last second of a step, in-flight up to 225, p99 651 ms, while the rest of the step was healthy).
    That is the store's fault, not the node's ceiling. On every attempt, `load-run` reads each node's log from the
-   start of the step (`docker logs --since`, once) and counts the lines `HTTP request PUT store:8333 took N ms`
+   start of the step (`docker logs --since`, once) and counts the lines `HTTP request PUT store:8333/atanor/atanor/cells/ took N ms`
+   (any operation; the target names it and the key's first folders, e.g. `LIST store:8333/atanor/?prefix=atanor/alarms/`)
    with N at or above `store_stall.min_ms`. The evidence is `store_stall` in the step file (`slow_requests`, `max_ms`,
    `window_requests`, `window_s`, `threshold_ms`, `min_requests`, `stalled`; the worst node's). A log without a slow
    request gives `slow_requests: 0`, and `null` means the check is off, so "nothing slow" and "not read" differ. The

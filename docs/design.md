@@ -3418,8 +3418,11 @@ a request that never left the node, is logged with `counted=false`. A crash of t
 (`:error`, `:throw` or `:exit`) and a bounded `detail` (`:pool_checkout_timeout`, `:pool_checkout_noproc` or the
 inspected reason). A request that an open breaker refused is `:store_unavailable` and is
 not logged again. The HTTP client's own failures, which the breaker counts, are logged with their transport
-error (`atanor: HTTP request GET store:8333 failed after 12 ms: socket closed`), and so are requests that
-take over a second. It listens to Alambique's `[:alambique, :store, :breaker, ...]`, `[:alambique, :store, :failure]`, `:upload_retry`, `:lease`
+error (`atanor: HTTP request GET store:8333/atanor/atanor/cells/ failed after 12 ms: socket closed`), and so are
+requests that take over a second (`atanor: HTTP request LIST store:8333/atanor/?prefix=atanor/alarms/ took 2134 ms`).
+The target names the operation (a GET with `list-type` is a LIST) and the first folders of the path and of a
+LIST's prefix, so a slow request says which part of the store it read. It never names the object nor the rest of
+the query, so no cell id or signature reaches the log. It listens to Alambique's `[:alambique, :store, :breaker, ...]`, `[:alambique, :store, :failure]`, `:upload_retry`, `:lease`
 and `:replication` events and to Finch's `[:finch, :request | :queue, ...]` events
 (`test/atanor/store_log_test.exs`).
 

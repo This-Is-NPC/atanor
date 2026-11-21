@@ -96,7 +96,22 @@ defmodule Atanor.StoreLog do
   defp detail_text(detail) when is_binary(detail), do: detail
   defp detail_text(detail), do: inspect(detail)
 
-  defp target(request), do: "#{request.method} #{request.host}:#{request.port}"
+  # The operation (a GET with `list-type` is a LIST) and where it went: the first folders of the path and, for a
+  # LIST, of its prefix (`LIST store:8333/atanor/?prefix=atanor/alarms/`, `GET store:8333/atanor/atanor/cells/`).
+  # Never an object name nor the rest of the query, so no cell id or signature reaches the log.
+  defp target(request) do
+    params = URI.decode_query(request.query || "")
+    {operation, prefix} = if params["list-type"], do: {"LIST", params["prefix"]}, else: {request.method, nil}
+    list = if prefix, do: "?prefix=" <> head(folder(prefix), 2), else: ""
+    "#{operation} #{request.host}:#{request.port}#{head(folder(request.path || "/"), 4)}#{list}"
+  end
+
+  # A path or key without its last segment: "a/b/c" is "a/b/", "a/b/" stays.
+  defp folder(path), do: String.replace(path, ~r{[^/]*$}, "")
+
+  # The first `n` segments of a folder, ending in "/".
+  defp head(folder, n),
+    do: folder |> String.split("/") |> Enum.take(n) |> Enum.join("/") |> String.trim_trailing("/") |> Kernel.<>("/")
 
   defp message(error) when is_exception(error), do: Exception.message(error)
   defp message(error), do: inspect(error, limit: 8)
