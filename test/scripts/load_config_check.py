@@ -181,6 +181,15 @@ print(json.dumps({
                  "measure_wide": lc.case_hash(resolved("[measures.ws.steps]\nreset_each_step = true\n"), "A", "ws") != base_hash[0]},
         "round_trip": lc.resolve(tomllib.loads(lc.dump_toml(reset_b))) == reset_b,
         "bad": problems("[measures.ws.steps]\nreset_each_step = \"yes\"\n[measures.swap.steps]\nreset_each_step = true\n")},
+    # steps.confirm_descents: 2 by default and then absent from the hash, so the rounds before it keep theirs; another value changes only that case's hash
+    "confirm_descents": {
+        "default": lc.plan(builtin, "cells", "A")["confirm_descents"],
+        "plan_has_no_key": "confirm_descents" not in lc.case_config(builtin, "A", "cells")["plan"],
+        "same_as_default": lc.case_hash(resolved("[measures.cells.steps]\nconfirm_descents = 2\n"), "A", "cells") == base_hash[1],
+        "zero_changes": lc.case_hash(resolved("[measures.cells.steps]\nconfirm_descents = 0\n"), "A", "cells") != base_hash[1],
+        "zero_in_plan": lc.case_config(resolved("[measures.cells.steps]\nconfirm_descents = 0\n"), "A", "cells")["plan"]["confirm_descents"],
+        "ws_same": lc.case_hash(resolved("[measures.cells.steps]\nconfirm_descents = 0\n"), "A", "ws") == base_hash[0],
+        "bad": problems("[measures.cells.steps]\nconfirm_descents = -1\n")},
     "official_plan_values":lc.plan_values(lc.plan(official, "http-wasm", "A"))[:3],
     # the names shared with Alambique, host.timeout_s and the per-measure judging
     "renames": {"data_tmpfs": [builtin["scenarios"]["A"]["data_tmpfs"], builtin["scenarios"]["B"]["data_tmpfs"]], "timeout_s": builtin["host"]["timeout_s"],

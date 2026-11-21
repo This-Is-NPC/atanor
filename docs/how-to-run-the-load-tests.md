@@ -25,7 +25,7 @@ that both have mean the same in both.
 | `http-wasm-jobs`: writes and reads of the scoreboard, a job-heavy WASM app (not comparable with native) | requests per second | the criteria of `http-native` | req/s per vCPU, fixed MB, MB per req/s (its S3 trips and bytes per request are not comparable with native) |
 | `cells`: cells written once every 10 s, all awake together | cells | working set at 90% of the limit, p99 > 250 ms, or 503 answers over 1% of all answers; the last two are judged on the hold, after the opening (see [the opening](#the-opening-of-the-cells-measure)) | MB per hot cell |
 | `scale`: `http-native` and `cells` on 1, 2 and 3 nodes behind the balancer, then a node joining under load (see [the scale measure](#the-scale-measure)) | requests per second and cells, per node count | the criteria of `http-native` and `cells`, per configuration; the join has no verdict, it records | the ceiling of each configuration, the gain over 1 node, requests and awake cells per node, the time until the load spreads after a join |
-| `swap`: node A replaced by B under load | none (one run at `swap.rate`, or at the last approved `http-wasm-jobs` rate of the results directory) | an acknowledged write lost or duplicated, or an answer other than 503 with `Retry-After` (503 with `Retry-After` stays accepted: the refused criterion does not apply) | swap duration and p99 peak |
+| `swap`: node A replaced by B under load | none (one run at `swap.rate`, else at the confirmed `http-wasm-jobs` step of the results directory, else at its highest step that passed; with none the swap does not run, see [the swap rate](#the-swap-rate)) | an acknowledged write lost or duplicated, or an answer other than 503 with `Retry-After` (503 with `Retry-After` stays accepted: the refused criterion does not apply) | swap duration and p99 peak |
 
 ### The workers of the http measures
 
@@ -76,7 +76,7 @@ The scoreboard stays the swap's workload and its rate comes from `http-wasm-jobs
    ```text
    Round load/rounds/018f.toml: 13 cases, results in .../load/results/018f
      skip-done on; each generator process is killed after 600 s (round.step_timeout_s); no round timeout
-     1. A/http-native      ladder, values 490, 650, 810, 975 req/s; at most 8 steps (3 refine, 1 confirm), 180 s each
+     1. A/http-native      ladder, values 490, 650, 810, 975 req/s; at most 10 steps (3 refine, 1 confirm, 2 descents), 180 s each
           lab    scenario A
           output A/http-native/
           hash   54fc3a5d2debb3a79e5d039f705c0cb17474a4feff0aa78a1ce007d4f6ae28c5
@@ -153,11 +153,14 @@ bisects `refine` times between the last good and the failing value. `kind = "lad
 (strictly growing). `kind = "ceiling"` runs a ladder of `factors` (75%, 100%, 125%, 150%) times `ceiling`, the
 ceiling that an earlier round found: it is the exploration round, a short check of the steps around a known
 ceiling (set `duration_s = 75`, `refine = 0` and `confirm = false` for the 75 s, no-refine, no-confirm
-version). `confirm = true` repeats the best good step once on a fresh node. `reset_each_step = true` (default
+version). `confirm = true` repeats the best good step once on a fresh node. When that confirmation fails, the
+ramp goes down the ladder (see [the confirmation descent](#the-confirmation-descent)): `confirm_descents` (default
+2; 0 keeps the single confirmation) is how many lower steps it may try. `reset_each_step = true` (default
 `false`) starts every step of the measure on a fresh node and an empty store (see "Reset before every step"
 below). `per_scenario.A` or `.B` overrides any key of `steps` for that scenario; the scale measure takes
 `ceilings` and `ceiling_factors` per scenario with `[scale.per_scenario.A]`. A `reset_each_step` left at
-`false` does not change the hash of the step files, so the rounds before it keep theirs.
+`false`, and a `confirm_descents` left at 2, do not change the hash of the step files, so the rounds before them
+keep theirs; setting `confirm_descents` to another value does change the hash of that case.
 
 **Judging rules.** `[judging]` has one table per rule, each with `enabled` and its limits; a rule that is off is not
 judged. A limit is exclusive: a step fails or is INVALID when it goes above it (below it, for a minimum).
@@ -238,13 +241,42 @@ of the older results.
 | `fail` | true | A criterion broke, or the node stopped: a result. The `stop_reason` names the criteria; `criteria` lists them. A step whose store stalled twice has `store: stalled at this step twice (EVIDENCE); failed on: CRITERIA`, so the criterion that made it fail is not lost. |
 | `invalid` | false | The lab, not the node, broke: there is no verdict. |
 
-The summary of a ramp has `approved` (the confirmed value, or the last good one when the node stopped), `good`,
-`confirmed`, `first_failure`, `stopped_by`, `invalid`, `node_stopped` and `ceiling_reached`. A failed step of a
+The summary of a ramp has two numbers: `good`, the highest step that passed once, and `approved`, the confirmed step
+(the highest that passed twice; null when none did, and the last good one when the node stopped). It also has
+`confirmed` (true when a step passed twice, false when no confirmation passed, null when none ran), `confirm_tried`
+(the values confirmed, in order), `first_failure`, `stopped_by`, `invalid`, `node_stopped` and `ceiling_reached`. The
+report shows both numbers and, when the first confirmation failed, what the descent found. A failed step of a
 ramp, a stopped node and an approved value are results (exit 0); an INVALID step is exit 1. The swap, a single
 check and not a ramp, also exits 1 when it failed. The swap starts node B from the image of the load environment
 (`atanor-cluster-load:local`, set once in `scripts/load-common`); if B exits or turns unhealthy before it serves,
 the swap stops at once with B's exit status and its last log lines. The reason is in `stop_reason` of the step file
 and in `swap-TIME.log` next to it.
+
+### The confirmation descent
+
+A step that passes once can fail when it is repeated on a fresh node: it was at the edge. When the confirmation of
+the best step fails, the ramp does not end without a ceiling. It goes down the ladder: the next lower value that
+passed in the ramp or the refinement is confirmed on a fresh node, and so on, up to `confirm_descents` lower values
+(default 2; 0 keeps the single confirmation). The first value that passes twice, its first run and its
+confirmation, is the ceiling: `approved` in `summary.json`. `good` stays the highest step that passed once. If no
+descent confirms, `approved` is null and `confirmed` is false. For example, a `cells` ramp that passed 353, 382 and
+397 and failed 412 and 470 has `good` 397; if 397 fails its confirmation, the ramp confirms 382 and, if that fails
+too, 353.
+
+The confirmation of a lower value is `step-VALUE-2.json` (phase `confirm`), as for the best step, so a rerun with
+`--skip-done` finds and reuses it. The report prints both numbers per measure, which step failed its confirmation
+and what the descent tried. `--skip-done` also reuses whole cases that are done: a case with its summary and all
+its step files of the same hash is not run again, so results written before the descent (they have no descent
+steps) keep their verdict until the case is run again with `--no-skip-done` or another `output.name`.
+
+### The swap rate
+
+The swap runs at `swap.rate` when it is set. Otherwise it takes the `approved` step of the `http-wasm-jobs` summary
+in the results directory, the confirmed one; when that is null, the highest `http-wasm-jobs` step that passed (`good`,
+not confirmed). The summary of the swap records `rate` and `rate_source`, and the report says where the rate came
+from. When there is no summary or no step that passed, and `swap.rate` is not set, the swap does not run: its
+summary has `status: "not run"` and the reason in `not_run`, the report says so, and `mise run load` does not fail
+because of it.
 
 ## Measured results
 
@@ -435,7 +467,7 @@ and the container limit has room for the whole tmpfs, so data left by earlier st
 then fail with a full disk) but cannot get the node OOM-killed. Restarting the node between those steps would lose the warm state they are meant to measure. Each
 step records the tmpfs at its start and its growth.
 
-After a failing step, every refine step and the confirmation start on a fresh node: `load-run` runs
+After a failing step, every refine step and the confirmation (and each confirmation of a descent) start on a fresh node: `load-run` runs
 `scripts/load-env reset` (`load:down`, then `load:up` without the build: a new node and store with empty data, the
 latency applied again, the workers deployed again). A refine on the node that just collapsed would measure the
 collapse (memory not given back, a full store, retries), not the rate. Each step file records `fresh_node`

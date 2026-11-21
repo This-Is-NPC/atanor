@@ -206,6 +206,12 @@ defmodule Atanor.LoadConfigTest do
     assert x["round_trip"]
     bad = Enum.join(x["bad"], "\n")
     assert bad =~ "measures.ws.steps.reset_each_step: expected true or false" and bad =~ "measures.swap.steps"
+
+    # steps.confirm_descents: 2 by default and not in the hash then (the earlier rounds keep their hashes); 0 is a value and changes the hash
+    c = r["confirm_descents"]
+    assert c["default"] == 2 and c["plan_has_no_key"] and c["same_as_default"]
+    assert c["zero_changes"] and c["zero_in_plan"] == 0 and c["ws_same"]
+    assert Enum.join(c["bad"], "\n") =~ "measures.cells.steps.confirm_descents: -1 is out of range, expected >= 0"
   end
 
   test "the names shared with Alambique, host.timeout_s and the judging of one measure", %{dir: dir} do

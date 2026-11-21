@@ -86,7 +86,7 @@ def new_round(name):
     os.makedirs(out)
     args = argparse.Namespace(out=out, measure=measure[0], step_s=1.0, timeout=1.0, gen_grace=1.0, open_rate=100.0, host_load_max=1e9, min_available_gb=0.0,
                               sample_s=0.05, quiet_window=0.0, quiet_max_wait=5.0, delivery=0.95, memory_pct=1e9, fd_pct=1e9, p99_ms=250.0,
-                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, max_store_stall_ms=1000.0, store_stall_requests=10, max_busy_share=1e9, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, no_confirm=False, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0, no_warmup=False, rate_per_proc=600.0, conns_per_rate=0.5, write_ratio=0.5, cells=64, worker="native", cell_period=10.0, cells_conns=64)
+                              max_generator_swap_mb=1e9, max_host_swap_growth_mb=1e12, max_refused_pct=1.0, max_lag_ms=50.0, max_throttle_jump_ms=5000.0, max_store_stall_ms=1000.0, store_stall_requests=10, max_busy_share=1e9, command="test", steps="10,20", start=10, max=20, factor=2, refine=0, no_confirm=False, descents=0, max_store_tmpfs_pct=90.0, max_store_disk_pct=90.0, no_warmup=False, rate_per_proc=600.0, conns_per_rate=0.5, write_ratio=0.5, cells=64, worker="native", cell_period=10.0, cells_conns=64)
     pid = os.getpid()
     info = {"scenario": "A", "memory_limit_bytes": 512 * MB, "store_latency_ms": 25, "node": {"id": "abc", "ip": "127.0.0.1", "pid": pid}, "store": {"id": "store-id", "ip": "127.0.0.1", "pid": pid},
             "lb": {"pid": pid}, "admin": "http://127.0.0.1:1"}
@@ -667,11 +667,13 @@ def case_args(name, config_hash="h1", skip=True, **over):
     return round_.info, args
 
 
-def run_case(info, args, slow_from, runs):
-    """The ramp of `args` with a stub generator that is slow from `slow_from` on (a failing p99); `runs` collects the values that ran."""
+def run_case(info, args, slow_from, runs, slow=None):
+    """The ramp of `args` with a stub generator that is slow from `slow_from` on (a failing p99), or when slow(value, nth run of the value);
+    `runs` collects the values that ran."""
     def generators(self, value, sampler):
         runs.append(value)
-        return [{**DOCUMENT, "statuses": {"200": 10}, "hist": {"9000" if value >= slow_from else "5": 10}}]
+        late = slow(value, runs.count(value)) if slow else value >= slow_from
+        return [{**DOCUMENT, "statuses": {"200": 10}, "hist": {"9000" if late else "5": 10}}]
 
     real, text = (m.Round.run_generators, m.load_env), json.dumps(info)  # the reset empties `info` before it reads it again
     m.Round.run_generators, m.load_env = generators, lambda *a: text if a[0] == "info" else ""
@@ -731,6 +733,37 @@ results["skip_done"] = {"first": first_runs, "again": again, "same_summary": fir
                         "third": third, "invalid_reran": fourth, "refused": refused, "refused_ran": other, "no_skip": forced, "files": files_of(args.out),
                         "approved": first["approved"], "hash_in_file": read_json(step_dir, "step-20-2.json")["config_hash"]}
 
+# The confirmation descent: 10, 20 and 30 pass, 40 fails; the confirmation of 30 fails (its second run), so the ramp goes down to 20, a step that passed.
+def descent_case(name, descents, slow, skip=True):
+    info, args = case_args(name, refine=0, steps="10,20,30,40", descents=descents, skip_done=skip)
+    runs = []
+    summary = run_case(info, args, 0, runs, slow)
+    return info, args, runs, summary
+
+
+def descent_result(info, args, runs, summary):
+    return {"runs": runs, "files": files_of(args.out), "summary": {k: summary[k] for k in ("good", "approved", "confirmed", "confirm_tried", "first_failure")},
+            "fresh": {f: read_json(args.out, "A", "http-native", f)["fresh_node"] for f in ("step-30-2.json", "step-20-2.json") if os.path.exists(os.path.join(args.out, "A", "http-native", f))}}
+
+
+found_info, found_args, found_runs, found_summary = descent_case("descent_found", 2, lambda v, n: v == 40 or (v == 30 and n == 2))
+results["descent_found"] = descent_result(found_info, found_args, found_runs, found_summary)
+again_runs = []
+results["descent_found"]["again"] = [again_runs, run_case(found_info, found_args, 0, again_runs, lambda v, n: True) == found_summary]  # a rerun reuses every step file
+results["descent_limit"] = descent_result(*descent_case("descent_limit", 1, lambda v, n: v == 40 or n == 2))
+results["descent_exhausted"] = descent_result(*descent_case("descent_exhausted", 5, lambda v, n: v == 40 or n == 2))
+results["descent_off"] = descent_result(*descent_case("descent_off", 0, lambda v, n: v == 40 or n == 2))
+# The report: the two numbers and what the confirmation found; the old sentence only when no step passed.
+report_lines = {}
+steps_of_case = lambda args: sorted((read_json(args.out, "A", "http-native", f) for f in os.listdir(os.path.join(args.out, "A", "http-native")) if f.startswith("step-") and f.endswith(".json")), key=lambda s: s["step"])
+for name, key in (("descent_found", "found"), ("descent_exhausted", "exhausted"), ("descent_off", "off")):
+    scenario_info, scenario_args, scenario_runs, scenario_summary = descent_case(name + "_report", 5 if key != "off" else 0, lambda v, n: v == 40 or (n == 2 and (key != "found" or v == 30)))
+    report_lines[key] = report.confirmation_lines("req/s", steps_of_case(scenario_args), scenario_summary)
+report_lines["none_passed"] = report.confirmation_lines("req/s", [], {"good": None, "approved": None, "confirmed": None})
+results["descent_report"] = report_lines
+results["swap_note"] = {"not_run": report.swap_note({"status": "not run", "not_run": "no http-wasm-jobs result and swap.rate is not set"}),
+                        "rate": report.swap_note({"status": "ok", "rate": 68, "rate_source": "the highest http-wasm-jobs step that passed (not confirmed)"})}
+
 # The layout: the node count is the variant of the scale measure, the join and the summaries have their own place.
 info, args = case_args("layout")
 scale_round = m.Round(args, info, stem="scale-http-native-n2")
@@ -752,6 +785,31 @@ swapped_again = m.swap(m.Round(swap_args, swap_info), swap_args, swap_info)
 results["swap_nested"] = {"first": swapped["status"], "again": swapped_again["status"], "approved": [swapped["approved"], swapped_again["approved"]],
                           "files": [f for f in before if f.startswith("step-")], "same_files": before == sorted(os.listdir(swap_dir)),
                           "hash": read_json(swap_dir, "step-10.json")["config_hash"]}
+
+# The swap rate: swap.rate, else the confirmed step of http-wasm-jobs, else its highest step that passed; with none the swap does not run, and that is not a failure.
+def swap_case(name, summary):
+    info, args = case_args(name, rate=None, trigger="sigterm", swap_workers=1, swap_warmup=1, swap_overlap=1, swap_settle=1, swap_timeout=30)
+    args.measure = "swap"
+    if summary is not None:
+        m.write_json(m.result_file(args, "A", "http-wasm-jobs", "summary"), summary)
+    return info, args
+
+
+_, rate_args = swap_case("swap_rate", {"approved": 8, "confirmed": True, "good": 10})
+confirmed_rate = m.swap_rate(rate_args, "A")
+_, rate_args = swap_case("swap_rate_good", {"approved": None, "confirmed": False, "good": 10})
+good_rate = m.swap_rate(rate_args, "A")
+_, rate_args = swap_case("swap_rate_given", {"approved": 8, "good": 10})
+rate_args.rate = 5
+given_rate = m.swap_rate(rate_args, "A")
+good_info, good_args = swap_case("swap_good", {"approved": None, "confirmed": False, "good": 10})
+good_swap = m.swap(m.Round(good_args, good_info), good_args, good_info)
+none_info, none_args = swap_case("swap_none", {"approved": None, "confirmed": None, "good": None})
+none_swap = m.swap(m.Round(none_args, none_info), none_args, none_info)
+_, missing_args = swap_case("swap_missing", None)
+results["swap_rate"] = {"confirmed": confirmed_rate, "good": good_rate, "given": given_rate, "missing": m.swap_rate(missing_args, "A"),
+                        "ran": [good_swap["status"], good_swap["rate"], good_swap["rate_source"], os.listdir(os.path.join(good_args.out, "A", "swap"))],
+                        "not_run": none_swap, "not_run_exit": m.exit_status("swap", none_swap), "not_run_files": os.path.exists(os.path.join(none_args.out, "A", "swap"))}
 
 # The round's timeout stops the ramp before its next step.
 info, args = case_args("deadline", deadline=time.time() - 1)

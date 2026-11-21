@@ -578,6 +578,92 @@ defmodule Atanor.LoadRunTest do
     assert w["first"] == "ok" and w["again"] == "ok" and w["approved"] == [10, 10]
     assert w["files"] == ["step-10.json"] and w["same_files"] and w["hash"] == "h1"
 
+    # the confirmation descent: 10, 20 and 30 pass, 40 fails, the confirmation of 30 fails; the ramp goes down to 20 (its confirmation is step-20-2, on a fresh node)
+    f = r["descent_found"]
+    assert f["runs"] == [10, 20, 30, 40, 30, 20]
+
+    assert f["summary"] == %{
+             "good" => 30,
+             "approved" => 20,
+             "confirmed" => true,
+             "confirm_tried" => [30, 20],
+             "first_failure" => 40
+           }
+
+    assert step.("20-2") in f["files"] and step.("30-2") in f["files"]
+    assert f["fresh"] == %{"step-30-2.json" => true, "step-20-2.json" => true}
+    assert f["again"] == [[], true]
+
+    # no descent confirms: the limit of descents, or the bottom of the ladder; there is a highest step that passed once and no confirmed one
+    assert r["descent_limit"]["runs"] == [10, 20, 30, 40, 30, 20]
+
+    assert r["descent_limit"]["summary"] == %{
+             "good" => 30,
+             "approved" => :null,
+             "confirmed" => false,
+             "confirm_tried" => [30, 20],
+             "first_failure" => 40
+           }
+
+    assert r["descent_exhausted"]["runs"] == [10, 20, 30, 40, 30, 20, 10]
+
+    assert r["descent_exhausted"]["summary"] == %{
+             "good" => 30,
+             "approved" => :null,
+             "confirmed" => false,
+             "confirm_tried" => [30, 20, 10],
+             "first_failure" => 40
+           }
+
+    # confirm_descents = 0 keeps the old behavior: one confirmation, no ceiling when it fails
+    assert r["descent_off"]["runs"] == [10, 20, 30, 40, 30]
+
+    assert r["descent_off"]["summary"] == %{
+             "good" => 30,
+             "approved" => :null,
+             "confirmed" => false,
+             "confirm_tried" => [30],
+             "first_failure" => 40
+           }
+
+    # the report says which step passed once, that its confirmation failed and what the descent found; the old sentence is only for no passed step
+    p = r["descent_report"]
+
+    assert p["found"] == [
+             "Highest step that passed once: **30 req/s**. Confirmed step (passed twice): **20 req/s**.",
+             "The confirmation of 30 failed (p99 900.1 ms > 250 ms). The descent tried 20 (ok); 20 passed twice."
+           ]
+
+    assert p["exhausted"] == [
+             "Highest step that passed once: **30 req/s**. Confirmed step (passed twice): **none**.",
+             "The confirmation of 30 failed (p99 900.1 ms > 250 ms). The descent tried 20 (fail), 10 (fail); none passed twice."
+           ]
+
+    assert Enum.at(p["off"], 1) =~ "The confirmation of 30 failed" and Enum.at(p["off"], 1) =~ "No descent ran"
+    assert p["none_passed"] == ["No approved step: the first step already failed or was invalid."]
+
+    # the swap rate: swap.rate, else the confirmed step, else the highest that passed; with none it does not run, exits 0 and writes no step
+    s = r["swap_rate"]
+    assert s["given"] == [5, "swap.rate"]
+    assert s["confirmed"] == [8, "the confirmed http-wasm-jobs step"]
+    assert s["good"] == [10, "the highest http-wasm-jobs step that passed (not confirmed)"]
+    assert s["missing"] == [:null, "no http-wasm-jobs result and swap.rate is not set"]
+    assert Enum.take(s["ran"], 3) == ["ok", 10, "the highest http-wasm-jobs step that passed (not confirmed)"]
+    assert "step-10.json" in Enum.at(s["ran"], 3)
+
+    assert s["not_run"] == %{
+             "approved" => :null,
+             "confirmed" => :null,
+             "stopped_by" => :null,
+             "invalid" => :null,
+             "status" => "not run",
+             "not_run" => "no http-wasm-jobs step passed and swap.rate is not set"
+           }
+
+    assert s["not_run_exit"] == 0 and s["not_run_files"] == false
+    assert r["swap_note"]["not_run"] == "**The swap did not run:** no http-wasm-jobs result and swap.rate is not set."
+    assert r["swap_note"]["rate"] =~ "Rate 68 req/s, taken from the highest http-wasm-jobs step that passed"
+
     # the round's timeout stops before the next step, and nothing was written
     assert r["deadline"] == ["round.timeout_s passed", false]
 
@@ -626,7 +712,7 @@ defmodule Atanor.LoadRunTest do
     assert d["text"] =~ "each generator process is killed after 600 s (round.step_timeout_s); no round timeout"
 
     assert d["text"] =~
-             "A/http-native      ladder, values 490, 650, 810, 975 req/s; at most 8 steps (3 refine, 1 confirm), 180 s each"
+             "A/http-native      ladder, values 490, 650, 810, 975 req/s; at most 10 steps (3 refine, 1 confirm, 2 descents), 180 s each"
 
     assert d["text"] =~ "A/http-wasm        bisect, values 25, 50, 100,"
     assert d["text"] =~ "B/ws               ladder, values 15000, 20000, 25000, 30000 connections"

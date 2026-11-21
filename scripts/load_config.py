@@ -29,6 +29,7 @@ RAMP_MEASURES = ("http-native", "http-wasm", "http-wasm-jobs", "ws", "cells")
 SCALE_LOADS = ("http-native", "http-wasm", "http-wasm-jobs", "cells")
 RAMPS = {"http-native": (25, 20000), "http-wasm": (25, 20000), "http-wasm-jobs": (25, 20000), "ws": (100, 60000), "cells": (100, 100000)}
 UNITS = {"http-native": "req/s", "http-wasm": "req/s", "http-wasm-jobs": "req/s", "ws": "connections", "cells": "cells", "swap": "req/s", "scale": "req/s or cells"}
+CONFIRM_DESCENTS = 2  # lower steps a failed confirmation may fall back to
 FACTORS = [0.75, 1.0, 1.25, 1.5]  # the steps of a ceiling plan, as fractions of its ceiling
 SIZE = re.compile(r"^[0-9]+[kmg]?b?$", re.IGNORECASE)  # as size_bytes of scripts/load-common
 CEILING_KEY = re.compile(r"^([a-z-]+):([0-9]+)$")
@@ -152,6 +153,7 @@ def steps_table(start, maximum, sparse=False):
         "duration_s": Leaf("float", 180.0, lo=0, open_lo=True),
         "refine": Leaf("int", 3, lo=0),
         "confirm": Leaf("bool", True),
+        "confirm_descents": Leaf("int", CONFIRM_DESCENTS, lo=0),
         "reset_each_step": Leaf("bool", False),
     }, sparse)
 
@@ -316,8 +318,9 @@ def plan(config, measure, scenario):
 
 
 def hashed_plan(config, measure, scenario):
-    """`plan` as hashed: `reset_each_step` is left out while false, so a round that does not set it keeps its hash."""
-    return {k: v for k, v in plan(config, measure, scenario).items() if k != "reset_each_step" or v}
+    """`plan` as hashed: `reset_each_step` is left out while false and `confirm_descents` while at its default, so a round that does not set them keeps its hash."""
+    return {k: v for k, v in plan(config, measure, scenario).items()
+            if not (k == "reset_each_step" and not v) and not (k == "confirm_descents" and v == CONFIRM_DESCENTS)}
 
 
 def steps_of(ceiling, factors):
