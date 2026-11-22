@@ -13,8 +13,6 @@
         { "type": "generic", "path": "testkit/mix.exs" },
         { "type": "generic", "path": "daemon/mix.exs" },
         { "type": "generic", "path": "README.md" },
-        { "type": "generic", "path": "docs/how-to-build-a-derived-image.md" },
-        { "type": "generic", "path": "docs/how-to-operate-atanor.md" },
         { "type": "generic", "path": "examples/live-counter/mix.exs" }
       ]
     }
