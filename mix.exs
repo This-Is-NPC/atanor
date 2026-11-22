@@ -35,15 +35,6 @@ defmodule Atanor.MixProject do
   defp elixirc_paths(:test), do: ["lib", "test/support", "testkit/lib"]
   defp elixirc_paths(_), do: ["lib"]
 
-  # A test OIDC issuer's testkit is an optional test-only path dependency: set OIDC_TESTKIT to a checkout
-  # of its testkit directory to compile the OIDC end-to-end test.
-  defp oidc_testkit do
-    case System.get_env("OIDC_TESTKIT") do
-      nil -> []
-      path -> if File.dir?(path), do: [{:maestro_testkit, path: path, only: :test, runtime: false}], else: []
-    end
-  end
-
   # Coverage counts lib/ only: the modules of test/support and testkit/ are compiled into the test build
   # but are not production code. Atanor.Dev* and Mix.Tasks.Atanor.Dev are the local development tooling
   # behind `mise run dev`. ATANOR_COVERAGE_IGNORE replaces the default (comma-separated regexes
@@ -56,30 +47,29 @@ defmodule Atanor.MixProject do
   end
 
   defp deps do
-    oidc_testkit() ++
-      [
-        {:alambique, git: @alambique_git, tag: @alambique_tag, override: true},
-        {:alambique_testkit, git: @alambique_git, tag: @alambique_tag, subdir: "testkit", only: [:dev, :test]},
-        {:rustler, "~> 0.38", runtime: false},
-        {:bandit, "~> 1.5"},
-        {:plug, "~> 1.16"},
-        {:websock_adapter, "~> 0.5"},
-        {:jason, "~> 1.4"},
-        {:jose, "~> 1.11"},
-        {:req, "~> 0.5"},
-        {:mint, "~> 1.6"},
-        {:telemetry, "~> 1.3"},
-        # Ranch protocol listeners (design 7.3); optional like Phoenix.
-        {:ranch, "~> 2.1", optional: true},
-        # The dashboard (design 10.1); the runtime does not need them.
-        {:phoenix, "~> 1.8", optional: true},
-        {:phoenix_live_view, "~> 1.2", optional: true},
-        {:phoenix_live_dashboard, "~> 0.9", optional: true},
-        {:telemetry_metrics, "~> 1.2", optional: true},
-        {:lazy_html, ">= 0.1.0", only: :test},
-        {:stream_data, "~> 1.1", only: :test},
-        {:mint_web_socket, "~> 1.0", only: :test},
-        {:gen_smtp, "~> 1.2", only: :test}
-      ]
+    [
+      {:alambique, git: @alambique_git, tag: @alambique_tag, override: true},
+      {:alambique_testkit, git: @alambique_git, tag: @alambique_tag, subdir: "testkit", only: [:dev, :test]},
+      {:rustler, "~> 0.38", runtime: false},
+      {:bandit, "~> 1.5"},
+      {:plug, "~> 1.16"},
+      {:websock_adapter, "~> 0.5"},
+      {:jason, "~> 1.4"},
+      {:jose, "~> 1.11"},
+      {:req, "~> 0.5"},
+      {:mint, "~> 1.6"},
+      {:telemetry, "~> 1.3"},
+      # Ranch protocol listeners (design 7.3); optional like Phoenix.
+      {:ranch, "~> 2.1", optional: true},
+      # The dashboard (design 10.1); the runtime does not need them.
+      {:phoenix, "~> 1.8", optional: true},
+      {:phoenix_live_view, "~> 1.2", optional: true},
+      {:phoenix_live_dashboard, "~> 0.9", optional: true},
+      {:telemetry_metrics, "~> 1.2", optional: true},
+      {:lazy_html, ">= 0.1.0", only: :test},
+      {:stream_data, "~> 1.1", only: :test},
+      {:mint_web_socket, "~> 1.0", only: :test},
+      {:gen_smtp, "~> 1.2", only: :test}
+    ]
   end
 end
