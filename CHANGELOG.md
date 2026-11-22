@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/This-Is-NPC/atanor/compare/v0.10.0...v0.10.1) (2026-11-22)
+
+
+### Documentation
+
+* rewrite the documentation for users ([3b15857](https://github.com/This-Is-NPC/atanor/commit/3b1585752ac044d54f37b9bcb69ae40ba493d3a6))
+
 ## [0.10.0](https://github.com/This-Is-NPC/atanor/compare/v0.9.0...v0.10.0) (2026-11-22)
 
 
