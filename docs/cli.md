@@ -10,24 +10,16 @@ has the credentials, and needs no node. The API it calls is described in
 
 ## Install
 
-`atanor` is an escript: one file that needs the Erlang it was built with (the version pinned in `mise.toml`) to run.
-Build it in a checkout and put it on your `PATH`:
+The command comes with the release, so there is nothing to build. Pick one:
 
-```sh
-mise run build:cli
-install -m 755 _build/cli/atanor ~/.local/bin/atanor
-atanor --version
-```
+- **The image** (the default): run the commands through `docker run`, as below. Docker is all it needs.
+- **The tarball**: `atanor-<version>-linux-<arch>.tar.gz` from the GitHub release. Unpack it and run
+  `atanor/bin/atanor-entrypoint` in place of `atanor`, for example with a shell alias:
+  `alias atanor=/path/to/atanor/bin/atanor-entrypoint`. It needs the host libraries that the
+  [README](../README.md#install) lists, and no Erlang.
 
-```text
-atanor 0.1.0
-```
-
-The release image and tarball hold the same command, so a machine with Docker needs no Erlang. Its
-entrypoint runs the `atanor` command for the commands below, and starts the node with no argument
-([how-to-build-the-release.md](how-to-build-the-release.md)):
-
-The image is published from 0.4.0 on and pulls without a login. For your own build
+Both run these commands: `login`, `logout`, `deploy`, `activate`, `rollback`, `status`, `versions`,
+`drain` and `token`. The published image pulls without a login. For your own build
 ([README](../README.md#install)), use `atanor:local` in place of `ghcr.io/this-is-npc/atanor`.
 
 ```sh
@@ -38,7 +30,7 @@ Give the image the credentials as for a node ([configuration.md](configuration.m
 for example `-e AWS_ACCESS_KEY_ID_FILE=... -e AWS_SECRET_ACCESS_KEY_FILE=...` with the files mounted. The command
 runs as the user `atanor` (uid 10001), which has to be able to read the directory. The profiles file is
 inside the container, so `login` there does not last: use `ATANOR_URL` and `ATANOR_TOKEN`. From a tarball,
-`bin/atanor-entrypoint deploy ...` does the same.
+`atanor/bin/atanor-entrypoint deploy ...` does the same.
 
 ## Profiles and the config file
 
@@ -50,7 +42,7 @@ replaced atomically, and the command never prints the token back.
 ```json
 {
   "profiles": {
-    "default": {"token": "atn_...", "url": "http://127.0.0.1:5010"},
+    "default": {"token": "atn_...", "url": "http://127.0.0.1:4001"},
     "ops": {"token": "...", "url": "https://admin.example.com"}
   }
 }
@@ -80,12 +72,12 @@ network in clear; `--insecure` allows it and prints a warning.
 
 | Option | Meaning |
 | --- | --- |
-| `--url URL` | The admin API URL, for example `http://127.0.0.1:5010` (or `ATANOR_URL`). |
+| `--url URL` | The admin API URL, for example `http://127.0.0.1:4001` (or `ATANOR_URL`). |
 | `--insecure` | Send the token over plain http to a host that is not loopback. |
 
 ```text
-$ echo "$TOKEN" | atanor login --url http://127.0.0.1:5010
-logged in to http://127.0.0.1:5010 (profile default); the token is stored in ~/.config/atanor/config.json
+$ echo "$TOKEN" | atanor login --url http://127.0.0.1:4001
+logged in to http://127.0.0.1:4001 (profile default); the token is stored in ~/.config/atanor/config.json
 ```
 
 ### atanor logout
@@ -129,18 +121,19 @@ package fa48567b0c8764bf0121aa6a9f0d7b40626820cfcccc8d9e5033aaa41e605c8f (hello,
 hello: active fa48567b0c8764bf0121aa6a9f0d7b40626820cfcccc8d9e5033aaa41e605c8f, revision 1, previous none
 ```
 
-Through the bucket (a WASM worker; the keys are in the environment, here for a local SeaweedFS):
+Through the bucket (a WASM worker; the keys are in the environment, here for the local SeaweedFS of
+[the local node guide](how-to-run-a-node-locally.md)):
 
 ```text
-$ cd examples/scoreboard
-$ AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... ATANOR_S3_ENDPOINT=http://127.0.0.1:18343 \
-    atanor deploy --bucket s3://atanor-demo/demo --activate
-package 55c8cdbc30d325d5628e54486c7ddb7bf3528f6355afe153817dafefb7f4061f (scoreboard, wasm, 117888 bytes)
-scoreboard: active 55c8cdbc30d325d5628e54486c7ddb7bf3528f6355afe153817dafefb7f4061f, revision 1, previous none
-stored in s3://atanor-demo/demo; the nodes apply it at their next poll
-$ atanor deploy ../hello-native --bucket s3://atanor-demo/demo --activate
+$ cd atanor-hello
+$ AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... ATANOR_S3_ENDPOINT=http://127.0.0.1:8333 \
+    atanor deploy --bucket s3://atanor --activate
+package 6f30c05f11f17db48d1819431b7ff92087d4343f9f248c5ae35d04d5c62a3c77 (hello, wasm, 181410 bytes)
+hello: active 6f30c05f11f17db48d1819431b7ff92087d4343f9f248c5ae35d04d5c62a3c77, revision 1, previous none
+stored in s3://atanor; the nodes apply it at their next poll
+$ atanor deploy ../my-native-worker --bucket s3://atanor --activate
 atanor: --bucket deploys WASM workers only: hello is native, and a node can run it only if its release holds the module, which the bucket cannot check. Deploy it through a node with --url or a profile, after rolling the nodes to a release that has the module
-$ atanor deploy --bucket s3://atanor-demo/demo --profile ops
+$ atanor deploy --bucket s3://atanor --profile ops
 atanor: --bucket writes the store directly and --profile is for the admin API of a node: give one or the other
 ```
 
@@ -175,7 +168,7 @@ apply it. Needs `read`.
 ```text
 $ atanor status hello
 hello: active d497f86a3e8810a9ac08e17caeff25d2f0397b950c3537fb77b8f438278197ef, revision 2, previous fa48567b0c8764bf0121aa6a9f0d7b40626820cfcccc8d9e5033aaa41e605c8f
-applied by nonode@nohost: d497f86a3e8810a9ac08e17caeff25d2f0397b950c3537fb77b8f438278197ef
+applied by atanor@atanor-node.local: d497f86a3e8810a9ac08e17caeff25d2f0397b950c3537fb77b8f438278197ef
 ```
 
 ### atanor versions WORKER
@@ -230,11 +223,11 @@ their leases. Run it against the node that leaves, not through a balancer. See
 [the admin API](how-to-use-the-admin-api.md), step 13, and design
 [§8.11](design.md#811-draining-and-stopping-gracefully).
 
-Output against a test node with three cells (`stop: [exit: false]`):
+Output of a node with three cells, started with `stop: [exit: false]` so that it stays up:
 
 ```text
 $ atanor drain
-drained nonode@nohost: 3 cells handed back in 14 ms
+drained atanor@atanor-node.local: 3 cells handed back in <ms> ms
 ```
 
 ### atanor token list

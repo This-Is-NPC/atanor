@@ -1,9 +1,8 @@
 # Scoreboard
 
 A WASM worker that keeps a scoreboard per room. It exercises HTTP, a WebSocket,
-a per-cell job and cell state, and it makes lost or duplicated acknowledged
-writes measurable. It is built for the container cluster
-([how-to-run-a-cluster-in-containers.md](../../docs/how-to-run-a-cluster-in-containers.md)).
+a per-cell job and cell state. Use it to try a worker end to end, and to check that
+acknowledged writes are neither lost nor duplicated.
 
 ## Why WASM
 
@@ -36,38 +35,43 @@ All requests use the host `scoreboard.localhost`.
 | Every answer | The header `x-scoreboard-version`: `1`, or the `SCOREBOARD_VERSION` the component was built with, to tell two deployments apart in the answers. |
 | WebSocket `/rooms/ROOM/live` | Send the text `join ROOM`. You get `joined`, then a `score` event per write and a `rankings` event per finished job. |
 
-## Check for lost and duplicated writes
+## Check one write by hand
 
-Every acknowledged write (HTTP 201) carries a client-chosen unique `id`.
-[scripts/scoreboard-check](../../scripts/scoreboard-check) writes scores with
-unique ids over several rooms, logs the answers, and compares the log with
-`GET .../writes`:
+Every acknowledged write (HTTP 201) carries a client-chosen unique `id`. Replace
+`<node-url>` with the address of your node or load balancer:
 
 ```sh
-mise run cluster:scoreboard-check write --url http://scoreboard.localhost:18080 --rooms r1,r2,r3 --count 300 --log /tmp/r1.log
-mise run cluster:scoreboard-check verify --url http://scoreboard.localhost:18080 --log /tmp/r1.log
+curl -i -X POST -H "Host: scoreboard.localhost" "<node-url>/rooms/r1/scores?id=check-1&player=ana&points=10&once=1"
+curl -H "Host: scoreboard.localhost" "<node-url>/rooms/r1/writes?limit=1000"
 ```
 
-It puts each request in one of three groups: acknowledged (201), refused (the
-call provably did not run: 503 `unavailable`, `overloaded`, a balancer 503, a
-refused connection) and unknown (a timeout or reset, 503 `unknown_outcome`, any
-other 5xx). `verify` prints the acknowledged ids missing from the rooms (LOST),
-those stored more than once (DUPLICATED), and how many unknown and refused
-writes are stored. A refused write that is stored is a bug and is printed.
-It exits 1 when LOST, DUPLICATED or such a write is not empty.
-`mise run cluster:chaos-run SCENARIO` runs it under a fault
-([how-to-run-a-cluster-in-containers.md](../../docs/how-to-run-a-cluster-in-containers.md)).
-`scripts/scoreboard-watch URL ROOM [SECONDS] [--log FILE]` prints the
-WebSocket events, or with `--log` records them and reconnects (Node.js 22 or
-later).
+The first answer is `201`, and the list of writes of `r1` contains `check-1`. Send the same
+`POST` again: with `once=1` the id is still stored once. Without `once=1` a repeated request
+adds a second row with the same id.
 
-## Build and deploy
+## Deploy
 
-```sh
-mise run build:scoreboard          # examples/scoreboard/scoreboard.wasm
-mise run cluster:deploy-example    # token scoped to worker:scoreboard:{deploy,activate,read}
-SCOREBOARD_VERSION=2 scripts/build-scoreboard   # another version header, to deploy again
-```
+The repository keeps the compiled component next to its manifest:
+`examples/scoreboard/scoreboard.wasm` and `examples/scoreboard/atanor.json`.
 
-The token is created with the operator token the first time and kept in
-`cluster/secrets/deploy-token`.
+1. Log in to the node with a profile that can create tokens (`atanor login --url <node-url>`,
+   see [cli.md](../../docs/cli.md)).
+2. Create a token that can deploy and activate this worker and read it:
+
+   ```sh
+   atanor token create scoreboard-ci --scope worker:scoreboard:deploy --scope worker:scoreboard:activate --scope worker:scoreboard:read
+   ```
+
+   The secret is shown once. Keep it, and use it for the profile that deploys the worker.
+3. Deploy from the example directory:
+
+   ```sh
+   cd examples/scoreboard
+   atanor deploy --activate
+   ```
+
+   The output names the package and the active version of `scoreboard`.
+
+To change the `x-scoreboard-version` header, the component must be built again with
+`SCOREBOARD_VERSION` set. Building the guest needs the repository's WIT packages, which are a
+contributor step: see [how-to-build-and-test.md](../../docs/how-to-build-and-test.md).

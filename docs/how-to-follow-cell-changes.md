@@ -5,7 +5,7 @@ namespace, or subscribe to changes without waking the cells?
 
 This guide stands alone. It assumes a native worker with a cell namespace;
 [how-to-write-a-native-worker.md](how-to-write-a-native-worker.md) creates one.
-WASM workers cannot follow the feed (see [design §16.5](design.md#165-limits-and-options)).
+A WASM worker cannot follow the feed ([known limitations](known-limitations.md)).
 
 ## Prerequisites
 
@@ -239,7 +239,7 @@ holds first, a lone change is delivered up to 250 ms later, and
 `page_size` still counts objects, so a page can hold more changes than
 `page_size`. Order per cell, the position and `Atanor.Change.id`
 are unchanged. The order per cell is the order of the `txid`, also for a batch
-published late (Alambique 0.3.0 keeps the object keys in commit order). A consumer outside Atanor must use the same Alambique as the nodes.
+published late. A consumer outside Atanor must use the same Alambique as the nodes.
 
 Alambique's feed options stay under `:alambique`: `window_ms`, `retention_ms`,
 `prune_interval_ms`, `publish_retry_ms` and `shards`. `skew_margin_ms` is an
@@ -271,10 +271,7 @@ what late publication and clock skew allow.
   backoff and does not drop subscribers.
 - **`_atanor_*` is not in the feed.** Atanor lists the prefix as internal
   (`feed: [internal_prefixes: ["_atanor_"]]`, fixed by Atanor, not an option),
-  so those tables get no capture triggers and publish nothing. A cell that
-  changed since the prefix was adopted regenerates its triggers when it wakes;
-  records published before that stay in the store until retention removes
-  them and can still be read.
+  so those tables get no capture triggers and publish nothing.
 - **`:now` has a skew margin.** A `:now` position or subscription starts and
   filters at now minus `skew_margin_ms` (2 000 ms by default, from Atanor's
   `:alambique` options). It can repeat changes from up to that margin before
@@ -307,8 +304,9 @@ what late publication and clock skew allow.
   `{:unsupported_format, version}` a newer writer wrote it: upgrade this node.
 - **Read errors in the log** The tailer retries; watch
   `[:atanor, :feed, :error]` for `reason` and `retry_ms`. Subscribers stay.
-- **A WASM worker needs the feed** It has no import for it. Keep the
-  subscription in a native worker and call the WASM worker, or poll a cell.
+- **A WASM worker needs the feed.** It cannot follow the feed; see
+  [known limitations](known-limitations.md). Keep the subscription in a native
+  worker and call the WASM worker, or poll a cell.
 
 ## Next steps
 

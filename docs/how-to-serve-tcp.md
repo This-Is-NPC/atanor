@@ -4,9 +4,9 @@
 (SMTP, IMAP, your own) over raw TCP or TLS, bind a connection to a cell, and
 serve it with a protocol library such as gen_smtp?
 
-This guide stands alone. It uses [examples/echo-tcp](../examples/echo-tcp). To
-write a worker and run a local node first, see
-[how-to-write-a-native-worker.md](how-to-write-a-native-worker.md).
+This guide does not stand alone. It builds on a native worker, which
+[how-to-write-a-native-worker.md](how-to-write-a-native-worker.md) explains. The
+worker of the examples is in [examples/echo-tcp](../examples/echo-tcp).
 
 ## Prerequisites
 
@@ -57,22 +57,17 @@ write a worker and run a local node first, see
    The callback that stored `name` ran before the binding; the ones after it
    run for the cell. A connection cannot be rebound.
 
-4. Start a node and map the listener name to a port.
+4. Map the listener name to a port in the `listeners:` option of your instance.
+   Here `visits` opens port 2525 while a worker claims it:
 
-   ```sh
-   cd examples/echo-tcp
-   mise exec -- mix atanor.dev --port 4124 --listener visits=2525
+   ```elixir
+   {Atanor, name: MyApp.Atanor, listeners: %{"visits" => 2525}}
    ```
 
-   ```text
-   Atanor listening on http://127.0.0.1:4124
-     tcp visits on 127.0.0.1:2525 -> visits
-   ```
-
-   In your own application the mapping is the `listeners:` option of
-   `{Atanor, opts}`, for example `listeners: %{"visits" => 2525}`; port 0
-   picks a free port and `Atanor.TCP.port/2` tells which. The long form of a
-   listener adds TLS and the protocol server:
+   Start your application as usual, for example with `iex -S mix` in your
+   project. Port 0 picks a free port, and `Atanor.TCP.port(MyApp.Atanor,
+   "visits")` tells which. The long form of a listener adds TLS and the
+   protocol server:
 
    ```elixir
    listeners: %{
@@ -85,7 +80,8 @@ write a worker and run a local node first, see
    }
    ```
 
-5. Talk to it. This is a real session; `>` is sent, `<` is received.
+5. Talk to it with any line client, for example `nc localhost 2525`. `>` is
+   sent, `<` is received. The example worker answers:
 
    ```text
    < READY
@@ -318,8 +314,8 @@ with `{:listener_failed, name, {:missing_dependency, :ranch}}`.
 - Undeploying the worker closes its listener and ends its connections.
 - A callback that raises or returns another shape closes the connection and
   is logged; the peer sees nothing of the error.
-- WASM workers cannot serve TCP, and therefore cannot use implicit TLS,
-  STARTTLS or Ranch protocol listeners (design §3.2).
+- WASM workers cannot serve TCP. The open limits are listed in
+  [known-limitations.md](known-limitations.md).
 
 ## Troubleshooting
 

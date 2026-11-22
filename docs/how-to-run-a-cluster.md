@@ -4,90 +4,91 @@
 each request run on the node that owns its cell, and see what happens when a
 node dies?
 
-This guide builds on [how-to-write-a-native-worker.md](how-to-write-a-native-worker.md):
-it runs the same project, [examples/hello-native](../examples/hello-native), on
-three nodes on one machine. Read that guide first if you have no worker yet.
+This guide builds on [how-to-run-a-node-locally.md](how-to-run-a-node-locally.md):
+it uses the same image, secrets and store, and runs three nodes on one machine.
+Read that guide first.
 
 ## Prerequisites
 
-- The tools of the [README](../README.md#requirements), and Docker for the
-  local SeaweedFS, which the nodes share as their bucket.
-- A native worker project that compiles, with a `route_key/2` that names a
-  cell (the example has one). Without it the request runs on the node that
-  received it; its cell calls still reach the owner.
-- Three terminals in `examples/hello-native`. In the commands, `HOST` is the
-  short host name of your machine (`hostname -s`).
+- Docker, and steps 1 to 3 of [how-to-run-a-node-locally.md](how-to-run-a-node-locally.md):
+  `IMAGE` is set, `atanor-secrets` holds the secrets, `atanor-net` is the network
+  and SeaweedFS runs as `atanor-store` with the bucket `atanor`. Do not start the
+  single node of its step 4: this guide starts three nodes.
+- A WASM worker with a cell, in `atanor-hello`: a manifest and a component, as in
+  [how-to-write-a-wasm-worker.md](how-to-write-a-wasm-worker.md). The steps below
+  assume that `GET /hello/<name>` on the host `localhost` answers
+  `{"hello":"<name>","greetings":<n>}`, where `n` counts the requests of that name
+  in the cell `hits.<name>`. The worker's cell calls run on the cell's owner.
+- In every command, `TOKEN` is the admin token of the nodes:
+
+  ```sh
+  TOKEN=$(cat atanor-secrets/admin_token)
+  ```
 
 ## Concepts in three lines
 
 Every node runs the same instance over the same bucket. A cell has one owner
-at a time (a lease in the bucket). A node that receives a request for a cell
-runs the worker's callback on the owner and sends back the answer.
+at a time (a lease in the bucket). A node that receives a request runs it, and
+each call to a cell runs on the cell's owner, on whichever node that is.
 
 ## Steps
 
-1. Start the shared bucket.
+1. Start three nodes. Each has its own ingress port (`400N` on the host), its
+   own admin port (`500N`) and a name that the others resolve: the network alias
+   `node-N.cluster` is the node's name, `atanor@node-N.cluster`
+   (`ATANOR_ADVERTISE`). There is no list of nodes: each node publishes its name
+   in the bucket and connects to the names it reads there
+   ([discovery](configuration.md#discovery)).
 
    ```sh
-   mise run seaweedfs:up
+   for n in 1 2 3; do
+     docker run -d --name atanor-node-$n --network atanor-net --network-alias node-$n.cluster \
+       --stop-timeout 90 -p 127.0.0.1:400$n:4000 -p 127.0.0.1:500$n:4001 \
+       -v "$PWD/atanor-secrets:/run/secrets:ro" \
+       -e ATANOR_STORE=s3://atanor -e ATANOR_S3_ENDPOINT=http://atanor-store:8333 \
+       -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret_key \
+       -e ATANOR_ADMIN_TOKEN_FILE=/run/secrets/admin_token -e ATANOR_COOKIE_FILE=/run/secrets/cookie \
+       -e ATANOR_ADVERTISE=node-$n.cluster "$IMAGE"
+   done
+   until [ "$(curl -s -o /dev/null -w '%{http_code}' -H "authorization: Bearer $TOKEN" \
+     http://127.0.0.1:5001/health/ready)" = 200 ]; do sleep 1; done
    ```
 
-   ```text
-   SeaweedFS ready on 127.0.0.1:18343
-   ```
+   Expected: `docker ps` lists `atanor-node-1` to `atanor-node-3` as running, and
+   the loop ends when node 1 is ready.
 
-2. Start the first node. `--sname` and `--cookie` make it a distributed
-   Erlang node, which publishes itself in the bucket; the other nodes must use the same cookie. `atanor-demo` is a public
-   value for this local demo. For a real cluster use a secret cookie, set in the
-   environment of the process (`RELEASE_COOKIE` for a release) and not in the
-   arguments, which show in the process list. Alambique's Mix tasks read
-   `ALAMBIQUE_COOKIE` when `--cookie` is absent. Each node needs its
-   own `--port`, `--admin-port` and `--data-dir`.
+2. Deploy the worker through node 1, as in step 5 of
+   [how-to-run-a-node-locally.md](how-to-run-a-node-locally.md). The command writes
+   the package to the bucket, and every node applies it at its next poll (at most
+   5 seconds).
 
    ```sh
-   mise exec -- elixir --sname a --cookie atanor-demo -S mix atanor.dev \
-     --store seaweedfs --port 4001 --admin-port 5001 --admin-token demo-token \
-     --data-dir /tmp/atanor-demo/a
+   docker run --rm --network atanor-net -v "$PWD/atanor-secrets:/run/secrets:ro" -v "$PWD/atanor-hello:/w:ro" \
+     -e ATANOR_S3_ENDPOINT=http://atanor-store:8333 \
+     -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret_key \
+     "$IMAGE" deploy /w --bucket s3://atanor --activate
    ```
 
-   ```text
-   Atanor listening on http://127.0.0.1:4001
-     localhost/hello -> hello
-   ```
+   Expected: the package is stored and active, as in step 5 of the local guide.
 
-3. In the second and third terminals start `b` and `c` the same way, with their
-   own ports. There is no list of nodes and no `--connect`: each node reads the
-   others from the bucket (`<prefix>/nodes/` in the bucket `atanor-dev`) and connects to
-   them, within a second or two here
-   ([discovery](configuration.md#discovery)). The nodes share a bucket and a prefix.
+3. Check that the nodes see each other. Run it again if a node has just started:
+   a node is found within a few seconds.
 
    ```sh
-   mise exec -- elixir --sname b --cookie atanor-demo -S mix atanor.dev \
-     --store seaweedfs --port 4002 --admin-port 5002 --admin-token demo-token \
-     --data-dir /tmp/atanor-demo/b
-   mise exec -- elixir --sname c --cookie atanor-demo -S mix atanor.dev \
-     --store seaweedfs --port 4003 --admin-port 5003 --admin-token demo-token \
-     --data-dir /tmp/atanor-demo/c
-   ```
-
-4. Check that the nodes see each other (run it again if `c` has just started: a
-   node is found within a second or two).
-
-   ```sh
-   curl -s -H "authorization: Bearer demo-token" localhost:5001/health
+   curl -s -H "authorization: Bearer $TOKEN" 127.0.0.1:5001/health
    ```
 
    ```json
-   {"node":"a@myhost","status":"ok","nodes":["a@myhost","b@myhost","c@myhost"],"workers":1}
+   {"node":"atanor@node-1.cluster","status":"ok","nodes":["atanor@node-1.cluster","atanor@node-2.cluster","atanor@node-3.cluster"],"workers":1}
    ```
 
-5. Send requests for the same name through each node, and for two other names.
-   Whatever the node that receives it, the counter of a name goes on.
+4. Send requests for the same name through each node, and for two other names.
+   Whatever the node that receives a request, the counter of a name goes on.
 
    ```sh
-   for p in 4001 4002 4003; do curl -s -H "host: localhost" localhost:$p/hello/alice; echo; done
-   curl -s -H "host: localhost" localhost:4002/hello/bob; echo
-   curl -s -H "host: localhost" localhost:4003/hello/carol; echo
+   for p in 4001 4002 4003; do curl -s -H "host: localhost" 127.0.0.1:$p/hello/alice; echo; done
+   curl -s -H "host: localhost" 127.0.0.1:4002/hello/bob; echo
+   curl -s -H "host: localhost" 127.0.0.1:4003/hello/carol; echo
    ```
 
    ```text
@@ -98,31 +99,30 @@ runs the worker's callback on the owner and sends back the answer.
    {"hello":"carol","greetings":1}
    ```
 
-6. See where the cells are. Each live cell is on one node, and the worker ran
-   on that node for every one of the requests above.
+5. See where the cells are. Each live cell is on one node, and the cell calls of
+   the requests above ran on that node.
 
    ```sh
-   curl -s -H "authorization: Bearer demo-token" localhost:5001/cells
-   curl -s -H "authorization: Bearer demo-token" "localhost:5001/cells?node=c@HOST"
+   curl -s -H "authorization: Bearer $TOKEN" 127.0.0.1:5001/cells
+   curl -s -H "authorization: Bearer $TOKEN" "127.0.0.1:5001/cells?node=atanor@node-3.cluster"
    ```
 
    ```text
-   {"total":3,"nodes":{"a@myhost":{"count":1,"status":"ok"},"b@myhost":{"count":0,"status":"ok"},"c@myhost":{"count":2,"status":"ok"}},"partial":false}
-   {"node":"c@myhost","next":null,"cells":[{"id":"hits.alice","key":"alice","namespace":"hits"},{"id":"hits.bob","key":"bob","namespace":"hits"}]}
+   {"total":3,"nodes":{"atanor@node-1.cluster":{"count":1,"status":"ok"},"atanor@node-2.cluster":{"count":0,"status":"ok"},"atanor@node-3.cluster":{"count":2,"status":"ok"}},"partial":false}
+   {"node":"atanor@node-3.cluster","next":null,"cells":[{"id":"hits.alice","key":"alice","namespace":"hits"},{"id":"hits.bob","key":"bob","namespace":"hits"}]}
    ```
 
    The cells were woken on the nodes Alambique prefers (rendezvous hashing
-   over the names), not on the node that got the request: `b` got requests and
+   over the names), not on the node that got the request: node 2 got requests and
    owns none.
 
-7. Crash the node that owns `alice` (`c` above). Find the VM and kill it
-   without a shutdown, then ask through `a` until the cell answers again.
+6. Kill the node that owns `alice` (node 3 above). A `SIGKILL` stops it without a
+   shutdown. Then ask through node 1 until the cell answers again.
 
    ```sh
-   ps -eo pid,args | grep -- '-sname c' | grep -v grep   # the PID is the first column
-   kill -KILL PID
+   docker kill -s KILL atanor-node-3
    while true; do
-     out=$(curl -s -m 5 -w ' [%{http_code}]' -H "host: localhost" localhost:4001/hello/alice)
+     out=$(curl -s -m 5 -w ' [%{http_code}]' -H "host: localhost" 127.0.0.1:4001/hello/alice)
      echo "$out"; case "$out" in *'[200]') break;; esac; sleep 0.2
    done
    ```
@@ -131,88 +131,89 @@ runs the worker's callback on the owner and sends back the answer.
    {"hello":"alice","greetings":4} [200]
    ```
 
-   In the run recorded here the cell answered 35 ms after the kill, on the first
-   try. The surviving nodes saw the process die at once (the operating system
+   The surviving nodes saw the process die at once (the operating system
    closed its connections), the detector confirmed it down, and the request for
    `alice` took the cell over: Alambique raised the epoch of its lease and woke
-   the cell on `a`, without waiting for the dead node's lease (30 s by default).
+   the cell on node 1, without waiting for the dead node's lease (30 s by default).
    The counter goes on from 3 to 4: nothing that was acknowledged was lost. Only
    the cells that are asked for move; `/health` now lists two nodes and `/cells`
    shows where the cells are. (A client that sends the request while the node is
    already gone but not yet confirmed down gets a 503 `unavailable` or waits for
    the verdict: step 8.)
 
-8. See how the nodes watch each other, and what a lost machine looks like.
+7. See how the nodes watch each other, and what a lost machine looks like.
    Nodes send each other heartbeats, and `/nodes` shows how this node sees each
-   peer. Restart `c` if you killed it in step 7 (it joins again by itself), then:
+   peer. Start node 3 again (it joins by itself), then:
 
    ```sh
-   curl -s -H "authorization: Bearer demo-token" localhost:5001/nodes
+   docker start atanor-node-3
+   curl -s -H "authorization: Bearer $TOKEN" 127.0.0.1:5001/nodes
    ```
 
    ```json
-   {"node":"a@myhost","nodes":[{"node":"b@myhost","reason":null,"state":"alive","phi":-0.0,"last_heartbeat_ms":41},{"node":"c@myhost","reason":null,"state":"alive","phi":-0.0,"last_heartbeat_ms":146}]}
+   {"node":"atanor@node-1.cluster","nodes":[{"node":"atanor@node-2.cluster","reason":null,"state":"alive","phi":-0.0,"last_heartbeat_ms":41},{"node":"atanor@node-3.cluster","reason":null,"state":"alive","phi":-0.0,"last_heartbeat_ms":146}]}
    ```
 
-   Ask for a few more names through `b` until `c` owns one (`/cells?node=c@HOST`
-   lists them; `mona` was one here). Then freeze the VM of `c` without closing
-   its connections, as a lost machine would (`PID` is the `beam.smp` of `c`,
-   found as in step 7), ask `a` for `mona` in the background and look at `/nodes`
+   Ask for a few more names through node 2 until node 3 owns one (`/cells?node=atanor@node-3.cluster`
+   lists them). Then freeze node 3 without closing its connections, as a lost
+   machine would, ask node 1 for `mona` in the background and look at `/nodes`
    after 3 and after 7 seconds:
 
    ```sh
-   kill -STOP PID
-   curl -s -m 20 -w ' [%{http_code}] after %{time_total}s\n' -H "host: localhost" localhost:4001/hello/mona &
+   docker pause atanor-node-3
+   curl -s -m 20 -w ' [%{http_code}] after %{time_total}s\n' -H "host: localhost" 127.0.0.1:4001/hello/mona &
    ```
 
    ```json
-   {"node":"a@myhost","nodes":[{"node":"b@myhost","reason":null,"state":"alive","phi":-0.0,"last_heartbeat_ms":212},{"node":"c@myhost","reason":null,"state":"alive","phi":1.37,"last_heartbeat_ms":3320}]}
-   {"node":"a@myhost","nodes":[{"node":"b@myhost","reason":null,"state":"alive","phi":-0.0,"last_heartbeat_ms":215},{"node":"c@myhost","reason":"{:phi, 10.9}","state":"down","phi":300.0,"last_heartbeat_ms":7328}]}
+   {"node":"atanor@node-1.cluster","nodes":[{"node":"atanor@node-2.cluster","reason":null,"state":"alive","phi":-0.0,"last_heartbeat_ms":212},{"node":"atanor@node-3.cluster","reason":null,"state":"alive","phi":1.37,"last_heartbeat_ms":3320}]}
+   {"node":"atanor@node-1.cluster","nodes":[{"node":"atanor@node-2.cluster","reason":null,"state":"alive","phi":-0.0,"last_heartbeat_ms":215},{"node":"atanor@node-3.cluster","reason":"{:phi, 10.9}","state":"down","phi":300.0,"last_heartbeat_ms":7328}]}
    {"hello":"mona","greetings":2} [200] after 4.943359s
    ```
 
    `phi` grows with the silence of a peer. When it passes the threshold (8 by
-   default) `a` asks `b` to reach `c` too, and when nobody can it marks `c`
-   `down` and disconnects it. The request that was waiting for `c` fails at that
-   moment, `a` takes `mona` over, and the answer comes at 4.9 s instead of
-   after the 60 s `net_ticktime` or the 30 s lease. A request for another cell of
-   `c` after that is answered at once (38 ms for `nick`). The 4.9 s is the
-   detection time; to shorten it see "Tune the failure detector" below.
+   default) node 1 asks node 2 to reach node 3 too, and when nobody can it marks node 3
+   `down` and disconnects it. The request that was waiting for node 3 fails at that
+   moment, and node 1 takes `mona` over: the answer does not wait for the 60 s
+   `net_ticktime` or the 30 s lease. A request for another cell of node 3 after
+   that is answered at once. The time to the verdict is the detection time; to
+   shorten it see "Tune the failure detector" below.
 
-   `kill -CONT PID` thaws it; its heartbeats come back and `c` is `alive`
+   `docker unpause atanor-node-3` thaws it; its heartbeats come back and node 3 is `alive`
    again in the same listing, with none of its taken cells (the old owner is
    fenced). The states are `alive`, `suspect`, `link_broken` (this node cannot
    reach the peer but another can; its cells are not taken) and `down`.
 
-9. Tell Atanor that a node is gone, as the infrastructure would (a hook that runs
-   after `virsh destroy`, a cloud event, an orchestrator). The admin token is
-   required. Freeze `c` again and post the hint to any node:
+8. Tell Atanor that a node is gone, as the infrastructure would (a hook that runs
+   after a machine is destroyed, a cloud event, an orchestrator). The admin token is
+   required. Freeze node 3 again and post the hint to any node:
 
    ```sh
-   kill -STOP PID
-   curl -s -X POST -H "authorization: Bearer demo-token" localhost:5001/nodes/c@HOST/gone
-   curl -s -H "authorization: Bearer demo-token" localhost:5002/nodes
-   curl -s -m 5 -w ' [%{http_code}] after %{time_total}s\n' -H "host: localhost" localhost:4002/hello/oscar
+   docker pause atanor-node-3
+   curl -s -X POST -H "authorization: Bearer $TOKEN" 127.0.0.1:5001/nodes/atanor@node-3.cluster/gone
+   curl -s -H "authorization: Bearer $TOKEN" 127.0.0.1:5002/nodes
+   curl -s -m 5 -w ' [%{http_code}] after %{time_total}s\n' -H "host: localhost" 127.0.0.1:4002/hello/oscar
    ```
 
    ```text
-   {"node":"c@myhost","state":"down"}
-   {"node":"b@myhost","nodes":[{"node":"a@myhost","reason":null,"state":"alive","phi":-0.0,"last_heartbeat_ms":298},{"node":"c@myhost","reason":":platform_hint","state":"down","phi":-0.0,"last_heartbeat_ms":105}]}
+   {"node":"atanor@node-3.cluster","state":"down"}
+   {"node":"atanor@node-2.cluster","nodes":[{"node":"atanor@node-1.cluster","reason":null,"state":"alive","phi":-0.0,"last_heartbeat_ms":298},{"node":"atanor@node-3.cluster","reason":":platform_hint","state":"down","phi":-0.0,"last_heartbeat_ms":105}]}
    {"hello":"oscar","greetings":2} [200] after 0.018528s
    ```
 
-   Both nodes mark `c` down at once, without waiting for phi, and the first
-   request for a cell of `c` (`oscar`) takes it over in 18 ms. A node that is not
-   known is 404 `unknown_node` and a call without the token is 401. Thaw `c`
-   with `kill -CONT PID`; for a few seconds it still counts its peers as lost
+   Both nodes mark node 3 down at once, without waiting for phi, and the first
+   request for a cell of node 3 (`oscar`) takes it over. A node that is not
+   known is 404 `unknown_node` and a call without the token is 401. Thaw node 3
+   with `docker unpause atanor-node-3`; for a few seconds it still counts its peers as lost
    and may answer 400 or 503.
 
-10. Clean up: press Ctrl-C twice in the terminals of the nodes that still run,
-   then remove the bucket container and the data directories.
+9. Clean up: stop the nodes that still run (`docker stop` sends `SIGTERM`, and
+   a node drains before it exits), remove them, then remove the store and the
+   secrets as step 7 of [how-to-run-a-node-locally.md](how-to-run-a-node-locally.md)
+   does.
 
    ```sh
-   mise run seaweedfs:down
-   rm -r /tmp/atanor-demo
+   docker stop atanor-node-1 atanor-node-2 atanor-node-3
+   docker rm atanor-node-1 atanor-node-2 atanor-node-3
    ```
 
 ## What happens when a node joins
@@ -227,9 +228,8 @@ needs nothing from you.
 - **Which and how fast.** Cells awake here that the new node prefers, coldest first,
   one at a time, at most `max_moves_per_s` (5) a second per node. A move pauses
   that cell for the time of a hibernate and a wake; its callers wait and then go to
-  the new node. About a third of the cells go to a third node: with 3,000 awake cells
-  on two nodes each moves about 500, so about 100 s after the delay (inferred from the
-  rate, not measured).
+  the new node. About a third of the cells go to a third node. At the default rate a
+  node moves 5 cells a second, so moving N cells takes about N / 5 seconds after the delay.
 - **What stays.** A cell with a call in flight when its turn comes is tried again a
   few times and, if still busy, left for another round. A cell that moved is not moved back
   while the members stay the same, and a hot cell that the
@@ -239,7 +239,7 @@ needs nothing from you.
   The events are in [telemetry.md](telemetry.md#rebalance-on-join).
 
   ```sh
-  curl -s -H "authorization: Bearer $TOKEN" $NODE:4001/runtime | jq .rebalance
+  curl -s -H "authorization: Bearer $TOKEN" 127.0.0.1:5001/runtime | jq .rebalance
   ```
 
 Tune it in the instance options, or by environment for the daemon:
@@ -254,7 +254,7 @@ Tune it in the instance options, or by environment for the daemon:
 | `max_moves_per_s` | `ATANOR_REBALANCE_MAX_MOVES_PER_S` | 5 | From 1 to 20, per node. Lower it if moves slow your callers. |
 | `start_delay_ms` | `ATANOR_REBALANCE_START_DELAY_MS` | 30000 | How long the members must stay unchanged. Raise it for rolling restarts. |
 
-Why these defaults are in [design §8.1](design.md#81-finding-the-owner). If a rolling
+The design is in [design §8.1](design.md#81-finding-the-owner). If a rolling
 restart moves cells you would rather leave, raise `start_delay_ms` above the time
 between two restarts, or turn it off and let cells go where they wake.
 
@@ -265,28 +265,25 @@ reach a node's distribution port can run any code there and read every
 tenant's cells and secrets. Distribution is plain TCP, so forwarded requests
 (headers and bodies included) cross it unencrypted. For a real cluster:
 
-1. Generate a cookie that is not used for anything else (not the admin or
-   dashboard token), and give it to the process through the environment:
-
-   ```sh
-   export RELEASE_COOKIE="$(openssl rand -base64 32)"   # releases
-   export ALAMBIQUE_COOKIE="$RELEASE_COOKIE"             # Alambique's Mix tasks
-   ```
-
-2. Open `epmd` (4369) and the distribution ports only between the nodes. Whoever can
-   write `<prefix>/nodes/` in the bucket decides whom the nodes dial: the cookie still
-   gates the handshake, but give the bucket's write keys only to the nodes. Fix the
-   range with `-kernel inet_dist_listen_min 9100 inet_dist_listen_max 9110` so a
-   firewall rule can name it.
+1. Give the cookie its own random value, not used for anything else (not the
+   admin or dashboard token), and give it to the node as a file:
+   `ATANOR_COOKIE_FILE`, or `RELEASE_COOKIE` in the environment. The secrets of
+   [how-to-run-a-node-locally.md](how-to-run-a-node-locally.md) do this. Never
+   put the cookie in a command-line argument: every user of the host sees arguments
+   in the process list.
+2. Open `epmd` (4369) and the distribution ports (9100 to 9110) only between the
+   nodes. Whoever can write `<prefix>/nodes/` in the bucket decides whom the nodes
+   dial: the cookie still gates the handshake, but give the bucket's write keys only
+   to the nodes.
 3. If the network between the nodes is not private, use TLS distribution: start
    the nodes with `-proto_dist inet_tls -ssl_dist_optfile /etc/atanor/dist.conf`
    and put the certificates in that file, as the Erlang/OTP guide "Using TLS for
    Erlang Distribution" describes. Check it with `:net_kernel.get_net_ticktime()`
    on a node and `/health` listing the other nodes.
 
-The demo above uses the public cookie `atanor-demo` for a local run only. The
-lab scripts generate a separate random secret for the cookie and for the admin
-and dashboard token.
+The steps above use the random cookie of the local guide, on a private Docker
+network with no published distribution ports. [how-to-run-in-production.md](how-to-run-in-production.md)
+covers the rest of the arrangement.
 
 ## Tune the failure detector
 
@@ -309,16 +306,16 @@ the first request for each takes it over (design
 `takeover:` (`enabled`, `quorum`, `attempts`), `routing:` and `stop:`
 ([Atanor](../lib/atanor.ex) lists them). `takeover: [quorum: true]`, the default,
 means a node takes cells over only when it and the peers it still reaches are a
-majority of the nodes it knows, so a node cut off from the others takes nothing;
-in a cluster of two a silent failure then waits for the lease
-([design §8.10](design.md#810-acting-on-a-confirmed-failure)).
+majority of the nodes it knows, so a node cut off from the others takes nothing
+([design §8.10](design.md#810-acting-on-a-confirmed-failure)). With two nodes,
+a silent failure waits for the lease.
 
 ## Stop a node without errors
 
-A node stopped with a release stop, `Supervisor.stop/1` or `System.stop/0`
+A node stopped with SIGTERM (`docker stop`, or the stop of your service manager)
 closes its listeners, tells its peers that it leaves, and hands its cells off
 before it exits (design [§8.11](design.md#811-draining-and-stopping-gracefully)). Its cells
-serve again on the other nodes in about 10 ms, and `GET` requests through the
+serve again on the other nodes at once, and `GET` requests through the
 other nodes see no error. A `POST` that was running on the stopping node can
 still get 503 `unknown_outcome`. Put a load balancer's drain before the stop so
 that clients stop sending to the node first; `stop: [connections_ms: ...]` is how
@@ -346,62 +343,29 @@ still gets the 503: the runtime keeps the availability reason of the cell call.
 
 [design.md §8.4](design.md#84-when-the-node-is-lost) has the full table.
 
-## What a cluster gains per node
-
-Does a second and a third node raise the ceiling, and how fast does a node that joins take its share? The
-load-test measure `scale` ([how to run it](how-to-run-the-load-tests.md#the-scale-measure)) answers it for scenario A
-(each node 1 CPU and 512 MB, the store with 25 ms added per trip, the nodes behind the load balancer). The tables
-below are filled from the official round; until it has run, they hold no numbers.
-
-Ceiling of each load (approved value) and the gain over 1 node; the ideal is 2x and 3x:
-
-| Load | Nodes | Ceiling | Gain over 1 node | Ideal | Efficiency |
-| --- | --- | --- | --- | --- | --- |
-| `http-native` (req/s) | 1 | to be filled by the official round | 1.00x | 1x | 100% |
-| `http-native` (req/s) | 2 | to be filled by the official round | to be filled | 2x | to be filled |
-| `http-native` (req/s) | 3 | to be filled by the official round | to be filled | 3x | to be filled |
-| `cells` (cells) | 1 | to be filled by the official round | 1.00x | 1x | 100% |
-| `cells` (cells) | 2 | to be filled by the official round | to be filled | 2x | to be filled |
-| `cells` (cells) | 3 | to be filled by the official round | to be filled | 3x | to be filled |
-
-Share of the requests and of the awake cells on each node at the ceiling (an equal split is 1/N):
-
-| Load | Nodes | Requests per node | Cells awake per node |
-| --- | --- | --- | --- |
-| `http-native` | 2, 3 | to be filled by the official round | to be filled by the official round |
-| `cells` | 2, 3 | to be filled by the official round | to be filled by the official round |
-
-Join (the load at 1.5 times the 1-node ceiling; the time counts from the start of the node, until every node
-holds its 1/N share within 25% for 3 readings 2 s apart):
-
-| Node that joins | Requests spread (s) | Cells spread (s) | Errors and 503 answers during the join |
-| --- | --- | --- | --- |
-| 2nd | to be filled by the official round | to be filled by the official round | to be filled by the official round |
-| 3rd | to be filled by the official round | to be filled by the official round | to be filled by the official round |
-
 ## Troubleshooting
 
 - **`/health` lists only one node.** The nodes are not connected. Check that
-  every node has the same `--cookie`, the same bucket and the same `--prefix`, and
-  that the objects under `<prefix>/nodes/` exist; run `epmd -names` to see the
-  registered names, and look for `atanor discovery: cannot connect` in the log.
-  Nodes started with `--sname` cannot connect to nodes started with `--name`.
-- **`mix atanor.dev` says `--connect needs a named node`.** Start it through
-  `elixir --sname NAME -S mix atanor.dev`, as above.
+  every node has the same cookie file, the same bucket and the same `ATANOR_STORE`
+  prefix, and that the objects under `<prefix>/nodes/` exist. Check that each
+  advertised name (`ATANOR_ADVERTISE`) resolves from the other nodes: the network
+  alias of step 1 does that on the Docker network. Look for
+  `atanor discovery: cannot connect` in `docker logs atanor-node-2`.
 - **`could not connect to ...`.** The other node is not up yet or uses another
   cookie. Start the nodes one after the other.
 - **Every request is a 404.** `host: localhost` is missing: the route of the
-  example matches the host `localhost`.
+  worker matches the host `localhost`.
 - **500 `foreign_store`, and an error in the log naming a node.** A node of
   this cluster was routed toward a node that runs an instance of the same name
   over another store or prefix, so the call was refused (not retried, no
   `Retry-After`). Nodes of two stores are connected, or a restart changed the
   store's location (endpoint, bucket) or the prefix and the nodes are split
   between the old and the new value. Start every node of the instance with the
-  same `store:` or `placement:` and `prefix:`, or disconnect the nodes of the
-  other store. The event `[:atanor, :foreign_store]` counts the refusals.
+  same `ATANOR_STORE` (the bucket and the prefix) or the same `store:` and `prefix:`
+  options, or disconnect the nodes of the other store. The event `[:atanor, :foreign_store]`
+  counts the refusals.
 - **A node answers `401` on the admin port.** Send
-  `authorization: Bearer <the --admin-token>`.
+  `authorization: Bearer <the admin token>`.
 
 ## Next steps
 
@@ -411,6 +375,7 @@ holds its 1/N share within 25% for 3 readings 2 s apart):
   to a new version; a request that crosses nodes keeps the version it started
   on.
 - [how-to-place-hot-cells.md](how-to-place-hot-cells.md) to let a very busy cell move to a less loaded or a dedicated node.
-- [how-to-run-the-cluster-lab.md](how-to-run-the-cluster-lab.md) to run it on three VMs and break it on purpose.
+- [how-to-run-in-production.md](how-to-run-in-production.md) to put the nodes behind a
+  load balancer, with TLS and a private network between them.
 - [design.md §8](design.md#8-cluster) for how routing, retries and failures
   work, including its limits.

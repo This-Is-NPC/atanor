@@ -3,10 +3,10 @@
 **The question:** How do I accept WebSocket connections in a native or WASM
 worker, and send a message to every socket attached to a cell, on any node?
 
-This guide stands alone. It builds on the worker of
-[how-to-write-a-native-worker.md](how-to-write-a-native-worker.md) and uses
-[examples/hello-native](../examples/hello-native), whose worker answers WebSocket
-text frames.
+This guide does not stand alone. It builds on a native worker, as in
+[how-to-write-a-native-worker.md](how-to-write-a-native-worker.md). The example
+worker that answers WebSocket text frames is in
+[examples/hello-native](../examples/hello-native).
 
 ## Prerequisites
 
@@ -31,13 +31,15 @@ text frames.
    To accept or refuse an upgrade, implement `ws_init(request, env)`: return
    `{:ok, state}` or `{:reject, %Atanor.Response{}}`.
 
-2. Start the node and talk to it.
+2. Deploy the worker to a running node ([how-to-deploy-a-worker.md](how-to-deploy-a-worker.md)),
+   with a manifest route `/hello`. Then send three lines to the ingress
+   (`ATANOR_LISTEN`, `0.0.0.0:4000` by default):
 
    ```sh
-   cd examples/hello-native
-   mise exec -- mix atanor.dev --port 4123
-   printf 'ada\nbob\nada\n' | websocat -t ws://localhost:4123/hello
+   printf 'ada\nbob\nada\n' | websocat -t ws://localhost:4000/hello
    ```
+
+   The example worker answers:
 
    ```text
    hello ada, greeting 1
@@ -128,14 +130,10 @@ its Plug and keeps its own rules.
   browser page) is accepted. The list applies to callback workers; a plug
   worker upgrades inside its Plug and checks its own origin.
 - **Compression.** `permessage-deflate` is off by default
-  (`websocket.compress: false`; daemon: `ATANOR_WEBSOCKET_COMPRESS`).
-  `max_frame_bytes` bounds the frame as received, so with compression on a
-  small compressed frame can become a much larger message in memory; a
-  reviewer measured about 25 times (not re-measured here), and the inflated
-  size is not counted by `max_frames_per_s`. Turn it on only when the saving
-  on the wire matters more, and then keep `max_frame_bytes` low enough that 25
-  times it fits your memory per socket and size `http: [max_connections:]` for
-  that.
+  (`websocket.compress: false`; daemon: `ATANOR_WEBSOCKET_COMPRESS`). Turn it
+  on only when the saving on the wire matters more. With it on, a small
+  compressed frame can inflate to a much larger message in memory; this is a
+  [known limitation](known-limitations.md).
 
 ## Troubleshooting
 

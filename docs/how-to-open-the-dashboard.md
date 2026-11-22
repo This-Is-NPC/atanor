@@ -3,65 +3,51 @@
 **The question:** How do I open the read-only dashboard and see the workers,
 deployments, routes, cells, alarms, jobs and metrics of my nodes in a browser?
 
-This guide stands alone for a project that already runs Atanor. What each page
+This guide stands alone for a node of the release image. What each page
 shows is in [screens.md](screens.md).
 
 ## Prerequisites
 
-- A project that runs Atanor, for example the one in
-  [how-to-write-a-native-worker.md](how-to-write-a-native-worker.md).
-- The dashboard is optional, so Atanor does not bring Phoenix with it. Add these
-  to the `deps` of your project:
-
-  ```elixir
-  {:phoenix, "~> 1.8"},
-  {:phoenix_live_view, "~> 1.2"},
-  {:phoenix_live_dashboard, "~> 0.9"},
-  {:telemetry_metrics, "~> 1.2"}
-  ```
-
-  Then run `mix deps.get` and `mix deps.compile atanor --force`. Atanor
-  compiles its dashboard only when it finds these packages, and Mix does not
-  recompile it by itself when they appear.
+- Docker, and a node of the release image. The [local node guide](how-to-run-a-node-locally.md)
+  starts one without the dashboard; step 1 below restarts it with the dashboard.
+- A browser on the same machine as the node.
+- A node in your own application: see [in your own application](#in-your-own-application).
 
 ## Steps
 
-1. Start a local node. `mix atanor.dev` starts the dashboard on port 4002 with a
-   random token and prints the URL to open:
+1. Make a dashboard token and start the node with the dashboard. The dashboard
+   is on only when `ATANOR_DASHBOARD_TOKEN` is set, to 32 bytes or more. The
+   node reads the token from a file, as the local guide does. Run this in the
+   directory of the local guide, with `IMAGE` set as in its step 1:
 
    ```sh
-   mix atanor.dev --port 4020
+   openssl rand -hex 24 | tr -d '\n' > atanor-secrets/dashboard_token
+   chmod 644 atanor-secrets/dashboard_token
+   docker rm -f atanor-node
+   docker run -d --name atanor-node --network atanor-net --stop-timeout 90 \
+     -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 -p 127.0.0.1:4002:4002 \
+     -v "$PWD/atanor-secrets:/run/secrets:ro" \
+     -e ATANOR_STORE=s3://atanor -e ATANOR_S3_ENDPOINT=http://atanor-store:8333 \
+     -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret_key \
+     -e ATANOR_ADMIN_TOKEN_FILE=/run/secrets/admin_token -e ATANOR_COOKIE_FILE=/run/secrets/cookie \
+     -e ATANOR_DASHBOARD_TOKEN_FILE=/run/secrets/dashboard_token \
+     -e ATANOR_ADVERTISE=atanor-node.local "$IMAGE"
    ```
+
+   Wait until the node is ready, as in step 4 of the local guide. The dashboard
+   listens on port 4002 in the container; `-p 127.0.0.1:4002:4002` publishes it
+   on loopback only. Its settings are `ATANOR_DASHBOARD_LISTEN` (default
+   `0.0.0.0:4002`) and the token; see [configuration](configuration.md).
+
+2. Open the dashboard with the token. Read the token with
+   `cat atanor-secrets/dashboard_token` and open:
 
    ```text
-   Atanor listening on http://127.0.0.1:4020
-     127.0.0.1/c -> counter
-   Dashboard on http://127.0.0.1:4002/workers?token=JWaeD5vOqwApzmh9dR5OdDt7
+   http://127.0.0.1:4002/workers?token=<dashboard token>
    ```
 
-   `--dashboard-port PORT` (0 picks a free port) and `--dashboard-token TOKEN`
-   choose them; `--no-dashboard` leaves the dashboard out.
-
-   In an application, give the option to `Atanor`. The token is required, the
-   listener is on loopback unless you pass `ip:`, and a VM runs one dashboard:
-
-   ```elixir
-   {Atanor, name: MyApp.Atanor, store: store, data_dir: dir,
-    dashboard: [token: System.fetch_env!("ATANOR_DASHBOARD_TOKEN"), port: 4002]}
-   ```
-
-   The cookie lasts `cookie_max_age_s` seconds (86 400, one day by default).
-   The dashboard listens on plain http, so it cannot tell that a proxy in front
-   of it serves https: pass `secure_cookie: true` then, and the cookie gets
-   `Secure`. Its default is the node's `behind_tls_proxy` option
-   (`ATANOR_BEHIND_TLS_PROXY` in the daemon, [TLS at the proxy](how-to-run-in-production.md#tls-at-the-proxy)),
-   so a node declared behind a TLS proxy needs no other setting. Leave it `false` for a loopback dashboard, which a
-   browser reaches over http and would not send a `Secure` cookie to. A dashboard that binds outside loopback
-   without `behind_tls_proxy` logs a warning at start: its token passes in clear.
-
-2. Open the URL, with the token. The browser is sent to the same page without
-   the token in the address and keeps a cookie that says it is signed in.
-   Without the token the answer is 401:
+   The browser is sent to the same page without the token in the address and
+   keeps a cookie that says it is signed in. Without the token the answer is 401:
 
    ```sh
    curl -i localhost:4002/workers
@@ -88,15 +74,47 @@ shows is in [screens.md](screens.md).
 The dashboard is read-only: no page changes a deployment. Use
 [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md) for that.
 
+## In your own application
+
+A node that runs in your own application (a [derived image](how-to-build-a-derived-image.md))
+gives the option to `Atanor` instead. The dashboard is optional there, so
+Atanor does not bring Phoenix with it. Add these to the `deps` of your project:
+
+```elixir
+{:phoenix, "~> 1.8"},
+{:phoenix_live_view, "~> 1.2"},
+{:phoenix_live_dashboard, "~> 0.9"},
+{:telemetry_metrics, "~> 1.2"}
+```
+
+Then run `mix deps.get` and `mix deps.compile atanor --force`. Atanor compiles
+its dashboard only when it finds these packages, and Mix does not recompile it
+by itself when they appear.
+
+```elixir
+{Atanor, name: MyApp.Atanor, store: store, data_dir: dir,
+ dashboard: [token: System.fetch_env!("ATANOR_DASHBOARD_TOKEN"), port: 4002]}
+```
+
+The token is required, the listener is on loopback unless you pass `ip:`, and a
+VM runs one dashboard. The cookie lasts `cookie_max_age_s` seconds (86 400, one
+day by default). The dashboard listens on plain http, so it cannot tell that a
+proxy in front of it serves https: pass `secure_cookie: true` then, and the
+cookie gets `Secure`. Its default is the node's `behind_tls_proxy` option
+(`ATANOR_BEHIND_TLS_PROXY` in the release, [TLS at the proxy](how-to-run-in-production.md#tls-at-the-proxy)),
+so a node declared behind a TLS proxy needs no other setting. Leave it `false` for a loopback dashboard, which a
+browser reaches over http and would not send a `Secure` cookie to. A dashboard that binds outside loopback
+without `behind_tls_proxy` logs a warning at start: its token passes in clear.
+
 ## Troubleshooting
 
-- **`Dashboard not started: add {:phoenix, ...}`** from `mix atanor.dev`: the
-  project lacks the dependencies above, or Atanor was compiled before you added
-  them. Run `mix deps.get` and `mix deps.compile atanor --force`. Passing
-  `--dashboard-port` without them is an error.
+- **The dashboard does not answer.** The node has no dashboard when
+  `ATANOR_DASHBOARD_TOKEN` is unset or shorter than 32 bytes. Set it, then start
+  the node again.
 - **`ArgumentError: :dashboard needs a :token`** or **`... needs these
-  dependencies`**: the option is invalid without a non-empty token, or Atanor
-  was compiled without the dashboard (same fix).
+  dependencies`** (in your own application): the option needs a non-empty token,
+  or Atanor was compiled without the dashboard. Add the dependencies above, then
+  run `mix deps.compile atanor --force`.
 - **429 with the right token.** The client address made `max_failures` (10)
   wrong tokens in `failure_window_ms` (60 seconds, options of `dashboard:`). The
   answer has `Retry-After`; wait that long. The address is the peer of the
@@ -108,7 +126,8 @@ The dashboard is read-only: no page changes a deployment. Use
 - **The page loads but stays empty or disconnected.** The socket accepts only
   the origin the page was served from. Open the address the node listens on
   (for example `127.0.0.1`, not a name that points to it through a proxy).
-- **Address already in use.** Port 4002 is taken. Pass `--dashboard-port`.
+- **Address already in use.** Port 4002 on your machine is taken. Publish another
+  host port, for example `-p 127.0.0.1:4012:4002`, and open that port.
 - **`{:error, ...}` or "did not answer" on Routes or Cells.** The selected node
   does not run this instance, or did not answer within 5 seconds.
 

@@ -26,23 +26,19 @@ The limits stay what they are for a cell, per partition:
   partition key.
 - A query is within one partition. Reading across them is a scatter-gather
   or the change feed (step 5). A unique constraint holds inside a partition.
-- `n` is fixed for the life of the data. There is no resharding. Pick `n` for
-  the growth you expect, a few times the number of nodes you will have.
+- `n` is fixed for the life of the data. Pick `n` for the growth you expect, a
+  few times the number of nodes you will have. Changing it later is a
+  [known limitation](known-limitations.md).
 
-A namespace without `partitions` behaves as before. You decide per namespace.
+A namespace without `partitions` has one cell for each key. You decide per namespace.
 
 Partitions spread the writers; they do not by themselves raise the throughput of
-your cluster. In the cluster lab,
-on a host whose load was five to ten times the usual, six partitions spread the writes
-and the CPU over the three nodes but did not write faster than one cell, and the
-shared store reached 150 to 180% of its two vCPU, against 56 to 71% with one cell:
-each partition replicates its own batches, so many small writers cost the store more
-than one that groups. Measure with your store and your nodes before you rely on it.
+your cluster. Measure with your store and your nodes before you rely on them.
 
 ## Prerequisites
 
-- A native or WASM worker with a cell namespace, running locally
-  (`mise run dev`) or on a cluster.
+- A native or WASM worker with a cell namespace, deployed on a node or a
+  cluster ([how-to-deploy-a-worker.md](how-to-deploy-a-worker.md)).
 
 ## Steps
 

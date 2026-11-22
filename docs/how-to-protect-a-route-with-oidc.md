@@ -6,8 +6,9 @@ claims in the worker?
 
 This guide stands alone for the operator side. It assumes a worker that
 already serves a route
-([how-to-write-a-native-worker.md](how-to-write-a-native-worker.md)) and an
-instance you start yourself, as in the README. The design is in
+([how-to-write-a-native-worker.md](how-to-write-a-native-worker.md)) and a node
+you run, for example as in [how-to-run-a-node-locally.md](how-to-run-a-node-locally.md).
+The design is in
 [design §7.5](design.md#75-bearer-tokens-on-a-route).
 
 ## What Atanor checks, and what it leaves to the worker
@@ -93,9 +94,8 @@ a package must not choose which issuers the node trusts.
    {"claims":{"aud":"http://127.0.0.1:45595/v1","client_id":"web-portal","iss":"http://127.0.0.1:45595","org_ids":["org_personal_5f2c","org_company_8a91"],"scope":"openid email organizations","sub":"0b7d4a52-...","exp":1793566776,"iat":1793565876, ...}}
    ```
 
-   The output above is abridged. It comes from a test OIDC provider as issuer and the probe
-   worker of the test suite, which answers with `Atanor.Request.claims/1`; the
-   claims are the ones the provider signed, unchanged.
+   The output is abridged. The worker answers with `Atanor.Request.claims/1`
+   (step 4); the claims are the ones your provider signed, unchanged.
 
 4. Read the claims in the worker.
 
@@ -191,7 +191,7 @@ Every value is a positive integer in milliseconds unless noted.
 
 To drop the cached keys of a node at once, for example after the provider
 withdrew a key, call `POST /auth/keys/flush` on the admin API of each node
-([step 14](how-to-use-the-admin-api.md)). The next request fetches the keys
+([the admin API guide](how-to-use-the-admin-api.md)). The next request fetches the keys
 again. The flush acts on one node only, so a cluster needs one call per node
 (design §7.5).
 

@@ -8,18 +8,17 @@ nodes are shown in [how-to-run-a-cluster.md](how-to-run-a-cluster.md).
 
 ## Prerequisites
 
-- A node started with the `admin:` option, or `mix atanor.dev --admin-port PORT
-  --admin-token TOKEN`. The token is required. The listener is on loopback
-  (`127.0.0.1`) unless you pass `ip:`; a token is required there too.
-- `curl`. The commands below use the example project in
-  [examples/hello-native](../examples/hello-native):
+- A node with the admin API. The [local node guide](how-to-run-a-node-locally.md)
+  starts one (its steps 1 to 4): the admin API listens on `localhost:4001`, and
+  the operator token is in `atanor-secrets/admin_token`. The token is required.
+- `curl`. The commands below use that node. Set the token in your shell, in the
+  directory of the local guide:
 
   ```sh
-  cd examples/hello-native
-  mise exec -- mix atanor.dev --port 4010 --admin-port 5010 --admin-token demo-token
+  export ADMIN_TOKEN=$(cat atanor-secrets/admin_token)
   ```
 
-  In an application, give the option to `Atanor`:
+  In an application (a [derived image](how-to-build-a-derived-image.md)), give the option to `Atanor`:
 
   ```elixir
   {Atanor, name: MyApp.Atanor, store: store, data_dir: dir, admin: [token: System.fetch_env!("ATANOR_ADMIN_TOKEN"), port: 4001]}
@@ -39,7 +38,7 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
 1. Check authentication. Without the token, or with another, the answer is 401.
 
    ```sh
-   curl -si localhost:5010/health
+   curl -si localhost:4001/health
    ```
 
    ```text
@@ -53,11 +52,11 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
 2. Ask for the health of the node and the nodes it sees.
 
    ```sh
-   curl -s -H "authorization: Bearer demo-token" localhost:5010/health
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/health
    ```
 
    ```json
-   {"node":"nonode@nohost","status":"ok","nodes":["nonode@nohost"],"workers":1,"store":{"<location>":{"state":"closed","since_ms":1731456000000,"failures":0}}}
+   {"node":"atanor@atanor-node.local","status":"ok","nodes":["atanor@atanor-node.local"],"workers":1,"store":{"<location>":{"state":"closed","since_ms":1731456000000,"failures":0}}}
    ```
 
    `store` is the circuit breaker of each store location: `closed`, `open`
@@ -73,14 +72,14 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    own; it opens only when the node is ready).
 
    ```sh
-   curl -si -H "authorization: Bearer demo-token" localhost:5010/health/ready
+   curl -si -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/health/ready
    ```
 
    ```text
    HTTP/1.1 200 OK
    content-type: application/json; charset=utf-8
 
-   {"node":"nonode@nohost","status":"ready"}
+   {"node":"atanor@atanor-node.local","status":"ready"}
    ```
 
    A load balancer should ask `/health/serving` instead: it answers 200
@@ -98,11 +97,10 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    says `"status":"draining"`.
 
    While the node loads its deployments the answer is 503 with the reason, for
-   example when the store cannot be read (output of the test
-   `test/atanor/readiness_test.exs`):
+   example when the store cannot be read:
 
    ```json
-   {"node":"nonode@nohost","reason":"could not list the workers: :injected","status":"starting"}
+   {"node":"atanor@atanor-node.local","reason":"could not list the workers: :injected","status":"starting"}
    ```
 
    Every other endpoint answers 503 `not_ready` then. The listener
@@ -112,8 +110,8 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
 3. List the workers in the store: the active package and the previous ones.
 
    ```sh
-   curl -s -H "authorization: Bearer demo-token" localhost:5010/workers
-   curl -s -H "authorization: Bearer demo-token" localhost:5010/workers/hello
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/workers
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/workers/hello
    ```
 
    ```json
@@ -130,7 +128,7 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    runs other native code.
 
    ```sh
-   curl -s -H "authorization: Bearer demo-token" localhost:5010/deployments
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/deployments
    ```
 
    ```json
@@ -154,19 +152,19 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    side and for unfreezing:
 
    ```sh
-   curl -s -H "authorization: Bearer demo-token" localhost:5010/crashes
-   curl -s -X POST -H "authorization: Bearer demo-token" \
-     localhost:5010/cells/notes/alice/unfreeze
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/crashes
+   curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" \
+     localhost:4001/cells/notes/alice/unfreeze
    ```
 
 5. List the routes of the node.
 
    ```sh
-   curl -s -H "authorization: Bearer demo-token" localhost:5010/routes
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/routes
    ```
 
    ```json
-   {"http":[{"path":"/hello","host":"localhost","worker":"hello"}],"node":"nonode@nohost","tcp":[]}
+   {"http":[{"path":"/hello","host":"localhost","worker":"hello"}],"node":"atanor@atanor-node.local","tcp":[]}
    ```
 
    `tcp` holds `{"listener", "port", "worker"}` for each open listener.
@@ -177,13 +175,13 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    `null` on the last page.
 
    ```sh
-   curl -s -H "authorization: Bearer demo-token" localhost:5010/cells
-   curl -s -H "authorization: Bearer demo-token" "localhost:5010/cells?node=nonode@nohost&limit=10"
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/cells
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" "localhost:4001/cells?node=atanor@atanor-node.local&limit=10"
    ```
 
    ```json
-   {"total":1,"nodes":{"nonode@nohost":{"count":1,"status":"ok"}},"partial":false}
-   {"node":"nonode@nohost","next":null,"cells":[{"id":"hits.alice","key":"alice","namespace":"hits"}]}
+   {"total":1,"nodes":{"atanor@atanor-node.local":{"count":1,"status":"ok"}},"partial":false}
+   {"node":"atanor@atanor-node.local","next":null,"cells":[{"id":"hits.alice","key":"alice","namespace":"hits"}]}
    ```
 
    A page costs in proportion to its size. A cell that has just woken or
@@ -198,12 +196,12 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    shows it end to end):
 
    ```sh
-   curl -s -H "authorization: Bearer demo-token" localhost:5010/nodes
-   curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/nodes/NODE/gone
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/nodes
+   curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/nodes/NODE/gone
    ```
 
    ```json
-   {"node":"nonode@nohost","nodes":[]}
+   {"node":"atanor@atanor-node.local","nodes":[]}
    {"error":"unknown_node"}
    ```
 
@@ -234,8 +232,7 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    node enforces, and `open: true` when none is
    ([who may claim what](how-to-run-in-production.md#who-may-claim-what)). The counters are in
    [telemetry](telemetry.md#counters-of-get-runtime). A
-   cgroup field is `null` when its file cannot be read. The load harness samples it
-   ([how-to-run-the-load-tests.md](how-to-run-the-load-tests.md)).
+   cgroup field is `null` when its file cannot be read.
 
 8. See jobs and dead letters. Without a cell, `/jobs` is the per-node slot
    count. With `?cell=namespace.key`, it is one page of that cell's jobs;
@@ -243,10 +240,10 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    (the cell wakes):
 
    ```sh
-   curl -s -H "authorization: Bearer demo-token" localhost:5010/jobs
-   curl -s -H "authorization: Bearer demo-token" "localhost:5010/jobs/mail/alice?state=dead"
-   curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/jobs/mail/alice/JOB/retry
-   curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/jobs/mail/alice/JOB/discard
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/jobs
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" "localhost:4001/jobs/mail/alice?state=dead"
+   curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/jobs/mail/alice/JOB/retry
+   curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/jobs/mail/alice/JOB/discard
    ```
 
    A dead job's `last_error` starts with `infrastructure: ` when errors of the
@@ -262,13 +259,13 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    [how-to-run-a-bulk-operation.md](how-to-run-a-bulk-operation.md).
 
    ```sh
-   curl -s -X POST -H "authorization: Bearer demo-token"      -H "content-type: application/json"      -d '{"selector":{"kind":"namespace","namespace":"mail"},"action":{"worker":"mail","kind":"reindex","payload_base64":""},"rate_per_s":25,"concurrency":8}'      localhost:5010/operations
-   curl -s -H "authorization: Bearer demo-token" localhost:5010/operations
-   curl -s -H "authorization: Bearer demo-token" localhost:5010/operations/OP_ID
-   curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/operations/OP_ID/pause
-   curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/operations/OP_ID/resume
-   curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/operations/OP_ID/continue
-   curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/operations/OP_ID/cancel
+   curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN"      -H "content-type: application/json"      -d '{"selector":{"kind":"namespace","namespace":"mail"},"action":{"worker":"mail","kind":"reindex","payload_base64":""},"rate_per_s":25,"concurrency":8}'      localhost:4001/operations
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/operations
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/operations/OP_ID
+   curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/operations/OP_ID/pause
+   curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/operations/OP_ID/resume
+   curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/operations/OP_ID/continue
+   curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/operations/OP_ID/cancel
    ```
 
    `continue` confirms an operation in `awaiting_confirmation`; `resume`
@@ -287,9 +284,9 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    `running`, `done`, `failed` or `stale`, and `mode` `report` or `apply`.
 
    ```sh
-   curl -s -X POST -H "authorization: Bearer demo-token" -H "content-type: application/json" -d '{"mode":"report"}' localhost:5010/operations/OP_ID/undo
-   curl -s -H "authorization: Bearer demo-token" localhost:5010/operations/OP_ID/undo
-   curl -s -X POST -H "authorization: Bearer demo-token" -H "content-type: application/json" -d '{"mode":"apply"}' localhost:5010/operations/OP_ID/undo
+   curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" -H "content-type: application/json" -d '{"mode":"report"}' localhost:4001/operations/OP_ID/undo
+   curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/operations/OP_ID/undo
+   curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" -H "content-type: application/json" -d '{"mode":"apply"}' localhost:4001/operations/OP_ID/undo
    ```
 
    Any other mode is 400 `invalid_mode`. An unknown operation, or a `GET`
@@ -310,8 +307,8 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     and the answer is 422.
 
     ```sh
-    curl -s -X POST -H "authorization: Bearer demo-token" \
-      localhost:5010/listeners/submission/reload-tls
+    curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" \
+      localhost:4001/listeners/submission/reload-tls
     ```
 
     ```json
@@ -328,11 +325,11 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     [how-to-run-a-migration-rehearsal.md](how-to-run-a-migration-rehearsal.md).
 
     ```sh
-    curl -s -X POST -H "authorization: Bearer demo-token" -H "content-type: application/json" \
-      -d '{"worker":"notes","id":"PACKAGE_ID"}' localhost:5010/rehearsals
-    curl -s -H "authorization: Bearer demo-token" localhost:5010/rehearsals
-    curl -s -H "authorization: Bearer demo-token" localhost:5010/rehearsals/REHEARSAL_ID
-    curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/rehearsals/REHEARSAL_ID/cancel
+    curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" -H "content-type: application/json" \
+      -d '{"worker":"notes","id":"PACKAGE_ID"}' localhost:4001/rehearsals
+    curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/rehearsals
+    curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/rehearsals/REHEARSAL_ID
+    curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/rehearsals/REHEARSAL_ID/cancel
     ```
 
     ```json
@@ -353,7 +350,7 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     store keeps only its hash, so a lost token is revoked and replaced.
 
     ```sh
-    curl -s -H "authorization: Bearer demo-token" -d '{"name":"ci-hello","description":"CI of hello","scopes":["worker:hello:deploy","worker:hello:activate","worker:hello:read"],"expires_at":"2027-06-01T00:00:00Z"}' localhost:5010/tokens
+    curl -s -H "authorization: Bearer $ADMIN_TOKEN" -d '{"name":"ci-hello","description":"CI of hello","scopes":["worker:hello:deploy","worker:hello:activate","worker:hello:read"],"expires_at":"2027-06-01T00:00:00Z"}' localhost:4001/tokens
     ```
 
     ```json
@@ -376,7 +373,7 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
 
     ```sh
     TOKEN=atn_0123...   # the secret from the previous answer
-    curl -s -H "authorization: Bearer $TOKEN" -H "x-package-sha256: $SHA256" --data-binary @hello.pkg localhost:5010/workers/hello/packages
+    curl -s -H "authorization: Bearer $TOKEN" -H "x-package-sha256: $SHA256" --data-binary @hello.pkg localhost:4001/workers/hello/packages
     ```
 
     ```json
@@ -395,10 +392,10 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     list the versions, see the status and roll back:
 
     ```sh
-    curl -s -H "authorization: Bearer $TOKEN" -d '{"package_id":"2b1294c0..."}' localhost:5010/workers/hello/activate
-    curl -s -H "authorization: Bearer $TOKEN" localhost:5010/workers/hello/versions
-    curl -s -H "authorization: Bearer $TOKEN" localhost:5010/workers/hello/status
-    curl -s -X POST -H "authorization: Bearer $TOKEN" localhost:5010/workers/hello/rollback
+    curl -s -H "authorization: Bearer $TOKEN" -d '{"package_id":"2b1294c0..."}' localhost:4001/workers/hello/activate
+    curl -s -H "authorization: Bearer $TOKEN" localhost:4001/workers/hello/versions
+    curl -s -H "authorization: Bearer $TOKEN" localhost:4001/workers/hello/status
+    curl -s -X POST -H "authorization: Bearer $TOKEN" localhost:4001/workers/hello/rollback
     ```
 
     ```json
@@ -414,23 +411,22 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     (`active`, `previous` or `null`). Page with `?limit=` and `after=<next>`
     (`limit` as in the other lists). Any listed `package_id` can be activated.
     A worker with no head and no uploads is 404. Uploading the same package
-    again keeps its first entry. Packages stored before the index existed are
-    not listed. `status` adds `node`, the
+    again keeps its first entry. `status` adds `node`, the
     package this node `applied` and the `error` if the head could not be
     applied. `GET /heads` lists the heads of the workers the token may read.
 
     Manage tokens and read who did what. These need `cluster:admin`.
 
     ```sh
-    curl -s -H "authorization: Bearer demo-token" localhost:5010/tokens
-    curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/tokens/atn_0123456789abcdef01234567/revoke
-    curl -s -H "authorization: Bearer $TOKEN" localhost:5010/heads
-    curl -s -H "authorization: Bearer demo-token" "localhost:5010/audit?limit=2"
+    curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/tokens
+    curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/tokens/atn_0123456789abcdef01234567/revoke
+    curl -s -H "authorization: Bearer $TOKEN" localhost:4001/heads
+    curl -s -H "authorization: Bearer $ADMIN_TOKEN" "localhost:4001/audit?limit=2"
     ```
 
     ```json
     {"error":"unauthorized"}
-    {"next":"1793565394790799-c349ebf5","entries":[{"action":"token.create","actor":{"type":"operator"},"error":null,"id":"1793565394785461-42240e64","node":"nonode@nohost","remote_ip":"127.0.0.1","result":"ok","status":201,"target":"atn_0123456789abcdef01234567","time":"2026-11-01T20:36:34.785461Z"},{"action":"package.upload","actor":{"id":"atn_0123456789abcdef01234567","name":"ci-hello","type":"token"},"error":null,"id":"1793565394790799-c349ebf5","node":"nonode@nohost","remote_ip":"127.0.0.1","result":"ok","status":201,"time":"2026-11-01T20:36:34.790799Z","version":"2b1294c007ec8b2ff45a97a1bc75243cceffa24737338966eb728cbb15bd6f78","worker":"hello"}]}
+    {"next":"1793565394790799-c349ebf5","entries":[{"action":"token.create","actor":{"type":"operator"},"error":null,"id":"1793565394785461-42240e64","node":"atanor@atanor-node.local","remote_ip":"127.0.0.1","result":"ok","status":201,"target":"atn_0123456789abcdef01234567","time":"2026-11-01T20:36:34.785461Z"},{"action":"package.upload","actor":{"id":"atn_0123456789abcdef01234567","name":"ci-hello","type":"token"},"error":null,"id":"1793565394790799-c349ebf5","node":"atanor@atanor-node.local","remote_ip":"127.0.0.1","result":"ok","status":201,"time":"2026-11-01T20:36:34.790799Z","version":"2b1294c007ec8b2ff45a97a1bc75243cceffa24737338966eb728cbb15bd6f78","worker":"hello"}]}
     ```
 
     The two answers shown are those of the last two commands: `/heads` with the
@@ -444,7 +440,8 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     `admin.max_failures` (10) in `admin.failure_window_ms` (60 seconds) the
     address gets 429 `{"error":"too_many_attempts"}` with `Retry-After`, with
     the right token too, until the window ends. The address is the peer of the
-    connection, so behind a proxy all clients share one limit. A valid token without the
+    connection; a proxy in front of the node is a known limit
+    ([known limitations](known-limitations.md)). A valid token without the
     scope is 403 with `required`. The audit log lists events oldest first;
     page with `limit` and `after=<next>`. Each entry has the `actor` (the
     `operator` or a token `id` and `name`), `action` (`package.upload`,
@@ -475,19 +472,19 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     The same as `atanor drain` ([cli.md](cli.md)).
 
     ```sh
-    curl -s -H "authorization: Bearer demo-token" localhost:5010/drain
-    curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/drain
-    curl -si -H "authorization: Bearer demo-token" localhost:5010/health/ready
+    curl -s -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/drain
+    curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/drain
+    curl -si -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/health/ready
     ```
 
-    Output of the test node, started with `stop: [exit: false]` so it stays
-    up (without it the VM stops after the answer):
+    Output of a node started with `stop: [exit: false]` so that it stays up
+    (without it the VM stops after the answer):
 
     ```text
-    GET /drain -> 200 {"errors":[],"node":"nonode@nohost","state":"idle"}
-    POST /drain -> 200 {"duration_ms":6,"errors":[],"hibernated":1,"node":"nonode@nohost","state":"drained"}
-    GET /health/ready -> 503 {"node":"nonode@nohost","reason":"the node is handing its cells off","status":"draining"}
-    GET /health/serving -> 503 {"node":"nonode@nohost","reason":"the node is handing its cells off","status":"draining"}
+    GET /drain -> 200 {"errors":[],"node":"atanor@atanor-node.local","state":"idle"}
+    POST /drain -> 200 {"duration_ms":6,"errors":[],"hibernated":1,"node":"atanor@atanor-node.local","state":"drained"}
+    GET /health/ready -> 503 {"node":"atanor@atanor-node.local","reason":"the node is handing its cells off","status":"draining"}
+    GET /health/serving -> 503 {"node":"atanor@atanor-node.local","reason":"the node is handing its cells off","status":"draining"}
     GET ingress /c/a -> 503 retry-after=["1"] {"error":"unavailable","reason":"draining"}
     ```
 
@@ -514,11 +511,11 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
     number of issuers the node held, 0 when it has no `auth:` rule.
 
     ```sh
-    curl -s -X POST -H "authorization: Bearer demo-token" localhost:5010/auth/keys/flush
+    curl -s -X POST -H "authorization: Bearer $ADMIN_TOKEN" localhost:4001/auth/keys/flush
     ```
 
     ```json
-    {"flushed":1,"node":"nonode@nohost"}
+    {"flushed":1,"node":"atanor@atanor-node.local"}
     ```
 
     The action is logged and emits `[:atanor, :admin, :action]` with
@@ -551,7 +548,7 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
 - **401 `unauthorized` with a scoped token.** The token is expired, revoked,
   mistyped or from another prefix or store. Create a new one. A 403 `forbidden`
   names the scope the request needs in `required`.
-- **`versions` does not list a package.** It was stored before the version index existed, or by other means than a deploy. Upload it again to index it.
+- **`versions` does not list a package.** `versions` lists the packages uploaded for the worker. Upload the package again to index it.
 - **A deploy is 503 `store_unavailable`.** The node cannot reach the bucket.
   The body has no detail, because an error of the object store can hold its
   response; the cause is in the node's log (`atanor admin: store unavailable`).

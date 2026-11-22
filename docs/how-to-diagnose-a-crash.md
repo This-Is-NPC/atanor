@@ -36,12 +36,11 @@ The default `diagnostics.breadcrumbs: :durable` covers jobs, alarms, sweep
 driver pages, migrations, deployment activation and WebSocket connections. It
 does **not** cover every HTTP request, native or WASM; use
 `diagnostics: [breadcrumbs: :all]` while reproducing an HTTP crash. `:all`
-writes one file per request and costs throughput (design §12).
+writes one file per request and costs throughput.
 
 A clean stop and a process killed with an Elixir `:kill` leave no busy file.
 Only a VM crash produces a report. A whole-machine crash can lose the
-breadcrumb files (they are not fsynced) and Alambique's markers; then only the
-store's own records remain.
+breadcrumb files; this is a [known limitation](known-limitations.md).
 
 ## Enable core dumps
 
@@ -154,8 +153,8 @@ also in every relevant crash report.
 
 A cell is frozen when `recent` reaches `quarantine.threshold` inside
 `quarantine.window_ms`; a frozen cell refuses to wake with `:frozen`. Look at
-it with `mix alambique.inspect` (from a checkout of Alambique or its release) or
-`/crashes`. To let it wake again and forget the counter:
+it in `/crashes`, in the `alambique` field of its unit. To let it wake again and
+forget the counter:
 
 ```sh
 curl -s -X POST -H "authorization: Bearer $TOKEN" \

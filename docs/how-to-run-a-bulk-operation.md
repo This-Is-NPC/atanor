@@ -18,12 +18,11 @@ its token ([how-to-use-the-admin-api.md](how-to-use-the-admin-api.md)).
 
 ## Steps
 
-**Behaviour change for existing automation:** by default an operation now
-dispatches its first 10 cells, then waits `canary_window_ms` (60 s) before it
-continues, and it halts if more than 10% of those jobs failed. An operation of
-10 cells or fewer is not delayed. To keep the old timing, create it with
-`"canary_size": 0`, or set `canary_size: 0` (or a shorter `canary_window_ms`)
-under `sweeps:` on the node. Step 4 describes the canary.
+By default an operation dispatches its first 10 cells (the canary), then waits
+`canary_window_ms` (60 s) before it continues. It halts if more than 10% of
+those jobs failed. An operation of 10 cells or fewer is not delayed. To
+dispatch without a canary, create the operation with `"canary_size": 0`, or set
+`canary_size: 0` under `sweeps:` on the node. Step 4 describes the canary.
 
 1. Start a namespace sweep. It enqueues `kind: "reindex"` in every cell of
    `mail`, at most 25 per second, 8 at a time:
@@ -49,8 +48,8 @@ under `sweeps:` on the node. Step 4 describes the canary.
    "running"`. The per-operation `rate_per_s`, `concurrency` and `page_size`
    must not exceed the instance's `sweeps:` values. The instance defaults are
    50 cells/s and 8 in flight; raise `sweeps: [rate_per_s: ..., concurrency:
-   ...]` on the nodes before a large sweep (the implementation benchmarks
-   10,000 and 32 and reaches about 700 cells/s on a laptop).
+   ...]` on the nodes before a large sweep. The cost of one cell is in
+   [cell-cost.md](cell-cost.md).
 
 2. Use a prefix selector for part of the keys, or an index cell for a list
    owned by the application:
@@ -146,9 +145,8 @@ under `sweeps:` on the node. Step 4 describes the canary.
    ```
 
    A completed cell has one job with the operation id and a marker `done`; a
-   failed job has `failed` and its last error. `Atanor.Sweeps.sample_outcomes/3`
-   returns counts from a sample of those markers; with `cells: [...]` and
-   `at: :latest` it reads named cells without waking them, as the guard does.
+   failed job has `failed` and its last error. The guard counts these markers
+   in the recent cells; it reads them without waking the cells.
 
 ## Undo and the undo report
 
@@ -280,10 +278,9 @@ report first and refuses a cell that was written since.
     second operation whose job removes exactly what the first added. The first
     operation's id is in each cell's job (`/jobs/mail/alice`), so the inverse
     job can find its own rows. Run it like any operation, with a canary, and
-    check the result with the report's `tables` counts. For a destructive
-    operation, restore a copy of the cell with `mix alambique.restore` at the
-    `before_txid` of the report, read the earlier rows, and write the repair
-    through the worker.
+    check the result with the report's `tables` counts. Atanor cannot rewind a
+    destructive operation that has no undo positions, so decide on `"undo": true`
+    before you start it.
 
 ## Expected results
 
@@ -328,9 +325,7 @@ report first and refuses a cell that was written since.
   for it and make a new report. `already_running`: wait for the record to end.
 - **Cells are `data_written` that nobody wrote.** Alambique ignores wakes but
   not a worker that writes in an alarm or a request, nor a migration. Make the
-  report and the apply close together, or stop the writer. Right after an
-  upgrade of Alambique, a cell whose history predates its data marker can read
-  as written once.
+  report and the apply close together, or stop the writer.
 - **The report stays `running`.** Each cell has `sweeps.undo_timeout_ms`
   (120 s) and `undo_concurrency` (2) run at once, so a thousand large cells
   take a while. A report not updated for `sweeps.undo_stale_ms` (10 minutes)

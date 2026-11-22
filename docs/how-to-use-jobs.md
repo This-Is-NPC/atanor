@@ -47,8 +47,7 @@ in step 6.
    makes up, such as `{:error, :timeout}` for a slow web service: it counts as an attempt, even when a
    cell call failed earlier in the same attempt.
 
-   A WASM job cannot tell Atanor which error it passes on: every error of the guest counts as an attempt,
-   also one of a cell call that failed for such a reason, until the host interface marks it.
+   A WASM job's errors all count as attempts. The limit is in [known limitations](known-limitations.md).
 
 2. Enqueue in the same transaction as the data. Use
    `Atanor.Jobs.enqueue/4` with the `Alambique.Tx` from `Env.transaction/4`:
@@ -126,8 +125,8 @@ in step 6.
    ```
 
    Each fire inserts a normal job; the cron row itself is the schedule. Times
-   are UTC and there are no time zones yet (see
-   [design §15.4](design.md#154-execution-retries-cron-and-timeouts)).
+   are UTC. Time zones are not supported; see [known limitations](known-limitations.md)
+   and [design §15.4](design.md#154-execution-retries-cron-and-timeouts).
 
 8. Observe and recover. With the admin API:
 
@@ -178,30 +177,24 @@ in step 6.
   `jobs.worker_concurrency` and `jobs.concurrency` at least as high. When one
   job finishes, the next due job of its cell is claimed in the same
   transaction (`jobs.claim_on_finish`, default true) instead of at the next scan
-  (`alarms.tick_ms`): 100 jobs at four at a time drain in about 1 s instead of
-  25 s. The cost: while a cell's jobs run, enqueues into that cell share the
-  cell's one writer with them and are about 3 times slower (1 460 against 4 500
-  jobs/s in the bench), though the jobs complete about 3 times sooner overall
-  ([design §12.9](design.md#129-jobs-and-bulk-operations)). Set it to `false`
-  to favour enqueue speed.
-- **A node was replaced (drained) and its job waited a minute.** A draining node releases the claims of the
+  (`alarms.tick_ms`). The cost: while a cell's jobs run, enqueues into that cell
+  share the cell's one writer with them and are slower. Set `jobs.claim_on_finish`
+  to `false` to favour enqueue speed.
+- **A job waits after its node is drained.** A draining node releases the claims of the
   jobs it did not finish when `jobs.release_claims` is true (default), so the node that takes the cell runs
   them within one `alarms.tick_ms`. A job still running when the drain ends (`stop.jobs_ms`) is not
   released: its claim expires at `jobs.claim_ms`. Give each node its own name
   ([design §15.12](design.md#1512-the-claims-of-a-node-that-hands-its-cells-back)).
-- **A node died and its job did not run again for minutes.** The jobs a node
-  had claimed run again on the node that takes the cell over, once the old lease has ended
-  (`jobs.release_claims`, default true), when the cell is used: a request, an
-  enqueue or an alarm takes it over. A cell nobody uses waits for the claim
-  (`jobs.claim_ms`). A node that comes back after a freeze stops its running
-  attempt within `routing.fence_check_ms`, and a node that is cut off from the
-  store and its peers stops it when its lease on the cell ends (minus
-  Alambique's `skew_margin_ms`), whatever `jobs.release_claims` is. The job may
-  have repeated its effects until then. A cell taken over early starts no job
-  until the old lease has ended plus the margin, so a released job can wait up
-  to `lease_ttl_ms` (30 s by default) before it runs again; set
-  `routing.fence_defer_after_takeover: false` to run it at once and accept an
-  overlap bounded by the lease left ([design §8.13](design.md#813-a-handler-that-outlives-its-cell),
+- **A job runs late after its node dies.** The jobs a node had claimed run again on the node that takes
+  the cell over, once the old lease has ended (`jobs.release_claims`, default true). The takeover happens
+  when the cell is used: a request, an enqueue or an alarm. A cell nobody uses waits for the claim
+  (`jobs.claim_ms`). A node that comes back after a freeze stops its running attempt within
+  `routing.fence_check_ms`, and a node that is cut off from the store and its peers stops it when its lease
+  on the cell ends (minus Alambique's `skew_margin_ms`), whatever `jobs.release_claims` is. The job may
+  have repeated its effects until then. A cell taken over early starts no job until the old lease has ended
+  plus the margin, so a released job can wait up to `lease_ttl_ms` (30 s by default) before it runs again.
+  Set `routing.fence_defer_after_takeover: false` to run it at once and accept an overlap bounded by the
+  lease left ([design §8.13](design.md#813-a-handler-that-outlives-its-cell),
   [§15.11](design.md#1511-the-claims-of-a-node-confirmed-down)). Each stop emits
   `[:atanor, :handler, :fenced]` ([telemetry.md](telemetry.md)).
 
@@ -211,4 +204,4 @@ in step 6.
   across many cells.
 - [telemetry.md](telemetry.md) lists the job events.
 - [design.md §15](design.md#15-jobs-per-cell-and-bulk-operations) has the
-  schema, retry formula, limits and measurements.
+  schema, the retry formula and the limits.

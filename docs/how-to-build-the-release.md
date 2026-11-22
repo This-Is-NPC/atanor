@@ -4,7 +4,7 @@
 tarball, check that the image works, and know what a release publishes and what
 the tarball needs on the host?
 
-This guide stands alone for someone with the repository and Docker. To run
+This page is for contributors. It stands alone for someone with the repository and Docker. To run
 the image you built as a cluster, see
 [how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md);
 for the settings of a node, [configuration.md](configuration.md#the-daemon-environment-and-file);
@@ -31,8 +31,7 @@ The [Dockerfile](../Dockerfile) at the root builds it from public sources only
 
 - Docker with BuildKit (Docker 23 or later). Nothing else: Elixir, Erlang and
   Rust are inside the build stage.
-- Internet for the first build. The Rust build of both NIFs dominates it
-  ([measured below](#what-it-costs)).
+- Internet for the first build. The Rust build of both NIFs takes most of the time.
 - To run the check below, `mise install` (for `mise run`), plus `curl` and `openssl` on the host.
 
 ## Build the image
@@ -84,22 +83,23 @@ and removed at the end):
 - the runtime image has no `curl` and no `iptables`, and runs as a user that is not root;
 - the harness image has `curl`, `iptables`, `tc` and `ps`.
 
-It prints the image sizes, the build times and the time from `docker run` to ready.
+It prints the image sizes, the build times and the time from `docker run` to ready. The values in
+angle brackets vary by machine.
 `ATANOR_SMOKE_REUSE=1` skips the builds and uses the images of the last run.
 
 ```text
-size  runtime: 55.0 MB (54984954 bytes)
-size  harness: 63.5 MB (63471497 bytes)
+size  runtime: <size> MB (<bytes> bytes)
+size  harness: <size> MB (<bytes> bytes)
 ok    the runtime image has no curl and no iptables
 ok    the harness image has curl, iptables, tc and ps
 ok    the runtime image runs as a user that is not root
-ok    a node started from environment variables only was ready on /health/ready in 34.0 s (docker run to HTTP 200)
+ok    a node started from environment variables only was ready on /health/ready in <seconds> s (docker run to HTTP 200)
 ok    no cookie: exit status 1, the log says: atanor: no cookie: set RELEASE_COOKIE or ATANOR_COOKIE_FILE
 ok    an unknown ATANOR_ variable: exit status 1, the log says:   unknown variable ATANOR_STOER; did you mean ATANOR_STORE?
 image-smoke: passed
 ```
 
-`mise run image:derived-smoke` does the same for the [derived image](how-to-build-a-derived-image.md#check-the-image)
+`mise run image:derived-smoke` does the same for the [derived image](how-to-build-a-derived-image.md)
 of `examples/live-counter`. Both scripts share `scripts/smoke-common`, which starts the disposable SeaweedFS.
 
 ## Build the tarball
@@ -119,9 +119,8 @@ Set the cookie with `RELEASE_COOKIE` or `ATANOR_COOKIE_FILE`, as for the image.
 
 **What the tarball needs on the host.** It is built in the Debian 13 (trixie)
 base of the image, and its native code links that base's libraries. The newest symbol
-versions it uses are glibc 2.38 and OpenSSL 3.4 (observed with `objdump -T` on the amd64 build;
-Debian 13 has glibc 2.41 and OpenSSL 3.5). The host needs at least those, plus `libstdc++6` and
-`libncurses6`. It does not run on musl (Alpine) or on an older distribution; use the image there.
+versions it uses are glibc 2.38 and OpenSSL 3.4 (`objdump -T` on the amd64 build). The host needs at
+least those, plus `libstdc++6` and `libncurses6`. It does not run on musl (Alpine) or on an older distribution; use the image there.
 It does not need Erlang, Elixir or Rust.
 
 ## What a release publishes
@@ -148,8 +147,6 @@ and then:
    public (GitHub, Packages, the package, Package settings, Change visibility). Then re-run the failed
    job; nothing else needs to run again.
 
-No release before 0.4.0 ran these jobs, so none published an image or a tarball.
-
 The workflow has no test job: the gate is CI on the pull request (`.github/workflows/ci.yml`).
 The release pull request is opened with the workflow token, which starts no
 pull_request run, so the job `ci-on-release-pr` dispatches `ci.yml` on the release
@@ -158,28 +155,8 @@ branch and the `ci` check comes from that run. To dispatch it by hand:
 pinned by commit SHA, the default token is read-only, and `packages: write` and
 `contents: write` are given only to the jobs that push images and attach files. The
 build cache is the GitHub Actions cache (`type=gha`), one scope per architecture.
-`mise run check:workflows` lints it with `actionlint`. The arm64 build is not made
-locally: the first release run is its proof.
-
-## What it costs
-
-Measured on the VM of the project (4 vCPU, about 6 GB, Docker 29.7, linux/amd64), with the
-files of this repository after the pin of Alambique v0.6.0:
-
-| What | Result |
-| --- | --- |
-| Image size, `runtime` | 55.0 MB (54 984 954 bytes) |
-| Image size, `harness` | 63.5 MB (63 471 497 bytes) |
-| Release directory | 65 MB; the tarball is 20.4 MB (amd64) |
-| `docker build --target runtime`, first build on that VM | 665 s |
-| The same, after a change to Atanor and Alambique, with the Cargo caches kept | 390 s |
-| `docker build --target harness` right after, the layers cached | 202 s (almost all of it pulling base metadata, installing the tools and exporting; the build stage was cached) |
-| `docker build --target runtime` on a clean 2 vCPU, 3 GB machine, default Cargo jobs | 1236 s, no out-of-memory |
-| `docker run` to HTTP 200 on `/health/ready`, one node, SeaweedFS already up | 34.0 s and 34.5 s (two runs) |
-| `cluster:up` with two nodes, build of the harness image included | 492 s |
-
-The times are of one machine under no other load, and a build on a faster host is shorter.
-The arm64 image and tarball are not measured: the first release run builds them.
+`mise run check:workflows` lints it with `actionlint`. The arm64 build runs only in the
+release workflow, not locally.
 
 ## Troubleshooting
 

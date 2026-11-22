@@ -4,7 +4,7 @@
 over their own SeaweedFS and a load balancer, deploy an app with a scoped
 token, and kill, pause, partition or restart a node or the store?
 
-This guide stands alone for someone with the repository and Docker. For the
+This page is for contributors. It stands alone for someone with the repository and Docker. For the
 cluster itself (routing, takeover, detector) see
 [how-to-run-a-cluster.md](how-to-run-a-cluster.md); for the VM version see
 [how-to-run-the-cluster-lab.md](how-to-run-the-cluster-lab.md).
@@ -43,8 +43,7 @@ nodes are not published; the load balancer publishes everything on
 - Docker with Compose v2 and BuildKit, `curl`, `jq`, `openssl`, `python3`.
 - The tools of the [README](../README.md#requirements) (`mise install`).
 - Internet for the first build (base images, Hex, crates, and the public
-  Alambique repository at the tag in `alambique.ref`). It took about three
-  minutes on 12 cores with 6 Cargo jobs.
+  Alambique repository at the tag in `alambique.ref`).
 - Free host ports 18080 to 18083 (or set the ports below).
 - Node.js 22 or later for the WebSocket client (optional).
 
@@ -81,12 +80,9 @@ Set these in the environment of `mise run`; the defaults are in `compose.yml`.
 
 ## Keeping the data in memory
 
-Writes wait for the disk under the cell files and under SeaweedFS. On a host whose file system
-stalls writes (we saw it on btrfs), the cluster stalls with it: above about 60 requests per second,
-every 6 to 10 s all rooms on all nodes waited about 2 s. It comes from the host, not from the
-library or from Atanor.
-
-Start the cluster with the data on tmpfs to take the host's disk out of the path:
+Writes wait for the disk under the cell files and under SeaweedFS. If the host's
+file system stalls writes, the cluster stalls with it; [known-limitations.md](known-limitations.md)
+describes this. Start the cluster with the data on tmpfs to take the host's disk out of the path:
 
 ```sh
 ATANOR_CLUSTER_TMPFS=1 mise run cluster:up
@@ -102,33 +98,10 @@ ATANOR_CLUSTER_TMPFS=1 mise run cluster:up
 - **Set the variable for every `cluster:*` command** that starts or recreates containers
   (`cluster:up`, `cluster:chaos-run`, `cluster:roll`). Without it they use the disk layout and
   recreate containers with it.
-- **tmpfs counts against the container's memory limit.** A cell file took about 50 MB in these
-  runs (12 rooms on one node: 640 MB), and the store held 684 MB after 19,000 writes. If a node holds
+- **tmpfs counts against the container's memory limit.** If a node holds
   many cells, raise `ATANOR_CLUSTER_NODE_MEMORY` and `_STORE_MEMORY` together with the size.
+  For what one cell costs in memory, see [cell-cost.md](cell-cost.md).
 - A full tmpfs of a node shows as HTTP 503 `overloaded` (Alambique's `disk_full`); a full tmpfs of the store, as store errors (see Troubleshooting).
-
-Measured on this repository's cluster (3 nodes at 1.5 CPUs, SeaweedFS, HAProxy, 12 rooms `d1` to `d12`, 8
-workers, 40 s per run, host: AMD Ryzen AI 5 340, 12 schedulers,
-btrfs on an encrypted NVMe root). Latency is that of acknowledged writes, in ms.
-
-| Data | Rate asked | Host load average (1 min) | Sent / acknowledged / refused / unknown | p50 | p99 | Maximum | LOST / DUPLICATED |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| tmpfs | 100 | 3.5 | 4,008 / 4,008 / 0 / 0 | 4 | 22 | 205 | 0 / 0 |
-| tmpfs | 200 | 4.5 | 7,992 / 7,992 / 0 / 0 | 5 | 46 | 966 | 0 / 0 |
-| btrfs | 100 | 2 to 23 (other work) | not recorded | not recorded | 460 to 2,050 | 2,040 to 2,150 | not recorded |
-| btrfs | 60 | quiet | not recorded | not recorded | 11 | 217 | not recorded |
-
-The btrfs rows are the earlier runs of this investigation (7 runs of 40 s at 100 per second, and one check
-at 60 per second), kept as they were; their request counts were not recorded. The tmpfs rows are one run each,
-with a load average of 3.5 to 4.5 from the run itself, so they are single measurements. The one request over 1
-s in the 200 run is one request, not the periodic 2 s stall. The same hardware with the data on btrfs under a shared load gave stalls of 1 to 3 s
-(section 12 of Alambique's `docs/design.md` has its table at 120 and 200 requests per second).
-
-One `ATANOR_CLUSTER_TMPFS=1 mise run cluster:chaos-run kill` (60 requests per second, host load average
-4 at the start, 14 at the end) killed node-2 with 5 of 12 rooms: 5,820 sent, 5,819 acknowledged, 0 refused,
-1 unknown (an HTTP 502, not stored), LOST 0, DUPLICATED 0. The rooms were served again 8.8 s after the first
-failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by phase: before 22, during
-2,013 (the killed node's rooms), rejoin 101, after 114. The restarted node began with an empty tmpfs.
 
 ## Steps
 
@@ -189,7 +162,7 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
    ```
 
    ```text
-   token atn_da778a3b31c72449ddacf15d (scoreboard-deploy)
+   token atn_<id>_<secret> (scoreboard-deploy)
    scopes: worker:scoreboard:deploy worker:scoreboard:activate worker:scoreboard:read
    expires: never
    package 40fb5077586e27a6c8732e39376f56b493c4b0b44150290d2d3d3c6b7d80dd7e (scoreboard, wasm, 117504 bytes)
@@ -318,7 +291,6 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
    `scripts/cluster-roll roll`: for each node in turn, a graceful stop, a
    recreate from the new image under the same name, and a wait until it is
    ready and every node sees it.
-   The load generator is one Python process; it uses about one core.
 
    What it measures, per run:
 
@@ -342,83 +314,21 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
      (*missed*, counting those lost while it was reconnecting) and the pushes it
      received twice.
 
-   One run of each fault on one 12-core machine that also ran other containers,
-   with 3 nodes at 1.5 cores, the default 30 s lease, 12 rooms, 8 workers and
-   60 requests per second (each run takes about 1.5 to 2 minutes). Latency is
-   that of acknowledged writes, in ms; p99 values above 1 s are mostly the host's
-   disk stalls (see "Keeping the data in memory"):
+   The default load is 8 workers at 60 requests per second; `--workers` and
+   `--rate` change it. The load is one Python process and the WebSocket client
+   one Node.js process.
 
-   | Run | Faulted | Sent | Acked | Refused | Unknown (no answer) | LOST / DUPLICATED | Stored: unknown / refused | Restore (s) | p50 / p99 before | during | rejoin | after |
-   | --- | --- | ---: | ---: | ---: | ---: | --- | --- | ---: | --- | --- | --- | --- |
-   | kill | node-2 | 5059 | 5058 | 0 | 1 | 0 / 0 | 0 of 1 / 0 of 0 | 0.85 | 6 / 143 | 6 / 729 | 9 / 2088 | 8 / 728 |
-   | pause | node-1 | 5654 | 5637 | 0 | 17 | 0 / 0 | 16 of 17 / 0 of 0 | 19.41 | 6 / 24 | 6 / 155 | 7 / 695 | 8 / 723 |
-   | partition | node-2 | 6105 | 6088 | 2 | 15 | 0 / 0 | 0 of 15 / 0 of 2 | 13.31 | 6 / 18 | 6 / 24 | 7 / 27 | 7 / 1196 |
-   | store-restart | all | 3047 | 3037 | 1 | 9 | 0 / 0 | 0 of 9 / 0 of 1 | 43.93 | 6 / 1852 | 6 / 7 | 7 / 3265 | 6 / 2507 |
-   | rollout-deploy | all | 4698 | 4698 | 0 | 0 | 0 / 0 | 0 of 0 / 0 of 0 | not hit | 7 / 570 | 6 / 32 | 6 / 30 | 6 / 27 |
-   | rollout-restart | all | 4529 | 4529 | 0 | 0 | 0 / 0 | 0 of 0 / 0 of 0 | not hit | 5 / 12 | 7 / 1070 | 6 / 1881 | 5 / 1895 |
+   A POST that reaches a node which is stopping, or that is killed while it
+   handles the request, can get 503 `owner_down` or 503 `unknown_outcome`. A
+   client retries the first and uses ids to retry the second. The client
+   behavior is in [what a client sees when a node fails](how-to-run-a-cluster.md#what-a-client-sees-when-a-node-fails).
 
-   Reading the table:
+   Latency noise, stalls of about 2 s that hit every room of one node at once,
+   is a known limitation: see [known-limitations.md](known-limitations.md). Read
+   the *during*, *rejoin* and *after* p99 with that in mind: only a p99 well
+   above 2 s, and the restore column, show a fault.
 
-   - **No acknowledged write was lost or duplicated** in any fault.
-   - **Every unknown write of `pause` was stored**: the frozen node finished
-     them after `unpause`. No unknown write of the other faults was stored, and
-     no refused write was stored.
-   - **A killed node's cells** are served again by another node in about a
-     second. **A paused node's cells** take about 19 s and **a partitioned
-     node's** about 13 s: the detector's decision, not the 30 s lease.
-   - **The balancer follows the partition.** With `/health/ready` the balancer
-     keeps sending a third of the traffic to the cut node, which answers 503
-     `no_quorum` at once. With `/health/serving` it takes the node out within
-     about two seconds.
-   - **`store-restart`.** Cells are served again about 30 to 45 s after the
-     restart began. Writes that fail in the window are refused with 503
-     `store_unavailable` (the call did not run) or answered 503
-     `unknown_outcome` (a cell stopped on an upload, which may have reached the
-     store); the clients that waited were served.
-   - **`rollout-deploy` is atomic for clients.** The last answer with the old
-     version comes about 17 ms before the first with the new one, across all
-     rooms, and nothing is refused. The new version first shows about a second
-     after the command starts, which is when `atanor deploy` returns.
-   - **`rollout-restart`** (a new image, one node at a time) refuses nothing in
-     this run. A POST that reaches a stopping owner can be refused with 503
-     `owner_down` in 2 to 3 ms, or answered 503 `unknown_outcome`; a client
-     retries the first and uses ids to retry the second. A WASM worker runs on
-     the node that received the request, and its cell calls reach the owner
-     through Alambique's router, which meets a draining owner as `owner_down`
-     at once; a native worker routed to the owner waits up to
-     `routing.leave_wait_ms` (3 s) first ([design §8.11](design.md#811-draining-and-stopping-gracefully)).
-   - **Latency noise.** Stalls of about 2 s that hit every room of one node at
-     once appear above about 60 requests per second when the data is on btrfs,
-     and not with the data on tmpfs ([Keeping the data in memory](#keeping-the-data-in-memory)).
-     They are not the nodes' CPU limit, the store's CPU or latency, or the
-     connection pool. Read the *during*, *rejoin* and *after* p99 with that in
-     mind: only a p99 well above 2 s, and the restore column, show a fault.
-
-   To reproduce one row: `mise run cluster:up`, `mise run
-   cluster:deploy-example`, then `mise run cluster:chaos-run kill` (twice for
-   two runs). The default load is 8 workers at 60 requests per second; `--workers`
-   and `--rate` change it. The load is one Python process and the WebSocket client one Node.js process.
-
-8. Look at resource use, once up and once under 4,000 writes from 6 client
-   threads (`docker stats`):
-
-   ```text
-   NAME                     CPU %     MEM USAGE / LIMIT   PIDS     (idle)
-   atanor-cluster-node-1    0.34%     154.6MiB / 2GiB     58
-   atanor-cluster-lb-1      0.16%     15.1MiB / 256MiB    12
-   atanor-cluster-store-1   4.61%     223.7MiB / 2GiB     8
-
-   NAME                     CPU %     MEM USAGE / LIMIT   PIDS     (4,000 writes)
-   atanor-cluster-node-1    52.02%    177.2MiB / 2GiB     58
-   atanor-cluster-node-2    20.51%    161.6MiB / 2GiB     58
-   atanor-cluster-node-3    23.61%    191.8MiB / 2GiB     59
-   atanor-cluster-lb-1      14.82%    17.84MiB / 256MiB   12
-   atanor-cluster-store-1   47.00%    463.3MiB / 2GiB     10
-   ```
-
-   CPU % is of one core; the limit is 150% per node.
-
-9. Remove everything. It prints the ids of the containers it removes and keeps
+8. Remove everything. It prints the ids of the containers it removes and keeps
    the image and the secrets.
 
    ```sh
@@ -464,15 +374,13 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
   `/health/serving`: a node without a quorum (cut off, or alone after the others
   left) answers 503 `no_quorum` there while `/health/ready` stays 200
   ([how-to-use-the-admin-api.md](how-to-use-the-admin-api.md)).
-- **Requests stall for about 2 s above 60 requests per second.** Look at the host's
-  file system under Docker's data directory. On btrfs this happened with the cell files and
-  the store's data both on it; start with `ATANOR_CLUSTER_TMPFS=1`
-  ([above](#keeping-the-data-in-memory)).
+- **Requests stall for about 2 s under load.** A file system that stalls writes
+  causes this; see [known-limitations.md](known-limitations.md). Start with
+  `ATANOR_CLUSTER_TMPFS=1` ([above](#keeping-the-data-in-memory)).
 - **Writes answer 503 `overloaded`, or 500 from the store, with `ATANOR_CLUSTER_TMPFS=1`.** A tmpfs is full.
   Check `docker exec atanor-cluster-node-1 df -m /var/lib/atanor` and
   `docker exec atanor-cluster-store-1 df -m /data`, then run `cluster:down` and start again with a
-  larger `ATANOR_CLUSTER_TMPFS_SIZE` (and memory limits). With 512m, two nodes filled in about four minutes
-  of load.
+  larger `ATANOR_CLUSTER_TMPFS_SIZE` (and memory limits).
 - **The data is gone after a host restart.** That is what `ATANOR_CLUSTER_TMPFS=1` does. Start
   without it to keep the data on disk.
 
@@ -484,5 +392,5 @@ failure (outage 7.5 s); the node was healthy again 7.2 s after `start`. p99 by p
   another under load (`mise run cluster:swap-run`).
 - [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md) and [cli.md](cli.md)
   for tokens and deploys.
-- [examples/scoreboard](../examples/scoreboard/README.md) for the app and its
-  checker.
+- [cell-cost.md](cell-cost.md) for what one cell costs under load, and [examples/scoreboard](../examples/scoreboard/README.md)
+  for the app and its checker.

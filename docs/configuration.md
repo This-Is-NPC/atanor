@@ -27,7 +27,7 @@ children = [
 
 | Option | What it sets |
 | --- | --- |
-| `store:`, `prefix:` | The S3-compatible store that holds both the cells and Atanor's own metadata under `prefix:`. `placement:` with `meta_store:` replaces it when cells live in several places. Deploys that share a store need prefixes where neither is a path prefix of the other (Alambique 0.11 rule; Atanor uses `<prefix>/cells`). |
+| `store:`, `prefix:` | The S3-compatible store that holds both the cells and Atanor's own metadata under `prefix:`. `placement:` with `meta_store:` replaces it when cells live in several places. Deploys that share a store need prefixes where neither is a path prefix of the other (Atanor uses `<prefix>/cells`). |
 | `data_dir:` | The directory of the local copies of cells. One instance holds it (a lock on `data_dir/lock`) on a case-sensitive file system; a second instance, or another file system, fails to start with `data_dir_in_use` or `data_dir_case_insensitive`, logged by the node. |
 | `secrets:` | The values of the secrets the workers are granted. |
 | `hosts:`, `listeners:` | The routes a manifest may activate. `listeners: %{"smtp" => 2525}` opens that port while a worker claims it. The long form adds `tls_mode:` and `tls:`, `protocol: :ranch` and `ip:` (the address to bind); a Ranch protocol gets the listener name as `:atanor_listener`. |
@@ -54,7 +54,7 @@ the same variables as the daemon
 
 ## The daemon: environment and file
 
-A node run as a daemon (the release built from [daemon](../daemon), and the images derived from it)
+A node run as a daemon (the release image, and the images derived from it)
 has no Elixir to write: `Atanor.Daemon` turns environment variables, plus an optional JSON file, into the
 options above and checks them with the same validator as `{Atanor, opts}`.
 
@@ -134,9 +134,8 @@ Rules:
 ### Dirty IO threads and the CPU quota
 
 The BEAM starts 10 dirty IO threads whatever the CPU limit of its container, and Alambique's SQLite calls run
-on them. Bursts across 10 threads use up a small CFS quota in each 100 ms period: with a quota of 1 CPU a
-node was throttled for 150 to 173 s of 180 s at 490 requests per second and missed its p99, and with one
-thread the same step passed with half the p99 and about 40 s of throttling.
+on them. Bursts across 10 threads use up a small CFS quota in each 100 ms period, which throttles the
+whole node. The effect on the cost of a cell is in [cell-cost.md](cell-cost.md).
 
 `rel/env.sh.eex` therefore adds `+SDio N` to the VM flags, with N the CPU quota of the process's cgroup
 rounded up, at least 1 (`cpu.max` `100000 100000` gives 1, `150000 100000` gives 2, `200000 100000` gives 2).
@@ -148,8 +147,7 @@ To choose another number, set `+SDio` in `ERL_FLAGS`, `ERL_ZFLAGS` or `vm.args`,
 `ERL_ZFLAGS="+SDio 4"`. The VM reads `ERL_AFLAGS` (where the script puts its flag) first, then the command line
 and `vm.args`, then `ERL_FLAGS`, then `ERL_ZFLAGS`, and the last `+SDio` wins.
 
-An app whose release files `mix atanor.release` wrote before this script sized the dirty IO threads keeps its
-old copy of `rel/env.sh.eex`. Copy `rel/env.sh.eex` from the `atanor` dependency (`deps/atanor/daemon/rel/`), or
+If your app's `rel/env.sh.eex` lacks these lines, it does not size the dirty IO threads. Copy `rel/env.sh.eex` from the `atanor` dependency (`deps/atanor/daemon/rel/`), or
 run `mix atanor.release --force`, which also rewrites the `Dockerfile` and the entry point it generated.
 
 The statement slots follow the dirty IO threads: see `sql: [max_concurrent_statements:]` in
@@ -168,10 +166,7 @@ The rule: grace period above `shutdown_ms`, with a margin (15 s here, so 90 s).
 | systemd | `TimeoutStopSec=90` |
 | Kubernetes | `terminationGracePeriodSeconds: 90` |
 
-If you change `shutdown_ms`, change the grace with it. The cluster scripts derive it: `shutdown_ms` (from
-`ATANOR_CLUSTER_SHUTDOWN_MS`, else `ATANOR_SHUTDOWN_MS`) plus 15 s. `ATANOR_CLUSTER_STOP_GRACE` (`90s`, `2m` or
-seconds) overrides it, and a value at or below the drain is refused
-([how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md)).
+If you change `shutdown_ms`, change the grace period with it: the grace period is `shutdown_ms` plus 15 s.
 
 ### AWS credentials
 
@@ -193,19 +188,6 @@ node does not start. Neither the log line nor the warnings print a key, a token 
 
 The region is `ATANOR_S3_REGION`, else `AWS_REGION`, else `AWS_DEFAULT_REGION`, else `us-east-1`. Without
 `ATANOR_S3_ENDPOINT` the endpoint is `https://s3.<region>.amazonaws.com`.
-
-Before this page, the container cluster named these `ATANOR_NODE_*` (`ATANOR_NODE_BUCKET`,
-`ATANOR_NODE_S3_ENDPOINT`, `ATANOR_NODE_S3_ACCESS_KEY`, ...). They fail now, with the closest key in the error:
-
-| Old | New |
-| --- | --- |
-| `ATANOR_NODE_S3_ENDPOINT`, `ATANOR_NODE_BUCKET` | `ATANOR_S3_ENDPOINT`, `ATANOR_STORE=s3://<bucket>` |
-| `ATANOR_NODE_S3_ACCESS_KEY`, `ATANOR_NODE_S3_SECRET_KEY` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
-| `ATANOR_NODE_ADMIN_TOKEN`, `ATANOR_NODE_DASHBOARD_TOKEN` | `ATANOR_ADMIN_TOKEN`, `ATANOR_DASHBOARD_TOKEN` |
-| `ATANOR_NODE_PEERS` (`ATANOR_PEERS` after that) | none: the nodes find each other through the store ([discovery](#discovery)) |
-| `ATANOR_NODE_ID`, `ATANOR_NODE_RELEASE` | `ATANOR_NODE_ID`, `ATANOR_RELEASE` |
-| `ATANOR_NODE_SHUTDOWN_MS`, `_DRAIN_TIMEOUT_MS`, `_DRAIN_CONCURRENCY`, `_LEASE_TTL_MS`, `_DETECTOR_PAUSE_MS` | `ATANOR_SHUTDOWN_MS`, `ATANOR_DRAIN_TIMEOUT_MS`, `ATANOR_DRAIN_CONCURRENCY`, `ATANOR_LEASE_TTL_MS`, `ATANOR_DETECTOR_PAUSE_MS` |
-| `ATANOR_NODE_HOST`, `ATANOR_NODE_NET_TICKTIME`, `RELEASE_COOKIE` from the entrypoint | `ATANOR_ADVERTISE`, `ATANOR_NET_TICKTIME`, `ATANOR_COOKIE_FILE` |
 
 ### Discovery
 
@@ -249,17 +231,16 @@ They are in [design §4.3](design.md#43-limits-on-cell-calls-and-their-errors).
 
 `alambique: [registry: [advertise:, meta:, ttl_ms:, renew_ms:, refresh_ms:,
 page_size:, sweep_ms:]]` makes Alambique keep this node in a registry in the
-store, which `Alambique.peers/1` reads. It is off by default and Atanor does
-not use it yet; Atanor checks the keys and the types of the values at start
+store, which `Alambique.peers/1` reads. [Discovery](#discovery) uses it. Atanor
+checks the keys and the types of the values at start
 (`advertise:` is a non-empty string, `meta:` a map, the others positive
 integers). The S3 store takes an optional `endpoint:` (derived from the
 region), `session_token:` and a credentials function in its own config, which
 Atanor passes through.
 
 - `sql: [max_concurrent_statements:]` is the most reads that run on a node at
-  once. Default (Alambique's, as of 0.15.0): `max(dirty IO - 2, min(dirty IO, 2))`, so 1, 2, 2, 2,
-  3 ... 8 for 1, 2, 3, 4, 5 ... 10 dirty IO schedulers. It keeps two slots on a two-thread node, where one slot
-  refused 2.2% of the reads as `busy` whenever a write ran on the other thread. A read over the limit
+  once. Default (Alambique's): `max(dirty IO - 2, min(dirty IO, 2))`, so 1, 2, 2, 2,
+  3 ... 8 for 1, 2, 3, 4, 5 ... 10 dirty IO schedulers. It keeps two slots on a two-thread node. A read over the limit
   is a 503 `overloaded`. A value you give wins. The daemon sizes the schedulers to the CPU quota
   ([Dirty IO threads and the CPU quota](#dirty-io-threads-and-the-cpu-quota)).
 - `sql: [script_timeout_ms:]` (60,000) bounds a migration, a script and
@@ -297,14 +278,12 @@ cgroup v2 limit, or `memory: [limit_bytes:]`), the awake cells may use half of
 the room between what the node uses when it boots (the BEAM and the data
 directory, which counts when it is in memory) and the refuse mark
 (`memory: [awake_fraction: 0.5]`), and the least used cells hibernate past
-that: before the node refuses requests. With 160 MiB at boot that is 137.6 MiB on a
-512 MiB node and 790.4 MiB on a 2 GiB one; it is never above half the limit
-nor below a tenth of it ([design §4.3](design.md)).
+that: before the node refuses requests. The awake budget is never above half the
+limit nor below a tenth of it ([design §4.3](design.md)).
 The wakes in flight have a share too, and the guests of WASM workers that wait take the rest (`1 - wake_fraction`, below): `memory: [wake_fraction: 0.5]` of the headroom
 between the refuse mark and the limit derives `awake: [max_wakes:]` and
-`restore: [max_inflight_bytes:]` unless you give them (a 512 MiB
-node gets 10 wakes and 2.4 MiB in flight; a 2 GiB node 14 and 9.6 MiB;
-`restore: [fetch_concurrency:]` keeps Alambique's 16 and the bytes budget is the
+`restore: [max_inflight_bytes:]` unless you give them
+(`restore: [fetch_concurrency:]` keeps Alambique's 16 and the bytes budget is the
 limit; formula in [design §4.3](design.md)), so a store that fails cannot make
 every queued request restore a cell at once.
 The S3 store keeps its own pool of `pool_size` connections (256 by default).
@@ -361,7 +340,8 @@ The admin listener has `admin: [header_timeout_ms: 10_000, body_timeout_ms: 120_
 Raise `body_timeout_ms` if clients upload `max_body_bytes` over a slow link.
 Each has an [environment variable](#the-daemon-environment-and-file). HTTP/2 streams keep Bandit's own
 body deadline, which a trickle does not extend; the headers of HTTP/2 and the
-dashboard listener have no total deadline. There is no limit per client address.
+dashboard listener have no total deadline, and the limits per client address are in
+[known limitations](known-limitations.md).
 
 Open WebSockets are not closed by either gate. Refusals count in
 `Atanor.Admission.stats/1` and `[:atanor, :http, :reject]` (reasons `:memory` and
@@ -406,8 +386,8 @@ with `df -Pk` at start; the node logs the budget and its source, for example
 read there is no budget, a warning is logged and Alambique's defaults apply.
 
 - Unless you set them, `wal: [checkpoint_bytes:]` is `budget / max_cells / 2` between
-  1 MiB and 64 MiB (`max_cells` is `awake: [max_cells:]`, 20 000 by default, so
-  1 MiB below about 39 GiB), `wal: [max_bytes:]` is what the WALs of all awake cells
+  1 MiB and 64 MiB (`max_cells` is `awake: [max_cells:]`, 20 000 by default),
+  `wal: [max_bytes:]` is what the WALs of all awake cells
   may hold (at most half of the budget; Alambique checkpoints the biggest WALs past it,
   checked every `wal: [budget_interval_ms:]`, `disk: [sample_ms:]` at most 1 000), and
   `local_cache: [max_bytes:]` is the budget minus that. `local_cache: [interval_ms:]`
@@ -425,7 +405,7 @@ read there is no budget, a warning is logged and Alambique's defaults apply.
 - `diagnostics: [max_bytes: 33_554_432]` caps the crash reports kept on disk while
   the store is down, the oldest removed first.
 
-Design §4.4 has the reasons and the measurements.
+Design §4.4 has the reasons.
 
 **Store requests.** Two options cut the requests a busy cell sends:
 
@@ -463,12 +443,11 @@ are not limited by them.
 The node settings of the WASM engine (threads, calls in flight, queue, CPU limit) are in the
 `:atanor, :wasm` application environment, documented in `Atanor.Wasm`. `threads` defaults to the
 logical processors, at most the CPU quota of the container (cgroup `cpu.max`, rounded up). The pooling allocator reserves address space for
-`max_calls + max_waiting + max_nested_calls` calls (about 2.8 TiB for 12 threads at the defaults).
+`max_calls + max_waiting + max_nested_calls` calls.
 `max_waiting` is how many guests that wait (a sleep, a host call, an outbound response, a
 worker they called) stop counting against `max_calls` and `worker_calls`; `worker_calls` (three quarters of `max_calls`) limits the busy calls of one worker, and a call above it waits in the `queue`, of which one worker may take `worker_queue` places (three quarters of `queue`, so a noisy worker leaves a quarter for the others; design §14.2). On a node with a memory limit it
 and `queue` are derived from it, not from the CPUs: `(limit * (1 - refuse_fraction) * (1 - wake_fraction)) /
-waiting_bytes` (`waiting_bytes` 2 MiB, 1 to 256), which is 19 on a 512 MiB node (scenario A, 1 CPU) and 76 on
-2 GiB (scenario B, 2 CPUs); without a limit 2 per thread (and `queue` 4 per thread). `threads`,
+waiting_bytes` (`waiting_bytes` 2 MiB, 1 to 256); without a limit 2 per thread (and `queue` 4 per thread). `threads`,
 `max_calls` and `worker_calls` still follow the CPU quota. A value you give wins (design §14.2). The node logs
 the derived values at start. On a host with `ulimit -v`,
 `vm.overcommit_memory=2` or a container memory policy that refuses it, the node fails to start with an error
@@ -481,9 +460,3 @@ deployment waits for one.
 which the reply to a guest's host call is copied into the native side on a
 dirty scheduler; smaller replies use a normal one
 ([design §14.7](design.md#147-host-calls-and-outbound-http)).
-
-## Local node settings
-
-`mix atanor.dev` and the options of the `atanor` command are in
-[how-to-build-and-test.md](how-to-build-and-test.md#run-a-local-node) and
-[cli.md](cli.md).

@@ -23,13 +23,14 @@ is a different remedy, for reads: see
 [how-to-read-from-replicas.md](how-to-read-from-replicas.md).
 
 It is off by default. A move interrupts the cell for the time of a hibernate
-and a wake (the lab measured it, see below), and the thresholds depend on your
-hardware, so you turn it on knowing that.
+and a wake, and the thresholds depend on your hardware, so turn it on knowing
+that and measure the effect on your own load.
 
 ## Prerequisites
 
 - Two or more nodes running the same instance, connected (see the cluster guide).
-- The admin API enabled, to look at the state (`admin: [port: ..., token: ...]`).
+- The admin API enabled, to look at the state (`admin: [port: ..., token: ...]`,
+  or `ATANOR_ADMIN_TOKEN` for the daemon, see [configuration.md](configuration.md)).
 
 ## Steps
 
@@ -67,19 +68,19 @@ hardware, so you turn it on knowing that.
    {
      "cpu": 66.2,
      "enabled": true,
-     "node": "atanor@10.77.42.12",
+     "node": "atanor@198.51.100.12",
      "recent": [],
      "peers": [
        {
          "cpu": 33.0,
-         "node": "atanor@10.77.42.11",
+         "node": "atanor@198.51.100.11",
          "age_ms": 507,
          "tags": [],
          "hot": 0
        },
        {
          "cpu": 28.8,
-         "node": "atanor@10.77.42.13",
+         "node": "atanor@198.51.100.13",
          "age_ms": 417,
          "tags": [],
          "hot": 0
@@ -101,11 +102,10 @@ hardware, so you turn it on knowing that.
      "writes_per_s": 421.6
    }
    ```
-   
-      This is node 2 of the lab, serving one hot cell with `cpu_enter` set to 95 so that
-      it stays put. `cpu` is 66%, so the node is not pressured and the last decision
-      for the cell is `not_pressured`; `peers` has the CPU of the other two as this
-      node last heard it (`age_ms` ago).
+
+   The values are examples. `cpu` is the node's CPU in percent. `peers` has the
+   CPU of the other nodes as this node last heard it (`age_ms` ago). For a hot
+   cell, `last_decision` is the reason the loop last kept it where it is.
 
 3. Dedicate a node (optional). Tag it, and say which namespaces go to a node with
    that tag. Put the same `affinity` on every node: the owner of the cell decides.
@@ -134,11 +134,11 @@ hardware, so you turn it on knowing that.
 
    ```elixir
    # replace the instance, the cell and the node name with yours
-   Atanor.HotCells.move(MyApp.Atanor, {"rooms", "room-1"}, :"atanor@10.0.0.13")
+   Atanor.HotCells.move(MyApp.Atanor, {"rooms", "room-1"}, :"atanor@198.51.100.13")
    ```
 
    ```text
-   {:ok, :"atanor@10.0.0.13"}
+   {:ok, :"atanor@198.51.100.13"}
    ```
 
 ## What stops it from moving all the time
@@ -165,9 +165,9 @@ single writer.
   the cell's WAL tail before it hands the lease over (when it has
   `compaction: [release_min_tail:]` files), for at most `compaction:
   [release_deadline_ms:]` (3 s by default). `hot_cells: [release_deadline_ms:]`
-  sets another deadline for moves only. The cell is held while it compacts and
-  the compaction competes with traffic for the store: a round at 900 req/s with
-  13 s gave 7 times the 5xx. Raise it only with a measure.
+  sets another deadline for moves only. The cell is held while it compacts, and
+  the compaction competes with traffic for the store. Raise the deadline only
+  after you measure the effect.
 - After a move, a cell that goes to sleep wakes on the node Alambique prefers
   for it (rendezvous hashing), not necessarily where you moved it. The loop moves
   it again if it is hot again after `residence_ms`. A tagged node is the way to

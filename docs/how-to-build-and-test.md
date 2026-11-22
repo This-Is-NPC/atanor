@@ -20,10 +20,8 @@ it between every checkout and worktree of the machine:
   that hash copies it into `priv/native/` and runs no cargo at all. A change under `native/atanor_wasm`
   changes the hash and builds again.
 
-Measured on the development laptop, 2026-11-18: a new worktree with the shared target already built
-compiled the NIF in 13 s; with the NIF in the cache, the compile of `Atanor.Wasm.Native` ran no cargo and
-took under a second. CI keeps the in-tree target that it caches, and has no NIF cache; `mise run
-test:coverage` always builds the instrumented NIF. Remove `~/.cache/atanor` to start over.
+CI keeps the in-tree target that it caches and has no NIF cache. `mise run test:coverage` always builds the
+instrumented NIF. Remove `~/.cache/atanor` to start over.
 
 ## Run a local node
 
@@ -40,11 +38,11 @@ survives a restart and only this VM can reach it. `--store seaweedfs` uses
 the bucket `atanor-dev` of a local SeaweedFS after `mise run seaweedfs:up`.
 With `--admin-port` and `--admin-token` the `atanor` command can switch the
 node's workers ([how-to-deploy-a-worker.md](how-to-deploy-a-worker.md)).
-`--data-dir` sets the directory for the local copies of cells. `--admin-port` and `--admin-token` start the admin API, `--dashboard-port`, `--dashboard-token` and `--no-dashboard` set the dashboard (it starts on 4002 with a random token when your project has its dependencies), and `--connect NODE` joins other
-nodes ([how to run a cluster](how-to-run-a-cluster.md)). The node
-deploys the workers of `./atanor.json`, or of each `--manifest FILE`, and
-prints their routes. Without manifests every request
-gets a 404:
+`--data-dir` sets the directory for the local copies of cells. `--dashboard-port`,
+`--dashboard-token` and `--no-dashboard` set the dashboard (it starts on 4002 with a random token when
+your project has its dependencies). `--connect NODE` joins other nodes
+([how to run a cluster](how-to-run-a-cluster.md)). The node deploys the workers of `./atanor.json`, or of
+each `--manifest FILE`, and prints their routes. Without manifests every request gets a 404:
 
 ```text
 $ curl -i http://127.0.0.1:4000/x
@@ -71,19 +69,19 @@ mise run docs:dashboard-screenshots  # regenerate docs/img (needs Playwright)
 mise run test:native     # Rust unit tests of the WASM library
 mise run test:coverage   # line coverage of lib/ and the Rust crate over all test runs; fails below 90% each (about 30 minutes)
 mise run build:wasm-fixtures  # rebuild the test guests in test/fixtures/wasm
-mise run bench:wasm      # WASM measurements (design 12.1)
-mise run bench:http      # requests/s and latency of native and WASM workers (12.2)
-mise run bench:cells     # thousands of cells per node through Atanor (12.3)
-mise run bench:fetch     # latency of sequential outbound HTTP fetches (4)
-mise run bench:jobs      # enqueue, job execution and bulk-operation throughput (12.9)
-mise run bench:job-trips # store requests per job and jobs/s in one cell with added store latency (12.13)
-mise run bench:cluster   # forwarded against local requests on three nodes (12.4)
-mise run bench:micro     # ns per call of the per-request and per-job costs (12.14)
-mise run bench:feed      # time for a change feed subscriber to receive a burst (12.14)
-mise run bench:idle-polls  # store reads of an idle node polling finished sweeps (12.14)
-mise run bench:hot-cell-tail  # latency tail of one hot cell over a slow store (12.14)
-mise run bench:auth      # cost of verifying a bearer token (12.14)
-mise run bench:detector  # time to detect a lost node and to serve its cells again, heartbeat cost (12.7)
+mise run bench:wasm      # WASM measurements
+mise run bench:http      # requests/s and latency of native and WASM workers
+mise run bench:cells     # wake many cells on one node and report resource use
+mise run bench:fetch     # latency of sequential outbound HTTP fetches
+mise run bench:jobs      # enqueue, job execution and bulk-operation throughput
+mise run bench:job-trips # store requests per job and jobs/s in one cell with added store latency
+mise run bench:cluster   # forwarded against local requests on three nodes
+mise run bench:micro     # ns per call of the per-request and per-job costs
+mise run bench:feed      # time for a change feed subscriber to receive a burst
+mise run bench:idle-polls  # store reads of an idle node polling finished sweeps
+mise run bench:hot-cell-tail  # latency tail of one hot cell over a slow store
+mise run bench:auth      # cost of verifying a bearer token
+mise run bench:detector  # time to detect a lost node and to serve its cells again, heartbeat cost
 mise run lab:up          # cluster lab: three KVM VMs and a SeaweedFS VM (needs libvirt; see the lab guide)
 mise run lab:test        # every lab scenario, about 90 minutes; results in lab/results/
 mise run lab:down        # remove the lab VMs, disks and network
@@ -97,8 +95,13 @@ mise run seaweedfs:down  # remove the SeaweedFS container
 `ATANOR_CHECK_START_TIMEOUT_MS` (milliseconds, default 20 000) bounds the
 start wait.
 
+The benchmarks measure the machine they run on. The cost of one cell is in
+[cell-cost.md](cell-cost.md).
+
 `testkit/` holds `atanor_testkit`; its sources are compiled into the test
-build, with the worker modules for tests in `test/support/`.
+build, with the worker modules for tests in `test/support/`. The end-to-end test
+of OIDC access tokens uses a fake OIDC issuer in `test/support/`. It runs with the
+normal suite and needs no setting.
 `AtanorTestkit.Node.start/1` starts an instance over a memory store with a
 temporary data directory and an ephemeral port; `stop/1` removes it.
 `AtanorTestkit.Cluster` starts peer nodes over one store, with fault injection
@@ -119,7 +122,7 @@ block a push.
 
 ```sh
 mise run hooks:install   # sets core.hooksPath to .githooks (once per clone)
-mise run check:fast      # what pre-push runs: warnings as errors and formatting
+mise run check:fast      # what pre-push runs (listed below)
 mise run check           # the quick gate of CI, on this machine
 ```
 
@@ -167,10 +170,23 @@ mise run test:coverage --report-only                         # merge what is in 
 Coverage, the cluster suite and SeaweedFS also run locally on demand, for
 example `mise run test:coverage` (all of it, about 30 minutes) to find what
 lowered the coverage, or `mise run test:cluster` for the cluster tests alone.
+The coverage gate and its options are in
+[how-to-measure-test-coverage.md](how-to-measure-test-coverage.md).
 The benchmarks,
 the load tests, the container cluster, the image smoke tests and the lab are
 never in CI: they measure a machine or need KVM, libvirt or privileged
 containers.
+
+## Load tests and the cluster lab
+
+- The load harness runs one round of load from a TOML file: the scenarios, the
+  criteria and the output directory are keys of that file. `mise run load --
+  --config FILE --dry-run` prints the plan of a round and starts nothing. The
+  guide is [how-to-run-the-load-tests.md](how-to-run-the-load-tests.md).
+- The cluster lab starts three KVM virtual machines and a SeaweedFS machine
+  with `mise run lab:up`, runs its scenarios with `mise run lab:test`, and
+  removes them with `mise run lab:down`. It needs the requirements listed above.
+  The guide is [how-to-run-the-cluster-lab.md](how-to-run-the-cluster-lab.md).
 
 `mise run check` runs, in order: `mix compile --warnings-as-errors` in the
 test and dev environments (forced, so old warnings show), `mix format
@@ -196,6 +212,13 @@ The hooks:
 - `pre-push` runs `mise run check:fast` once per push. A red check refuses the
   push. Tag pushes and deletions pass. `git commit --no-verify` and `git push
   --no-verify` skip the hooks.
+
+`mise run check:fast` runs these checks, and fails on the first one that is red:
+
+- compilation with warnings as errors;
+- formatting;
+- the README markers (`scripts/readme-check`): no start and end marker on one line, and no address-like
+  version string that a release replace damaged.
 
 `mise run local-check` is for manual use. It runs `mise run check` on a clean
 HEAD that is already pushed and posts a `local-check` commit status with `gh`.

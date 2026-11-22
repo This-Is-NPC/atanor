@@ -3,27 +3,41 @@
 **The question:** How do I write a worker as a WebAssembly component, give it
 a cell, and run it on a local node?
 
-This guide stands alone. It uses [examples/hello-wasm](../examples/hello-wasm).
-For the native kind, see [how-to-write-a-native-worker.md](how-to-write-a-native-worker.md);
-deploying works the same way ([how-to-deploy-a-worker.md](how-to-deploy-a-worker.md)).
+This guide stands alone. It builds a small guest in Rust, runs it on a node
+and calls it. For the native kind, see
+[how-to-write-a-native-worker.md](how-to-write-a-native-worker.md); deploying
+works the same way ([how-to-deploy-a-worker.md](how-to-deploy-a-worker.md)).
 
-A WASM worker is a component that exports `wasi:http/incoming-handler`. It
-can be written in any language whose toolchain produces such a component. I
-tested only Rust (`wasm32-wasip2` target, with the `wasi` crate 0.14 and
-`wit-bindgen` 0.51). Other languages that produce `wasi:http` components
-(for example JavaScript with `jco`, Go with TinyGo, or Python with
-`componentize-py`) should work, but I did not run them.
+A WASM worker is a component that exports `wasi:http/incoming-handler`. This
+guide uses Rust (the `wasm32-wasip2` target, with the `wasi` crate 0.14 and
+`wit-bindgen` 0.51).
 
 ## Prerequisites
 
-- The tools of the [README](../README.md#requirements).
-- Rust with the `wasm32-wasip2` target: `rustup target add wasm32-wasip2`
-  (`mise.toml` already lists it).
+- Rust with the `wasm32-wasip2` target: `rustup target add wasm32-wasip2`.
+- A node to run it on. Step 4 uses the [local node guide](how-to-run-a-node-locally.md),
+  which needs Docker.
 
 ## Steps
 
-1. Write the guest. This one answers every request with its path.
-   `guest/Cargo.toml` has `crate-type = ["cdylib"]` and `wasi = "0.14"`:
+1. Write the guest. This one answers every request with its path. Put it in a
+   project directory, `hello/guest/`. `guest/Cargo.toml` has
+   `crate-type = ["cdylib"]` and `wasi = "0.14"`:
+
+   ```toml
+   [package]
+   name = "hello-guest"
+   version = "0.1.0"
+   edition = "2021"
+
+   [lib]
+   crate-type = ["cdylib"]
+
+   [dependencies]
+   wasi = "0.14"
+   ```
+
+   The source is `guest/src/lib.rs`:
 
    ```rust
    use wasi::exports::http::incoming_handler::Guest;
@@ -50,15 +64,18 @@ tested only Rust (`wasm32-wasip2` target, with the `wasi` crate 0.14 and
    export!(Hello);
    ```
 
-2. Build it and put the component next to the manifest:
+2. Build it and put the component next to the manifest, in `hello/`:
 
    ```sh
-   cd examples/hello-wasm/guest
+   cd hello/guest
    cargo build --release --target wasm32-wasip2
-   cp target/wasm32-wasip2/release/hello_guest.wasm ../hello.wasm
+   cp target/wasm32-wasip2/release/hello_guest.wasm ..
+   cd ..
    ```
 
-3. Write `atanor.json`. `kind` is `wasm` and `component` is the file name of
+   The result is `hello/hello.wasm`.
+
+3. Write `hello/atanor.json`. `kind` is `wasm` and `component` is the file name of
    the component in the project directory. A package carries the file; the
    manifest has no `module`.
 
@@ -72,19 +89,14 @@ tested only Rust (`wasm32-wasip2` target, with the `wasi` crate 0.14 and
    }
    ```
 
-4. Run a node from the project directory:
+4. Run a node and deploy the directory. Set `IMAGE` as in step 1 of the
+   [local node guide](how-to-run-a-node-locally.md), then follow its steps 2 to 5
+   with your `hello` directory in place of its `atanor-hello`. That guide starts the node from the release
+   image, stores the package in a local S3 bucket and deploys it with the
+   `atanor` command in the image. The node answers on port 4000 with the route
+   of `atanor.json`.
 
-   ```sh
-   cd examples/hello-wasm
-   mise exec -- mix atanor.dev --port 4000
-   ```
-
-   ```text
-   Atanor listening on http://127.0.0.1:4000
-     localhost/hello -> hello
-   ```
-
-5. Call it:
+5. Call it. The output is the body your guest writes:
 
    ```text
    $ curl -i 'http://localhost:4000/hello/world?x=1'
@@ -99,15 +111,21 @@ tested only Rust (`wasm32-wasip2` target, with the `wasi` crate 0.14 and
 
 A component uses a cell, a secret, another worker or outbound HTTP by
 importing an interface, and only if the manifest grants it. The interfaces
-are in [wit/](../wit): `atanor:cell/sql@0.1.0`, `atanor:config/secrets@0.1.0`
+are in the [wit/](https://github.com/This-Is-NPC/atanor/tree/v0.10.0/wit) folder of the release tag <!-- x-release-please-version -->: `atanor:cell/sql@0.1.0`, `atanor:config/secrets@0.1.0`
 and `atanor:worker/call@0.1.0`; outbound HTTP is the standard
 `wasi:http/outgoing-handler`.
 
 1. In the guest's WIT world, import the interface and generate bindings with
-   `wit-bindgen`. [test/fixtures/guests](../test/fixtures/guests) shows a
-   world file (`wit/worlds.wit`), the `wit/deps` folder (the WASI 0.2.12
-   WIT from `wasmtime-wasi-http`, and links to `wit/`, assembled by
-   `mise run build:wasm-fixtures`) and one guest per binding.
+   `wit-bindgen`. Copy the Atanor interfaces into `guest/wit/`, next to a
+   world file. This world imports the SQL interface and includes the WASI HTTP
+   world, whose WIT (WASI 0.2.12) goes in `guest/wit/deps/`:
+
+   ```wit
+   world worker {
+     include wasi:http/proxy@0.2.12;
+     import atanor:cell/sql@0.1.0;
+   }
+   ```
 2. Call it. A cell is addressed by `{namespace, key}`:
 
    ```rust
@@ -127,7 +145,7 @@ and `atanor:worker/call@0.1.0`; outbound HTTP is the standard
    `sql::query_bounded(&cell, sql, &params, max_lag_ms)` is a read that accepts
    data up to that many milliseconds old and may be answered by a replica on the
    node ([how-to-read-from-replicas.md](how-to-read-from-replicas.md)); `query`
-   is always strong. A guest built before `query-bounded` existed still loads.
+   is always strong. A component that does not import `query-bounded` still loads.
    `sockets::send_to_cell` takes messages up to `wasm.max_cell_message_bytes`
    (1 MiB by default).
 3. Grant it in the manifest, with the same names as for a native worker:
@@ -233,9 +251,7 @@ impl SocketHandler for Handler {
 `on-open` may return `Upgrade::Reject(response)` to answer the request
 instead. It runs before the socket exists, so attach in `on-message`. An
 error from `on-message` closes the socket with code 1011; `close: true` closes
-it with 1000 after the frames. The test guests
-[alarm.rs](../test/fixtures/guests/src/alarm.rs) and
-[socket.rs](../test/fixtures/guests/src/socket.rs) are complete examples.
+it with 1000 after the frames.
 See [how-to-use-websockets.md](how-to-use-websockets.md) for the limits and
 the delivery rules. For messages that are never stored (cursors, presence), the
 same import has `join-channel`, `publish` and `channel-members`, and the optional
@@ -258,14 +274,18 @@ handler that exceeds one fails its alarm attempt, or closes the socket with
 1011.
 
 The node keeps pre-mapped slots for the guests' memories and tables (the
-`:atanor, :wasm` setting `pooling`, `true` by default), which makes a call
-instantiate in 18 microseconds instead of 68 (design §14.9). The slots reserve
-address space: 4 GiB for each of 8 memory slots per call that may be in flight, so
-about 768 GiB on a 1 CPU, 512 MiB node and 2.7 TiB on 2 CPUs and 2 GiB, with the default `max_calls` (4 per thread),
-`max_waiting` (what the memory fits, 19 and 76) and `max_nested_calls` (1 per thread); lower those three to reduce it (design §14.9); on a host that limits address space
-(`ulimit -v`, `vm.overcommit_memory=2`) set `pooling: false`. A component with
-more than 8 memories or 16 tables, or a table larger than `table_elements`,
-does not instantiate in either mode.
+`pooling` engine setting, `true` by default, see
+[configuration.md](configuration.md#wasm-engine)), so a call does not map
+its memory each time (design §14.9). The pool holds, per thread, a store of at
+most 8 instances, 8 memories and 16 tables. Each memory slot reserves address
+space up to `max_memory_bytes` (at most 4 GiB). The address space reserved
+grows with `max_calls` (4 per thread by default), `max_waiting` (derived from
+the memory, see `waiting_bytes`, 2 MiB by default) and `max_nested_calls` (1
+per thread by default); lower them to reserve less. On a host that limits
+address space (`ulimit -v`, `vm.overcommit_memory=2`) set `pooling: false`. A
+component with more than 8 memories or 16 tables, or a table larger than
+`table_elements`, does not instantiate in either mode. For what one cell costs
+in memory, see [cell-cost.md](cell-cost.md).
 
 ## Troubleshooting
 
@@ -317,11 +337,11 @@ does not instantiate in either mode.
   and a guest cannot forge a log line or send terminal codes. Printable UTF-8
   stays as written. Do not print request data to stderr from a guest, all the same:
   it ends up in the log.
-- **503 `overloaded`.** The queue was full (`worker_queue`), a call between workers found `max_nested_calls` in flight (`nested_calls`), or the call waited for a thread past `queue_wait_ms` or the request's `http.queue_wait_ms` and was taken back (`queue_timeout`, it never ran) (a guest that
-  waits counts against neither `threads` nor `worker_calls`, up to `max_waiting` waiting guests on the node, 19 on 512 MiB and 76 on 2 GiB). The body is `{"error":"overloaded","reason":"worker_queue"}` (`reason` names the gate that refused; for the others see [design §7.1](design.md))
+- **503 `overloaded`.** The queue was full (`worker_queue`), a call between workers found `max_nested_calls` in flight (`nested_calls`), or the call waited for a thread past `queue_wait_ms` or the request's `http.queue_wait_ms` and was taken back (`queue_timeout`, it never ran). A guest that
+  waits counts against neither `threads` nor `worker_calls`, up to `max_waiting` waiting guests on the node. The body is `{"error":"overloaded","reason":"worker_queue"}` (`reason` names the gate that refused; for the others see [design §7.1](design.md))
   and the response carries `Retry-After` (`http.retry_after_s`, 1 s by default).
-  A worker has at most `worker_calls` busy calls (36 with 12 threads); the others wait in the queue, up to `queue_wait_ms`, and a burst beyond the queue is refused on purpose. Retry after `Retry-After`, or raise `queue`, `worker_calls` and `max_calls`. If the guests mostly wait, raise `max_waiting` and `queue` (or the node's memory: they follow it).
-  See the node settings in `Atanor.Wasm`.
+  A worker has at most `worker_calls` busy calls; the others wait in the queue, up to `queue_wait_ms`, and a burst beyond the queue is refused on purpose. Retry after `Retry-After`, or raise `queue`, `worker_calls` and `max_calls`. If the guests mostly wait, raise `max_waiting` and `queue` (or the node's memory: they follow it).
+  The node settings are in [configuration.md](configuration.md#wasm-engine).
 
 ## Next steps
 
