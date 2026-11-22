@@ -51,7 +51,7 @@ The go-live numbers of [capacity.md](capacity.md) come from rounds 018f, 026r, 0
   The highest values that passed varied, for example:
   - A cells: 353 to 426;
   - B cells: 1938 to 2438;
-  - B http-native: 1406 to 1641, and none in round 028, where the first step, 1125, failed with p99 307 ms while
+  - B http-native: 1406 to 1641. Round 028 approved no value: its first step, 1125, failed with p99 307 ms while
     79 store writes took 1 s or more;
   - A http-wasm: 375 to 450;
   - A http-wasm-jobs: 54 to 68.
@@ -59,7 +59,9 @@ The go-live numbers of [capacity.md](capacity.md) come from rounds 018f, 026r, 0
   its repeat, and 353 passed twice.
 - **The lab store stalls.** In some steps, store answers take 1 to 1.3 s for a few seconds, and a step that
   falls on that window fails its p99. In round 027 this happened at 570 in A http-native, which still passed, and at
-  1500 in B http-native, where p99 reached 995 ms.
+  1500 in B http-native, where p99 reached 995 ms. In round 028 the store stalled during the first step of B
+  http-native, at 1125, with its slowest answer at 8 s, and the ladder has no lower step. That is a condition of the
+  lab and does not measure the node, so the go-live number of B http-native stays at 650.
 - **A job-heavy app makes slow listings of the alarm index.** With `http-wasm-jobs`, the node lists `alarms/` on every
   tick, and on the lab's SeaweedFS that listing took 1 to 3.2 s, one at a time, every 3 to 5 s, growing longer over
   the measure. Round 028's node log names them: 249 of the 272 store requests of 1 s or more in one step were

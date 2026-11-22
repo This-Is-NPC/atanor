@@ -250,7 +250,7 @@ To develop Atanor ([how to build and test](docs/how-to-build-and-test.md)):
 - Alambique, fetched from its public git repository at the release tag in `alambique.ref`.
 - Optional: Ranch for `protocol: :ranch` listeners, and Phoenix with four extra dependencies for the
   dashboard when you build the library yourself. The daemon image holds both.
-- Optional, for the end-to-end OIDC test only: set `MAESTRO_TESTKIT` to a checkout of the Maestro testkit.
+- Optional, for the end-to-end OIDC test only: set `OIDC_TESTKIT` to a checkout of a test OIDC issuer's testkit.
 
 ## Documentation
 
