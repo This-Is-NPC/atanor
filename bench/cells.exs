@@ -1,4 +1,4 @@
-# Thousands of cells on one node, through Atanor (design §12.3).
+# Thousands of cells on one node, through Atanor.
 #
 #   mise run bench:cells            # 5 000 cells
 #   mise run bench:cells -- 20000   # another count

@@ -1,4 +1,4 @@
-# Micro benchmarks of per-request and per-job costs (design §12.14).
+# Micro benchmarks of per-request and per-job costs.
 #
 #   mise run bench:micro                    # every section
 #   mise run bench:micro -- config regex    # some sections

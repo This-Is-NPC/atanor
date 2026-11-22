@@ -33,7 +33,7 @@ defmodule Atanor.JobsTripsTest do
   # Cell transactions that committed, counted from the commit events (whatever the uploads they shared).
   defp transactions(agent), do: Agent.get(agent, & &1)
 
-  # The claim re-arms the `@jobs` wake inside its own transaction, not in one more (design §12.13). One
+  # The claim re-arms the `@jobs` wake inside its own transaction, not in one more. One
   # job is six write transactions: enqueue, the alarm's claim of the wake, the claim, two in the test
   # handler, the finish.
   test "a job is six cell transactions", %{node: node} do

@@ -1,4 +1,4 @@
-# Cost of verifying a bearer token (design §12.14).
+# Cost of verifying a bearer token.
 #
 #   mise run bench:auth
 #

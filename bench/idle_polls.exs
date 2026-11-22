@@ -1,4 +1,4 @@
-# Store requests of an idle node's time-driven polls (design §12.13, §12.14).
+# Store requests of an idle node's time-driven polls.
 #
 #   mise run bench:idle-polls             # 300 finished sweep operations, 10 s
 #   mise run bench:idle-polls -- 1000 20  # operations, seconds

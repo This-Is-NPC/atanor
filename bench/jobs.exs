@@ -1,4 +1,4 @@
-# Jobs per cell and bulk operations (design §12.9).
+# Jobs per cell and bulk operations.
 #
 #   mise run bench:jobs              # 1 000 cells, 2 000 jobs in one cell
 #   mise run bench:jobs -- 4000 4000

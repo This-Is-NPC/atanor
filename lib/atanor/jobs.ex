@@ -819,7 +819,7 @@ defmodule Atanor.Jobs do
         :unchanged
 
       # A wake not later than the next one still covers every job, and its entry exists: a scan that claims
-      # the entry moves the row first, so a row still at `current_at` is unclaimed (design §12.13).
+      # the entry moves the row first, so a row still at `current_at` is unclaimed.
       from == nil and current_at != nil and next != nil and current_at <= next ->
         :unchanged
 
@@ -860,7 +860,7 @@ defmodule Atanor.Jobs do
 
   # A wake that is overdue by more than `alarms.timeout_ms` was not claimed: its entry is missing (a bucket
   # copied while the node ran, the cell newer than the index) or the scheduler is behind. One `HEAD` tells,
-  # and only then; the entry is put back under the nonce the row names (design §12.13). A refused store
+  # and only then; the entry is put back under the nonce the row names. A refused store
   # call leaves it to the next rearm.
   defp heal_index(_instance, _config, _id, _now, nil, _nonce), do: :ok
 

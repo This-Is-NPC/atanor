@@ -1,4 +1,4 @@
-# WASM workers on one node (design §12).
+# WASM workers on one node.
 #
 #   mise run bench:wasm            # 5 seconds per throughput case
 #   mise run bench:wasm -- 10      # another duration
