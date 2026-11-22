@@ -1,6 +1,6 @@
 defmodule AtanorLab.Stats do
   @moduledoc """
-  Counters of the distribution sockets and of the detector, for the heartbeat cost (design §12.8), and of the
+  Counters of the distribution sockets and of the detector, for the heartbeat cost, and of the
   bounded reads of this node by who answered: a local replica or the owner (design §19).
   """
 

@@ -1,4 +1,4 @@
-# HTTP requests per second and latency on one node (design §12.2).
+# HTTP requests per second and latency on one node.
 #
 #   mise run bench:http            # 5 seconds per case
 #   mise run bench:http -- 10      # another duration

@@ -1,5 +1,5 @@
 # Requests forwarded to the owner of a cell, against requests that find the
-# owner on the ingress node (design §12.4).
+# owner on the ingress node.
 #
 #   mise run bench:cluster            # 5 seconds per case
 #   mise run bench:cluster -- 10      # another duration

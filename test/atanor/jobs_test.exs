@@ -73,7 +73,7 @@ defmodule Atanor.JobsTest do
     {node, _world} = start()
 
     # One at a time, each finished before the next: an enqueue that moves a later wake earlier leaves that
-    # entry to expire (design §12.13).
+    # entry to expire.
     for n <- 1..8 do
       assert %{status: 200} = enqueue(node, "a", payload: "p#{n}")
       assert until(fn -> length(effects(node, "a")) == n and no_wake?(node) end)

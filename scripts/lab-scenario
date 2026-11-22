@@ -224,7 +224,7 @@ scenario_clock() {
   done
 }
 
-# Detection and takeover (design §12.8). Settings come from the environment:
+# Detection and takeover. Settings come from the environment:
 #   LAB_REPEAT (3) runs of the destroy, kill and partition faults; LAB_STALL_SECONDS ("2 3.5 8") pauses of the
 #   beam of node 2; LAB_HOG_SECONDS (30) and LAB_HOG_PROCS (4) for the CPU hog; LAB_SKEWS ("+1 +5 -5 +20") seconds
 #   of clock skew; LAB_COST_SECONDS (60) for the heartbeat cost; LAB_FREEZE_KINDS ("stop suspend") and
@@ -546,7 +546,7 @@ cpu_report() {
 # CPU pressure and the other two nodes are not; with the placement off it shows what the hog costs. The windows of
 # the report: LAB_HOT_BASE_S before the hog, and LAB_HOT_AFTER_S (15) from LAB_HOT_SETTLE_S (5) after the move (or
 # after the hog, without a move). The loads of the cell grow with it: past about 55,000 rows its latency degrades
-# whatever the placement (design §12.6), so keep LAB_HOT_SECONDS at 60.
+# whatever the placement, so keep LAB_HOT_SECONDS at 60.
 hot_placement=${LAB_HOT_PLACEMENT:-off}
 hot_hog=${LAB_HOT_HOG:-0}
 hot_dedicated=${LAB_HOT_DEDICATED:-}

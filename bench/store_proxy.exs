@@ -1,5 +1,5 @@
 # A loopback TCP proxy in front of the S3 store that delays every request by a
-# fixed time and counts requests by method and path (design §12.10).
+# fixed time and counts requests by method and path.
 #
 # The delay is added once per request, before its head is forwarded. Requests
 # are told apart on the client side of each connection (head, then a body of

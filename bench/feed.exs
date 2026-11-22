@@ -1,4 +1,4 @@
-# Time for a change feed subscriber to receive a burst of changes (design §12.14, §16.2).
+# Time for a change feed subscriber to receive a burst of changes (design §16.2).
 #
 #   mise run bench:feed              # 2 000 writes to 2 000 cells
 #   mise run bench:feed -- 5000 50   # writes, then feed.poll_ms

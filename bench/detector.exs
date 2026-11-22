@@ -1,4 +1,4 @@
-# Failure detection between peer nodes (design §12.7).
+# Failure detection between peer nodes.
 #
 #   mise run bench:detector        # 3 repetitions of each case
 #   mise run bench:detector -- 5

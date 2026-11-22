@@ -1,4 +1,4 @@
-# Store round trips of the job path against SeaweedFS (design §12.13).
+# Store round trips of the job path against SeaweedFS.
 #
 #   mise run bench:job-trips
 #   mise run bench:job-trips -- --jobs 100 --latency 25,100 --concurrency 1,16
