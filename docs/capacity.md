@@ -7,7 +7,7 @@ numbers.
 ## The go-live numbers
 
 Plan each node at these values or below. Each one is 50% of the lowest value that passed in the load rounds
-018f, 026r and 027 (`load/rounds/`), so it leaves room for the run-to-run noise of the lab and for a store slower than
+018f, 026r, 027 and 028 (`load/rounds/`), so it leaves room for the run-to-run noise of the lab and for a store slower than
 the lab's.
 
 | Load | Unit | A: 1 CPU, 512 MB | B: 2 CPUs, 2 GB |
@@ -15,7 +15,7 @@ the lab's.
 | `http-native` | requests per second | 300 | 650 |
 | `http-wasm` | requests per second | 190 | 550 |
 | `cells` | hot cells | 175 | 970 |
-| `http-wasm-jobs` | requests per second | 28 | 55 |
+| `http-wasm-jobs` | requests per second | 27 | 55 |
 | `ws` | open WebSockets | 1650 | 11000 |
 
 What each load is:
