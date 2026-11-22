@@ -29,5 +29,8 @@ erl_crash.dump*
 .env
 .env.*
 /load/results
+# Round files are private; the example is the one tracked layout.
+/load/rounds/*
+!/load/rounds/example.toml
 # A build copy left by an older image build; untracked, it made scripts/cluster-common tag every lab release -dirty.
 /cluster/.build/

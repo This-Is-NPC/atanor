@@ -81,13 +81,16 @@ def load_runs(result):
 
 results = {}
 
-# --dry-run: the plan of the official round, with nothing started and nothing written
+# --dry-run: the plan of the default round, with nothing started and nothing written
+dry_config = os.path.join(work, "dry.toml")
+with open(dry_config, "w") as file:
+    file.write(f"[output]\ndir = \"{work}/dry\"\n")
 with contextlib.redirect_stdout(io.StringIO()) as shown:
-    status = ld.main(["--config", f"{repo}/load/rounds/018f.toml", "--dry-run"])
+    status = ld.main(["--config", dry_config, "--dry-run"])
 text = shown.getvalue()
-config = lc.load_config(f"{repo}/load/rounds/018f.toml")
-results["dry_run"] = {"status": status, "text": text.replace(repo, "REPO"), "hashes": all(lc.case_hash(config, s, m) in text for s, m in lc.case_list(config)),
-                      "calls": os.path.exists(log), "results_dir": os.path.exists(f"{repo}/load/results/018f")}
+config = lc.load_config(dry_config)
+results["dry_run"] = {"status": status, "text": text.replace(work, "WORK"), "hashes": all(lc.case_hash(config, s, m) in text for s, m in lc.case_list(config)),
+                      "calls": os.path.exists(log), "results_dir": os.path.exists(f"{work}/dry")}
 
 # an invalid config is refused with every problem and nothing starts
 bad = run("bad", "[judging.p99]\nmax_ms = -1\n[round]\nstep_timeout_s = 10\nmeasures = [\"ws\"]\n[nope]\nx = 1\n")

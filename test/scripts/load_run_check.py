@@ -826,13 +826,13 @@ with open(os.path.join(work, "args.toml"), "w") as handle:
                  "[judging.errors]\nenabled = false\n[judging.store_stall]\nenabled = false\n[judging.host_load]\nenabled = false\n[judging.host_memory]\nenabled = false\n"
                  "[workload]\nwarmup = false\n[measures.cells.steps]\nkind = \"ceiling\"\nceiling = 400\nduration_s = 50\n")
 given = m.config_defaults(lc.load_config(os.path.join(work, "args.toml")), "cells", "A", "c.toml")
-official = m.config_defaults(lc.load_config(f"{repo}/load/rounds/018f.toml"), "scale", "A", "o.toml")
+default_scale = m.config_defaults(lc.load_config(f"{repo}/load/rounds/example.toml"), "scale", "A", "o.toml")
 results["config_defaults"] = {"p99_off": math.isinf(given["p99_ms"]), "p99_on": m.config_defaults(lc.load_config(), "cells", "A", "c.toml")["p99_ms"], "delivery": given["delivery"],
                               "judge_errors": given["judge_errors"], "stall_ms": given["max_store_stall_ms"], "host_off": math.isinf(given["host_load_max"]),
                               "quiet_window": given["quiet_window"], "min_gb": given["min_available_gb"], "timeout": given["step_timeout"], "no_warmup": given["no_warmup"],
                               "repeats": given["stall_repeats"], "steps": given["steps"], "hash": len(given["config_hash"]),
-                              "command": given["command"], "scale": [official["ceilings"], official["factors"], official["max_nodes"], official["load_plans"]["http-native"]["values"],
-                                                                      official["steps"] if "steps" in official else "none"]}
+                              "command": given["command"], "scale": [default_scale["ceilings"], default_scale["factors"], default_scale["max_nodes"], default_scale["load_plans"]["http-native"]["values"],
+                                                                      default_scale["steps"] if "steps" in default_scale else "none"]}
 
 
 # [scale.judging.LOAD]: each load of the scale ramps with its own rules; the others keep the measure's
