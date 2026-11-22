@@ -111,7 +111,8 @@ guide uses Rust (the `wasm32-wasip2` target, with the `wasi` crate 0.14 and
 
 A component uses a cell, a secret, another worker or outbound HTTP by
 importing an interface, and only if the manifest grants it. The interfaces
-are in the [wit/](https://github.com/This-Is-NPC/atanor/tree/v0.10.0/wit) folder of the release tag <!-- x-release-please-version -->: `atanor:cell/sql@0.1.0`, `atanor:config/secrets@0.1.0`
+are in the [wit/](https://github.com/This-Is-NPC/atanor/tree/master/wit) folder of the repository (take the folder at the tag of
+the release you run): `atanor:cell/sql@0.1.0`, `atanor:config/secrets@0.1.0`
 and `atanor:worker/call@0.1.0`; outbound HTTP is the standard
 `wasi:http/outgoing-handler`.
 

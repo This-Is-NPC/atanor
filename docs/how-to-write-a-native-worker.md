@@ -17,8 +17,9 @@ none ([how-to-write-a-wasm-worker.md](how-to-write-a-wasm-worker.md)).
 
 ## Steps
 
-1. Create the project and add Atanor to it. Use a release tag; the one below
-   matches the current release.
+1. Create the project and add Atanor to it. Use the tag of the release you install: the version in
+   the [README's Install](../README.md#install), prefixed with `v` (for example `v1.2.3`). Replace
+   `v<version>` with it.
 
    ```sh
    mix new hello
@@ -28,7 +29,7 @@ none ([how-to-write-a-wasm-worker.md](how-to-write-a-wasm-worker.md)).
    ```elixir
    defp deps do
      [
-       {:atanor, git: "https://github.com/This-Is-NPC/atanor.git", tag: "v0.10.0"}, # x-release-please-version
+       {:atanor, git: "https://github.com/This-Is-NPC/atanor.git", tag: "v<version>"},
        {:alambique_testkit,
         git: "https://github.com/This-Is-NPC/alambique.git", tag: "<tag>", subdir: "testkit", only: :dev}
      ]
