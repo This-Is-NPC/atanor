@@ -17,11 +17,13 @@ The containers are named `atanor-*`. Step 7 removes them.
 ## Steps
 
 1. Name the image and fetch the example worker: a manifest and a compiled WASM component. The image is
-   published and pulls without a login. The clone is the source of the same release.
+   the latest release, published under the tag `latest`, and pulls without a login. The clone is the
+   source of the same release: `TAG` is the tag that the latest release page redirects to.
 
    ```sh
-   export IMAGE=ghcr.io/this-is-npc/atanor:0.10.0 # x-release-please-version
-   git clone --depth 1 --branch v0.10.0 https://github.com/This-Is-NPC/atanor.git atanor-src # x-release-please-version
+   export IMAGE=ghcr.io/this-is-npc/atanor:latest
+   TAG=$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/This-Is-NPC/atanor/releases/latest | sed 's#.*/##')
+   git clone --depth 1 --branch "$TAG" https://github.com/This-Is-NPC/atanor.git atanor-src
    ```
 
    Then copy the example worker out of the clone:
