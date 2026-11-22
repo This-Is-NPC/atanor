@@ -674,13 +674,7 @@ defmodule Atanor.LoadRunTest do
     assert d["timeout"] == 123.0 and d["no_warmup"] and d["repeats"] == 3 and d["steps"] == "300,400,500,600"
     assert d["hash"] == 64 and d["command"] == "mise run load -- --config c.toml"
 
-    assert d["scale"] == [
-             "http-native:1=600,http-native:2=840,cells:1=470,cells:2=750",
-             "1,1.5",
-             2,
-             [490, 650, 810, 975],
-             :null
-           ]
+    assert d["scale"] == ["", "0.75,1,1.25,1.5", 3, [], :null]
 
     # [scale.judging.LOAD]: cells ramps with its own rules, http-native keeps the measure's
     assert r["scale_judging"] == %{
@@ -705,19 +699,19 @@ defmodule Atanor.LoadRunTest do
     {out, 0} = System.cmd("python3", ["-I", "test/scripts/load_round_check.py", dir], stderr_to_stdout: true)
     r = out |> String.split("\n", trim: true) |> List.last() |> :json.decode()
 
-    # --dry-run prints the plan of the official round and starts and writes nothing
+    # --dry-run prints the plan of the defaults and starts and writes nothing
     d = r["dry_run"]
     assert d["status"] == 0 and d["hashes"] and d["calls"] == false and d["results_dir"] == false
-    assert d["text"] =~ "13 cases, results in REPO/load/results/018f"
+    assert d["text"] =~ "6 cases, results in WORK/dry"
     assert d["text"] =~ "each generator process is killed after 600 s (round.step_timeout_s); no round timeout"
 
     assert d["text"] =~
-             "A/http-native      ladder, values 490, 650, 810, 975 req/s; at most 10 steps (3 refine, 1 confirm, 2 descents), 180 s each"
+             "A/http-native      bisect, values 25, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800 req/s; at most 16 steps (3 refine, 1 confirm, 2 descents), 180 s each"
 
     assert d["text"] =~ "A/http-wasm        bisect, values 25, 50, 100,"
-    assert d["text"] =~ "B/ws               ladder, values 15000, 20000, 25000, 30000 connections"
-    assert d["text"] =~ "A/scale            scale"
-    assert d["text"] =~ "output A/scale/"
+    assert d["text"] =~ "A/ws               bisect, values 100, 200, 400,"
+    assert d["text"] =~ "A/swap             swap req/s; 1 step, 60 s each"
+    assert d["text"] =~ "output A/swap/"
 
     # an invalid config lists every problem and starts nothing
     i = r["invalid"]

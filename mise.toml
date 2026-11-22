@@ -282,7 +282,7 @@ description = "Remove the load-test containers, network and volumes (project ata
 run = "scripts/load-env down"
 
 [tasks."load:config-check"]
-description = "Validate a load round file and print its resolved config and hash, or every problem (argument: --check FILE, e.g. --check load/rounds/018f.toml; layout in load/rounds/example.toml)"
+description = "Validate a load round file and print its resolved config and hash, or every problem (argument: --check FILE, e.g. --check load/rounds/example.toml; layout in load/rounds/example.toml)"
 run = "scripts/load_config.py"
 
 [tasks."load:report"]

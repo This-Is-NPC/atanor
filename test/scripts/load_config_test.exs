@@ -18,31 +18,6 @@ defmodule Atanor.LoadConfigTest do
     # example.toml is the defaults, key for key
     assert r["example_is_default"]
 
-    # 018f.toml: the steps of the official round, per scenario
-    o = r["official"]
-    assert o["plans"]["A_http-native"] == [490, 650, 810, 975]
-    assert o["plans"]["B_http-native"] == [1125, 1500, 1875, 2250]
-    assert o["plans"]["A_ws"] == [2400, 3200, 4000, 4800]
-    assert o["plans"]["B_ws"] == [15000, 20000, 25000, 30000]
-    assert o["plans"]["A_cells"] == [353, 470, 588, 705]
-    assert o["plans"]["B_cells"] == [1500, 2000, 2500, 3000]
-    assert o["plans"]["A_http-wasm-jobs"] == [34, 45, 56, 68]
-    assert o["plans"]["B_http-wasm-jobs"] == [68, 90, 112, 135]
-    assert o["http_wasm"] == "bisect"
-
-    assert o["scale"]["ceilings"] == %{
-             "http-native:1" => 600,
-             "http-native:2" => 840,
-             "cells:1" => 470,
-             "cells:2" => 750
-           }
-
-    assert o["scale"]["max_nodes"] == 2 and o["scale"]["ceiling_factors"] == [1.0, 1.5] and
-             o["scale"]["join"]["enabled"]
-
-    assert o["scale_run_on"] == ["A"]
-    assert o["store"] == "disk" and o["min_available_gib"] == 1.0 and o["max_connections"] == 40000
-
     # the hash is stable (the spelling of a value does not matter) and changes with a value
     assert r["hash"] == %{"stable" => true, "changes" => true, "length" => 64}
   end
@@ -172,7 +147,7 @@ defmodule Atanor.LoadConfigTest do
     # the resolved config as TOML reads back to itself (OUT/config.toml)
     assert r["toml_round_trip"] == [true, true, true, true, true]
     assert r["env_scale_no_nodes"] == [false, "1"]
-    assert r["env_cap"] == ["", "40000"]
+    assert r["env_cap"] == ["", "60000"]
 
     # the compaction and the S3 pool of a node reach the lab as env lines; at 0 they are empty and the hash is as before
     n = r["node_options"]
@@ -197,10 +172,9 @@ defmodule Atanor.LoadConfigTest do
     assert Enum.all?(z["bad"], &(length(&1) == 1))
     assert Enum.join(List.flatten(z["bad"]), "\n") =~ "node.lazy_restore.min_bytes"
 
-    # steps.reset_each_step: off by default, settable for one scenario; only the hash of the case that sets it changes (018f hashes pinned as before the option)
+    # steps.reset_each_step: off by default, settable for one scenario; only the hash of the case that sets it changes
     x = r["reset_each_step"]
     assert x["default"] == false and x["plan_has_no_key"]
-    assert x["old_hashes"] == ["5347ec0e9ca0cdd9", "e4de6dd0a98f94af", "a5922958882b75ff"]
     assert x["scenario_only"] == [false, true]
     assert x["hash"] == %{"jobs_B_changes" => true, "jobs_A_same" => true, "ws_B_same" => true, "measure_wide" => true}
     assert x["round_trip"]

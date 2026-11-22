@@ -50,7 +50,6 @@ def missing():
 
 
 example = lc.load_config(f"{repo}/load/rounds/example.toml")
-official = lc.load_config(f"{repo}/load/rounds/018f.toml")
 builtin = lc.load_config()
 
 
@@ -73,7 +72,6 @@ reset_b_base = resolved("[round]\nscenarios = [\"A\", \"B\"]\n")
 reset_b = resolved("[round]\nscenarios = [\"A\", \"B\"]\n[measures.http-wasm-jobs.per_scenario.B]\nreset_each_step = true\n")
 scale_judging = resolved("[measures.scale.judging.p99]\nmax_ms = 400\n[measures.scale.judging.refused]\nmax_pct = 2\n"
                          "[scale.judging.cells.p99]\nmax_ms = 900\n[scale.judging.cells.errors]\nenabled = false\n")
-plans = {f"{s}_{m}": lc.plan(official, m, s)["values"] for m in ("http-native", "ws", "cells", "http-wasm-jobs") for s in ("A", "B")}
 a, b = lc.config_hash(builtin), lc.config_hash(lc.resolve({"judging": {"p99": {"max_ms": 250}}}))
 c = lc.config_hash(lc.resolve({"judging": {"p99": {"max_ms": 300}}}))
 
@@ -81,15 +79,14 @@ NODE_ENV = ["ATANOR_LOAD_COMPACTION_" + k for k in ("HOLD_BYTES", "CONCURRENCY",
            ["ATANOR_LOAD_S3_POOL_SIZE", "ATANOR_LOAD_S3_POOL_TIMEOUT_MS", "ATANOR_LOAD_ERL_FLAGS"]
 node_set = resolved("[node.compaction]\nhold_bytes = 67108864\nconcurrency = 4\nurgent_concurrency = 8\nmerge_concurrency = 6\nrelease_concurrency = 2\n"
                     "[node.store]\npool_size = 512\npool_timeout_ms = 3000\n[node]\nerl_flags = \"+SDio 2 +S 1:1\"\n")
+scale_nodes = resolved("[scale]\nmax_nodes = 2\n")
+cap_ws = resolved("[node]\nhttp_max_connections = 60000\n")
 lazy_zero = resolved("[node.lazy_restore]\nmin_bytes = 0\n")
 lazy_set = resolved("[node.lazy_restore]\nmin_bytes = 1048576\n")
 erl_bad = [problems(f"[node]\nerl_flags = {json.dumps(v)}\n") for v in ("+SDio 2; rm", "+S \"1\"", "$HOME", "a`b`", "+S 1\n+A 2", "+SDio  2", " +S 1", 5)]
 
 print(json.dumps({
-    "example_is_default": example == builtin, "official": {"plans": plans, "http_wasm": lc.plan(official, "http-wasm", "A")["kind"], "scale": official["scale"],
-                                                          "scale_run_on": official["measures"]["scale"]["run_on"], "store": official["store"]["backing"],
-                                                          "min_available_gib": official["judging"]["host_memory"]["min_available_gib"],
-                                                          "max_connections": official["node"]["http_max_connections"]},
+    "example_is_default": example == builtin,
     "hash": {"stable": a == b, "changes": a != c, "length": len(a)},
     "unknown_key": problems("[measures.cells.steps]\nfactr = 3\n"),
     "unknown_table": problems("[judgng.p99]\nmax_ms = 1\n"),
@@ -150,9 +147,9 @@ print(json.dumps({
                   "scale_sees_load_plans": hashes("[measures.cells.steps]\nrefine = 1\n", "A", "scale")[0] != base_hash[3],
                   "swap_section": hashes("[swap]\nworkers = 3\n", "A", "swap")[0] != base_hash[2]},
     # the resolved config as TOML reads back to itself
-    "toml_round_trip": [lc.resolve(tomllib.loads(lc.dump_toml(c))) == c for c in (builtin, official, example, store_override, resolved("[scale.ceilings]\n\"cells:1\" = 5\n"))],
-    "env_scale_no_nodes": ["ATANOR_LOAD_NODES" in lc.env_lines(official, "A", "scale"), lc.env_lines(official, "A", "ws")["ATANOR_LOAD_NODES"]],
-    "env_cap": [lc.env_lines(builtin, "A")["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"], lc.env_lines(official, "B", "ws")["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"]],
+    "toml_round_trip": [lc.resolve(tomllib.loads(lc.dump_toml(c))) == c for c in (builtin, scale_nodes, example, store_override, resolved("[scale.ceilings]\n\"cells:1\" = 5\n"))],
+    "env_scale_no_nodes": ["ATANOR_LOAD_NODES" in lc.env_lines(scale_nodes, "A", "scale"), lc.env_lines(scale_nodes, "A", "ws")["ATANOR_LOAD_NODES"]],
+    "env_cap": [lc.env_lines(builtin, "A")["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"], lc.env_lines(cap_ws, "B", "ws")["ATANOR_LOAD_HTTP_MAX_CONNECTIONS"]],
     # [node.compaction] and [node.store]: env lines, validation, and a hash that only sees what is set
     "node_options": {"env_default": [lc.env_lines(builtin, "A")[k] for k in NODE_ENV], "env_set": [lc.env_lines(node_set, "A", "ws")[k] for k in NODE_ENV],
                      "hash_set_changes": lc.case_hash(node_set, "A", "ws") != base_hash[0],
@@ -173,7 +170,6 @@ print(json.dumps({
     "reset_each_step": {
         "default": lc.plan(builtin, "http-wasm-jobs", "A")["reset_each_step"],
         "plan_has_no_key": "reset_each_step" not in lc.case_config(builtin, "A", "ws")["plan"],
-        "old_hashes": [lc.case_hash(official, "A", "ws")[:16], lc.case_hash(official, "B", "http-wasm-jobs")[:16], lc.case_hash(official, "A", "scale")[:16]],
         "scenario_only": [lc.plan(reset_b, "http-wasm-jobs", s)["reset_each_step"] for s in ("A", "B")],
         "hash": {"jobs_B_changes": lc.case_hash(reset_b, "B", "http-wasm-jobs") != lc.case_hash(reset_b_base, "B", "http-wasm-jobs"),
                  "jobs_A_same": lc.case_hash(reset_b, "A", "http-wasm-jobs") == lc.case_hash(reset_b_base, "A", "http-wasm-jobs"),
@@ -190,7 +186,6 @@ print(json.dumps({
         "zero_in_plan": lc.case_config(resolved("[measures.cells.steps]\nconfirm_descents = 0\n"), "A", "cells")["plan"]["confirm_descents"],
         "ws_same": lc.case_hash(resolved("[measures.cells.steps]\nconfirm_descents = 0\n"), "A", "ws") == base_hash[0],
         "bad": problems("[measures.cells.steps]\nconfirm_descents = -1\n")},
-    "official_plan_values":lc.plan_values(lc.plan(official, "http-wasm", "A"))[:3],
     # the names shared with Alambique, host.timeout_s and the per-measure judging
     "renames": {"data_tmpfs": [builtin["scenarios"]["A"]["data_tmpfs"], builtin["scenarios"]["B"]["data_tmpfs"]], "timeout_s": builtin["host"]["timeout_s"],
                 "min_available_gib": builtin["judging"]["host_memory"]["min_available_gib"],
