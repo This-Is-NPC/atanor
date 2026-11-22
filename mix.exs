@@ -35,10 +35,10 @@ defmodule Atanor.MixProject do
   defp elixirc_paths(:test), do: ["lib", "test/support", "testkit/lib"]
   defp elixirc_paths(_), do: ["lib"]
 
-  # The Maestro testkit is an optional test-only path dependency: set MAESTRO_TESTKIT to a checkout of
-  # its testkit directory to compile the OIDC end-to-end test.
-  defp maestro_testkit do
-    case System.get_env("MAESTRO_TESTKIT") do
+  # A test OIDC issuer's testkit is an optional test-only path dependency: set OIDC_TESTKIT to a checkout
+  # of its testkit directory to compile the OIDC end-to-end test.
+  defp oidc_testkit do
+    case System.get_env("OIDC_TESTKIT") do
       nil -> []
       path -> if File.dir?(path), do: [{:maestro_testkit, path: path, only: :test, runtime: false}], else: []
     end
@@ -56,7 +56,7 @@ defmodule Atanor.MixProject do
   end
 
   defp deps do
-    maestro_testkit() ++
+    oidc_testkit() ++
       [
         {:alambique, git: @alambique_git, tag: @alambique_tag, override: true},
         {:alambique_testkit, git: @alambique_git, tag: @alambique_tag, subdir: "testkit", only: [:dev, :test]},
