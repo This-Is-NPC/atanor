@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0](https://github.com/This-Is-NPC/atanor/compare/v0.9.0...v0.10.0) (2026-11-22)
+
+
+### Features
+
+* **load:** descend when a confirmation fails ([451239c](https://github.com/This-Is-NPC/atanor/commit/451239c4fed087623c0b3a86560ef2b2a3cb893e))
+* **store-log:** log the operation and key folder ([7cb55f4](https://github.com/This-Is-NPC/atanor/commit/7cb55f452fc086825e742113f54004bae7684f1d))
+
+
+### Performance Improvements
+
+* **load:** add the 028 round ([adada05](https://github.com/This-Is-NPC/atanor/commit/adada05873de76f600fc63ebaf0f68480bbce412))
+
 ## [0.9.0](https://github.com/This-Is-NPC/atanor/compare/v0.8.0...v0.9.0) (2026-11-20)
 
 
