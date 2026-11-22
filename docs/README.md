@@ -1,9 +1,16 @@
 # Atanor documentation
 
+The pages are in two groups. The first group is for people who run Atanor or write workers for it, and uses only
+the release, the `atanor` command, the admin API, the configuration and signals. The second group is for people who
+build, test, measure or release Atanor itself. A page of the first group links to a page of the second group only
+for background, never as a step.
+
+## For users
+
 | Page | Question it answers |
 | --- | --- |
-| [design.md](design.md) | How is Atanor built: model, processes, bindings, storage layout, guarantees? |
 | [configuration.md](configuration.md) | Which options does an instance take, what do they bound, and which environment variables and file keys configure a node run as a daemon? |
+| [how-to-run-a-node-locally.md](how-to-run-a-node-locally.md) | How do I start one node on my machine over a local S3 store, deploy a worker to it and call the worker? |
 | [how-to-write-a-native-worker.md](how-to-write-a-native-worker.md) | How do I write a native worker, give it a cell, and run it locally? |
 | [how-to-write-a-wasm-worker.md](how-to-write-a-wasm-worker.md) | How do I write a worker as a WebAssembly component and run it locally? |
 | [how-to-serve-tcp.md](how-to-serve-tcp.md) | How do I speak a TCP protocol from a worker, bind a connection to a cell, and serve it over TLS, STARTTLS or a Ranch protocol such as gen_smtp? |
@@ -12,7 +19,6 @@
 | [how-to-use-alarms.md](how-to-use-alarms.md) | How do I run code in a cell at a later time? |
 | [how-to-follow-cell-changes.md](how-to-follow-cell-changes.md) | How does a native worker read or follow the change feed of a granted namespace without waking its cells? |
 | [how-to-use-jobs.md](how-to-use-jobs.md) | How do I run work later in a cell, retry it, and make its effects idempotent? |
-| [how-to-measure-job-round-trips.md](how-to-measure-job-round-trips.md) | How many requests does the store receive for each job, of which kind, and how many jobs a second does one cell finish when the store is slow? |
 | [how-to-run-a-bulk-operation.md](how-to-run-a-bulk-operation.md) | How do I run the same job across many cells, throttled, guarded and resumable, and see what it changed? |
 | [how-to-protect-a-route-with-oidc.md](how-to-protect-a-route-with-oidc.md) | How do I require a valid OIDC access token on a route, with any provider, and read its claims in the worker? |
 | [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md) | How do I put a new version on the nodes, through a node with a scoped token or straight into the bucket, switch to it, and roll back? |
@@ -25,26 +31,40 @@
 | [how-to-read-from-replicas.md](how-to-read-from-replicas.md) | How do I serve the reads of a very busy cell on every node, accepting data a little old, from a replica, and let the cell get its replicas by itself? When can a read be old after a change of owner, and how do I read my own writes? |
 | [how-to-partition-a-cell.md](how-to-partition-a-cell.md) | How do I spread a very busy cell over several partitions that have a writer each, route requests to the right one, and read across them? |
 | [how-to-run-in-production.md](how-to-run-in-production.md) | How do I put nodes behind a load balancer with TLS, keep the distribution traffic on a private network, and protect the bucket, the cookie and the tokens? |
-| [how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md) | How do I run Atanor in Docker containers over their own SeaweedFS and a load balancer, deploy an app with a scoped token, kill, pause, partition or restart a node or the store, and measure what a fault or a rollout costs under load? |
 | [how-to-replace-a-node.md](how-to-replace-a-node.md) | How do I start a new node next to a running one, drain the old one, and shut it down without losing a write, and what do clients see meanwhile? |
 | [how-to-operate-atanor.md](how-to-operate-atanor.md) | What do I monitor and alert on, how do I back up and restore the bucket (lose the node, the data directory or everything), upgrade a node, and handle an open store breaker, a full disk, 503 `overloaded` and slow wakes? |
-| [operating-a-cluster-compared.md](operating-a-cluster-compared.md) | What did running the scoreboard on the container cluster take from an operator, and how does it compare with an app server, Postgres, a queue and Redis: what is simpler, harder or missing? |
-| [how-to-run-the-cluster-lab.md](how-to-run-the-cluster-lab.md) | How do I run Atanor on three VMs over one SeaweedFS, break them on purpose, and measure what clients see? |
-| [how-to-run-the-load-tests.md](how-to-run-the-load-tests.md) | How many requests per second, idle WebSockets and hot cells does one node hold in 1 CPU and 512 MB or 2 CPUs and 2 GB, what does each cost, and what does a node swap cost at that load? |
+| [cell-cost.md](cell-cost.md) | What does one request, and one awake cell, cost in CPU, memory, local disk and store trips? |
 | [how-to-use-the-admin-api.md](how-to-use-the-admin-api.md) | How do I see workers, deployments, routes, live cells and the state of the peers of my nodes, control jobs and bulk operations, say that a node is gone, and deploy with scoped tokens and an audit log? |
 | [how-to-open-the-dashboard.md](how-to-open-the-dashboard.md) | How do I open the read-only dashboard and see workers, deployments, routes, cells, alarms and metrics? |
 | [screens.md](screens.md) | What does each dashboard page show, and how do I move between them? |
 | [telemetry.md](telemetry.md) | Which telemetry events and native counters does Atanor emit? |
-| [capacity.md](capacity.md) | How much load can one node take in production, how many users is that, and when do I add a node? |
-| [known-limitations.md](known-limitations.md) | What are the limits of the design, what did the load rounds find, which defects are still open, and what do I do about them? |
+| [known-limitations.md](known-limitations.md) | What does Atanor not do, or not do well yet, and what do I do about it? |
+| [how-to-build-a-derived-image.md](how-to-build-a-derived-image.md) | How do I run my own Elixir code, a Phoenix and LiveView app included, in the same VM as an Atanor node, as a container image, and deploy a native worker to it? |
+
+Recommended path: the [README](../README.md), the worker how-tos (native or WASM) and `configuration.md`, then TCP,
+WebSockets (and ephemeral messages for them), alarms, the change feed, jobs and bulk operations, then protecting a route
+with OIDC, deploying a worker with the `atanor` command (reference in `cli.md`; and rehearsing its migrations), running
+a cluster (putting it in production behind a balancer, placing its hot cells, reading them from replicas, partitioning a
+cell that one writer cannot serve, operating it day to day (monitoring, backup, upgrades, incidents), and the cost of one
+cell in `cell-cost.md`), then the admin API, the dashboard and `telemetry.md`. Read `known-limitations.md` before relying
+on a guarantee. To run Phoenix, LiveView or other Elixir code beside a node, read the derived image guide after the
+native worker one.
+
+## For contributors
+
+| Page | Question it answers |
+| --- | --- |
+| [design.md](design.md) | How is Atanor built: model, processes, bindings, storage layout, guarantees? |
 | [properties.md](properties.md) | Which rules have property tests, what does each prove, and which rules are left to example tests? |
 | [how-to-build-and-test.md](how-to-build-and-test.md) | How do I build Atanor from source, run a local node, and run the tests and benchmarks? |
 | [how-to-measure-test-coverage.md](how-to-measure-test-coverage.md) | How do I measure which production lines the tests run, in Elixir and Rust, and what is left out of the count? |
 | [how-to-build-the-release.md](how-to-build-the-release.md) | How do I build the Atanor daemon as an image or a tarball, check it, publish it with a release, and what does the tarball need on the host? |
-| [how-to-build-a-derived-image.md](how-to-build-a-derived-image.md) | How do I run my own Elixir code, a Phoenix and LiveView app included, in the same VM as an Atanor node, as a container image, and deploy a native worker to it? |
+| [how-to-run-the-cluster-lab.md](how-to-run-the-cluster-lab.md) | How do I run Atanor on three VMs over one SeaweedFS, break them on purpose, and measure what clients see? |
+| [how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md) | How do I run Atanor in Docker containers over their own SeaweedFS and a load balancer, deploy an app with a scoped token, kill, pause, partition or restart a node or the store, and measure what a fault or a rollout costs under load? |
+| [how-to-run-the-load-tests.md](how-to-run-the-load-tests.md) | How do I measure what each unit of load (a request, an idle WebSocket, a hot cell) costs? |
+| [how-to-measure-job-round-trips.md](how-to-measure-job-round-trips.md) | How many requests does the store receive for each job, of which kind, and how many jobs a second does one cell finish when the store is slow? |
 | [how-to-update-alambique.md](how-to-update-alambique.md) | How do I move Atanor to a new Alambique release, and why is it pinned? |
-| [prior-art.md](prior-art.md) | What do workerd, celld, Spin and wasmCloud do, and which choices did Atanor make? |
 
-Recommended path: the [README](../README.md), the worker how-tos (native or WASM) and `configuration.md`, then TCP, WebSockets (and ephemeral messages for them), alarms, the change feed, jobs and bulk operations, then protecting a route with OIDC, deploying a worker with the `atanor` command (reference in `cli.md`; and rehearsing its migrations), running a cluster (putting it in production behind a balancer, placing its hot cells, reading them from replicas, partitioning a cell that one writer cannot serve, the cluster in containers, operating it day to day (monitoring, backup, upgrades, incidents), what operating it takes compared with a classic stack, the cluster lab, the load tests and the capacity to plan per node), then the admin API, the dashboard and `telemetry.md`. To run Phoenix, LiveView or other Elixir code beside a node, read the derived image guide after the native worker one.
-
-Contributors continue with `how-to-build-and-test.md`, then `design.md` sections 1 to 5, then 7, 8, 15, 16, 17, 18 and 19, and `prior-art.md` before reading the worker and binding formats. Read the "Limits" paragraphs of `design.md` and `known-limitations.md` before relying on a guarantee.
+Contributors start with `how-to-build-and-test.md`, then read `design.md` sections 1 to 5, then 7, 8, 15, 16, 17, 18 and
+19, before reading the worker and binding formats. Read the "Limits" paragraphs of `design.md` and `known-limitations.md`
+before relying on a guarantee.

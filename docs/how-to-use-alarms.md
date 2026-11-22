@@ -3,8 +3,9 @@
 **The question:** How do I make a worker run `handle_alarm/3` for a cell at a
 given time, even when the cell is asleep?
 
-This guide stands alone. It uses [examples/hello-native](../examples/hello-native).
-WASM workers are covered in the last section.
+This guide stands alone. Its native example is the source of
+[examples/hello-native](../examples/hello-native). WASM workers are covered in
+the last section.
 
 ## Prerequisites
 
@@ -40,19 +41,21 @@ WASM workers are covered in the last section.
    Return `:ok`, or `{:error, reason}` (or raise) to be retried. The handler
    can set the next alarm itself, which makes a periodic job.
 
-4. Run it. `/hello/<name>/later` of the example sets the alarm.
+4. Run it. On a node where the worker is deployed, call a route that sets the
+   alarm. In the example, `/hello/<name>/later` sets it. Replace `<node>` with
+   the address of your node.
 
    ```sh
-   cd examples/hello-native
-   mise exec -- mix atanor.dev --port 4123
+   curl -s http://<node>/hello/ada
+   curl -s http://<node>/hello/ada/later
+   sleep 4; curl -s http://<node>/hello/ada
    ```
 
+   The example answers with this shape:
+
    ```text
-   $ curl -s http://localhost:4123/hello/ada
    {"hello":"ada","greetings":1}
-   $ curl -s http://localhost:4123/hello/ada/later
    {"hello":"ada","again_at":1793063776602}
-   $ sleep 4; curl -s http://localhost:4123/hello/ada
    {"hello":"ada","greetings":3}
    ```
 

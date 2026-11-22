@@ -3,37 +3,43 @@
 **The question:** How do I write an Elixir worker, give it a cell, and run it
 on a local node?
 
-This guide stands alone. It uses [examples/hello-native](../examples/hello-native),
-which you can read next to it. It develops the worker against a checkout of Atanor,
-on a local node. To run a native worker on a daemon, put its module in a
-[derived image](how-to-build-a-derived-image.md); a WASM worker needs none
-([how](how-to-write-a-wasm-worker.md)).
+This guide stands alone. It builds a worker in a new Mix project and runs it on
+a local node with `mix atanor.dev`. To run a native worker on a daemon, put its
+module in a [derived image](how-to-build-a-derived-image.md); a WASM worker needs
+none ([how-to-write-a-wasm-worker.md](how-to-write-a-wasm-worker.md)).
 
 ## Prerequisites
 
-- The tools of the [README](../README.md#requirements): Elixir, Erlang, Rust,
-  and Alambique, a required dependency (its release tag is in `alambique.ref`).
-- A Mix project. The example is a complete one.
+- Elixir 1.17 or later, with Erlang, and Rust: Atanor compiles its Rust crates
+  when Mix builds its dependencies.
+- Atanor's Alambique is a required dependency that comes with Atanor; you do
+  not declare it.
 
 ## Steps
 
-1. Add Atanor to the project. `alambique_testkit` is only for the in-memory
-   store of `mix atanor.dev`. Atanor and the test kit must use the same
-   Alambique, the release tag in Atanor's `alambique.ref`; replace `<tag>` with
-   it (the example reads the file instead).
+1. Create the project and add Atanor to it. Use a release tag; the one below
+   matches the current release.
+
+   ```sh
+   mix new hello
+   cd hello
+   ```
 
    ```elixir
    defp deps do
      [
-       {:atanor, path: "path/to/atanor"},
-       {:alambique, git: "https://github.com/This-Is-NPC/alambique.git", tag: "<tag>", override: true},
+       {:atanor, git: "https://github.com/This-Is-NPC/atanor.git", tag: "v0.10.0"}, # x-release-please-version
        {:alambique_testkit,
         git: "https://github.com/This-Is-NPC/alambique.git", tag: "<tag>", subdir: "testkit", only: :dev}
      ]
    end
    ```
 
-2. Write the worker. It implements `Atanor.Worker`; `handle_request/2` gets an
+   `alambique_testkit` is only for the in-memory store of `mix atanor.dev`. It
+   must use the same Alambique as Atanor. Run `mix deps.get`, then read the tag
+   from `deps/atanor/alambique.ref` and replace `<tag>` with it.
+
+2. Write the worker in `lib/hello/worker.ex`. It implements `Atanor.Worker`; `handle_request/2` gets an
    `Atanor.Request` and the `Atanor.Env`, and returns an `Atanor.Response`.
    The env is the only way to reach cells, secrets, outbound HTTP and other
    workers.
@@ -88,10 +94,11 @@ on a local node. To run a native worker on a daemon, put its module in a
    migration; never edit one that shipped. The full format is in
    [design.md](design.md#3-workers).
 
-4. Start the node from the project directory.
+4. Start the node from the project directory. It reads `atanor.json` and
+   compiles the project's modules; `--port` sets the ingress port.
 
    ```sh
-   mise exec -- mix atanor.dev --port 4123
+   mix atanor.dev --port 4123
    ```
 
    Expected output:
@@ -164,8 +171,8 @@ shows how, through a node, and how to switch versions and roll back.
 ## Run it on several nodes
 
 With a `route_key/2` that names a cell, Atanor runs `handle_request/2` on the
-node that owns the cell, whichever node received the request. The example has
-one; [how-to-run-a-cluster.md](how-to-run-a-cluster.md) runs it on three nodes.
+node that owns the cell, whichever node received the request.
+[how-to-run-a-cluster.md](how-to-run-a-cluster.md) runs a cluster of nodes.
 The handler gets plain data and must not keep state of its own between
 requests. A request that only reads can say so with `{:cell, ns, key,
 consistency: {:bounded, ms}}`: it then runs on the node that received it, reads

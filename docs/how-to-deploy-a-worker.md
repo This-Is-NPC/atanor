@@ -4,9 +4,9 @@
 them serve it, and go back if it is wrong?
 
 This guide stands alone for the deploy itself, and builds on
-[how-to-write-a-native-worker.md](how-to-write-a-native-worker.md) for the
-project: it uses [examples/hello-native](../examples/hello-native). You deploy
-with the `atanor` command ([reference](cli.md)), in one of two ways:
+[how-to-run-a-node-locally.md](how-to-run-a-node-locally.md) for its node and
+its example worker. You deploy with the `atanor` command ([reference](cli.md)),
+in one of two ways:
 
 - **through a node** (the steps below): the command sends the package to a
   node's admin API with a scoped token, and the node writes the store, so you
@@ -18,49 +18,34 @@ Either way the nodes apply the new head on their own at their next poll.
 
 ## Prerequisites
 
-- The tools of the [README](../README.md#requirements), and a compiled worker
-  project. The commands below run in `examples/hello-native`.
 - The `atanor` command on your `PATH`: [cli.md](cli.md#install).
-- A node with the admin API. The operator starts it, and holds the operator
-  token; deployers get a scoped token (step 2). This guide runs a local node
-  over the in-memory store, with admin port 4108 and the operator token
-  `demo-token`.
+- The node and the `atanor-hello` directory of the
+  [local node guide](how-to-run-a-node-locally.md), steps 1 to 6. The node serves
+  the worker `hello` on port 4000, and its admin API listens on
+  `http://127.0.0.1:4001`. Its operator token is in `atanor-secrets/admin_token`.
 
 ## Concepts in two lines
 
-A **package** is the manifest plus, for a native worker, the MD5 of the
-compiled module. Its id is the SHA-256 of its bytes, so the same inputs give
+A **package** is the manifest plus the compiled WASM component, or for a native
+worker the MD5 of the compiled module. Its id is the SHA-256 of its bytes, so the same inputs give
 the same id. A worker's **head** names the package that is active and the
 previous ones. Nodes apply heads; they do not hold workers of their own.
 
 ## Steps
 
-1. Start a node. It deploys the project's worker at start.
-
-   ```sh
-   cd examples/hello-native
-   mise exec -- mix atanor.dev --port 4107 --admin-port 4108 --admin-token demo-token
-   ```
-
-   ```text
-   Atanor listening on http://127.0.0.1:4107
-     localhost/hello -> hello
-   ```
-
-   Leave it running and open another terminal in `examples/hello-native`.
-
-2. The operator logs in under the profile `ops` and creates a token that may
+1. The operator logs in under the profile `ops` and creates a token that may
    deploy, activate, roll back and read the worker `hello` only. `login` reads
-   the token from standard input; here it comes from a pipe.
+   the token from standard input; here it comes from a file. Run this in the
+   `atanor-hello` directory of the local guide.
 
    ```sh
-   echo demo-token | atanor login --url http://127.0.0.1:4108 --profile ops
+   cat ../atanor-secrets/admin_token | atanor login --url http://127.0.0.1:4001 --profile ops
    atanor token create ci-hello --profile ops --scope worker:hello:deploy \
      --scope worker:hello:activate --scope worker:hello:rollback --scope worker:hello:read
    ```
 
    ```text
-   logged in to http://127.0.0.1:4108 (profile ops); the token is stored in ~/.config/atanor/config.json
+   logged in to http://127.0.0.1:4001 (profile ops); the token is stored in ~/.config/atanor/config.json
    token atn_f1d739a58341175596fb32cb (ci-hello)
    scopes: worker:hello:deploy worker:hello:activate worker:hello:rollback worker:hello:read
    expires: never
@@ -71,29 +56,50 @@ previous ones. Nodes apply heads; they do not hold workers of their own.
    The deployer logs in with that secret, under the default profile:
 
    ```sh
-   echo "atn_f1d739a58341175596fb32cb_<secret>" | atanor login --url http://127.0.0.1:4108
+   echo "atn_f1d739a58341175596fb32cb_<secret>" | atanor login --url http://127.0.0.1:4001
    ```
 
    ```text
-   logged in to http://127.0.0.1:4108 (profile default); the token is stored in ~/.config/atanor/config.json
+   logged in to http://127.0.0.1:4001 (profile default); the token is stored in ~/.config/atanor/config.json
    ```
 
-3. See what the node serves.
+   Only the `ops` profile and `atanor token` need the operator token. Every
+   command below runs under the default profile, with the deployer's token.
+
+2. See what the node serves, as the deployer.
 
    ```sh
    atanor status
    ```
 
    ```text
-   hello: active fa48567b0c8764bf0121aa6a9f0d7b40626820cfcccc8d9e5033aaa41e605c8f, revision 1, previous none
+   hello: active 6f30c05f11f17db48d1819431b7ff92087d4343f9f248c5ae35d04d5c62a3c77, revision 1, previous none
    ```
 
-4. Change the worker. Here the new version also claims the path `/greet`:
-   copy `atanor.json`, add `{"http": {"host": "localhost", "path": "/greet"}}`
-   to `routes`, and call the copy `atanor-v2.json`. A code change works the
-   same way, but see "Native code" below.
+3. Change the worker. Here the new version also claims the path `/greet`. Copy
+   the manifest and call the copy `atanor-v2.json`, in the same directory, so
+   that it reads the same `hello.wasm`:
 
-5. Build the package and upload it. This does not change what runs. The
+   ```sh
+   cp atanor.json atanor-v2.json
+   ```
+
+   Then add `{"http": {"host": "localhost", "path": "/greet"}}` to its `routes`:
+
+   ```json
+   {
+     "manifest_version": 1,
+     "name": "hello",
+     "kind": "wasm",
+     "component": "hello.wasm",
+     "routes": [{"http": {"host": "localhost", "path": "/hello"}}, {"http": {"host": "localhost", "path": "/greet"}}]
+   }
+   ```
+
+   A code change works the same way: rebuild the component, then deploy it
+   with the same manifest. A native worker is different: see [Native code](#native-code).
+
+4. Build the package and upload it. This does not change what runs. The
    command builds the package here, sends it with its SHA-256, and the node
    checks both before it stores anything.
 
@@ -102,21 +108,20 @@ previous ones. Nodes apply heads; they do not hold workers of their own.
    ```
 
    ```text
-   package d497f86a3e8810a9ac08e17caeff25d2f0397b950c3537fb77b8f438278197ef (hello, native, 506 bytes)
+   package <v2 package id> (hello, wasm, <bytes> bytes)
    ```
 
    The node still has no route for `/greet`:
 
    ```text
-   $ curl -s -H 'Host: localhost' http://127.0.0.1:4107/greet/ann
+   $ curl -s -H 'Host: localhost' http://127.0.0.1:4000/greet/ann
    {"error":"not_found"}
    ```
 
-   The command reads the module's `.beam` from `_build/$MIX_ENV/lib/*/ebin`
-   (`dev` by default; `--ebin DIR` names other directories). Uploading the
-   package that is already stored changes nothing.
+   The command reads a WASM component from the manifest's directory. Uploading
+   the package that is already stored changes nothing.
 
-6. List the versions. Every package uploaded for the worker is there, and any
+5. List the versions. Every package uploaded for the worker is there, and any
    can be activated.
 
    ```sh
@@ -124,49 +129,42 @@ previous ones. Nodes apply heads; they do not hold workers of their own.
    ```
 
    ```text
-   hello: active fa48567b0c8764bf0121aa6a9f0d7b40626820cfcccc8d9e5033aaa41e605c8f, revision 1, previous none
+   hello: active 6f30c05f11f17db48d1819431b7ff92087d4343f9f248c5ae35d04d5c62a3c77, revision 1, previous none
    versions, oldest first:
-     fa48567b0c8764bf0121aa6a9f0d7b40626820cfcccc8d9e5033aaa41e605c8f  active    native  460 bytes  2026-11-01T21:00:48.781349Z  by token ci-hello (atn_f1d739a58341175596fb32cb)
-     d497f86a3e8810a9ac08e17caeff25d2f0397b950c3537fb77b8f438278197ef  -         native  506 bytes  2026-11-01T21:00:49.274813Z  by token ci-hello (atn_f1d739a58341175596fb32cb)
+     6f30c05f11f17db48d1819431b7ff92087d4343f9f248c5ae35d04d5c62a3c77  active    wasm  181410 bytes  <upload time>  by token ci-hello (atn_f1d739a58341175596fb32cb)
+     <v2 package id>  -         wasm  <bytes> bytes  <upload time>  by token ci-hello (atn_f1d739a58341175596fb32cb)
    ```
 
-7. Activate the package. Use the id that step 5 printed. Add `--activate` to
-   step 5 to do both at once.
+6. Activate the package. Use the id that step 4 printed. Add `--activate` to
+   step 4 to do both at once.
 
    ```sh
-   atanor activate hello d497f86a3e8810a9ac08e17caeff25d2f0397b950c3537fb77b8f438278197ef
+   atanor activate hello <v2 package id>
    ```
 
    ```text
-   hello: active d497f86a3e8810a9ac08e17caeff25d2f0397b950c3537fb77b8f438278197ef, revision 2, previous fa48567b0c8764bf0121aa6a9f0d7b40626820cfcccc8d9e5033aaa41e605c8f
+   hello: active <v2 package id>, revision 2, previous 6f30c05f11f17db48d1819431b7ff92087d4343f9f248c5ae35d04d5c62a3c77
    ```
 
    The command moves the head. Connected nodes switch at once; a node that
-   missed the notice follows at its next poll (5 seconds by default, the
-   `:poll_interval_ms` option). After at most that long:
-
-   ```text
-   $ curl -s -H 'Host: localhost' http://127.0.0.1:4107/greet/ann
-   {"error":"try /hello/<name>"}
-   ```
-
-   A request that started before the switch finishes on the version it
+   missed the notice follows at its next poll (5 seconds by default). After at
+   most that long, the node serves `/greet` from the new version. A request that started before the switch finishes on the version it
    started on. `atanor status hello` also shows whether the node you asked
    applied the head:
 
    ```text
-   hello: active d497f86a3e8810a9ac08e17caeff25d2f0397b950c3537fb77b8f438278197ef, revision 2, previous fa48567b0c8764bf0121aa6a9f0d7b40626820cfcccc8d9e5033aaa41e605c8f
-   applied by nonode@nohost: d497f86a3e8810a9ac08e17caeff25d2f0397b950c3537fb77b8f438278197ef
+   hello: active <v2 package id>, revision 2, previous 6f30c05f11f17db48d1819431b7ff92087d4343f9f248c5ae35d04d5c62a3c77
+   applied by atanor@atanor-node.local: <v2 package id>
    ```
 
-8. Roll back.
+7. Roll back.
 
    ```sh
    atanor rollback hello
    ```
 
    ```text
-   hello: active fa48567b0c8764bf0121aa6a9f0d7b40626820cfcccc8d9e5033aaa41e605c8f, revision 3, previous none
+   hello: active 6f30c05f11f17db48d1819431b7ff92087d4343f9f248c5ae35d04d5c62a3c77, revision 3, previous none
    ```
 
    After the nodes switch `/greet/ann` is `not_found` again and `/hello/ann` still
@@ -174,9 +172,10 @@ previous ones. Nodes apply heads; they do not hold workers of their own.
    `atanor: the worker has no previous package to return to`. The head keeps
    the last 20 previous versions.
 
-9. Stop the node with `Ctrl+C` twice. `atanor logout --profile ops` removes the
-   operator's token from your machine; `atanor token revoke atn_f1d7...` ends a
-   token for good ([cli.md](cli.md#atanor-token-revoke-token_id)).
+8. Remove the token. `atanor logout --profile ops` removes the operator's
+   token from your machine; `atanor token revoke atn_f1d7...` ends a token for
+   good ([cli.md](cli.md#atanor-token-revoke-token_id)). To stop the node, clean
+   up as the local guide does, in its step 7.
 
 ## In CI
 
@@ -200,48 +199,50 @@ Every upload, activation, rollback and token change is in the audit log
 
 If your CI or your laptop has write access to the bucket, `deploy` needs no
 node and no token. This is the one-line deploy of a cluster started from the
-[image](how-to-build-the-release.md): the nodes find the head in the bucket.
-It works for WASM workers only ([why](#troubleshooting)). This section uses
-[examples/scoreboard](../examples/scoreboard), which `mise run build:scoreboard`
-builds into `scoreboard.wasm`.
+[image](how-to-run-a-node-locally.md): the nodes find the head in the bucket.
+It works for WASM workers only ([why](#troubleshooting)). This section uses the
+`atanor-hello` directory of the local guide.
 
 1. Give the command the bucket and the credentials, as you give them to a node
    ([configuration.md](configuration.md#the-daemon-environment-and-file)): the
    endpoint, the region and the AWS chain (`AWS_ACCESS_KEY_ID` and
    `AWS_SECRET_ACCESS_KEY`, a profile, a web identity, container credentials
    or EC2 metadata). The bucket and the prefix must be the nodes' `ATANOR_STORE`.
-   Here they are for a local SeaweedFS and a node started with
-   `mix atanor.dev --port 4107 --store seaweedfs --bucket atanor-demo --prefix demo`:
+   Here they are for the local SeaweedFS of the local guide, whose bucket is
+   `atanor` (`s3://atanor`, prefix `atanor`). Run them in the `atanor-hello`
+   directory, where the secrets are one level up:
 
    ```sh
-   export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... ATANOR_S3_ENDPOINT=http://127.0.0.1:18343
+   export AWS_ACCESS_KEY_ID=$(cat ../atanor-secrets/access_key) \
+     AWS_SECRET_ACCESS_KEY=$(cat ../atanor-secrets/secret_key) \
+     ATANOR_S3_ENDPOINT=http://127.0.0.1:8333
    ```
 
-2. Deploy and activate.
+2. Deploy and activate. The package is the same as in step 5 of the local guide,
+   so the command stores the same bytes; the head moves to it again.
 
    ```sh
-   cd examples/scoreboard
-   atanor deploy --bucket s3://atanor-demo/demo --activate
+   atanor deploy --bucket s3://atanor --activate
    ```
 
    ```text
-   package 55c8cdbc30d325d5628e54486c7ddb7bf3528f6355afe153817dafefb7f4061f (scoreboard, wasm, 117888 bytes)
-   scoreboard: active 55c8cdbc30d325d5628e54486c7ddb7bf3528f6355afe153817dafefb7f4061f, revision 1, previous none
-   stored in s3://atanor-demo/demo; the nodes apply it at their next poll
+   package 6f30c05f11f17db48d1819431b7ff92087d4343f9f248c5ae35d04d5c62a3c77 (hello, wasm, 181410 bytes)
+   hello: active 6f30c05f11f17db48d1819431b7ff92087d4343f9f248c5ae35d04d5c62a3c77, revision 1, previous none
+   stored in s3://atanor; the nodes apply it at their next poll
    ```
 
    Without `--activate` the package is stored and no head moves.
 
-3. Wait for the nodes. Every node polls the heads (`:poll_interval_ms`, 5
-   seconds by default), so after at most that long each one serves the worker:
+3. Wait for the nodes. Every node polls the heads (every 5 seconds by default),
+   so after at most that long each one serves the worker:
 
    ```text
-   $ curl -s -H 'Host: scoreboard.localhost' http://127.0.0.1:4107/rooms/demo
-   {"room":"demo","writes":0,"last_seq":0,"ranked_through":0,"rankings":[]}
+   $ curl -s -H 'Host: localhost' http://127.0.0.1:4000/hello/world
+   hello GET /hello/world? authority=localhost body=
    ```
 
    `atanor versions`, `activate`, `rollback` and `status` go through a node:
-   they need the admin API and a token (steps 2 and 3 above). A second
+   they need the admin API and a token (step 1 above). A second
    `deploy --bucket --activate` of changed code moves the head again, and a
    rollback is `atanor rollback`. Nothing else tells the nodes: a node that is
    down applies the head when it starts.
@@ -256,8 +257,8 @@ of a node: give one or the other`). `ATANOR_URL`, `ATANOR_TOKEN` and
 The release image holds the same command, so a machine with Docker and no
 Erlang can deploy. The image starts the node with no argument and runs the
 command for `deploy` (and `status`, `activate`, ...). Mount the project and
-give the credentials by files. The image is published from 0.4.0 on and pulls without a login; for your
-own build ([README](../README.md#install)), use `atanor:local` in place of `ghcr.io/this-is-npc/atanor`:
+give the credentials by files. The published image pulls without a login. For your own build
+([README](../README.md#install)), use `atanor:local` in place of `ghcr.io/this-is-npc/atanor`:
 
 ```sh
 docker run --rm -v "$PWD:/w:ro" -v "$HOME/.secrets/atanor:/run/secrets:ro" \
@@ -269,16 +270,15 @@ docker run --rm -v "$PWD:/w:ro" -v "$HOME/.secrets/atanor:/run/secrets:ro" \
 
 It needs no cookie and no advertise address, because it starts no node. The
 command runs as the user `atanor` (uid 10001): the mounted directory must be
-readable by it. `mise run image:smoke` runs exactly this against SeaweedFS and
-checks that a node then serves the worker.
+readable by it.
 
 ## Native code
 
 A native package holds the MD5 of the module's compiled code, and a node
 applies it only if its loaded module has the same MD5. To ship new native
-code: build the release (an [image derived from the product image](how-to-build-a-derived-image.md) when the
-nodes run containers), roll the nodes to it, then deploy and activate with `--url` or a profile. A
-node that still runs the old code keeps the previous version serving and
+code: build a [derived image](how-to-build-a-derived-image.md) that holds the
+new module, roll the nodes to it, then deploy and activate with `--url` or a
+profile. A node that still runs the old code keeps the previous version serving and
 reports the problem in `Atanor.Deployments.status/1`, for example
 `{:code_mismatch, "<package md5>", "<loaded md5>"}`.
 
@@ -298,14 +298,16 @@ release that ran
 
 ## Which routes become active
 
-The manifest only declares routes. The operator decides, per node, in
-`{Atanor, opts}`:
+The manifest only declares routes. The operator decides, per node. In the
+release, the environment variables do it; in a derived image, the options of
+`{Atanor, opts}` do:
 
-- `hosts: %{"hello" => ["localhost", "*.example.com"]}` lists the hosts each
-  worker may claim; `*.example.com` covers subdomains, not `example.com`,
-  and `"*"` allows every host, which a catch-all route (`"host": "*"`) needs.
-  Without the option every host is allowed, which trusts the packages.
-- `listeners: %{"smtp" => 2525}` maps the TCP listener names in manifests
+- `ATANOR_HOSTS` (`hosts:`) lists the hosts each worker may claim, as
+  `hello=localhost,*.example.com`. `*.example.com` covers subdomains, not
+  `example.com`, and `*` allows every host, which a catch-all route
+  (`"host": "*"`) needs. Without the variable every host is allowed, which
+  trusts the packages.
+- `listeners: %{"smtp" => 2525}` (derived image only) maps the TCP listener names in manifests
   to ports. The long form adds `tls_mode:`/`tls:`, `protocol: :ranch` and `ip:`
   (the address to bind, the ingress `ip` by default); a
   manifest route and its listener must agree on the protocol
@@ -319,10 +321,10 @@ The manifest only declares routes. The operator decides, per node, in
   revoked. Ask the operator for a new one.
 - **`forbidden: this token needs the scope ...`** The token lacks that scope;
   `--activate` needs the `activate` scope as well as `deploy`.
-- **`cannot build the package: Elixir.Hello.Worker.beam not found`** The project
-  is not compiled for the build the command reads (`MIX_ENV`, `dev` by
-  default), or `module` is misspelled. Run `mix compile` in the worker's
-  project, or pass `--ebin DIR`.
+- **`cannot build the package: Elixir.Hello.Worker.beam not found`** (native
+  workers) The module is not compiled for the build the command reads
+  (`MIX_ENV`, `dev` by default), or `module` is misspelled. Compile the worker's
+  project with `mix compile`, or pass `--ebin DIR`.
 - **`invalid manifest at manifest_version: is required`** Add
   `"manifest_version": 1`.
 - **`the package is for the worker X, not the one named`** The uploaded

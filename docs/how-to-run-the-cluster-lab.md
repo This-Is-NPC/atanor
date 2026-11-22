@@ -3,7 +3,7 @@
 **The question:** How do I run Atanor on three real machines that share one
 SeaweedFS, break them on purpose, and measure what clients see?
 
-This guide stands alone for someone with the repository and a Linux machine
+This page is for contributors. It stands alone for someone with the repository and a Linux machine
 with KVM. How the cluster behaves in general is in [how-to-run-a-cluster.md](how-to-run-a-cluster.md).
 
 ## What the lab is
@@ -12,9 +12,9 @@ Four virtual machines on a private libvirt network, all named `atanor-lab*`:
 
 | Object | What it is |
 | --- | --- |
-| `atanor-lab` | Isolated libvirt network (`qemu:///system`), bridge `virbr-alab`, `10.77.42.0/24`, no forwarding, no DHCP. The host is `10.77.42.1`. |
-| `atanor-lab-1..3` | The Atanor nodes (2 vCPU, 4 GB), `10.77.42.11` to `.13`. They run a release of [lab/app](../lab/app) under systemd. |
-| `atanor-lab-store` | SeaweedFS (`weed mini`, 2 GB), `10.77.42.20`, S3 on port 8333, bucket `atanor-lab`. |
+| `atanor-lab` | Isolated libvirt network (`qemu:///system`), bridge `virbr-alab`, `192.0.2.0/24`, no forwarding, no DHCP. The host is `192.0.2.1`. |
+| `atanor-lab-1..3` | The Atanor nodes (2 vCPU, 4 GB), `192.0.2.11` to `.13`. They run a release of [lab/app](../lab/app) under systemd. |
+| `atanor-lab-store` | SeaweedFS (`weed mini`, 2 GB), `192.0.2.20`, S3 on port 8333, bucket `atanor-lab`. |
 
 The VMs boot the official Arch Linux cloud image, copy-on-write. The release
 is built on the host and copied in; the VMs have no internet.
@@ -42,7 +42,7 @@ VMs, not the firewall.
   `git` access to the public Alambique repository: the tag in `alambique.ref`
   is a git dependency.
 - About 14 GB of free RAM, 4 GB of disk under `/var/tmp`, and a free subnet
-  `10.77.42.0/24` (check with `ip -br addr`).
+  `192.0.2.0/24` (check with `ip -br addr`).
 - Internet access for the first run: the image (570 MB) and the Hex packages.
 - `mise run docs:lab-dashboard-screenshots` also needs Playwright, as
   [screens.md](screens.md) says.
@@ -67,44 +67,44 @@ on the host.
 
    ```text
    [lab:image] $ scripts/lab-image
-   image ok: /var/tmp/atanor-lab/cache/Arch-Linux-x86_64-cloudimg-20261101.620452.qcow2
+   image ok: /var/tmp/atanor-lab/cache/<image>.qcow2
    [lab:network] $ scripts/lab-network
-   network atanor-lab up on virbr-alab (10.77.42.1/24)
+   network atanor-lab up on virbr-alab (192.0.2.1/24)
    [lab:vms] $ scripts/lab-vms
    created atanor-lab-1
    created atanor-lab-2
    created atanor-lab-3
    created atanor-lab-store
-   atanor-lab-1 ready at 10.77.42.11
-   atanor-lab-2 ready at 10.77.42.12
-   atanor-lab-3 ready at 10.77.42.13
-   atanor-lab-store ready at 10.77.42.20
+   atanor-lab-1 ready at 192.0.2.11
+   atanor-lab-2 ready at 192.0.2.12
+   atanor-lab-3 ready at 192.0.2.13
+   atanor-lab-store ready at 192.0.2.20
    [lab:store] $ scripts/lab-store
-   SeaweedFS ready on http://10.77.42.20:8333, bucket atanor-lab
+   SeaweedFS ready on http://192.0.2.20:8333, bucket atanor-lab
    [lab:nodes] $ scripts/lab-nodes
    {:ok, "0bfb9a6dc8349bf043f2333f81f8bb88169c75442c6a8c49d1a275580756b4bd"}
-   {"node":"atanor@10.77.42.11","status":"ok","nodes":["atanor@10.77.42.11","atanor@10.77.42.12","atanor@10.77.42.13"],"workers":1}
-   cluster ready: dashboard http://10.77.42.11:4002/workers?token=SECRET
+   {"node":"atanor@192.0.2.11","status":"ok","nodes":["atanor@192.0.2.11","atanor@192.0.2.12","atanor@192.0.2.13"],"workers":1}
+   cluster ready: dashboard http://192.0.2.11:4002/workers?token=SECRET
    ```
 
-   The first run takes a few minutes more (image download, first build). The
+   The first run takes longer (image download, first build). The
    `SECRET` is the token of the admin API and the dashboard; it is in
    `/var/tmp/atanor-lab/secret`. The Erlang cookie is another random value, in
-   `/var/tmp/atanor-lab/cookie`. A `secret` made by an older version is shorter
-   than the 32 bytes that a token on a VM address needs: run `lab:down` first.
+   `/var/tmp/atanor-lab/cookie`. A `secret` shorter than the 32 bytes that a
+   token on a VM address needs must be replaced: run `lab:down` first.
 
-2. Look at the cluster. The nodes listen on `10.77.42.11` to `.13`: HTTP on
+2. Look at the cluster. The nodes listen on `192.0.2.11` to `.13`: HTTP on
    4000, the admin API on 4001, the dashboard on 4002.
 
    ```sh
    secret=$(cat /var/tmp/atanor-lab/secret)
-   curl -s -H "authorization: Bearer $secret" 10.77.42.12:4001/cells
-   curl -s -H 'host: lab' -X POST --data 7 10.77.42.13:4000/c/hello
+   curl -s -H "authorization: Bearer $secret" 192.0.2.12:4001/cells
+   curl -s -H 'host: lab' -X POST --data 7 192.0.2.13:4000/c/hello
    ```
 
    ```json
-   {"total":3,"nodes":{"atanor@10.77.42.11":{"count":1,"status":"ok"},"atanor@10.77.42.12":{"count":0,"status":"ok"},"atanor@10.77.42.13":{"count":2,"status":"ok"}},"partial":false}
-   {"node":"atanor@10.77.42.11","id":1}
+   {"total":3,"nodes":{"atanor@192.0.2.11":{"count":1,"status":"ok"},"atanor@192.0.2.12":{"count":0,"status":"ok"},"atanor@192.0.2.13":{"count":2,"status":"ok"}},"partial":false}
+   {"node":"atanor@192.0.2.11","id":1}
    ```
 
    The write went in through node 3 and ran on node 1, which owns the cell
@@ -116,7 +116,7 @@ on the host.
    acknowledged:
 
    ```sh
-   N=10.77.42.11,10.77.42.12,10.77.42.13
+   N=192.0.2.11,192.0.2.12,192.0.2.13
    mise exec -- elixir lab/tools/load.exs run --nodes $N --log /tmp/lab.log --seconds 10
    mise exec -- elixir lab/tools/load.exs report --log /tmp/lab.log
    mise exec -- elixir lab/tools/load.exs verify --nodes $N --log /tmp/lab.log
@@ -135,12 +135,11 @@ on the host.
    mise run lab:scenario                  # the names
    mise run lab:scenario crash graceful_stop
    mise run lab:scenario hot_cell         # one very busy cell, below
-   mise run lab:test                      # every scenario, about 70 minutes
-   mise run lab:scenario detect           # detection and takeover (below), about 90 minutes
+   mise run lab:test                      # every scenario
+   mise run lab:scenario detect           # detection and takeover (below)
    ```
 
-   The `detect` group measures the failure detector and the takeover
-   ([design §12.8](design.md#128-detection-and-takeover-in-the-lab)):
+   The `detect` group measures the failure detector and the takeover:
    `detect_destroy`, `detect_kill`, `detect_partition` (node 2 lost three ways,
    with how long node 1 took to see it down and how long its cells took to
    serve again), `detect_destroy_no_takeover` (the same with takeover off),
@@ -159,7 +158,7 @@ on the host.
    | `LAB_STALL_SECONDS` | `2 3.5 8` | pauses of the beam of node 2 |
    | `LAB_HOG_SECONDS`, `LAB_HOG_PROCS` | 30, 4 | length and number of CPU hogs |
    | `LAB_SKEWS` | `+1 +5 -5 +20` | seconds of clock skew of node 2 |
-   | `LAB_COST_SECONDS` | 60 | idle time measured for the heartbeat cost |
+   | `LAB_COST_SECONDS` | 60 | idle time of the heartbeat cost run |
    | `LAB_FREEZE_KINDS` | `stop suspend` | how `freeze_rejoin` freezes node 2: `stop` (SIGSTOP of the beam), `suspend` (`virsh suspend` of the VM) |
    | `LAB_FREEZE_SECONDS` | 20 | length of the freeze (`LAB_REPEAT` runs of each kind) |
    | `LAB_STAMP` | the date | name of the results directory |
@@ -169,9 +168,9 @@ on the host.
    | `LAB_HOT_CURSORS` | 0 | WebSockets of `hot_cell` that also send a cursor frame, which every WebSocket of the cell receives |
    | `LAB_HOT_CURSOR_MS` | 1000 | milliseconds between the cursor frames of one WebSocket |
    | `LAB_HOT_PLACEMENT` | `off` | `on`: `hot_cell` restarts the nodes with the automatic placement of hot cells on, reports the move and restores the nodes afterwards |
-   | `LAB_HOT_HOG`, `LAB_HOT_HOG_AT` | 0, 22 | `1`: two busy loops in the VM of the owner from `LAB_HOT_HOG_AT` s after the baseline window starts, so that only the owner is under CPU pressure |
+   | `LAB_HOT_HOG` | 0 | `1`: two busy loops in the VM of the owner, so that only the owner is under CPU pressure |
    | `LAB_HOT_DEDICATED` | none | a node number: that VM is tagged `dedicated` and the hot cells of the namespace go there |
-   | `LAB_HOT_BASE_S`, `LAB_HOT_SETTLE_S`, `LAB_HOT_AFTER_S` | 15, 8, 20 | the baseline window, the wait after the move and the window after it |
+   | `LAB_HOT_BASE_S`, `LAB_HOT_SETTLE_S`, `LAB_HOT_AFTER_S` | 10, 5, 15 | the baseline window, the wait after the move and the window after it |
    | `ATANOR_LAB_HOT_<OPTION>` | | any option of `hot_cells:` as an integer (`ATANOR_LAB_HOT_CPU_ENTER=40`), passed to the nodes with the placement on |
    | `LAB_HOT_PARTITIONS`, `LAB_HOT_KEYS` | 0, 1000 | `3`, `6` or `12`: `hot_cell` splits the cell into that many partitions ([design §4.2](design.md#42-partitioned-cells)); the HTTP clients send a partition key among `LAB_HOT_KEYS` and each WebSocket has its own. Not combined with the placement or the hog |
    | `LAB_HOT_WRITE_RATIO`, `LAB_HOT_WS_WRITE_RATIO` | 0.5, 0.1 | the share of writes among the requests of an HTTP client and of a WebSocket; 0.05 and 0.02 make the load read-heavy |
@@ -180,7 +179,7 @@ on the host.
    | `LAB_HOT_PIPELINE_DEPTH` | Alambique's (8) | the nodes restart with `pipeline_depth` set to this |
    | `LAB_HOT_CURSOR_MODE` | `cell` | how the cursor reaches the sockets: `cell` (a callback on the owner, then `send_to_cell`) or `channel` (the [ephemeral channel](how-to-share-ephemeral-messages.md), no callback on the owner) |
 
-   <a id="hot_cell"></a>`hot_cell` (not part of `lab:test`; about 3 minutes) measures
+   <a id="hot_cell"></a>`hot_cell` (not part of `lab:test`) measures
    what one very busy cell does to its owner. It opens the connections, sends
    writes and reads to a single cell through the three nodes, and writes to
    `hot_cell.txt`: writes and reads per second with p50, p95 and p99 (separately),
@@ -237,7 +236,7 @@ on the host.
    ```text
     Id   Name               State
    -----------------------------------
-    -    omakure-r3-linux   shut off
+    -    example-vm        shut off
 
     Name      State    Autostart   Persistent
    --------------------------------------------
@@ -254,19 +253,18 @@ on the host.
   prevents it with a systemd credential that makes `systemd-time-wait-sync`
   return at once. Check that the VM has the console with
   `virsh -c qemu:///system console atanor-lab-1` (Ctrl-] leaves it).
-- **Nothing in the VMs can open a TCP connection to the host.** This host
-  drops TCP from the lab bridge to itself (ICMP works), and the lab does not
-  change the host firewall. That is why SeaweedFS runs in a VM and not in a
+- **Nothing in the VMs can open a TCP connection to the host.** A host
+  firewall can drop TCP from the lab bridge to the host (ICMP still works),
+  and the lab does not change the host firewall. That is why SeaweedFS runs in a VM and not in a
   container on the host.
 - **`virt-install` cannot read the disk.** Disks must be where the `qemu` user
   can traverse: `/var/tmp/atanor-lab`, not a home directory.
 - **The release does not start in a VM (`GLIBC_2.xx not found`).** The release
-  is built on the host and needs a glibc no newer than the image's. The
-  Arch image of 2026-10-15 and the host had glibc 2.44. Pin an image whose
-  glibc is at least the host's (`LAB_IMAGE` in `scripts/lab-common`), or build
+  is built on the host and needs a glibc no newer than the image's. Pin an
+  image whose glibc is at least the host's (`LAB_IMAGE` in `scripts/lab-common`), or build
   the release in a container of the image's distribution.
 - **`lab:nodes` waits forever for the health check.** Look at the service in a
-  VM: `ssh -i /var/tmp/atanor-lab/ssh/id_ed25519 lab@10.77.42.11 sudo journalctl -u atanor-lab`.
+  VM: `ssh -i /var/tmp/atanor-lab/ssh/id_ed25519 lab@192.0.2.11 sudo journalctl -u atanor-lab`.
 - **A scenario stopped half way.** Faults live in the VMs; the next scenario
   (or `lab:scenario` with any name) clears them first. `mise run lab:down`
   removes everything.
@@ -275,4 +273,5 @@ on the host.
 
 - [how-to-run-a-cluster.md](how-to-run-a-cluster.md) and
   [design.md §8](design.md#8-cluster) for how routing and failover work.
-- [design §8.10](design.md#810-acting-on-a-confirmed-failure) and [§8.13](design.md#813-a-handler-that-outlives-its-cell) for the limits the lab found.
+- [design §8.10](design.md#810-acting-on-a-confirmed-failure) and [§8.13](design.md#813-a-handler-that-outlives-its-cell) for what happens after a confirmed failure and to a handler that outlives its cell.
+- [known-limitations.md](known-limitations.md) for the open limits.

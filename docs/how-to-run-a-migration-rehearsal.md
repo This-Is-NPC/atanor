@@ -4,7 +4,7 @@
 migrations. How do I find out, before I activate it, whether they apply to my
 real data?
 
-This guide builds on [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md):
+This guide does not stand alone. It builds on [how-to-deploy-a-worker.md](how-to-deploy-a-worker.md):
 you publish the package, rehearse it, and only then activate it. It needs the
 admin API ([how-to-use-the-admin-api.md](how-to-use-the-admin-api.md)).
 
@@ -162,9 +162,9 @@ keep no lease from it, are not woken, and the change feed does not move.
 - **`state: "stale"`.** The node that ran the rehearsal stopped or lost the
   store before it wrote the result. Nothing resumes it. Start another one.
 - **`nothing_to_rehearse`.** The package has no namespace with migrations.
-- **`sampled: 0` for a namespace you expect.** Only cells that have woken
-  since Alambique's schema index exists are listed. A namespace with few cells
-  is read completely; check `scanned`.
+- **`sampled: 0` for a namespace you expect.** Only cells that have woken are
+  sampled (see the prerequisites). A namespace with few cells is read
+  completely; check `scanned`.
 - **A failed cell with `stage: "timeout"`.** The cell took longer than
   `timeout_ms`. A large cell or a heavy migration may need a higher bound on
   the node.

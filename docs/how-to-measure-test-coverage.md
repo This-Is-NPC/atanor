@@ -3,7 +3,7 @@
 **The question:** how do I measure which production lines the tests run, in
 Elixir and in Rust, and what is left out of the count?
 
-This guide stands alone. You need the project tools (`mise install`), `epmd`
+This page is for contributors. It stands alone. You need the project tools (`mise install`), `epmd`
 for the cluster tests, Docker for the SeaweedFS tests, and the `llvm-tools`
 rustup component (`rustup component add llvm-tools`).
 

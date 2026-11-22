@@ -16,8 +16,7 @@ the `cell` (`{namespace, key}`), so the dashboards of the three questions
 | Placement of hot cells | `[:atanor, :hot_cell, :sample \| :decision \| :move \| :replicas]` |
 | Takeover of a lost node's cells, drain and graceful stop | `[:atanor, :cell, :take_over]`, `[:atanor, :node, :drain, ...]` |
 | A node starts: deployments applied, then serving | `[:atanor, :deployments, :loaded]`, `[:atanor, :node, :ready]` |
-| Awake cells migrated to a new worker version | `[:atanor, :foreign_store]` | `count` (1) | `instance`, `node` (the node of another store that a call was routed toward). A configuration error, not unavailability; the call is refused and not retried (design §8.4) |
-| `[:atanor, :cells, :migrate]` |
+| Awake cells migrated to a new worker version, and calls routed to another store | `[:atanor, :cells, :migrate]`, `[:atanor, :foreign_store]` |
 | Limits hit and WASM instantiation | `[:atanor, :wasm, :limit]`, `[:atanor, :wasm, :invoke]`, `[:atanor, :wasm, :load]` |
 | Cells hibernated to stay under `awake: [max_bytes:]` (Alambique's) | `[:alambique, :admission, :evict]` (`bytes`: memory of the awake cells after it; `cell`, `max_bytes`); documented in Alambique's `docs/telemetry.md` |
 | Reads from replicas (Alambique's, design §19) | `[:alambique, :replica, :read]` (`source`: `:replica` or `:owner`, and `reason` for the owner), `:build`, `:refresh`, `:stop`; documented in Alambique's `docs/telemetry.md` |
@@ -47,6 +46,7 @@ the owner, with `forwarded: true`.
 | `[:atanor, :call]` | `duration` (the callback, without routing and without the network) | `worker`, `deployment`, `cell` (`{namespace, key}`, or `nil` when the work has no routing key), `kind`, `node` (the node that ran it), `instance`, `forwarded` (it came from another node), `release` (the node's release id), `result`: `:ok` or `:error`, `reason` (with `:error`: `:crashed`, `:bad_return`, `:bad_response`, `:overloaded`, `{:limit, :timeout \| :memory \| :cpu}`, ...), `status` (HTTP kinds, when a response was sent) |
 | `[:atanor, :forward]` | `duration` (the whole round trip) | `worker`, `deployment`, `cell`, `target` (the node), `result`: `:ok`, `:moved` (it no longer owns the cell), `:rejected` (it cannot run the deployment), `:lost` (the connection failed before the callback started) or `:unknown_outcome` (it started, then the connection failed or the call timed out) |
 | `[:atanor, :cells, :migrate]` | `count` (cells migrated), `errors` (cells whose migration failed) | `namespace`, `node`. Emitted by the node that applied a worker with new or more migrations for the namespace, once it finished migrating its awake cells of it (design §4.1) |
+| `[:atanor, :foreign_store]` | `count` (1) | `instance`, `node` (the node of another store that a call was routed toward). A configuration error, not unavailability; the call is refused and not retried (design §8.4) |
 | `[:atanor, :http, :reject]` | `count` (1) | `reason`: `:no_route`, `:no_handler`, `:payload_too_large`, `:bad_request`, `:origin_not_allowed` (a WebSocket upgrade from an origin outside `websocket.allowed_origins`), `:bad_host` or `:bad_path` (the last two before any route is looked up), or the reason of a 503 `overloaded`: `:memory` / `:disk` / `:in_flight` (admission control, before anything else), `:wake_gate`, `:awake_limit`, `:busy`, `:disk_full`, `:worker_queue` (the WASM queue was full), `:nested_calls` (a call between workers above `max_nested_calls`) or `:queue_timeout` (a call the node refused after admitting the request, the last because it waited past `http.queue_wait_ms`; design §7.1), or the reason of any other 503 the node answers after admitting the request (`:owner_unreachable`, `:fenced`, `:owner_unknown`, `:store_unavailable`, `:unknown_outcome`, ...; design §8.4), `status`, `host`, `worker` (`nil` when no route matched) |
 
 | `[:atanor, :auth, :reject]` | `count` (1) | `reason` (an atom: `:missing`, `:bad_request`, `:malformed`, `:algorithm`, `:type`, `:no_key`, `:signature`, `:claims`, `:issuer`, `:audience`, `:no_expiry`, `:expired`, `:not_yet_valid`, `:issued_in_future`, `:insufficient_scope`, `:keys_unavailable`), `status` (400, 401, 403 or 503), `host`, `worker`. A request that failed the `auth:` rule of its route and did not reach the worker ([how to protect a route](how-to-protect-a-route-with-oidc.md)). Never carries the token or a claim |
@@ -216,10 +216,10 @@ the limit or more (design §4.3,
   its chain partly merged; the merges already made stay), `deadline_error` (the deadline passed while the cell's
   files were being listed, before the chain was known), `busy` (the node already had `release_concurrency` cells
   compacting and none freed a place inside the budget, so the cell was released without a pass and its chain was
-  not looked at: `tail` is 0; Alambique 0.14.0) and `error` (the pass failed and the cell was released anyway).
-  The event's `reason` is `:idle`, `:request`, `:shutdown`, `:evict` (the room another wake needed; before 0.14.0 it
-  was `:request`) or `:frozen`; Atanor counts by outcome only and prints the reason in its warning. `hibernations.tail_max` is the longest tail, in level-0 files, that was left after a release
-  compaction (before Alambique 0.13.0 it was the tail found before it). They come from
+  not looked at: `tail` is 0) and `error` (the pass failed and the cell was released anyway).
+  The event's `reason` is `:idle`, `:request`, `:shutdown`, `:evict` (the room another wake needed) or `:frozen`;
+  Atanor counts by outcome only and prints the reason in its warning. `hibernations.tail_max` is the longest tail,
+  in level-0 files, that was left after a release compaction. They come from
   Alambique's `[:alambique, :cell, :hibernate]` event, which every hibernation emits (idle, on request, at
   shutdown), and the event names no instance, so a VM that runs more than one instance counts all of them in
   each. A `deadline`, `deadline_error`, `busy` or `error` also logs `atanor: release compaction of "<cell>" ended with ...`, at most once

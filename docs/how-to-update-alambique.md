@@ -13,7 +13,7 @@ Alambique is a public git dependency,
 identified by a git tag, so builds and test runs are reproducible, and the tests, the benchmarks, the
 examples and the lab release all use that release.
 
-The tag (for example `v0.1.0`) is written in one file, `alambique.ref`, at the root of this
+The tag (for example `v<x.y.z>`) is written in one file, `alambique.ref`, at the root of this
 repository. `mix.exs`, `testkit/mix.exs` and `examples/*/mix.exs` read it.
 `lab/app` and `daemon` depend on Atanor by path and get Alambique through
 Atanor's `mix.exs`. Each `mix.lock` records the tag and the commit it resolves to.
@@ -70,8 +70,7 @@ on `:alambique` too. With the override both resolve to the pinned release.
    listed in `testkit/lib/atanor_testkit/cluster.ex`. Fix the callers; compile
    with warnings as errors: `mix compile --warnings-as-errors`. A function
    Atanor calls that Alambique removed shows up there as "is undefined or
-   private" (0.3.0 dropped the prepared-statement API of `Alambique.Sqlite`).
-   Add the new keys of the checked option groups to `@alambique_limits` in
+   private". Add the new keys of the checked option groups to `@alambique_limits` in
    `lib/atanor/config.ex`: Atanor refuses a key it does not list.
 
 5. Run the suites, in this order. All must pass:
@@ -92,7 +91,7 @@ on `:alambique` too. With the override both resolve to the pinned release.
 
 ## Options a new pin leaves alone
 
-The `registry` option (0.6) is off and Atanor does not use `Alambique.peers/1`
+The `registry` option is off and Atanor does not use `Alambique.peers/1`
 yet; it only checks the keys.
 
 The memory (`awake: [cache_kib:, max_bytes:,
@@ -112,9 +111,8 @@ local to each node.
   `override: true` on its own `:alambique`.
 - **The lock file names an old tag after the edit.** `mix deps.get` keeps
   the lock; use `mix deps.update alambique alambique_testkit` (step 2).
-- **`{:error, {:data_dir_in_use, path}}` when a test starts a node.** Since
-  Alambique 0.3.0 an instance holds an exclusive lock on `<data_dir>/lock`
-  until it stops. Give each instance its own `data_dir`, or stop the first
+- **`{:error, {:data_dir_in_use, path}}` when a test starts a node.** An
+  instance holds an exclusive lock on `<data_dir>/lock` until it stops. Give each instance its own `data_dir`, or stop the first
   one before the second starts.
 - **Tests fail with `Alambique.Replication.Native ... is not available`.** The
   native library of Alambique was not built for this release. Run `mix

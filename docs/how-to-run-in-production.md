@@ -4,9 +4,9 @@
 nodes on a private network, and keep the bucket, the cookie and the tokens safe?
 
 This guide stands alone for the arrangement; it assumes you have run one node
-([README](../README.md#run-it-in-1-minute)) and have a bucket on S3 or a compatible store. It describes what
+([README](../README.md#start-here)) and have a bucket on S3 or a compatible store. It describes what
 to put around the image. It does not set up a particular balancer, cloud or orchestrator: the examples are
-HAProxy, which the [container cluster](how-to-run-a-cluster-in-containers.md) already uses, and Docker.
+HAProxy and Docker.
 
 ## What is exposed, and to whom
 
@@ -14,7 +14,7 @@ HAProxy, which the [container cluster](how-to-run-a-cluster-in-containers.md) al
 | --- | --- | --- |
 | 4000 | The ingress: your workers over HTTP and WebSocket. Plain HTTP, no TLS. | The load balancer, and so the internet. |
 | 4001 | The admin API: health, deploys, tokens, drains. Plain HTTP, bearer token. | The load balancer's health checks and your operators, never the internet. |
-| 4002 | The dashboard, read-only, when `ATANOR_DASHBOARD_TOKEN` is set. It has no connection cap. | Loopback or an operator network. |
+| 4002 | The dashboard, read-only, when `ATANOR_DASHBOARD_TOKEN` is set. | Loopback or an operator network. |
 | 4369 and 9100 to 9110 | Erlang distribution between nodes: `epmd` and the node ports. | The other nodes only. |
 | TCP ports of your manifests | Raw TCP, or TLS terminated by the node. | As your workers need. |
 
@@ -25,8 +25,8 @@ proxy (HAProxy, nginx, a cloud load balancer) must sit in front. Without it, the
 every `Authorization` header of your workers' clients, cross the network in clear.
 
 1. Terminate TLS at the proxy for 4000, and for 4001 and 4002 when anyone reaches them from outside. Forward to
-   the node over the private network. A short HAProxy example, with the style of
-   [cluster/haproxy.cfg](../cluster/haproxy.cfg) (the certificate is a PEM file with the chain and the key):
+   the node over the private network. A short HAProxy example (the certificate is a PEM file with the chain and
+   the key):
 
    ```text
    frontend https
@@ -95,10 +95,10 @@ ATANOR_HTTP_ALLOW='shop=api.payments.example.com;blog=*'
    requests, with their `Authorization` headers, cross it. Open 4369 and 9100 to 9110 between the nodes
    only (a security group, a firewall rule, a Docker network that has no published ports for them). Give the
    cookie its own random value, never the admin token, and pass it as a file:
-   `ATANOR_COOKIE_FILE=/run/secrets/cookie`. Never give the cookie as a command-line argument
-   (`--cookie` of `mix atanor.dev` or of Alambique's Mix tasks): every user of the host sees arguments in the
-   process list; use `RELEASE_COOKIE` or `ALAMBIQUE_COOKIE` in the environment. If the network between the nodes is not private, use TLS
-   distribution ([how-to-run-a-cluster.md](how-to-run-a-cluster.md), "TLS distribution";
+   `ATANOR_COOKIE_FILE=/run/secrets/cookie`. Never give the cookie as a command-line argument:
+   every user of the host sees arguments in the process list; use `RELEASE_COOKIE` in the environment instead.
+   If the network between the nodes is not private, use TLS distribution
+   ([how-to-run-a-cluster.md](how-to-run-a-cluster.md), the TLS distribution step;
    [design §4.3, "what the cookie protects"](design.md#43-limits-on-cell-calls-and-their-errors)).
 
 2. **Set the address each node advertises.** `ATANOR_ADVERTISE` is the host name or IP, with a dot, that the other
@@ -120,7 +120,7 @@ ATANOR_HTTP_ALLOW='shop=api.payments.example.com;blog=*'
 5. **Point the balancer at the nodes, and check `/health/serving`.** The ingress has no health path of its own.
    Check the admin port: `GET /health/serving` with the admin token answers 200 while the node is ready and has a
    quorum, and 503 while it starts, drains or has no quorum. A draining node leaves the rotation by itself. With
-   HAProxy ([cluster/haproxy.cfg](../cluster/haproxy.cfg) is the working file):
+   HAProxy:
 
    ```text
    backend atanor_http
@@ -132,6 +132,7 @@ ATANOR_HTTP_ALLOW='shop=api.payments.example.com;blog=*'
        http-check send meth GET uri /health/serving hdr authorization "Bearer ${ATANOR_ADMIN_TOKEN}"
        http-check expect status 200
        default-server check port 4001 inter 1s fall 2 rise 2
+       timeout tunnel 1h
        server node-1 node-1.internal:4000
        server node-2 node-2.internal:4000
    ```
@@ -154,8 +155,8 @@ ATANOR_HTTP_ALLOW='shop=api.payments.example.com;blog=*'
 
    Also restrict what a deployer may claim ([who may claim what](#who-may-claim-what)).
 
-7. **Enforce the limits that a balancer does better.** The ingress bounds each read and each listener, but it has no
-   deadline for a whole request and no limit per client address. Set header and body timeouts and a per-address
+7. **Enforce the limits that a balancer does better.** The ingress bounds each read and each listener. It does not
+   bound a whole request or the connections of one client address. Set header and body timeouts and a per-address
    connection limit on the balancer ([design §7.1, Limits](design.md#71-http)).
 
 8. **Let a node leave gracefully.** On `SIGTERM` a node drains its cells and stops. `docker stop` must wait longer
@@ -163,13 +164,11 @@ ATANOR_HTTP_ALLOW='shop=api.payments.example.com;blog=*'
    ([the rule](configuration.md#the-stop-grace-period)).
    To replace nodes one by one, see [how-to-replace-a-node.md](how-to-replace-a-node.md).
 
-9. **Size the nodes.** The memory of a node grows with its awake cells, and the node limits itself to the cgroup
+9. **Plan for the cost of a cell.** The memory of a node grows with its awake cells, and the node limits itself to the cgroup
    limit of its container ([cells, limits and memory](configuration.md#cells-limits-memory-and-store-requests)). The
-   data directory `/var/lib/atanor/cells` holds local copies of cells: give it a disk, not a RAM file system, unless
-   you accept the trade ([how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md#keeping-the-data-in-memory)).
-   [How to run the load tests](how-to-run-the-load-tests.md#measured-results) lists what one lab VM measured for
-   requests a second, idle WebSockets and hot cells in 1 CPU and 512 MB or 2 CPUs and 2 GB. Those are measurements
-   of one host, not guarantees: run the round on your hardware before you size.
+   data directory `/var/lib/atanor/cells` holds local copies of cells: give it a disk, not a RAM file system.
+   [cell-cost.md](cell-cost.md) gives what one cell costs in memory, local disk and store traffic, and how to
+   work out your own figures from it.
 
 ## Check it
 

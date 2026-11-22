@@ -1,20 +1,14 @@
 # How to run the load tests
 
-**The question:** How many requests per second, idle WebSocket connections and hot cells does one Atanor
-node hold in 1 CPU and 512 MB (scenario A) or 2 CPUs and 2 GB (scenario B), what does each unit cost in
-CPU, memory and store trips, and what does a node swap cost at the load that node holds?
+**The question:** How do I measure what each unit of load (a request, an idle WebSocket, a hot cell) costs
+in CPU, memory and store trips?
 
-This guide stands alone. There is one way to run a round: `mise run load -- --config FILE`. Everything a
+This page is for contributors. It stands alone. There is one way to run a round: `mise run load -- --config FILE`. Everything a
 round does, from the scenarios to the criteria and the output directory, is a key of that TOML file. The
 scenario is the container cluster of [how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md)
 with one node and no peers; the swap is the one of [how-to-replace-a-node.md](how-to-replace-a-node.md).
-Numbers from a development machine say how the harness works, not what a release holds: run the real
-rounds on the pinned build.
-
-[Alambique](https://github.com/This-Is-NPC/alambique) uses the same round format (`scenarios`, `judging`,
-`host`, `output`, the step plans) with `round.step_timeout_s` at 1800, because its load generator runs inside
-its driver; Atanor's default of 600 covers only the separate generator processes. The names of the keys
-that both have mean the same in both.
+Numbers from a development machine only show how the harness works. Run the rounds on the pinned build
+and on your own hardware.
 
 ## What is measured
 
@@ -36,9 +30,7 @@ that both have mean the same in both.
 | `http-wasm-jobs` | `scoreboard`, [examples/scoreboard](../examples/scoreboard/README.md) (WASM app) | A write records a score and enqueues a ranking job that runs in the same cell; a read counts and ranks. |
 
 `http-wasm` and `http-native` do the same work, so their numbers compare the runtimes. The scoreboard is an app
-workload with a job per write: it makes about 4.7 segment uploads and 14.5 KB per request, against 1.1 uploads and
-436 B for the native worker, so its S3 trips and bytes per request are not comparable with native. A triage found
-a plain WASM guest at 1.16 puts and 410 B per request, so the runtime itself costs no more trips than native.
+workload with a job per write, so its S3 trips and bytes per request are not comparable with native.
 [test/atanor/load_plain_twin_test.exs](../test/atanor/load_plain_twin_test.exs) keeps the two within 25% of each other.
 The scoreboard stays the swap's workload and its rate comes from `http-wasm-jobs`.
 
@@ -56,8 +48,7 @@ The scoreboard stays the swap's workload and its rate comes from `http-wasm-jobs
 ## Steps
 
 1. **Write a round file.** Copy [load/rounds/example.toml](../load/rounds/example.toml), which lists every key
-   at its default, and keep only the keys that you change. [load/rounds/018f.toml](../load/rounds/018f.toml) is
-   the official round 018f: scenarios A and B, the store on disk, fixed ladders.
+   at its default, and keep only the keys that you change.
 
    ```sh
    cp load/rounds/example.toml load/rounds/my-round.toml
@@ -71,15 +62,17 @@ The scoreboard stays the swap's workload and its rate comes from `http-wasm-jobs
    mise run load -- --config load/rounds/my-round.toml --dry-run
    ```
 
-   The dry run of the official round starts like this:
+   The dry run of [load/rounds/example.toml](../load/rounds/example.toml) starts like this (the first case
+   of its six, then the others are cut):
 
    ```text
-   Round load/rounds/018f.toml: 13 cases, results in .../load/results/018f
+   Round load/rounds/example.toml: 6 cases, results in .../load/results/<stamp>
      skip-done on; each generator process is killed after 600 s (round.step_timeout_s); no round timeout
-     1. A/http-native      ladder, values 490, 650, 810, 975 req/s; at most 10 steps (3 refine, 1 confirm, 2 descents), 180 s each
+     1. A/http-native      bisect, values 25, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800 req/s; at most 16 steps (3 refine, 1 confirm, 2 descents), 180 s each
           lab    scenario A
           output A/http-native/
-          hash   54fc3a5d2debb3a79e5d039f705c0cb17474a4feff0aa78a1ce007d4f6ae28c5
+          hash   <sha256 of the resolved case>
+     ...
    ```
 
    `mise run load:config-check -- --check FILE` prints the resolved config and its hash.
@@ -151,16 +144,15 @@ unknown key, a wrong type or a value out of range is refused with a suggestion.
 **Step kinds.** `kind = "bisect"` grows from `start` by `factor` up to `max` and, after the first failing step,
 bisects `refine` times between the last good and the failing value. `kind = "ladder"` runs the fixed `values`
 (strictly growing). `kind = "ceiling"` runs a ladder of `factors` (75%, 100%, 125%, 150%) times `ceiling`, the
-ceiling that an earlier round found: it is the exploration round, a short check of the steps around a known
+ceiling set in the config: it is the exploration of a ceiling, a short check of the steps around a known
 ceiling (set `duration_s = 75`, `refine = 0` and `confirm = false` for the 75 s, no-refine, no-confirm
 version). `confirm = true` repeats the best good step once on a fresh node. When that confirmation fails, the
 ramp goes down the ladder (see [the confirmation descent](#the-confirmation-descent)): `confirm_descents` (default
 2; 0 keeps the single confirmation) is how many lower steps it may try. `reset_each_step = true` (default
 `false`) starts every step of the measure on a fresh node and an empty store (see "Reset before every step"
 below). `per_scenario.A` or `.B` overrides any key of `steps` for that scenario; the scale measure takes
-`ceilings` and `ceiling_factors` per scenario with `[scale.per_scenario.A]`. A `reset_each_step` left at
-`false`, and a `confirm_descents` left at 2, do not change the hash of the step files, so the rounds before them
-keep theirs; setting `confirm_descents` to another value does change the hash of that case.
+`ceilings` and `ceiling_factors` per scenario with `[scale.per_scenario.A]`. Setting `confirm_descents` to
+another value changes the hash of that case.
 
 **Judging rules.** `[judging]` has one table per rule, each with `enabled` and its limits; a rule that is off is not
 judged. A limit is exclusive: a step fails or is INVALID when it goes above it (below it, for a minimum).
@@ -230,8 +222,7 @@ the `config_hash` of its case; a stall repeat keeps its `first_attempt` inside t
 of the resolved config restricted to what affects the case: the scenario, the store with the measure's override, the
 balancer, the node, the judging with the measure's overrides, the generator, the workload, the measure's plan and,
 for the swap and the scale measure, their sections. It leaves out `output`, `host`, `round` and the other measures'
-plans, so a change to one measure leaves the done steps of the others valid. `load:report` also reads the flat layout
-of the older results.
+plans, so a change to one measure leaves the done steps of the others valid.
 
 ### The verdicts
 
@@ -259,15 +250,14 @@ the best step fails, the ramp does not end without a ceiling. It goes down the l
 passed in the ramp or the refinement is confirmed on a fresh node, and so on, up to `confirm_descents` lower values
 (default 2; 0 keeps the single confirmation). The first value that passes twice, its first run and its
 confirmation, is the ceiling: `approved` in `summary.json`. `good` stays the highest step that passed once. If no
-descent confirms, `approved` is null and `confirmed` is false. For example, a `cells` ramp that passed 353, 382 and
-397 and failed 412 and 470 has `good` 397; if 397 fails its confirmation, the ramp confirms 382 and, if that fails
-too, 353.
+descent confirms, `approved` is null and `confirmed` is false. For example, a `cells` ramp that passed 300, 350 and
+400 and failed 450 and 500 has `good` 400; if 400 fails its confirmation, the ramp confirms 350 and, if that fails
+too, 300.
 
 The confirmation of a lower value is `step-VALUE-2.json` (phase `confirm`), as for the best step, so a rerun with
 `--skip-done` finds and reuses it. The report prints both numbers per measure, which step failed its confirmation
 and what the descent tried. `--skip-done` also reuses whole cases that are done: a case with its summary and all
-its step files of the same hash is not run again, so results written before the descent (they have no descent
-steps) keep their verdict until the case is run again with `--no-skip-done` or another `output.name`.
+its step files of the same hash is not run again; `--no-skip-done` or another `output.name` runs it again.
 
 ### The swap rate
 
@@ -278,39 +268,10 @@ from. When there is no summary or no step that passed, and `swap.rate` is not se
 summary has `status: "not run"` and the reason in `not_run`, the report says so, and `mise run load` does not fail
 because of it.
 
-## Measured results
+## Cost of a cell
 
-These are the values of the official round 018f ([load/rounds/018f.toml](../load/rounds/018f.toml)). They are
-measurements of one lab host, not guarantees. The host was one VM with 4 vCPUs and about 5 GB of RAM. The store
-was SeaweedFS on the disk of that VM. Alambique was the pin v0.11.0. The first four scenario A measures ran on
-Atanor commit `3e32ed0` and the rest on `f853a15`. Run the round on your own hardware before you size.
-
-Scenario A is a node limited to 1 CPU and 512 MB. Scenario B is 2 CPUs and 2 GB. The criteria are the ones of
-[how a step is judged](#how-a-step-is-judged) at the defaults of the round file: p99 over 250 ms, 503 answers
-over 1% of all answers, any other 5xx or any error, the working set at 90% of the memory limit. Each value
-below was approved with the refine and confirm phases, unless a row says otherwise. Rates are requests per second.
-
-| Measure | A (1 CPU, 512 MB) | B (2 CPUs, 2 GB) |
-| --- | --- | --- |
-| `http-native` | 590. Failed at 650 with p99 338 ms. | 1641. Failed at 1875 with p99 271 ms. |
-| `http-wasm` | 450. Failed at 800: 3.2% of the answers were refused (`worker_queue`). | No approved value. The best step was 1300 with p99 139 ms. Its confirmation failed because the lab store stalled twice: a limit of the lab, not of the node. |
-| `ws`, connections | 3300. Failed at 4000: working set at 90%. | 22500. Failed at 25000: 695 connections failed and the working set was at 93.6%. |
-| `cells`, hot cells | 397. Failed at 470 with p99 475 ms. | 2438. Failed at 2500 with p99 515 ms. |
-| `http-wasm-jobs` | 68, the top of the ladder: nothing failed. | 109. 112 failed because the lab store stalled twice: a limit of the lab. |
-| `swap` | ok at 68 req/s. 212 responses were 503 `held_elsewhere` during the swap. | ok at 109 req/s. The swap took 11.8 s, the p99 peak was 593 ms and 366 responses were 503 `held_elsewhere`. |
-
-A later run of the `cells` measure on the same code in A failed 397 at p99 267 ms and approved 372. Read the
-ceiling of A cells as between about 370 and 400: that is the run-to-run noise of the lab.
-
-The scale measure ran on scenario A, with one and two nodes behind the balancer:
-
-| Configuration | One node | Two nodes | Gain |
-| --- | --- | --- | --- |
-| `http-native` | 600, confirmed | 998, confirmed | 1.66, an efficiency of 0.83 |
-| `cells` | 372, confirmed | 695, the best step, not confirmed (the confirmation had p99 278 ms) | 1.87, not confirmed |
-
-A node that joined at 900 req/s was judged ok. The requests spread over the nodes in 20.8 s and the cells in
-199.5 s. The scale measure is described in [the scale measure](#the-scale-measure).
+The numbers for a cell are in [cell-cost.md](cell-cost.md). They come from the lab host of this project, so run a
+round on your own hardware to get the cost there.
 
 ## How the environment is built
 
@@ -324,7 +285,7 @@ host (`ATANOR_CLUSTER_UP_TIMEOUT`, `ATANOR_CLUSTER_BUILD_JOBS`, `ATANOR_LAB_DIR`
 | Piece | How |
 | --- | --- |
 | Node | One container, `cpus` and `mem_limit` from the scenario (A: 1 and 512 MB; B: 2 and 2 GB), no peers. |
-| Service data | The node's data directory is a tmpfs (`scenarios.S.data_tmpfs`: 256 MB in scenario A, 1 GB in B). The node derives its disk budget from the size of that file system, and its disk reclaim puts idle cells to sleep at 70% of the budget; B's `cells` step grew the data by 191 MB, so a 256 MB tmpfs (a budget of 205 MB) made the reclaim hibernate cells (1315 awake of 1500) and the step was judged on wake churn. A tmpfs counts against its container's memory limit, so the container's limit (`mem_limit` and `memswap_limit`) is the scenario memory **plus** the tmpfs size (scenario A: 512 + 256 = 768 MB; B: 2048 + 1024 = 3072 MB), so that a full tmpfs cannot get the node OOM-killed. Every node of a cluster gets the same tmpfs, the ones `load-env add-node` starts for the join included. A step or join on 2 or more nodes records each node's `disk_budget_bytes` (`per_node`, and `disk_budget_bytes` in the join file) and adds the note `nodes differ in disk_budget_bytes: node-1 N, node-2 M` when they are not equal. The node itself is given the scenario memory as its limit (`ATANOR_MEMORY_LIMIT`), not the container limit, so its gates and the awake and WASM waiting limits it derives from the limit are those of a 512 MB (A) or 2 GB (B) machine. The tmpfs is a lab stand-in for the disk of a real machine; the node's working set counts it, so a tmpfs that fills takes memory from the 512 MB, which is conservative. `shmem`, the tmpfs, is reported apart. |
+| Service data | The node's data directory is a tmpfs (`scenarios.S.data_tmpfs`: 256 MB in scenario A, 1 GB in B). The node derives its disk budget from the size of that file system, and its disk reclaim puts idle cells to sleep at 70% of the budget. A tmpfs counts against its container's memory limit, so the container's limit (`mem_limit` and `memswap_limit`) is the scenario memory **plus** the tmpfs size (scenario A: 512 + 256 = 768 MB; B: 2048 + 1024 = 3072 MB), so that a full tmpfs cannot get the node OOM-killed. Every node of a cluster gets the same tmpfs, the ones `load-env add-node` starts for the join included. A step or join on 2 or more nodes records each node's `disk_budget_bytes` (`per_node`, and `disk_budget_bytes` in the join file) and adds the note `nodes differ in disk_budget_bytes: node-1 N, node-2 M` when they are not equal. The node itself is given the scenario memory as its limit (`ATANOR_MEMORY_LIMIT`), not the container limit, so its gates and the awake and WASM waiting limits it derives from the limit are those of a 512 MB (A) or 2 GB (B) machine. The tmpfs is a lab stand-in for the disk of a real machine; the node's working set counts it, so a tmpfs that fills takes memory from the 512 MB, which is conservative. `shmem`, the tmpfs, is reported apart. |
 | No swap | Every measured container has `memswap_limit` equal to `mem_limit`, so it cannot swap (zram or disk swap on the host would void the memory numbers). `load-run` checks `docker inspect` (`Memory` set and `MemorySwap` equal to it) and, when readable, the cgroup's `memory.swap.max` (0) before the first step, and refuses to run otherwise (`scripts/load-env check-swap`). |
 | Store | SeaweedFS in its own container (`store.cpus`, `store.memory` plus its tmpfs of `store.tmpfs_size`, outside the node's limit), data in a nodatacow host directory (the default), in tmpfs, or in a Docker volume on the host's disk ([the three](#where-the-store-keeps-its-data)). |
 | Store latency | `tc netem delay` of `store.latency_ms` (25) on the store's network interface, so every answer the store sends waits that long: each trip costs 25 ms more. The node image has `tc`; `atanor-load-tc` joins the store's network namespace with `NET_ADMIN`, applies the qdisc and exits. The qdisc needs no root on the host. A request on a warm connection pays the latency once; a `curl` that opens a connection pays it twice, because the handshake answer waits too. The lab start checks that the round trip from the node to the store grew by at least 80% of the added latency and every step records it (`store_rtt_ms`). Both time the second of two requests of one `curl` run, on the reused connection, which is the cost of one trip as the node pays it; the line reads `store round trip from the node, on a reused connection: A ms -> B ms`. |
@@ -391,8 +352,7 @@ and `/proc/meminfo`. Per step, in this order (the limits are the `[judging]` rul
    store's filesystem used (`store_fill.max_disk_pct`), for example `store disk 93% > 90%`.
 6. **Stall.** The step is INVALID, with a reason that starts with `stall:`, when the lab stopped for a moment
    and failed the step by chance: the generator's own lag p99 (`generator.release_lag_p99_ms` in the step file,
-   how late the generator put requests in its queue) is above `generator_lag.max_ms` (normal steps show 1 to
-   8 ms), or the node's CPU throttling (`node_throttled_ms` in `series`) grew between two consecutive samples by
+   how late the generator put requests in its queue) is above `generator_lag.max_ms` (50 ms by default), or the node's CPU throttling (`node_throttled_ms` in `series`) grew between two consecutive samples by
    more than `throttle.max_jump_ms` and by more than `throttle.jump_factor` times the median growth per sample of
    the step. A node saturated at every sample throttles at every sample, so its median is high and it is not
    flagged. A step whose generator lags is not a measurement of the node. A node above its ceiling answers
@@ -402,9 +362,7 @@ and `/proc/meminfo`. Per step, in this order (the limits are the `[judging]` rul
    (usually p99) and fails, so the ramp refines. A step file from a generator that does not report
    `release_lag_p99_ms` (`null`) is judged on `lag_p99_ms`.
 
-   The store can stall too: a second where its answers all take about a second (observed: 64 node-to-store requests of
-   1.0 to 1.1 s in the last second of a step, in-flight up to 225, p99 651 ms, while the rest of the step was healthy).
-   That is the store's fault, not the node's ceiling. On every attempt, `load-run` reads each node's log from the
+   The store can stall too: for a second or more, its answers all take about a second. That is the store's fault, not the node's ceiling. On every attempt, `load-run` reads each node's log from the
    start of the step (`docker logs --since`, once) and counts the lines `HTTP request PUT store:8333/atanor/atanor/cells/ took N ms`
    (any operation; the target names it and the key's first folders, e.g. `LIST store:8333/atanor/?prefix=atanor/alarms/`)
    with N at or above `store_stall.min_ms`. The evidence is `store_stall` in the step file (`slow_requests`, `max_ms`,
@@ -458,7 +416,7 @@ The node's memory gate and the `ws` and `cells` criterion read the same number: 
 cgroup, `memory.current` minus `inactive_file` (tmpfs included), against the same limit, the scenario memory (A 512 MB, B 2 GB).
 The node refuses new requests at 85% of it (503 `overloaded`, reason `memory`; the step file's `refusing_seen` and
 `refused_memory` show it) and the harness fails the step at `memory.max_pct` (90). The gates do not close open
-WebSockets (design §7.1, a documented decision): sockets opened below 85% keep their memory, and their growth
+WebSockets (design §7.1): sockets opened below 85% keep their memory, and their growth
 (messages, buffers) can take a `ws` step past 90% with no refusal to show for it. The step then fails with the stop reason
 `working set N% of the scenario limit >= 90%`, and `refusing_seen` is true only if the node refused something on the way
 (for example the opening of more sockets). That is a result about the sockets held, not a defect of the gate.
@@ -475,17 +433,16 @@ collapse (memory not given back, a full store, retries), not the rate. Each step
 (`true` for those steps) and `reset_s`, the seconds the reset took. A confirmation after a ramp that never failed
 keeps the warm node. A node that stopped still ends the round.
 
-**Reset before every step.** The store of a ramp accumulates: in round 018f the store container (disk backing,
-memory limit 2 GiB) reached 2044 MB of 2048 MB by the third step of scenario B, so the last steps of
-`http-wasm-jobs` were limited by the store and not by the node. With `reset_each_step = true` for a measure
-(`[measures.http-wasm-jobs.per_scenario.B]`, as in [load/rounds/026.toml](../load/rounds/026.toml)), `load-run` runs the
+**Reset before every step.** The store of a ramp accumulates data, and a full store then limits the later steps, which measure the store
+and not the node. With `reset_each_step = true` for a measure
+(for example `[measures.http-wasm-jobs.per_scenario.B]`), `load-run` runs the
 same `scripts/load-env reset` as above before every step, the first and the confirmation included. The
 store container and its volume are removed and created again, so its memory starts at zero. The bucket
 one-shot container creates the bucket, and the nodes start again, so no node keeps cells whose data lived in the
 old store. `cluster-up` returns when the nodes are healthy and the balancer serves, which needs the store and
 the bucket (the nodes start after the bucket container exits successfully). A step that stalls and is repeated
 resets again; a step reused by `--skip-done` does not. Each step file has `fresh_node` and `reset_s` as for
-the refine steps. Plan 1 to 2 minutes per reset (see the timings below). The reset itself runs only in a real
+the refine steps. Plan 1 to 2 minutes per reset. The reset itself runs only in a real
 lab: the tests stub it.
 
 **The bucket and its garbage.** Each ramp step records `store.bucket` and `store.garbage`, read from the store at
@@ -515,13 +472,13 @@ Every step file also keeps the evidence to tell what the admission gate did, one
 - `runtime.cgroup_memory_max_bytes`: `memory.max` as the node sees it.
 - `store_backing` (`nocow`, `tmpfs` or `disk`, from `load-env info`) and `store.backing`: where the store's data was. With `nocow`, `store.nocow` says whether the C attribute was in effect (`false` only on a filesystem without copy-on-write).
 - `store`: `memory_max_mb`, `limit_mb`, `tmpfs_max_mb`, `tmpfs_size_mb`, `tmpfs_max_pct` (the store's tmpfs fill) and `s3_errors` in the step; on disk, `tmpfs_max_pct` is null and `disk_used_max_mb`, `disk_free_min_mb` and `disk_max_pct` (from `df /data` in the store container) take its place.
-- `refusals`: the 503 answers of the step set against every refusal counter the node reports (`runtime.admission.refused`: `memory`, `disk`, `in_flight`, `wake_gate`, `awake_limit`, `busy`, `disk_full`, `queue_timeout`, `worker_queue`, `nested_calls`, `unavailable`, whatever the node counts, summed over the nodes of a cluster; `unavailable` counts the 503 `unavailable` answers, so those 503s are attributed). `answers_503` are the 503s the generator saw, `by_cause` the growth of each counter, `attributed` their sum and `unattributed` the 503 answers no counter grew for (`max(answers_503 - attributed, 0)`; the counters count calls, so `attributed` may exceed the answers). `notes` says how many stayed unattributed, or that there was no `/runtime` reading. `admission.refused` keeps only the causes the node reports, and `admission.refused_unreported` lists the known ones it does not (an older node), so a missing counter is not read as 0. `admission.awake_limit_by` is the growth over the step of the node's `awake_limit_by` in `/runtime` (the wakes Alambique refused, by reason: `no_wait`, `queue_full`, `wait_expired`, `crowded`, `max_children`), `null` for an older node.
+- `refusals`: the 503 answers of the step set against every refusal counter the node reports (`runtime.admission.refused`: `memory`, `disk`, `in_flight`, `wake_gate`, `awake_limit`, `busy`, `disk_full`, `queue_timeout`, `worker_queue`, `nested_calls`, `unavailable`, whatever the node counts, summed over the nodes of a cluster; `unavailable` counts the 503 `unavailable` answers, so those 503s are attributed). `answers_503` are the 503s the generator saw, `by_cause` the growth of each counter, `attributed` their sum and `unattributed` the 503 answers no counter grew for (`max(answers_503 - attributed, 0)`; the counters count calls, so `attributed` may exceed the answers). `notes` says how many stayed unattributed, or that there was no `/runtime` reading. `admission.refused` keeps only the causes the node reports, and `admission.refused_unreported` lists the known ones it does not, so a missing counter is not read as 0. `admission.awake_limit_by` is the growth over the step of the node's `awake_limit_by` in `/runtime` (the wakes Alambique refused, by reason: `no_wait`, `queue_full`, `wait_expired`, `crowded`, `max_children`), `null` when the node does not report it.
 - `statuses_503_by_reason` (step) and `generator.statuses_503_by_reason` (join): the 503 answers by the reason in their JSON body, `error/reason` such as `overloaded/memory`, `overloaded/queue_timeout` or `unavailable/store_unavailable` (`unknown` for a body without one). The generator (`reasons_503` in its document) parses only the bodies of 503 answers, so the other requests cost nothing more. The status counts keep `503 retry-after` and `503 no retry-after`.
-- `admission.unavailable_by_reason`: the growth over the step of the node's `admission.unavailable_by_reason` in `/runtime`, the `unavailable` 503s by reason. `null` when the node does not report it (an older node), not an empty map.
+- `admission.unavailable_by_reason`: the growth over the step of the node's `admission.unavailable_by_reason` in `/runtime`, the `unavailable` 503s by reason. `null` when the node does not report it, not an empty map.
 - `per_node` (the scale measure, every step of 2 or more nodes): for each node, `throttled_ms` (growth of its CPU throttling in the step) and `throttled_jump_ms` (the largest between two samples), `in_flight_max`, `refused` (its counters' growth), `unavailable_by_reason`, `awake_limit_by`, `wakes` and `compaction` (growth of the node's counters of those names, `null` when it does not report them), `disk_budget_bytes` (what its admission reports), and `runtime_failed` (samples in which its own `/runtime` did not answer) with the last `runtime_error`. Each entry of `series` has `nodes`, the same per sample (`throttled_ms` since the node started, `in_flight`). `node_throttled_ms` stays node-1's, which the stall rule reads.
-- `wake_refusals`: the wake refusals of the step (the growth of the node's `admission.awake_limit_by`, every reason summed) split into the **cold start** and the **steady** state, per node (`nodes`) and summed (`cold_start`, `steady`). The rule: a node's cold start lasts while it keeps waking cells. It ends at the last sample before the first one in which the node's `wakes` counter of `/runtime` did not grow, `cold_start_end_s` (seconds from the first sample, the latest of the nodes) is that sample, and `cold_start_ended` is false when `wakes` grew until the last sample (then the whole step counts as cold start). Refusals counted up to that sample are cold start, the rest steady. A node that has woken nothing yet (`wakes` 0 at its first sample: a fresh node, or one that joins) starts its cold start at its first wake, so the samples before it, which the dense sampling of the `scale` measure reads, do not end it. A step that starts with its cells awake (a warm-up) wakes nothing in its first interval, so all its refusals are steady, even if it wakes cells later. `null` when the node reports neither `wakes` nor `awake_limit_by`. The report shows both numbers next to the step. Round 025b: a fresh node woke its 64 cells in the first seconds (10 wakes at a time, 40 queue places) and refused 911 wakes there, none afterwards.
-- `lazy_restores`: the cells the node restored lazily during the step, from `lazy_restores` of `/runtime` (the node counts Alambique's `[:alambique, :replication, :hydrate]` event). The growth over the step of `ok` and `error` (restores that ended well and badly), `pages` (fetched), `misses` (pages a query waited for) and `ms_total` (the milliseconds the restores took), and `ms_max`, the longest restore the node has run so far (0 when none ended in the step). A read that waits for a page of a lazily restored cell holds a dirty I/O thread until the page comes from the store, so on a node with one dirty I/O thread `misses` is the count of such waits, and the p99 and max of the same step are their cost. A cell is restored lazily only when its files are at least `lazy_restore: [min_bytes:]` (4 MiB by default). The lab's cells are about 16 KB, so without `[node.lazy_restore] min_bytes` every count is 0; `null` for a node that does not report it. The report lists it for the `cells` measure, under "Lazy restores of each step", with the p99 and max of the step. When no step had a lazy restore it says so.
-- `evictions`: what tells why cells slept. The node counts the cells it hibernated under memory pressure (`pressure.hibernated` in `/runtime`): `pressure_hibernated` is its growth over the step, `null` when the node does not report it (no memory limit, or `memory.hibernate_fraction` off). `wakes` is the growth of the node's top-level `wakes` counter of `/runtime` (cells woken), `null` for a node that does not report it. `wake_ms` is the growth of `wake_ms.total` of `/runtime` (the milliseconds those wakes took, `null` for a node that does not report it): `wake_ms / wakes` is the mean wake of the step, which tells whether a p95 rise comes from wakes. `compaction` is the growth of the node's `hibernations.compaction` counters (`none`, `done`, `deadline`, `deadline_error`, `busy`, `error`: hibernations by the outcome of the compaction before the release) with `tail_max`, the longest WAL tail left after a release compaction (the tail found before it on Alambique older than 0.13.0); `null` for a node that does not report it, and the same per node in `per_node`. A `busy` count above 0 means the node's `release_concurrency` was full and cells were released without a pass (`node.compaction.release_concurrency` raises it). A `deadline` count above 0 means cells were released with a long chain, so the next wake of each reads many segments. The other causes are not counted: the awake budget's (`[:alambique, :admission, :evict]`) and the disk reclaim's (`[:atanor, :disk, :reclaim]`) are telemetry events, not in `/runtime` (`counter_in_runtime` is false). For them the step records the evidence around them: `cells_awake_start` and `cells_awake_end` (`/cells`, so `cells_awake_change`), and the node's disk use against its budget (`admission.disk_used_start_bytes`, `disk_used_max_bytes`, `disk_used_max_pct_of_budget`, and `disk_used` in `series`). The disk reclaim starts at `disk.evict_fraction` of the budget (0.7 by default): cells that sleep with the disk use under it were not put to sleep by the reclaim.
+- `wake_refusals`: the wake refusals of the step (the growth of the node's `admission.awake_limit_by`, every reason summed) split into the **cold start** and the **steady** state, per node (`nodes`) and summed (`cold_start`, `steady`). The rule: a node's cold start lasts while it keeps waking cells. It ends at the last sample before the first one in which the node's `wakes` counter of `/runtime` did not grow, `cold_start_end_s` (seconds from the first sample, the latest of the nodes) is that sample, and `cold_start_ended` is false when `wakes` grew until the last sample (then the whole step counts as cold start). Refusals counted up to that sample are cold start, the rest steady. A node that has woken nothing yet (`wakes` 0 at its first sample: a fresh node, or one that joins) starts its cold start at its first wake, so the samples before it, which the dense sampling of the `scale` measure reads, do not end it. A step that starts with its cells awake (a warm-up) wakes nothing in its first interval, so all its refusals are steady, even if it wakes cells later. `null` when the node reports neither `wakes` nor `awake_limit_by`. The report shows both numbers next to the step.
+- `lazy_restores`: the cells the node restored lazily during the step, from `lazy_restores` of `/runtime` (the node counts Alambique's `[:alambique, :replication, :hydrate]` event). The growth over the step of `ok` and `error` (restores that ended well and badly), `pages` (fetched), `misses` (pages a query waited for) and `ms_total` (the milliseconds the restores took), and `ms_max`, the longest restore the node has run so far (0 when none ended in the step). A read that waits for a page of a lazily restored cell holds a dirty I/O thread until the page comes from the store, so on a node with one dirty I/O thread `misses` is the count of such waits, and the p99 and max of the same step are their cost. A cell is restored lazily only when its files are at least `lazy_restore: [min_bytes:]` (4 MiB by default). Cells below that size are restored in full, so the counts stay 0 unless `[node.lazy_restore] min_bytes` is lowered; `null` for a node that does not report it. The report lists it for the `cells` measure, under "Lazy restores of each step", with the p99 and max of the step. When no step had a lazy restore it says so.
+- `evictions`: what tells why cells slept. The node counts the cells it hibernated under memory pressure (`pressure.hibernated` in `/runtime`): `pressure_hibernated` is its growth over the step, `null` when the node does not report it (no memory limit, or `memory.hibernate_fraction` off). `wakes` is the growth of the node's top-level `wakes` counter of `/runtime` (cells woken), `null` for a node that does not report it. `wake_ms` is the growth of `wake_ms.total` of `/runtime` (the milliseconds those wakes took, `null` for a node that does not report it): `wake_ms / wakes` is the mean wake of the step, which tells whether a p95 rise comes from wakes. `compaction` is the growth of the node's `hibernations.compaction` counters (`none`, `done`, `deadline`, `deadline_error`, `busy`, `error`: hibernations by the outcome of the compaction before the release) with `tail_max`, the longest WAL tail left after a release compaction; `null` for a node that does not report it, and the same per node in `per_node`. A `busy` count above 0 means the node's `release_concurrency` was full and cells were released without a pass (`node.compaction.release_concurrency` raises it). A `deadline` count above 0 means cells were released with a long chain, so the next wake of each reads many segments. The other causes are not counted: the awake budget's (`[:alambique, :admission, :evict]`) and the disk reclaim's (`[:atanor, :disk, :reclaim]`) are telemetry events, not in `/runtime` (`counter_in_runtime` is false). For them the step records the evidence around them: `cells_awake_start` and `cells_awake_end` (`/cells`, so `cells_awake_change`), and the node's disk use against its budget (`admission.disk_used_start_bytes`, `disk_used_max_bytes`, `disk_used_max_pct_of_budget`, and `disk_used` in `series`). The disk reclaim starts at `disk.evict_fraction` of the budget (0.7 by default): cells that sleep with the disk use under it were not put to sleep by the reclaim.
 
 The report adds, per measure, the refusals by reason, whether the gate was refusing, the largest in-flight count, the store tmpfs fill and the store 5xx at the approved step and at the first failing one.
 
@@ -539,8 +496,7 @@ statuses and histogram; `load-run` subtracts it from the totals to get the hold.
 
 ### The warm-up of the http measures
 
-The first step of a fresh node woke its cells at the load rate: with the same 25 ms per store trip, B at 450 req/s had a
-p99 of 244.5 ms against 55 ms at 600. An http step (`http-native`, `http-wasm`, `http-wasm-jobs`; not `swap`, and not the
+On a fresh node, cells that wake at the load rate make the requests wait for the wakes. An http step (`http-native`, `http-wasm`, `http-wasm-jobs`; not `swap`, and not the
 join of the scale measure) therefore starts like a `cells` step: each of its `workload.cells` cells is written once, at
 `workload.open_rate` (100 cells/s), then the generator rests 2 s before the steady load of `duration_s` seconds. The warm-up is the
 `opening` of the step file, with the figures of [the opening](#the-opening-of-the-cells-measure) (`planned`, `answers`, `refused`,
@@ -550,17 +506,16 @@ tens of thousands of requests). `workload.warmup = false` goes back to judging t
 
 ### The connection cap of the ws measure
 
-The node holds at most `http.max_connections` connections (16384 by default, plus its 10 acceptors, so 16390;
+The node accepts at most `http.max_connections` connections (16384 by default, plus its 10 acceptors, so 16390;
 [`ATANOR_HTTP_MAX_CONNECTIONS`](configuration.md)). A `ws` ramp that reaches it measures the cap, not the node's
 memory. `node.http_max_connections` sets it on the nodes of the lab. The file is refused when a `ws` plan's highest
 step is not below the cap, and `load-run` refuses to run, before any step, when the cap is not below the node's
 descriptor limit (`ulimit -n` of the container, the Docker default unless set), and says which value to use.
-Every step file records the cap as `http_max_connections` (the configured one, or 16384 when 0). For example, the
-official round sets `http_max_connections = 40000` above its highest `ws` step (30000).
+Every step file records the cap as `http_max_connections` (the configured one, or 16384 when 0). Set it above the highest `ws` step, as in `http_max_connections = 40000` for a plan of 30000.
 
 ## The scale measure
 
-**The question:** how much more does a cluster of 2 or 3 nodes hold than one node, how evenly do the nodes share
+**The question:** how much more does a cluster of 2 or 3 nodes reach than one node, how evenly do the nodes share
 the work, and how fast does a node that joins take its share?
 
 `scale` runs on scenario A (each node 1 CPU and 512 MB; scenario B works the same way) behind the load
@@ -585,7 +540,7 @@ rate = 900             # the join at a fixed rate instead of 1.5 times the 1-nod
 unchanged: the plan of that load for the scenario, the same criteria, the same INVALID rules (host load, swap, full
 store, stall, delivery), the same refine and confirmation. One node starts at its plan; 2 or more start at the
 approved value of one node fewer and grow by `scale.factor` (1.25), because the ceiling can hardly be below it. With
-`scale.ceilings` (`"http-native:1" = 600`: the ceilings of an earlier round) each ramp runs `ceiling_factors` times
+`scale.ceilings` (`"http-native:1" = 1000`: the ceilings that an earlier run found) each ramp runs `ceiling_factors` times
 its ceiling instead, and a configuration without a ceiling is skipped. The working-set criterion of `cells` judges
 the fullest node. A node that stops (any of them) is a result of the step, with the node named in the reason.
 
@@ -618,7 +573,7 @@ also records the balancer's counters (requests, 5xx answers, connection and resp
 generator's totals (503 and errors) for the whole join: the 503 answers of the first window are the overload of
 one node. The join's `rebalance` is what each node's `/runtime` says under `rebalance` at the end of each window
 (just before the next node starts, or when the load ends), and `rebalance_observed` is the same read `join.observe_s`
-after the node started, which is mid-plan when the plan is long (a plan of 35 cells showed 12 moved at that moment);
+after the node started, which is mid-plan when the plan is long;
 a field that is missing is null, and the report says so. The file is `SCENARIO/scale/join/step-RATE.json`.
 
 An ok join keeps the evidence of a failing step, for every node: `step-RATE.node-N.node.log` and
@@ -642,7 +597,7 @@ harness need cores too. The limits are caps, not reservations, so `scale` never 
 `scale.max_nodes` times the node CPUs plus the store's and the balancer's exceed the host's cores it prints a warning
 once, and the scale summary records `cpu_caps_sum`, `host_cores` and `cpu_caps_warning`. The guard is the
 host-saturated rule above: a step whose mean busy cores pass 85% of the host's cores is INVALID, and `largest_fit`
-and the advice say how many nodes the host held.
+and the advice say how many nodes the host could run.
 
 **The default ceilings.** Each ramp ends at its plan's `max` when nothing fails: 20000 req/s for `http-native`, 100000 for
 `cells`. A configuration that gets there has `ceiling_reached: true`: its ceiling is a lower bound, not the node's limit, and
@@ -662,17 +617,16 @@ wait and about 10 s of judging; a reset of 1 to 3 nodes takes 1 to 2 min. A 1-no
 (reset, quiet wait, `join.warmup_s` plus two windows of `join.observe_s` plus `join.node_wait_s`, and
 the last window). `max_nodes = 2` saves a third.
 
-**The report.** `report.md` adds, under `scale`, the gain-per-node table (the same table the
-[cluster guide](how-to-run-a-cluster.md#what-a-cluster-gains-per-node) fills from the official round), the table of
+**The report.** `report.md` adds, under `scale`, the gain-per-node table, the table of
 requests and cells per node, the steps of every configuration and the join.
 
 ## Exploring a ceiling
 
-**The question:** how do I find the defects of the product or the harness before the official round, so that the
-official round runs once?
+**The question:** how do I find the defects of the product or the harness before the real round, so that the
+real round runs once?
 
 An exploration round is unofficial. Its goal is findings, not numbers: nothing it measures is reported. Give each
-measure `kind = "ceiling"` with the `approved` value of a previous round as its `ceiling`: it runs only the steps at
+measure `kind = "ceiling"` with the `approved` value of a previous run as its `ceiling`: it runs only the steps at
 75%, 100%, 125% and 150% of it, and with `duration_s = 75`, `refine = 0` and `confirm = false` it neither bisects nor
 confirms. The ramp stops at the first failing step, as always. The swap has no ramp: set `swap.rate` to the
 `http-wasm-jobs` ceiling. Write one file per scenario, run it, and redo only the measure of a finding after a fix
@@ -689,7 +643,7 @@ a failed criterion (p99, memory, descriptors) or 503 answers, each with `Retry-A
 - a ramp that fails below the previous ceiling by more than 25%, or a swap that loses or duplicates a write;
 - any behavior of the harness that you did not expect (a wrong number, a missing file, a hang).
 
-Each finding becomes a fix before anything else; when every measure is clean, run the official round once.
+Each finding becomes a fix before anything else; when every measure is clean, run the round once.
 Time: a step is 75 s of load, at least 60 s of quiet wait and about 10 s of judging, and a failing step is followed
 by a reset of the node (about 1 min); ten measures take about 80 min (an estimate, not a measurement).
 
@@ -749,13 +703,12 @@ different backings are not comparable with each other.
 
 | `backing` | Where the store's `/data` is | Use it |
 |---|---|---|
-| `nocow` (default) | A directory of the host, `store.nocow_dir`, with the C attribute (nodatacow). | Normally. The store does not take memory from the lab, and on btrfs copy-on-write does not stall it. |
+| `nocow` (default) | A directory of the host, `store.nocow_dir`, with the C attribute (nodatacow). | Normally. The store does not take memory from the lab. On btrfs, the nodatacow attribute turns copy-on-write off for the store's files. |
 | `tmpfs` | Memory, `store.tmpfs_size` (1 GB), counted in the store's memory limit. | When the host's disk must not be touched. A step that fills it is INVALID. |
 | `disk` | The Docker volume `store-data` on the host's disk (`/`, root-only), until the lab is removed. | When you need the Docker-managed volume. On btrfs it is copy-on-write. |
 
-Why `nocow`: with the store in tmpfs, scenario B has only about 200 MiB above the memory floor. A store on a btrfs
-volume stalls the whole store for 1 to 4 s under its small synchronous writes (copy-on-write), and those stalls
-fail steps. nodatacow turns copy-on-write off for the files of the directory (and so their zstd compression).
+Why `nocow`: a store in tmpfs takes memory from the node's scenario. On a btrfs volume, copy-on-write applies to the
+store's small synchronous writes; nodatacow turns it off for the files of the directory (and so their zstd compression).
 
 1. Optional: choose the directory in `[store]`. The default is `${XDG_CACHE_HOME:-$HOME/.cache}/atanor-load/store`. It is
    machine-specific and not part of the case hash, so changing it does not make step files look foreign. Check that the
@@ -780,8 +733,7 @@ fail steps. nodatacow turns copy-on-write off for the files of the directory (an
    `store.backing`, `store.nocow`) and in the report ("store on a nodatacow directory"). A step is INVALID when the
    store's filesystem passes 90% used (`store_fill.max_disk_pct`).
 
-The node's data stays in tmpfs for every backing, so its memory accounting is unchanged, and the 25 ms added per store trip stays.
-Moving a round that relied on the old default (tmpfs) to the new one changes its `config_hash`; set `backing = "tmpfs"` to keep the old hash.
+The node's data stays in tmpfs for every backing, and the added latency per store trip stays.
 
 ## Troubleshooting
 
@@ -807,14 +759,6 @@ Moving a round that relied on the old default (tmpfs) to the new one changes its
   `HEAD` (`git pull` there, after pushing), the round file missing in the clone, or a round already running
   (`--status`). `--status` or `--fetch` say `set output.name` when the results directory cannot be found again.
 
-## Limits
-
-- `memory.peak` is the peak since the container started; the step also records the largest sampled value.
-- One generator host: its own CPU is reported (`generator.cpu_cores`) and counted out of the host load.
-- Hot cells below the memory policy (`memory: awake_fraction`) may hibernate and wake again; the step records
-  the cells awake from the admin API at its end.
-- `--remote` does not copy files: the round file and the code must be in the clone on the host.
-
 Next: [how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md),
-[how-to-replace-a-node.md](how-to-replace-a-node.md), [design.md](design.md) section 12 for the benchmarks that
-run in one VM.
+[how-to-replace-a-node.md](how-to-replace-a-node.md), and [cell-cost.md](cell-cost.md) for the cost of a cell.
+The conditions of the lab are in [known-limitations.md](known-limitations.md).

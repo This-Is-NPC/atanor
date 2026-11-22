@@ -5,11 +5,9 @@
 shut the old one down without losing a write, and see what clients get on the
 way?
 
-This guide stands alone for the swap itself. The commands run on the container
-cluster of [how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md),
-whose task `mise run cluster:swap-run` does the whole swap under load and
-checks it; the steps apply to any deployment (systemd, Kubernetes) with the
-names changed.
+This guide stands alone for the swap itself. Its commands use Docker, the store and the
+secrets of the [local node guide](how-to-run-a-node-locally.md). The steps apply to any
+deployment (systemd, Kubernetes) with the names changed.
 
 ## How it works, in short
 
@@ -33,7 +31,8 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
 - Two nodes that use the same store and prefix, and a balancer that sends to
   both and takes a node out while it answers 503 on `/health/serving`.
 - **A different node name and `node_id` on each.** The id is in the leases
-  (default: the Erlang node name, `atanor@node-1.cluster`). With the same id, B would
+  (default: the Erlang node name, `atanor@<ATANOR_ADVERTISE>`, for example
+  `atanor@node-1.cluster`). With the same id, B would
   treat A's lease as its own and both nodes would write the same cell. Atanor
   cannot detect this; keep the names distinct.
 - **No cluster between them.** Nodes that share a store find each other through it
@@ -48,51 +47,40 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
   `stop.shutdown_ms` (75 000 ms by default). `docker stop` (10 s by default)
   and Kubernetes (30 s) would otherwise send SIGKILL to a node
   that is still handing cells back; its leases then expire as after a crash
-  and B waits up to the TTL plus the skew (32 s). In Compose,
-  `stop_grace_period` is 90 s in [cluster/compose.yml](../cluster/compose.yml)
-  (`ATANOR_CLUSTER_STOP_GRACE`), and the cluster scripts stop nodes with the same
-  derived grace (`shutdown_ms` plus 15 s). Or lower `shutdown_ms` (and
-  `ATANOR_CLUSTER_SHUTDOWN_MS`) and keep the grace above it
+  and B waits up to the TTL plus the skew (32 s). Give the node a grace period of
+  90 s: `docker stop --timeout 90`, or `stop_grace_period: 90s` in Compose. Or lower
+  `stop.shutdown_ms` (`ATANOR_SHUTDOWN_MS`) and keep the grace above it
   ([the rule](configuration.md#the-stop-grace-period)).
-- For the walk-through below: Docker, and the setup of the container cluster
-  guide (`mise install`, `jq`, `curl`, `python3`).
+- Docker, `curl` and `jq`, and the store of the [local node guide](how-to-run-a-node-locally.md)
+  with its secrets in `atanor-secrets`.
 
 ## Steps
 
-1. Start A as the only node, in no group, and deploy the app.
+The steps take A to be the node of the local node guide, `atanor-node`, with its admin port on
+`127.0.0.1:4001`. B is `node-b`, with its port 4000 on `127.0.0.1:4010` and its admin port on `127.0.0.1:4011`.
+`$IMAGE` is the image of the new version.
+
+1. A is the only node, in no group. If it is not running yet, start it and deploy the app as in
+   steps 4 and 5 of the [local node guide](how-to-run-a-node-locally.md).
+
+2. Start B with its own name, the same bucket and cookie, and group `b`:
 
    ```sh
-   ATANOR_CLUSTER_NODES=1 mise run cluster:up
-   mise run cluster:deploy-example
+   docker run -d --name node-b --network atanor-net --stop-timeout 90 \
+     -p 127.0.0.1:4010:4000 -p 127.0.0.1:4011:4001 -v "$PWD/atanor-secrets:/run/secrets:ro" \
+     -e ATANOR_STORE=s3://atanor -e ATANOR_S3_ENDPOINT=http://atanor-store:8333 \
+     -e AWS_ACCESS_KEY_ID_FILE=/run/secrets/access_key -e AWS_SECRET_ACCESS_KEY_FILE=/run/secrets/secret_key \
+     -e ATANOR_ADMIN_TOKEN_FILE=/run/secrets/admin_token -e ATANOR_COOKIE_FILE=/run/secrets/cookie \
+     -e ATANOR_GROUP=b -e ATANOR_ADVERTISE=node-b.local "$IMAGE"
+   curl -s -H "authorization: Bearer $(cat atanor-secrets/admin_token)" http://127.0.0.1:4001/health
+   curl -s -H "authorization: Bearer $(cat atanor-secrets/admin_token)" http://127.0.0.1:4011/health
    ```
 
-   ```text
-   cluster ready: 1 nodes, release ebd7be660c0b-dirty
-   ...
-   scoreboard: active 55c8cdbc30d325d5628e54486c7ddb7bf3528f6355afe153817dafefb7f4061f, revision 1, previous none
-   ```
-
-   Outside the container cluster, the same is: `ATANOR_GROUP` unset on A and set on B, and a
-   node name and `ATANOR_NODE_ID` of their own.
-
-2. Start B: another Compose service of the same project (`node-2`: hostname
-   `node-2`, node `atanor@node-2.cluster`), the same bucket, in group `b` (`ATANOR_CLUSTER_GROUP=b`).
-
-   ```sh
-   docker compose -p atanor-cluster -f cluster/compose.yml up -d --no-deps node-2
-   docker exec atanor-cluster-node-1 sh -c 'curl -s -H "authorization: Bearer $(cat /run/secrets/admin_token)" http://127.0.0.1:4001/health'
-   docker exec atanor-cluster-node-2 sh -c 'curl -s -H "authorization: Bearer $(cat /run/secrets/admin_token)" http://127.0.0.1:4001/health'
-   ```
-
-   ```text
-   {"node":"atanor@node-1.cluster","status":"ok","nodes":["atanor@node-1.cluster"],"workers":1}
-   {"node":"atanor@node-2.cluster","status":"ok","nodes":["atanor@node-2.cluster"],"workers":1}
-   ```
-
-   Each node sees only itself: they are not a cluster. B follows the app's
-   deployment within the poll interval (5 s). If you used a compose file
-   other than ours, the side-by-side services look like this (the part that
-   matters: distinct names, another group, one bucket, a long grace period):
+   Each node lists only itself in `nodes`: they are not a cluster. The first answer is A
+   (`atanor@atanor-node.local`), the second is B (`atanor@node-b.local`). B follows the app's
+   deployment within the poll interval (5 s). If you run your own compose file, the side-by-side
+   services look like this (the part that matters: distinct names, another group, one bucket, a long
+   grace period):
 
    ```yaml
    services:
@@ -116,18 +104,21 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
          ATANOR_NODE_ID: atanor@node-2.cluster
    ```
 
-3. Point the balancer at both. In the container cluster HAProxy finds every
-   `node-N` through DNS and checks `/health/serving` on the admin port every
-   second; B is in rotation after two good checks (about 3 s after its start
-   in our runs). Check it:
+3. Point the balancer at both. A node is in rotation while `/health/serving` on its admin port
+   answers 200, and out while it does not. Check B:
 
    ```sh
-   curl -s "http://127.0.0.1:18083/stats;csv" | awk -F, '$1 == "atanor_http" && $2 ~ /^node/ {print $2, $18}'
+   curl -s -o /dev/null -w '%{http_code}\n' -H "authorization: Bearer $(cat atanor-secrets/admin_token)" \
+     http://127.0.0.1:4011/health/serving
+   ```
+
+   ```text
+   200
    ```
 
    While both are in rotation, a request for a cell that A holds and that
    lands on B is 503 `held_elsewhere` with `Retry-After: 1`. Keep that period
-   short: drain A as soon as B serves (`--overlap` of the task is that time).
+   short: drain A as soon as B serves.
 
 4. Drain A. Either way A keeps serving the cells it still holds, hands each
    back and stops itself with status 0.
@@ -135,19 +126,17 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    SIGTERM (what `docker stop`, systemd and Kubernetes send):
 
    ```sh
-   docker stop --timeout 90 atanor-cluster-node-1
+   docker stop --timeout 90 atanor-node
    ```
 
-   or the admin API, from inside A's container (the node's admin port is not
-   published; `atanor drain` is the same call, against the URL of the node
-   that leaves and not through the balancer):
+   or the admin API, on A's admin port (`atanor drain` is the same call, see [cli.md](cli.md)):
 
    ```sh
-   docker exec atanor-cluster-node-1 sh -c 'curl -s -X POST -H "authorization: Bearer $(cat /run/secrets/admin_token)" http://127.0.0.1:4001/drain'
+   curl -s -X POST -H "authorization: Bearer $(cat atanor-secrets/admin_token)" http://127.0.0.1:4001/drain
    ```
 
    ```text
-   {"node":"atanor@node-1.cluster","state":"drained","errors":[],"hibernated":3,"duration_ms":5}
+   {"node":"atanor@atanor-node.local","state":"drained","errors":[],"hibernated":N,"duration_ms":N}
    ```
 
    `errors` is empty when every cell was handed back and each lease released.
@@ -155,13 +144,12 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
 5. Watch the drain. On A, `GET /drain` says `idle`, `draining` or `drained`;
    `GET /health` stays 200 with `"status":"draining"`, and `/health/ready` and
    `/health/serving` answer 503 `draining`, which is what takes A out of the
-   balancer (within about 2 s: `inter 1s fall 2`). A node with many cells
-   stays in `draining` for the time they need (48 cells took 0.3 s here);
-   poll it. While `draining` the answer also carries `cells_at_start`, `done`
+   balancer. A node with many cells
+   stays in `draining` for the time they need; poll it. While `draining` the answer also carries `cells_at_start`, `done`
    and `left`, once the jobs have finished and the cells are being handed back:
 
    ```sh
-   docker exec atanor-cluster-node-1 sh -c 'curl -s -H "authorization: Bearer $(cat /run/secrets/admin_token)" http://127.0.0.1:4001/drain'
+   curl -s -H "authorization: Bearer $(cat atanor-secrets/admin_token)" http://127.0.0.1:4001/drain
    ```
 
    The node's log says `atanor: SIGTERM received, draining before the VM
@@ -181,8 +169,8 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    every cell.
 
    ```sh
-   docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' atanor-cluster-node-1
-   docker rm atanor-cluster-node-1
+   docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' atanor-node
+   docker rm atanor-node
    ```
 
    ```text
@@ -194,113 +182,10 @@ Design: [§8.11](design.md#811-draining-and-stopping-gracefully).
    ends with a refused connection, not with `drained`; read the exit status and
    the log.
 
-8. Do all of it under load and measure it:
-
-   ```sh
-   ATANOR_CLUSTER_NODES=1 mise run cluster:up && mise run cluster:deploy-example
-   mise run cluster:swap-run --trigger sigterm   # or --trigger api
-   ```
-
-   The task starts the [scoreboard](../examples/scoreboard/README.md) load
-   (`--rooms` 12, `--workers` 8 of at most 12, `--rate` 60 requests per second),
-   runs `--warmup` 25 s with A alone, starts B, waits until it is in rotation,
-   lets both serve `--overlap` 5 s, drains A, waits up to `--drain-wait` 120 s
-   for A to exit, keeps the load `--settle` 30 s, and runs the checker. It
-   exits 1 when an acknowledged write is lost or duplicated, a refused write is
-   stored, any answer was not a 503 with `Retry-After` or a refused connection,
-   or A did not exit with status 0. If B exits or turns unhealthy before it
-   serves, it stops at once with B's exit status and its last log lines. Results
-   are in `--out`.
-
-   Measured on this repository (one Ryzen AI 5 340, 12 schedulers, nodes at
-   1.5 CPUs, data in memory, host load average 2 to 5), one run each:
-
-   | Run | Trigger | Rooms / rate | Overlap | Acked | Refused (503) | Lost / dup. | A exit | Last 503 | p50 / p99 / max before | during the swap | after |
-   | --- | --- | --- | ---: | ---: | --- | --- | ---: | ---: | --- | --- | --- |
-   | 1 | SIGTERM | 12 / 60 | 5 s | 3,623 | 206 `held_elsewhere` | 0 / 0 | 1.5 s | 0.1 s | 5 / 75 / 83 | 9 / 418 / 418 | 5 / 70 / 869 |
-   | 2 | `POST /drain` | 48 / 100 | 5 s | 6,350 | 335 `held_elsewhere` | 0 / 0 | 3.9 s | 1.9 s | 18 / 85 / 105 | 52 / 476 / 655 | 14 / 89 / 100 |
-   | 3 | SIGTERM | 48 / 100 | 0 | 6,036 | 81 `held_elsewhere` | 0 / 0 | 3.1 s | 1.6 s | 22 / 95 / 123 | 33 / 429 / 618 | 16 / 88 / 120 |
-   | 4 | `POST /drain` | 48 / 100 | 0 | 5,982 | 102 `held_elsewhere` | 0 / 0 | 2.8 s | 1.3 s | 17 / 85 / 97 | 50 / 376 / 504 | 19 / 94 / 1,078 |
-
-   Latencies are those of acknowledged writes, in ms. "Swap" is from the
-   start of the drain to the exit of A; "A exit" and "Last 503" are measured
-   from the start of the drain. There was no other status than 503 in any run
-   (no 5xx, no unknown outcome, no refused connection), every 503 had
-   `Retry-After: 1`, and no refused write was stored. The 503s before the drain
-   are the overlap: with both nodes in rotation, half of the requests
-   reached the node that did not hold the cell. The drain itself took 0.3 s
-   for 48 cells (`POST /drain`: `"duration_ms":289`, `"hibernated":48`); the
-   rest of "A exit" is the VM stopping. The 3 s that B needs to enter the
-   rotation are not part of the swap. The `draining` reason did not appear:
-   with this few cells A finished before a request met it.
-
-### A swap with a slow store and many busy cells
-
-The four runs above had no unknown outcome because the store answered in under a
-millisecond. With the store 25 ms away (load scenario A, one CPU and 512 MB per
-node, 12 rooms, 750 requests per second), the swap measure of the load test
-(`mise run load -- --config FILE`, which runs `scripts/cluster-swap-run`) on Alambique 0.6.1 left 22 to 36 requests with no
-answer in 4 of 4 swaps, always from the same 4 of the 12 rooms. They were client
-timeouts at 10 s, not resets, and no acknowledged write was lost or duplicated.
-
-The leases were not the cause: A released all 12 of them in 0.1 s. B then spent
-25 to 32 s restoring those 4 cells, 449 to 822 segments each, one object per
-commit. Alambique's compactor took the first 8 ready cells of its table at each
-tick, and 12 busy cells are all ready again at the next one, so the same 4 cells
-were never compacted. A request for such a cell waits for its wake and has no
-deadline, so its client gave up first.
-
-Alambique 0.7.0 and later fix both parts. The compactor takes the cells that
-waited longest first and forces a pass on a cell whose chain passed
-`compaction: [max_chain_segments:]` (256), so no busy cell keeps a long chain;
-0.8.0 also skips the blocks that a higher level already holds. A restore reads
-ahead as budget frees, 16 requests at once, so a chain that is long anyway is
-read in a fraction of the time (800 segments on 512 MB: 1.4 s instead of 11.9 s
-at 25 ms a request, Alambique's measurement). Atanor no longer lowers
-`restore: [fetch_concurrency:]` on a small node; the bytes in flight
-(`max_inflight_bytes`) are the limit.
-
-Alambique 0.9.0 also compacts the level-0 tail of a cell when A hands it off
-(`compaction: [release_min_tail:]`, 32 files; at most `release_deadline_ms`, 3 s
-per cell; [design §8.11](design.md#811-draining-and-stopping-gracefully)), so B
-restores a short chain.
-
-The same swap on Alambique 0.9.0, with the 5 s wait deadline (scenario A, fresh
-stack for each run, a round file `swap-750.toml` and `mise run load -- --config
-swap-750.toml --no-skip-done`). No request went unanswered and none had an
-unknown outcome, in any run:
-
-```toml
-[round]
-cases = ["A/swap"]
-[output]
-name = "swap-750"
-[store]
-tmpfs_size = "2g"
-[swap]
-rate = 750
-```
-
-
-| Run | No answer | Unknown outcome | Lost | Duplicated | 503 `held_elsewhere` | 503 `queue_timeout` | p99 | p99 of the swap phase | Slow wakes of B | Drain of A |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 0 | 0 | 0 | 0 | 744 | 0 | 166 ms | 445 ms | none | 12 cells in 2,812 ms |
-| 2 | 0 | 0 | 0 | 0 | 764 | 0 | 161 ms | 320 ms | none | 12 cells in 2,357 ms |
-| 3 | 0 | 0 | 0 | 0 | 729 | 0 | 247 ms | 411 ms | none | 12 cells in 2,339 ms |
-
-No request got 503 `worker_queue`. The old node left 3.6 to 4.2 s after SIGTERM
-(6.8 s and a wake of 3.7 to 5.7 s on 0.8.0). The drain of A takes 2.3 to 2.8 s
-for 12 cells, compaction included, well inside `stop.shutdown_ms` and the grace
-period.
-
-A wake of one second or more is still logged by B (`slow wake of ...`, with the
-requests it made by kind and the time they took in the store). A request that
-reaches the 5 s deadline gets 503 `queue_timeout` with `Retry-After`; its write
-was not sent, so the client retries it.
-
-`cluster:swap-run` writes the balancer's request log (`docker-lb.log`) and adds
-`no_answer_by_server` and `no_answer_requests` (id, room, node, balancer state)
-to `result.json`, so a timeout is tied to the node that held it.
+8. Check the data. Take the fingerprint of the [test data](how-to-operate-atanor.md#test-data) before
+   the swap and after it, through B's port 4010. The same rows and hashes mean that no acknowledged
+   write was lost. The container cluster of this repository runs a scripted swap under load; that is
+   a contributor tool ([how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md)).
 
 ## Job claims and alarms during the swap
 
@@ -311,20 +196,19 @@ to `result.json`, so a timeout is tied to the node that held it.
   runs twice ([how-to-use-jobs.md](how-to-use-jobs.md), design.md, section 15.12).
 - **Alarms.** An alarm fires once, even on two nodes that are not a cluster:
   the claim is a conditional update in the cell, which only the holder of the
-  lease can run (tested in `test/atanor/alarms_handback_test.exs`). A draining
+  lease can run. A draining
   node leaves the alarm scheduler, so B scans the shards alone.
 
 ## Troubleshooting
 
 - **The container ends with status 137 (SIGKILL) after the grace period.** The
-  grace period is shorter than the drain (not seen in our runs, which used 90 s). Set it above
-  `stop.shutdown_ms` (`ATANOR_CLUSTER_STOP_GRACE`). The leases were not all
+  grace period is shorter than the drain. Set it above
+  `stop.shutdown_ms` (`docker stop --timeout 90`, or `stop_grace_period` in Compose). The leases were not all
   released and expire as after a crash.
 - **A exits with status 1 and `errors` lists `:deadline`.** The drain ran out
   of `stop.shutdown_ms` or `stop.drain_timeout_ms`. A still stops through the
   supervisor, which hibernates each cell it holds (upload, then release of the
-  lease, up to 30 s per cell), so B usually serves them within seconds, as in
-  our runs (1,300 cells in 2.3 to 3.3 s with a 100 ms deadline). Raise
+  lease, up to 30 s per cell), so B usually serves them within seconds. Raise
   `drain_timeout_ms` or `shutdown_ms` if cells are slow to upload, then repeat.
 - **Clients get 503 `held_elsewhere` for about 32 s.** A was killed (SIGKILL) or
   a cell could not upload before it ended: that cell keeps its lease until the
@@ -339,14 +223,17 @@ to `result.json`, so a timeout is tied to the node that held it.
 - **Many 503 `held_elsewhere` before the drain.** Both nodes are in rotation
   while A holds the cells. Drain A right after B serves, or add B to the
   balancer only when you drain.
-- **`cluster:swap-run` says the node is in a discovery group.** Start the cluster with one
-  node and without `ATANOR_CLUSTER_GROUP`.
+- **A wake is slow.** B logs `slow wake of ...` when a wake takes one second
+  or more, with the store requests it made and their time. A request that
+  reaches the 5 s queue deadline gets 503 `queue_timeout` with `Retry-After`;
+  its write was not sent, so the client retries it.
 
 ## Next steps
 
 - [how-to-run-a-cluster.md](how-to-run-a-cluster.md): the same nodes as one
   cluster, with takeover and the failure detector.
 - [how-to-run-a-cluster-in-containers.md](how-to-run-a-cluster-in-containers.md):
-  the container cluster, its settings and fault scenarios.
+  the container cluster of this repository, for contributors.
 - [how-to-use-the-admin-api.md](how-to-use-the-admin-api.md), step 13, and
   [cli.md](cli.md) (`atanor drain`).
+- [known-limitations.md](known-limitations.md) for what a swap still costs clients.

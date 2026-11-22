@@ -5,8 +5,8 @@ typing indicators, presence, signals) to every WebSocket that watches a cell,
 on any node, without a callback on the cell's owner and without writing to the
 cell?
 
-This guide builds on [how-to-use-websockets.md](how-to-use-websockets.md); read
-its first three steps first. It stands alone otherwise.
+This guide does not stand alone. It builds on [how-to-use-websockets.md](how-to-use-websockets.md);
+read its first three steps first.
 
 ## What you get
 
@@ -87,7 +87,7 @@ with access to the cell (it runs `handle_ws/3` on the owner once per socket).
 5. Try it. Two terminals, after the worker joined both sockets to `room-1`:
 
    ```sh
-   websocat ws://localhost:4123/room/room-1     # type: cursor 10,20
+   websocat ws://localhost:4000/room/room-1     # type: cursor 10,20
    ```
 
    The other terminal prints `{"user":"ada","cursor":"10,20"}`.
@@ -110,8 +110,7 @@ To handle client frames without a call on the owner, also export
 binary frame, before `on-message`, so a guest that exports it pays one more
 instantiation per frame. The call has no access to cells (`not-granted`), and
 `socket` is the connection's id, which the guest can use to stamp what it
-publishes. The Rust test guest
-[channel.rs](../test/fixtures/guests/src/channel.rs) is a complete example.
+publishes.
 
 ## Limits
 

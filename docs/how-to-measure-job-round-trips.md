@@ -5,8 +5,7 @@ which kind, and how many jobs a second does one cell finish when every store
 request is slow?
 
 This guide stands alone. It is for contributors who change the job path
-(claim, finish, alarms, fencing). The results of the baseline are in
-[design §12.13](design.md#1213-store-round-trips-of-a-job).
+(claim, finish, alarms, fencing).
 
 ## Prerequisites
 
@@ -17,7 +16,7 @@ This guide stands alone. It is for contributors who change the job path
 ## Steps
 
 1. Run the measurement with the defaults (100 jobs, 25 and 100 ms of added
-   latency, claim concurrency 1 and 16, both handlers; about ten minutes):
+   latency, claim concurrency 1 and 16, both handlers):
 
    ```sh
    mise run bench:job-trips
@@ -28,9 +27,9 @@ This guide stands alone. It is for contributors who change the job path
 
    ```
    == store latency +25 ms, cell_concurrency 16
-     host at the end of the case: load average: 8.91, 7.20, 7.68
-     enqueue: 100 jobs in 271 ms (369.0 jobs/s, 16 at a time)
-     drain:   100 jobs in 6424 ms (15.6 jobs/s in one cell, 64.2 ms of cell time per job)
+     host at the end of the case: load average: …, …, …
+     enqueue: 100 jobs in … ms (… jobs/s, 16 at a time)
+     drain:   100 jobs in … ms (… jobs/s in one cell, … ms of cell time per job)
      requests, drain (… in all, … per job):
        PUT segment (.ltx)  …
    ```

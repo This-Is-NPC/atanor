@@ -17,32 +17,15 @@ ms ago: every write acknowledged more than 500 ms before the read started is in
 the answer, newer ones may not be. A node that does not own the cell answers it
 from a local copy of the cell that polls the store; if there is no fresh copy
 the owner answers, so the read is always correct. The copy costs disk (the whole
-database) and a few store requests per second on every node that reads the cell.
+database) and store requests to poll for changes, on every node that reads the cell.
+The cost of one cell is in [cell-cost.md](cell-cost.md).
 A request that reads a bounded state **cannot write**.
 
-## A plain read can be old after a change of owner
+## Read your own writes after a change of owner
 
-This is separate from replicas, and it applies to every read, including a
-strong one. When another node takes a cell over (the owner was declared down,
-or in a partition), the old owner can keep answering a plain `query` from its
-own copy until it learns of the new epoch. If it is alive, for example a node
-that was frozen and thawed, the answer can miss writes the new owner has
-already acknowledged. A test shows it: the old owner answers `[0, 1]` for a
-cell whose new owner acknowledged `2` and `3`
-(`test/cluster/takeover_test.exs`, design [§8.12](design.md#812-reads-that-must-not-be-stale)).
-
-How long (read from Alambique's design §5, "Stale reads", not measured here),
-counted from the moment the takeover returns:
-
-- the old owner is told at once if its node still runs the instance: the time of
-  one message and one renewal request;
-- otherwise it learns at its next lease renewal, at most `ttl / 3` plus two
-  requests later;
-- in the worst case, when it cannot reach the store, it stops answering at the
-  end of its lease: `lease_ttl_ms` minus `skew_margin_ms` after its last
-  renewal (30 s by default for `lease_ttl_ms`).
-
-To read what you have just written, ask for the lease to be checked:
+A plain read can answer from a former owner after a takeover. That limit is in
+[known limitations](known-limitations.md). To read what you have just written,
+ask for the lease to be checked:
 
 ```elixir
 Atanor.Env.query(env, {"notes", "room-1"}, "SELECT body FROM notes", [], verify_lease: true)
@@ -50,18 +33,15 @@ Atanor.Env.query(env, {"notes", "room-1"}, "SELECT body FROM notes", [], verify_
 
 The cell runs the statement, reads its lease object from the store, and answers
 only if the lease is still its own. If it is not, the router sends the read to
-the new owner. The cost, read from the code (`lib/atanor/env.ex`, design §8.12):
-one store `GET` per read, or per batch of reads that wait behind a write. It is
-off by default, so a plain read costs no store request. It is not measured here.
+the new owner. The cost is one store `GET` per read, or per batch of reads that
+wait behind a write ([design §8.12](design.md#812-reads-that-must-not-be-stale)).
+It is off by default, so a plain read costs no store request.
 
 `verify_lease: true` cannot be combined with `{:bounded, _}`: it answers
 `{:error, {:invalid_option, :consistency}}`. `Atanor.Cell.query/5` takes the
 same option.
 
-A WASM guest has no equivalent: the `sql` import has no lease flag, and
-`query-bounded` is the opposite (it accepts old data). A guest that must read
-its own writes right after a takeover cannot ask for it. The decision is in
-design §8.12.
+A WASM guest cannot ask for the lease check: the `sql` import has no lease flag.
 
 ## Prerequisites
 
@@ -69,7 +49,7 @@ design §8.12.
 - A worker with a `route_key/2` for the cell. A `Plug` or WASM worker has no
   routing key and already runs on the node that received the request.
 - Disk under `data_dir` for the copies (`<data_dir>/read-replicas`, at most 1
-  GiB per node by default).
+  GiB per node by default). A copy holds the whole cell; see [cell-cost.md](cell-cost.md).
 
 ## Steps
 
@@ -155,15 +135,12 @@ design §8.12.
 5. Check that it works. Alambique emits who answered each bounded read:
 
    ```text
-   [:alambique, :replica, :read] %{lag_ms: 82} %{source: :replica, cell: "notes.room-1", txid: 3}
+   [:alambique, :replica, :read] %{lag_ms: <ms>} %{source: :replica, cell: "notes.room-1", txid: <n>}
    [:alambique, :replica, :read] %{} %{source: :owner, reason: :no_replica, cell: "notes.room-1"}
    ```
 
-   With the placement loop, each switch is an event:
-
-   ```text
-   lab-event hot_cell.replicas %{result: :ok, action: :on, cell: {"log", "hot-1793603605"}} %{reads: 651.3486513486514}
-   ```
+   With the placement loop, each switch emits `[:atanor, :hot_cell, :replicas]`
+   ([telemetry.md](telemetry.md#placement-of-hot-cells)).
 
    `GET /hot-cells` on the admin API lists the cells whose replicas this node
    switched on under `replicas`.

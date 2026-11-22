@@ -9,10 +9,6 @@ and the detail view of a process, port or table, are not served: they show
 process state and node internals that can hold secrets.
 
 The images come from a node with synthetic workers, cells, alarms, jobs and traffic.
-`mise run docs:dashboard-screenshots` regenerates them: it runs
-`scripts/dashboard-demo.exs` (a node over the test workers, with background
-traffic) and captures each page with Playwright through
-`scripts/capture-dashboard.cjs`.
 
 The menu is the same on every page. **Selected node** (top right) picks the node
 whose Routes and Cells you see. **Update every** sets how often the page
