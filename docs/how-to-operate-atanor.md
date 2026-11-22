@@ -174,12 +174,13 @@ others. Each node publishes its port 4000 on `127.0.0.1` at the port its scenari
 read through the worker.
 
 The scoreboard needs no build toolchain. Each release attaches it, already compiled, as
-`atanor-scoreboard-VERSION.tar.gz` (with a `.sha256`); the version below is the one of the image you run.
+`atanor-scoreboard-VERSION.tar.gz` (with a `.sha256`). `VERSION` below is the latest release, the one of
+the `latest` image; set it to the version of the image you run if that is another.
 Download it, then deploy it as in step 5 of the [local node guide](how-to-run-a-node-locally.md), with the
 directory `scoreboard` in place of `atanor-hello`:
 
 ```sh
-VERSION=0.10.0 # x-release-please-version
+VERSION=$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/This-Is-NPC/atanor/releases/latest | sed 's#.*/v##')
 curl -fsSLO "https://github.com/This-Is-NPC/atanor/releases/download/v$VERSION/atanor-scoreboard-$VERSION.tar.gz"
 curl -fsSL "https://github.com/This-Is-NPC/atanor/releases/download/v$VERSION/atanor-scoreboard-$VERSION.tar.gz.sha256" | sha256sum -c -
 tar -xzf "atanor-scoreboard-$VERSION.tar.gz"
