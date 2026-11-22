@@ -35,7 +35,8 @@ is not a supported way to install it.
 
 ## Steps
 
-1. Add Atanor to `mix.exs`, and name the release `atanor`. Use a release tag.
+1. Add Atanor to `mix.exs`, and name the release `atanor`. Use the tag of the release you install: the
+   version in the [README's Install](../README.md#install), prefixed with `v`, in place of `v<version>`.
    Alambique comes with Atanor, so do not declare it.
 
    ```elixir
@@ -49,7 +50,7 @@ is not a supported way to install it.
 
    defp deps do
      [
-       {:atanor, git: "https://github.com/This-Is-NPC/atanor.git", tag: "v0.10.0"}, # x-release-please-version
+       {:atanor, git: "https://github.com/This-Is-NPC/atanor.git", tag: "v<version>"},
        {:phoenix, "~> 1.8"},
        {:phoenix_live_view, "~> 1.2"}
      ]
