@@ -31,7 +31,7 @@ The numbers to plan with are in [capacity.md](capacity.md).
 
 ## What the load rounds found
 
-The go-live numbers of [capacity.md](capacity.md) come from rounds 018f, 026r and 027 (`load/rounds/`).
+The go-live numbers of [capacity.md](capacity.md) come from rounds 018f, 026r, 027 and 028 (`load/rounds/`).
 
 **The lab:**
 
@@ -49,24 +49,30 @@ The go-live numbers of [capacity.md](capacity.md) come from rounds 018f, 026r an
   - A cells passed 397, then failed its repeat with p99 257 ms;
   - B http-native passed 1406, then failed with 287 ms.
   The highest values that passed varied, for example:
-  - A cells: 353 to 397;
+  - A cells: 353 to 426;
   - B cells: 1938 to 2438;
-  - B http-native: 1406 to 1641;
-  - A http-wasm: 375 to 450.
+  - B http-native: 1406 to 1641, and none in round 028, where the first step, 1125, failed with p99 307 ms while
+    79 store writes took 1 s or more;
+  - A http-wasm: 375 to 450;
+  - A http-wasm-jobs: 54 to 68.
+  In round 028 the confirmation descent found A cells at 353: 426 passed once and failed its repeat, then 412 failed
+  its repeat, and 353 passed twice.
 - **The lab store stalls.** In some steps, store answers take 1 to 1.3 s for a few seconds, and a step that
   falls on that window fails its p99. In round 027 this happened at 570 in A http-native, which still passed, and at
   1500 in B http-native, where p99 reached 995 ms.
-- **A job-heavy app makes slow store reads.** With `http-wasm-jobs`, one store read at a time took 1 to 2.4 s, every
-  3 to 5 s, and grew longer over the 20 minutes of the measure. The other loads had at most 2 such reads.
-  - **Inference:** the pattern fits the listing of the alarm index on every tick. The node log now names the
-    operation of every slow store request, so the next round can confirm it.
-  - It was seen only on the lab's SeaweedFS.
+- **A job-heavy app makes slow listings of the alarm index.** With `http-wasm-jobs`, the node lists `alarms/` on every
+  tick, and on the lab's SeaweedFS that listing took 1 to 3.2 s, one at a time, every 3 to 5 s, growing longer over
+  the measure. Round 028's node log names them: 249 of the 272 store requests of 1 s or more in one step were
+  `LIST store:8333/atanor/?prefix=atanor/alarms/`, and the rest were writes of cells. The other loads had no slow
+  listing. It was seen only on SeaweedFS; a store without folders was not measured.
 - **Refusals near the WASM ceiling.** A WASM node near its ceiling answers about 1% of requests with 503 `overloaded`
-  (`worker_queue`). In round 027, B http-wasm refused 1.0% at 1300 requests per second, and A refused 1.3% at 400.
+  (`worker_queue`). B http-wasm refused 1.0% at 1300 requests per second in round 027 and 1.6% in round
+  028; A refused 1.3% and 1.6% at 400.
   Clients must retry a 503 that carries `Retry-After`.
 - **Answers held elsewhere during a node swap.** Replacing a node under load answers some requests with 503
   `held_elsewhere` while the cells move: 212 answers in A at 68 requests per second, and 366 in B at 109, where the
-  swap took 11.8 s and p99 peaked at 593 ms. No acknowledged write was lost or duplicated.
+  swap took 11.8 s and p99 peaked at 593 ms. In round 028, A at 54 requests per second swapped in 4.5 s with 190 such
+  answers and a p99 peak of 391 ms. No acknowledged write was lost or duplicated.
 
 **Workaround.** Plan with the go-live numbers, which are 50% of the lowest value that passed. Retry the 503s that
 carry `Retry-After`. Run a round on your own hardware and store before you size above them
@@ -76,7 +82,8 @@ carry `Retry-After`. Run a round on your own hardware and store before you size 
 
 - The round files are in `load/rounds/`, and the measured values in
   [how-to-run-the-load-tests.md](how-to-run-the-load-tests.md#measured-results).
-- Round 027 ran Atanor 0.9.0 and Alambique 0.15.0, on 2026-11-21.
+- Round 027 ran Atanor 0.9.0 and Alambique 0.15.0, on 2026-11-21. Round 028 ran master `431e255` (0.9.0 with the
+  confirmation descent and the store log), on 2026-11-21 and 22, as a check that may only lower a number.
 - A load round may lower a number of [capacity.md](capacity.md) and adds what it finds here.
 
 ## Open defects
