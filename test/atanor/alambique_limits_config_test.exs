@@ -233,7 +233,14 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
   end
 
   test "the feed selection and object size are passed through to Alambique" do
-    tables = %{"messages" => [omit: ["body"]], "parts" => false, "tags" => [only: ["name"]], "users" => true}
+    tables = %{
+      "messages" => [omit: ["body"]],
+      "parts" => false,
+      "tags" => [only: ["name"]],
+      "users" => true,
+      "events" => [ops: [:insert]],
+      "drafts" => [ops: [:update, :delete], only: ["id"]]
+    }
 
     feed =
       build(feed: [tables: tables, other_tables: :skip, max_object_bytes: 1_048_576]).alambique_opts[
@@ -260,12 +267,38 @@ defmodule Atanor.AlambiqueLimitsConfigTest do
           {[tables: %{"messages" => [omit: [""]]}], ~r/:tables must be a map/},
           {[tables: %{"messages" => [skip: ["body"]]}], ~r/:tables must be a map/},
           {[tables: %{"messages" => [omit: ["a"], only: ["b"]]}], ~r/:tables must be a map/},
+          {[tables: %{"messages" => [ops: []]}], ~r/:tables must be a map/},
+          {[tables: %{"messages" => [ops: [:upsert]]}], ~r/:tables must be a map/},
+          {[tables: %{"messages" => [ops: :insert]}], ~r/:tables must be a map/},
+          {[tables: %{"messages" => [ops: [:insert], ops: [:delete]]}], ~r/:tables must be a map/},
           {[other_tables: :all], ~r/:other_tables must be :capture or :skip/},
           {[other_tables: false], ~r/:other_tables must be :capture or :skip/},
           {[max_object_bytes: 0], ~r/:max_object_bytes must be a positive integer/},
           {[max_object_bytes: "1MB"], ~r/:max_object_bytes must be a positive integer/}
         ] do
       assert_raise ArgumentError, message, fn -> build(feed: bad) end
+    end
+  end
+
+  test "the idle shrink of the awake cells is passed through and checked against the hibernation" do
+    awake = [cache_kib: 512, idle_cache_after_ms: 10_000, idle_cache_kib: 32, idle_gc: false]
+    config = build(idle_timeout_ms: 60_000, awake: awake)
+    assert Keyword.take(config.alambique_opts[:awake], Keyword.keys(awake)) |> Enum.sort() == Enum.sort(awake)
+    assert build(awake: [idle_cache_after_ms: 299_999]).alambique_opts[:awake][:idle_cache_after_ms] == 299_999
+
+    for {bad, message} <- [
+          {[awake: [idle_cache_after_ms: 0]], ~r/:idle_cache_after_ms must be nil or a positive integer/},
+          {[awake: [idle_cache_kib: -1]], ~r/:idle_cache_kib must be a non-negative integer/},
+          {[awake: [idle_gc: 1]], ~r/:idle_gc must be true or false/},
+          {[awake: [idle_cache_after_ms: 300_000]],
+           ~r/:idle_cache_after_ms \(300000\) must be less than :idle_timeout_ms/},
+          {[idle_timeout_ms: 5_000, awake: [idle_cache_after_ms: 5_000]],
+           ~r/must be less than :idle_timeout_ms \(5000\)/},
+          {[awake: [idle_cache_after_ms: 1_000, idle_cache_kib: 512]], ~r/:idle_cache_kib \(512\) must be less than/},
+          {[awake: [idle_cache_after_ms: 1_000, cache_kib: 64]],
+           ~r/:idle_cache_kib \(64\) must be less than :cache_kib/}
+        ] do
+      assert_raise ArgumentError, message, fn -> build(bad) end
     end
   end
 end
