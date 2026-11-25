@@ -71,7 +71,9 @@ dispatch without a canary, create the operation with `"canary_size": 0`, or set
    ```
 
    The index query receives the cursor (empty on the first page) and the page
-   size as its two `?` parameters and must return one target key per row.
+   size as its two `?` parameters and must return one target key per row. It
+   is one statement: text with a second statement after it fails the
+   operation, with `multiple_statements` in its `last_error`.
 
 3. Follow the progress. The counters are saved with each page:
 
