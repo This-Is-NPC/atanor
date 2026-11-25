@@ -137,6 +137,10 @@ and `atanor:worker/call@0.1.0`; outbound HTTP is the standard
    let rows = sql::query(&cell, "SELECT body FROM notes", &[])?;
    ```
 
+   Each `sql` string is one statement: a second statement after it fails with
+   `failed("multiple_statements: ...")` and nothing runs. The host holds the
+   transaction, so `BEGIN`, `COMMIT`, `END` and `ROLLBACK` fail with
+   `failed("not_authorized: ...")`.
    `batch` runs several statements in one transaction. The results of all its
    statements together may not pass the node's `wasm.max_batch_bytes` (64 MiB by
    default): past it the batch is rolled back and fails with
@@ -312,6 +316,11 @@ in memory, see [cell-cost.md](cell-cost.md).
   retry after a moment. If the guest then answers 5xx, the client gets 503
   `overloaded` with `Retry-After`. The limits and their defaults are in
   [design §4.3](design.md#43-limits-on-cell-calls-and-their-errors).
+- **A cell call fails with `failed("multiple_statements: ...")`,
+  `not_authorized` or `nul_in_statement`.** The string held a second
+  statement, a `BEGIN`, `COMMIT`, `END` or `ROLLBACK` (the host holds the
+  transaction), or a NUL byte. Nothing ran. Send one statement per string; in
+  a `batch`, one per `statement`.
 - **`batch` fails with `failed("batch_too_large: ...")`.** The results of all
   its statements together passed the node's `wasm.max_batch_bytes` (64 MiB by
   default). The batch was rolled back: nothing was applied. Split it into

@@ -142,7 +142,8 @@ Atanor passes `alambique:` options through; an unknown key or a wrong value rais
 `ArgumentError` at start. Defaults: `sql: [statement_timeout_ms:]` 10 000,
 `sql: [max_result_rows:]` 100 000, `sql: [max_result_bytes:]` 64 MiB,
 `awake: [max_cells:]` 20 000, `awake: [max_pending:]` 10 000, `awake: [cache_kib:]` 512,
-`idle_timeout_ms` 300 000. `max_wakes` and `max_bytes` are derived from the memory limit.
+`awake: [idle_cache_after_ms:]` `nil` (off; below `idle_timeout_ms` when set), `awake: [idle_cache_kib:]` 64
+(below `cache_kib`), `awake: [idle_gc:]` `true`, `idle_timeout_ms` 300 000. `max_wakes` and `max_bytes` are derived from the memory limit.
 `feed: false` is refused.
 
 Memory: idle cells hibernate from 0.75 of the limit (`hibernate_fraction`); the ingress
