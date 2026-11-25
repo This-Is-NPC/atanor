@@ -166,6 +166,18 @@ defmodule Atanor.CellLimitsTest do
       assert %{status: 200, body: "[count(*)] 5"} = sql(node, "query", "SELECT count(*) FROM notes")
     end
 
+    test "a string with two statements, transaction control or a NUL byte arrives as its code and runs nothing" do
+      node = wasm()
+      two = "INSERT INTO notes (body) VALUES ('a'); INSERT INTO notes (body) VALUES ('b')"
+
+      assert %{status: 500, body: "failed: multiple_statements: " <> _} = sql(node, "execute", two)
+      assert %{status: 500, body: "failed: multiple_statements: " <> _} = sql(node, "query", "SELECT 1; SELECT 2")
+      assert %{status: 500, body: "failed: multiple_statements: " <> _} = sql(node, "batch", two)
+      assert %{status: 500, body: "failed: not_authorized: " <> _} = sql(node, "execute", "COMMIT")
+      assert %{status: 500, body: "failed: nul_in_statement: " <> _} = sql(node, "execute", "SELECT 1\0")
+      assert %{status: 200, body: "[count(*)] 0"} = sql(node, "query", "SELECT count(*) FROM notes")
+    end
+
     test "a batch whose results pass wasm max_batch_bytes fails and applies nothing" do
       node = WasmCase.start([{"cell", "cell", cells: %{"notes" => @notes}}], wasm: [max_batch_bytes: 55])
       two = "SELECT '#{String.duplicate("x", 12)}'\nSELECT '#{String.duplicate("y", 12)}'"

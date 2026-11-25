@@ -33,7 +33,12 @@ interface sql {
     /// `": "`: `statement_timeout` (the statement ran past the cell's
     /// `sql.statement_timeout_ms`; a batch is undone), `result_too_large` (more
     /// rows or bytes than `sql.max_result_rows` or `sql.max_result_bytes`),
-    /// `bad_params` (a wrong number or type of parameters), `overloaded` (the
+    /// `bad_params` (a wrong number or type of parameters),
+    /// `multiple_statements` (the string holds more than one statement; a
+    /// string is one statement and nothing ran), `not_authorized` (`BEGIN`,
+    /// `COMMIT`, `END` or `ROLLBACK` in a write: the host holds the
+    /// transaction), `nul_in_statement` (the text
+    /// holds a NUL byte; nothing ran), `overloaded` (the
     /// node is at its `awake` limits) and `busy` (too many calls wait on this
     /// cell). The last two did not run the call: retry after a moment. The
     /// ingress answers 503 `overloaded` when the guest then responds 5xx.
@@ -53,7 +58,8 @@ interface sql {
   /// partitioned namespace; the logical address is refused there.
   partition: func(cell: address, partition-key: string) -> result<address, error>;
 
-  /// Runs a read statement.
+  /// Runs a read statement. `sql` is one statement: comments, spaces and
+  /// `;` may follow it, another statement may not (`multiple_statements`).
   query: func(cell: address, sql: string, params: list<value>) -> result<rows, error>;
 
   /// Runs a read statement and accepts an answer that misses writes
@@ -64,7 +70,8 @@ interface sql {
   /// for a read that must see every acknowledged write.
   query-bounded: func(cell: address, sql: string, params: list<value>, max-lag-ms: u32) -> result<rows, error>;
 
-  /// Runs a write statement; rows come back for `RETURNING`.
+  /// Runs a write statement; rows come back for `RETURNING`. `sql` is one
+  /// statement, as in `query` and in each statement of `batch`.
   execute: func(cell: address, sql: string, params: list<value>) -> result<rows, error>;
 
   /// Runs the statements in order in one transaction: all commit or none do.
