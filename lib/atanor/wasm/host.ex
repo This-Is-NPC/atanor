@@ -20,7 +20,9 @@ defmodule Atanor.Wasm.Host do
     overloaded: "this node is at its awake limits; retry later",
     busy: "too many calls are waiting on this cell; retry later",
     batch_too_large: "the results of the batch are over the wasm max_batch_bytes; nothing was applied",
-    message_too_large: "the message is over the wasm max_cell_message_bytes"
+    message_too_large: "the message is over the wasm max_cell_message_bytes",
+    not_authorized: "BEGIN, COMMIT, END and ROLLBACK are not allowed; the host holds the transaction",
+    nul_in_statement: "the SQL text holds a NUL byte; nothing ran"
   }
   @limit_errors Map.keys(@limit_messages)
 
@@ -243,6 +245,12 @@ defmodule Atanor.Wasm.Host do
 
   def error({:error, reason}) when reason in @limit_errors,
     do: {:error, :failed, "#{reason}: #{Map.fetch!(@limit_messages, reason)}"}
+
+  # One string is one statement; Alambique runs nothing when another follows.
+  def error({:error, {:multiple_statements, tail}}),
+    do:
+      {:error, :failed,
+       "multiple_statements: one string holds one statement; nothing ran (another starts at #{inspect(String.slice(tail, 0, 40))})"}
 
   # The transaction was rolled back, so nothing was applied.
   def error({:error, {:store, _}}),
