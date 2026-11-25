@@ -124,6 +124,29 @@ defmodule Atanor.SweepsTest do
     assert until(fn -> match?({:ok, %{"state" => "done"}, _}, Sweeps.get(node.name, op["id"])) end)
   end
 
+  test "an index query with a second statement fails the operation and dispatches nothing" do
+    {node, _world} = start()
+    wake(node, ~w(a idx))
+    {:ok, _} = Cell.execute(node.name, {"jobs", "idx"}, "CREATE TABLE mailboxes (key TEXT PRIMARY KEY)")
+    {:ok, _} = Cell.execute(node.name, {"jobs", "idx"}, "INSERT INTO mailboxes (key) VALUES ('a')")
+
+    op =
+      operation(node, %{
+        "selector" => %{
+          "kind" => "index",
+          "cell" => %{"namespace" => "jobs", "key" => "idx"},
+          "namespace" => "jobs",
+          "sql" => "SELECT key FROM mailboxes WHERE key > ? ORDER BY key LIMIT ?; DELETE FROM mailboxes"
+        }
+      })
+
+    assert until(fn -> match?({:ok, %{"state" => "failed"}, _}, Sweeps.get(node.name, op["id"])) end)
+    {:ok, failed, _} = Sweeps.get(node.name, op["id"])
+    assert failed["last_error"] =~ "multiple_statements"
+    assert effects(node, ~w(a)) == [{"a", []}]
+    assert {:ok, %{rows: [["a"]]}} = Cell.query(node.name, {"jobs", "idx"}, "SELECT key FROM mailboxes")
+  end
+
   test "pause stops dispatch and resume continues from the cursor" do
     {node, _world} = start(sweeps: [rate_per_s: 1, concurrency: 1, page_size: 1])
     wake(node, ~w(a b c))
