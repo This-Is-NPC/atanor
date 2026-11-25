@@ -161,6 +161,9 @@ that follows the headers of `messages` and nothing of `attachments`:
 
 Each entry is `true` (the whole table, the default), `false` (nothing),
 `[omit: columns]` (all but these) or `[only: columns]` (the key and these).
+`[ops: [:insert]]` keeps only those operations (`:insert`, `:update`,
+`:delete`) of the table; it goes alone or with one of `omit:` and `only:`, as in
+`[ops: [:insert, :update], only: ["subject"]]`.
 `other_tables: :skip` leaves out the tables the map does not name; the default
 `:capture` keeps them. Names are non-empty strings. A wrong shape stops the
 instance at start with a message that names the key.
@@ -172,6 +175,10 @@ What changes for a subscriber:
   knowing which of the two you mean.
 - The key columns are always in `row` and in `key`.
 - An `UPDATE` that changes only omitted columns produces no change.
+- An operation left out of `ops:` produces no change: with
+  `[ops: [:insert, :update]]` a `DELETE` on the table never reaches a
+  subscriber. An `UPDATE` that changes the key is a `delete` of the old key and
+  an `insert` of the new one, each kept only when listed.
 - Read the omitted value from the cell, in a call that owns it
   (`Atanor.Env.query/5`); the feed does not have it.
 - `_atanor_*` tables are internal and never in the feed, so an entry naming one

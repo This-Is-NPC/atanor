@@ -91,7 +91,10 @@ none ([how-to-write-a-wasm-worker.md](how-to-write-a-wasm-worker.md)).
    ```
 
    A migration is `[version, sql]`, with versions counting up from 1. `sql` is
-   one statement or a list of statements. To change the schema later, append a
+   one statement or a list of statements. Each string is one statement: a
+   string with a second statement after it fails with `multiple_statements`.
+   Each version runs in one transaction that the node holds, so `BEGIN`,
+   `COMMIT`, `END` and `ROLLBACK` are refused (`not_authorized`). To change the schema later, append a
    migration; never edit one that shipped. The full format is in
    [design.md](design.md#3-workers).
 
@@ -211,6 +214,15 @@ from a replica there and cannot write
   more than `max_result_rows` (100,000) or `max_result_bytes` (64 MiB), or got
   the wrong number of parameters. Narrow the statement; repeating it fails the
   same way. Inside `transaction/4`, pass the error to `Alambique.Tx.rollback/2`.
+- **`{:error, {:multiple_statements, tail}}`, `{:error, :not_authorized}` or
+  `{:error, :nul_in_statement}` from a cell call.** One string is one
+  statement: comments, spaces and `;` may follow it, another statement may not.
+  A transaction is the node's: `BEGIN`, `COMMIT`, `END` and `ROLLBACK` are
+  refused, `SAVEPOINT` is allowed. The text may not hold a NUL byte. Nothing
+  ran.
+- **`{:error, :inactive_transaction}` from a statement inside `transaction/4`.**
+  The transaction handle works only in the process that runs the function, the
+  cell's, and only while it runs. Do not pass it to a task or keep it.
 - **`{:error, :overloaded}` or `{:error, :busy}` from a cell call.** The node is
   at `alambique: [awake: [max_cells:, max_wakes:, max_bytes:]]` (every awake
   cell has callers waiting, so none can hibernate to make room) or `max_pending`

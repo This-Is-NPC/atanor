@@ -307,6 +307,16 @@ working set stays at the mark trades memory for wakes. The count is `pressure`
 in `GET /runtime` and `[:atanor, :memory, :pressure]`
 ([telemetry](telemetry.md)).
 
+**Shrinking idle cells.** `alambique: [awake: [idle_cache_after_ms: ms]]`
+(off by default) makes an awake cell with no call for `ms` lower its page
+cache from `cache_kib` (512) to `awake: [idle_cache_kib:]` (64) and, with
+`awake: [idle_gc: true]` (the default), collect its own garbage. The next call
+gives the cell its full cache back. `ms` must be below `idle_timeout_ms` and
+`idle_cache_kib` below `cache_kib`; the node refuses to start otherwise. The
+cost is cold pages: the first call after a shrink reads its pages again, and a
+cell called a little less often than every `ms` meets a cold cache on every
+call. The options apply to every cell of the node.
+
 **Refusing requests before the node dies.** The ingress refuses with 503
 `overloaded` and `Retry-After`, before it reads the route, the token or the
 body, when either gate is closed:
