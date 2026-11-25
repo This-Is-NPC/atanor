@@ -36,14 +36,17 @@ defmodule Atanor.Overview do
   end
 
   @doc """
-  The circuit breaker of each store location, read from its state without a request (design §10.2).
+  The circuit breakers of each store location, read from their state without a request (design §10.2): the
+  location's own and, under `feed`, the one of its feed objects.
   It never changes `ready/1`: see design §10.2 for why an open breaker does not take the node out.
   """
   def store_breakers(name) do
     for {location, breaker} <- Alambique.breaker_status(alambique(name)), into: %{} do
-      {location, %{breaker | state: Atom.to_string(breaker.state)}}
+      {location, breaker |> state_string() |> Map.update!(:feed, &state_string/1)}
     end
   end
+
+  defp state_string(breaker), do: %{breaker | state: Atom.to_string(breaker.state)}
 
   @doc "The state of this node's drain, as the admin API shows it (design §8.11)."
   def drain(name), do: name |> Atanor.drain_status() |> drain_body()

@@ -394,11 +394,14 @@ docker logs NODE 2>&1 | grep -E "breaker|store failure|store error"
 ```
 
 ```text
-{"default":{"state":"open","failures":5,"since_ms":...}}
+{"default":{"state":"open","failures":5,"since_ms":...,"feed":{"state":"open","failures":5,"since_ms":...}}}
 atanor: store failure: :head on default: reason=:timeout_recv counted=true
 atanor: store breaker open for 5000 ms (:failures): default
 atanor: store breaker closed: default
 ```
+
+A store that fails only for the change-feed objects opens the feed breaker of the location alone: `.feed.state`
+is `open`, the log says `atanor: store feed breaker open ...`, and its failures end with `breaker=feed`.
 
 With the breaker open, a request for a cold cell gets 503 `store_unavailable` at once, and `/health/ready` stays
 200. The breaker closes by itself after the 5 s cool-down and one good probe. While the breaker is still closed,
