@@ -56,13 +56,16 @@ Every write is logged and emits `[:atanor, :admin, :action]`.
    ```
 
    ```json
-   {"node":"atanor@atanor-node.local","status":"ok","nodes":["atanor@atanor-node.local"],"workers":1,"store":{"<location>":{"state":"closed","since_ms":1731456000000,"failures":0}}}
+   {"node":"atanor@atanor-node.local","status":"ok","nodes":["atanor@atanor-node.local"],"workers":1,"store":{"<location>":{"state":"closed","since_ms":1731456000000,"failures":0,"feed":{"state":"closed","since_ms":1731456000000,"failures":0}}}}
    ```
 
    `store` is the circuit breaker of each store location: `closed`, `open`
    (requests fail at once with 503 `store_unavailable`) or `half_open` (the next
    request is the probe), since when (`since_ms`, Unix milliseconds) and the
-   failures in a row. It is read from the node without a request to the store.
+   failures in a row. `feed` is the breaker of the location's change-feed
+   objects, with the same fields: a store that fails only for those opens
+   `feed` and leaves the rest closed. It is read from the node without a
+   request to the store.
    An open breaker does not change `status` or the readiness paths below: the
    node still serves its awake cells, and the other nodes share the store
    ([design §10.2](design.md#102-admin-api)).

@@ -39,16 +39,16 @@ defmodule Atanor.StoreLog do
 
   @doc false
   def handle([:alambique, :store, :breaker, :open], %{cooldown_ms: cooldown}, meta, _) do
-    Logger.warning("atanor: store breaker open for #{cooldown} ms (#{inspect(meta.reason)}): #{meta.location}")
+    Logger.warning("atanor: #{breaker(meta)} open for #{cooldown} ms (#{inspect(meta.reason)}): #{meta.location}")
   end
 
   def handle([:alambique, :store, :breaker, :close], _, meta, _),
-    do: Logger.info("atanor: store breaker closed: #{meta.location}")
+    do: Logger.info("atanor: #{breaker(meta)} closed: #{meta.location}")
 
   def handle([:alambique, :store, :failure], _, %{operation: operation, reason: reason, counted: counted} = meta, _) do
     Logger.warning(
       "atanor: store failure: #{inspect(operation)} on #{meta.location}: reason=#{inspect(reason, limit: 8)}" <>
-        crash(meta) <> " counted=#{counted}"
+        crash(meta) <> " counted=#{counted}" <> if(meta[:class] == :feed, do: " breaker=feed", else: "")
     )
   end
 
@@ -90,6 +90,10 @@ defmodule Atanor.StoreLog do
   def handle(_event, _measurements, _meta, _config), do: :ok
 
   # `kind` and `detail` are nil unless the store crashed.
+  # Each location has two breakers: `:feed` for the feed objects and `:default` for the rest.
+  defp breaker(%{class: :feed}), do: "store feed breaker"
+  defp breaker(_meta), do: "store breaker"
+
   defp crash(%{kind: kind, detail: detail}) when kind != nil, do: " kind=#{inspect(kind)} detail=#{detail_text(detail)}"
   defp crash(_meta), do: ""
 

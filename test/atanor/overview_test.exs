@@ -74,7 +74,7 @@ defmodule Atanor.OverviewTest do
     env = Env.new(node.name, deployment)
 
     assert {:ok, _} = Env.execute(env, {"notes", "a"}, "INSERT INTO notes (body) VALUES ('x')")
-    assert [%{state: "closed", failures: 0}] = Map.values(Overview.health(node.name).store)
+    assert [%{state: "closed", failures: 0, feed: %{state: "closed"}}] = Map.values(Overview.health(node.name).store)
 
     Store.fail(store)
     {:error, _} = Env.execute(env, {"notes", "b"}, "INSERT INTO notes (body) VALUES ('x')")

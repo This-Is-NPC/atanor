@@ -22,6 +22,19 @@ defmodule Atanor.StoreLogTest do
     assert log =~ "store breaker closed: s3://bucket"
   end
 
+  test "the feed breaker of a location says so when it opens, closes and counts a failure" do
+    meta = %{instance: :x, location: "s3://bucket", reason: :failures, class: :feed}
+    log = emit([:store, :breaker, :open], %{cooldown_ms: 5_000}, meta)
+    assert log =~ "store feed breaker open for 5000 ms (:failures): s3://bucket"
+
+    log = emit([:store, :breaker, :close], %{}, Map.delete(meta, :reason))
+    assert log =~ "store feed breaker closed: s3://bucket"
+
+    failure = %{meta | reason: :timeout} |> Map.merge(%{operation: :get, counted: true})
+    assert emit([:store, :failure], %{}, failure) =~ "reason=:timeout counted=true breaker=feed"
+    assert emit([:store, :failure], %{}, %{failure | class: :default}) =~ ~r/counted=true$/m
+  end
+
   test "a store failure is logged with its operation, reason and whether the breaker counted it" do
     meta = %{instance: :x, location: "s3://bucket", operation: :head, reason: {:http, 503}, counted: true}
     log = emit([:store, :failure], %{}, meta)
