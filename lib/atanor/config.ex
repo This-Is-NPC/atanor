@@ -452,7 +452,10 @@ defmodule Atanor.Config do
       max_wake_queue: :positive,
       max_pending: :positive,
       cache_kib: :positive,
-      max_bytes: :positive_or_nil
+      max_bytes: :positive_or_nil,
+      idle_cache_after_ms: :positive_or_nil,
+      idle_cache_kib: :non_negative,
+      idle_gc: :boolean
     ],
     wal: [
       checkpoint_bytes: :positive,
@@ -509,6 +512,10 @@ defmodule Atanor.Config do
   # The clock and the skew margin of the leases are those of the Alambique instance.
   @alambique_clock {Alambique.Clock.System, nil}
   @alambique_skew_margin_ms 2_000
+  # Alambique's defaults, for the checks of `awake:` against them.
+  @alambique_idle_timeout_ms 300_000
+  @alambique_cache_kib 512
+  @alambique_idle_cache_kib 64
 
   @doc "The clock the cells' leases use: `{module, config}`."
   @spec lease_clock(t) :: {module, term}
@@ -1107,6 +1114,8 @@ defmodule Atanor.Config do
       end
     end
 
+    idle_cache!(opts)
+
     # Atanor reads the change feed (tailer, subscriptions, rewind markers), so it cannot be turned off.
     # Zero turns holding off; `linger_ms: 0` never waits and `stop_publish_ms: 0` publishes nothing at a stop.
     # `retention_ms: nil` keeps the feed objects for ever; unset, Alambique's seven days apply.
@@ -1115,6 +1124,25 @@ defmodule Atanor.Config do
     check!(Keyword.keyword?(feed), ":alambique :feed must be a keyword list")
     alambique_group!(:feed, Keyword.take(feed, Keyword.keys(@alambique_feed_limits)), @alambique_feed_limits)
     feed_linger!(Keyword.merge(@feed_groups, feed))
+  end
+
+  # A shrink at or after the hibernation never happens, and a shrunk cache must be smaller than the full one.
+  defp idle_cache!(opts) do
+    awake = Keyword.get(opts, :awake, [])
+    after_ms = awake[:idle_cache_after_ms]
+    idle_timeout = Keyword.get(opts, :idle_timeout_ms, @alambique_idle_timeout_ms)
+    kib = Keyword.get(awake, :idle_cache_kib, @alambique_idle_cache_kib)
+    cache = Keyword.get(awake, :cache_kib, @alambique_cache_kib)
+
+    check!(
+      is_nil(after_ms) or after_ms < idle_timeout,
+      ":alambique :awake :idle_cache_after_ms (#{after_ms}) must be less than :idle_timeout_ms (#{idle_timeout})"
+    )
+
+    check!(
+      is_nil(after_ms) or kib < cache,
+      ":alambique :awake :idle_cache_kib (#{kib}) must be less than :cache_kib (#{cache})"
+    )
   end
 
   # A lingering sender holds batches the feed's window has not seen yet, so `linger_ms` must stay well below
@@ -1184,15 +1212,31 @@ defmodule Atanor.Config do
     do: is_list(value) and value -- [:request, :shutdown, :evict, :idle, :frozen] == []
 
   # The rules of Alambique's own check: names are non-empty valid strings, a selection is a boolean or a list
-  # of exactly one `omit:` or `only:` with a list of column names.
+  # of at most one `omit:` or `only:` with a list of column names and at most one `ops:`, a non-empty list of
+  # `:insert`, `:update` and `:delete`.
   defp limit?(:tables, tables) when is_map(tables),
     do: Enum.all?(tables, fn {name, spec} -> name?(name) and selection?(spec) end)
 
   defp limit?(:tables, _), do: false
 
   defp selection?(spec) when is_boolean(spec), do: true
-  defp selection?([{kind, columns}]) when kind in [:omit, :only], do: is_list(columns) and Enum.all?(columns, &name?/1)
+
+  defp selection?([_ | _] = spec) do
+    if Keyword.keyword?(spec) do
+      {ops, columns} = Keyword.split(spec, [:ops])
+      length(ops) <= 1 and Enum.all?(ops, &ops?/1) and (columns == [] or columns?(columns))
+    else
+      false
+    end
+  end
+
   defp selection?(_), do: false
+
+  defp columns?([{kind, columns}]) when kind in [:omit, :only], do: is_list(columns) and Enum.all?(columns, &name?/1)
+  defp columns?(_), do: false
+
+  defp ops?({:ops, [_ | _] = ops}), do: Enum.all?(ops, &(&1 in [:insert, :update, :delete]))
+  defp ops?(_), do: false
 
   defp name?(name), do: is_binary(name) and name != "" and String.valid?(name)
 
@@ -1206,7 +1250,8 @@ defmodule Atanor.Config do
 
   defp must(:tables),
     do:
-      "a map of non-empty table name to true, false, [omit: columns] or [only: columns] (columns are non-empty strings)"
+      "a map of non-empty table name to true, false, or a list of ops: (a non-empty list of :insert, :update and :delete) " <>
+        "and at most one of omit: or only: (non-empty column name strings)"
 
   defp hot_cells!(nil, _alambique), do: @hot_cells
 
