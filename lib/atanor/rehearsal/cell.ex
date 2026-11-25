@@ -5,7 +5,9 @@ defmodule Atanor.Rehearsal.Cell do
   # and describe the result. Alambique applies a migration through an
   # `Alambique.Tx`, which only exists inside a live cell, so the loop below is
   # the file-level equivalent: one transaction per version that also sets
-  # `PRAGMA user_version`.
+  # `PRAGMA user_version`, with each statement held to the rules of a
+  # migration in a live cell: one statement per string and no transaction
+  # control. Every statement gets what is left of the cell's time budget.
 
   alias Alambique.Sqlite
   alias Atanor.Restore
@@ -73,13 +75,9 @@ defmodule Atanor.Rehearsal.Cell do
   defp open_and_migrate(path, migrations, options, deadline) do
     case Sqlite.open(path) do
       {:ok, conn} ->
-        {:ok, watchdog} =
-          :timer.apply_after(max(deadline - System.monotonic_time(:millisecond), 0), Sqlite, :interrupt, [conn])
-
         try do
           migrate(conn, migrations, options, deadline)
         after
-          :timer.cancel(watchdog)
           Sqlite.close(conn)
         end
 
@@ -91,14 +89,14 @@ defmodule Atanor.Rehearsal.Cell do
   defp migrate(conn, migrations, options, deadline) do
     max_version = migrations |> Enum.map(&elem(&1, 0)) |> Enum.max()
 
-    with :ok <- Sqlite.execute(conn, "PRAGMA recursive_triggers = ON"),
-         {:ok, from} <- user_version(conn),
+    with {:ok, _} <- run(conn, "PRAGMA recursive_triggers = ON", deadline),
+         {:ok, from} <- user_version(conn, deadline),
          :ok <- not_too_new(from, max_version),
-         {:ok, before} <- describe(conn),
-         :ok <- drop_capture_triggers(conn),
+         {:ok, before} <- describe(conn, deadline),
+         :ok <- drop_capture_triggers(conn, deadline),
          {:ok, applied} <- apply_all(conn, Enum.filter(migrations, &(elem(&1, 0) > from)), deadline),
-         {:ok, integrity} <- integrity(conn, options.integrity_check),
-         {:ok, after_state} <- describe(conn) do
+         {:ok, integrity} <- integrity(conn, options.integrity_check, deadline),
+         {:ok, after_state} <- describe(conn, deadline) do
       {:ok,
        %{
          "outcome" => if(applied == [], do: "nothing_pending", else: "migrated"),
@@ -116,7 +114,16 @@ defmodule Atanor.Rehearsal.Cell do
        |> fail_on_integrity()}
     else
       {:error, %{} = error} -> {:error, error}
-      {:error, reason} -> {:error, error("open", nil, reason)}
+      {:error, reason} -> {:error, timed_out(reason, nil) |> as_error("open")}
+    end
+  end
+
+  # One statement with what is left of the cell's time budget; Alambique stops
+  # it at that deadline with `:statement_timeout`.
+  defp run(conn, sql, deadline, opts \\ []) do
+    case deadline - System.monotonic_time(:millisecond) do
+      left when left > 0 -> Sqlite.run(conn, sql, [], [{:timeout_ms, left} | opts])
+      _ -> {:error, :statement_timeout}
     end
   end
 
@@ -132,10 +139,10 @@ defmodule Atanor.Rehearsal.Cell do
   defp fail_on_integrity(report),
     do: %{report | "outcome" => "failed", "error" => error("check", nil, report["integrity"])}
 
-  defp user_version(conn) do
-    case Sqlite.run(conn, "PRAGMA user_version", []) do
+  defp user_version(conn, deadline) do
+    case run(conn, "PRAGMA user_version", deadline) do
       {:ok, %{rows: [[version]]}} -> {:ok, version}
-      {:error, reason} -> {:error, error("open", nil, reason)}
+      {:error, reason} -> {:error, timed_out(reason, nil) |> as_error("open")}
     end
   end
 
@@ -145,7 +152,7 @@ defmodule Atanor.Rehearsal.Cell do
       started = System.monotonic_time(:millisecond)
 
       with :ok <- before_deadline(deadline, version),
-           :ok <- apply_version(conn, version, statements) do
+           :ok <- apply_version(conn, version, statements, deadline) do
         {:cont, {:ok, [{version, System.monotonic_time(:millisecond) - started} | done]}}
       else
         {:error, %{} = error} -> {:halt, {:error, error}}
@@ -162,48 +169,50 @@ defmodule Atanor.Rehearsal.Cell do
     if System.monotonic_time(:millisecond) < deadline, do: :ok, else: {:error, error("timeout", version, :timeout)}
   end
 
-  defp apply_version(conn, version, statements) do
-    with :ok <- Sqlite.execute(conn, "BEGIN IMMEDIATE"),
-         :ok <- Enum.reduce_while(statements, :ok, &run_statement(conn, &1, &2)),
-         :ok <- Sqlite.execute(conn, "PRAGMA user_version = #{version}"),
-         :ok <- Sqlite.execute(conn, "COMMIT") do
+  defp apply_version(conn, version, statements, deadline) do
+    with {:ok, _} <- run(conn, "BEGIN IMMEDIATE", deadline),
+         :ok <- Enum.reduce_while(statements, :ok, &run_statement(conn, &1, &2, deadline)),
+         {:ok, _} <- run(conn, "PRAGMA user_version = #{version}", deadline),
+         {:ok, _} <- run(conn, "COMMIT", deadline) do
       :ok
     else
       {:error, reason} ->
         if Sqlite.transaction_status(conn) == {:ok, :transaction}, do: Sqlite.execute(conn, "ROLLBACK")
-        {:error, interrupted(reason, version)}
+        {:error, timed_out(reason, version)}
     end
   end
 
-  defp run_statement(conn, statement, :ok) do
-    case Sqlite.execute(conn, statement) do
-      :ok -> {:cont, :ok}
+  # A migration string is one statement, and the transaction is the
+  # rehearsal's, as in a live cell: `A; B` gives `{:multiple_statements, _}`
+  # and `BEGIN` or `COMMIT` gives `:not_authorized`.
+  defp run_statement(conn, statement, :ok, deadline) do
+    case run(conn, statement, deadline, no_transaction_control: true) do
+      {:ok, _} -> {:cont, :ok}
       error -> {:halt, error}
     end
   end
 
-  # The watchdog interrupts a statement that outlives the cell's time budget.
-  defp interrupted("interrupted", version), do: error("timeout", version, :timeout)
-  defp interrupted(reason, _version), do: reason
+  defp timed_out(:statement_timeout, version), do: error("timeout", version, :timeout)
+  defp timed_out(reason, _version), do: reason
 
-  defp drop_capture_triggers(conn) do
-    with {:ok, %{rows: rows}} <- Sqlite.run(conn, @capture_triggers, []) do
+  defp drop_capture_triggers(conn, deadline) do
+    with {:ok, %{rows: rows}} <- run(conn, @capture_triggers, deadline) do
       Enum.reduce_while(rows, :ok, fn [name], :ok ->
-        case Sqlite.execute(conn, "DROP TRIGGER main." <> Restore.quote_identifier(name)) do
-          :ok -> {:cont, :ok}
+        case run(conn, "DROP TRIGGER main." <> Restore.quote_identifier(name), deadline) do
+          {:ok, _} -> {:cont, :ok}
           {:error, reason} -> {:halt, {:error, error("open", nil, reason)}}
         end
       end)
     else
-      {:error, reason} -> {:error, error("open", nil, reason)}
+      {:error, reason} -> {:error, timed_out(reason, nil) |> as_error("open")}
     end
   end
 
-  defp integrity(conn, check) do
-    case Sqlite.run(conn, "PRAGMA " <> Atom.to_string(check), []) do
+  defp integrity(conn, check, deadline) do
+    case run(conn, "PRAGMA " <> Atom.to_string(check), deadline) do
       {:ok, %{rows: [["ok"]]}} -> {:ok, "ok"}
       {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, &hd/1)}
-      {:error, reason} -> {:error, interrupted(reason, nil) |> as_error("check")}
+      {:error, reason} -> {:error, timed_out(reason, nil) |> as_error("check")}
     end
   end
 
@@ -211,20 +220,20 @@ defmodule Atanor.Rehearsal.Cell do
   defp as_error(reason, stage), do: error(stage, nil, reason)
 
   # Row counts per user table, and a hash of the normalized schema.
-  defp describe(conn) do
-    with {:ok, %{rows: objects}} <- Sqlite.run(conn, @user_objects, []),
-         {:ok, rows} <- count_rows(conn, for(["table", name | _] <- objects, do: name)) do
+  defp describe(conn, deadline) do
+    with {:ok, %{rows: objects}} <- run(conn, @user_objects, deadline),
+         {:ok, rows} <- count_rows(conn, for(["table", name | _] <- objects, do: name), deadline) do
       normalized = for [type, name, table, sql] <- objects, do: [type, name, table, String.split(sql)]
       hash = :crypto.hash(:sha256, :erlang.term_to_binary(normalized)) |> Base.encode16(case: :lower)
       {:ok, %{rows: rows, schema: hash}}
     else
-      {:error, reason} -> {:error, interrupted(reason, nil) |> as_error("check")}
+      {:error, reason} -> {:error, timed_out(reason, nil) |> as_error("check")}
     end
   end
 
-  defp count_rows(conn, tables) do
+  defp count_rows(conn, tables, deadline) do
     Enum.reduce_while(tables, {:ok, %{}}, fn table, {:ok, acc} ->
-      case Sqlite.run(conn, "SELECT count(*) FROM " <> Restore.quote_identifier(table), []) do
+      case run(conn, "SELECT count(*) FROM " <> Restore.quote_identifier(table), deadline) do
         {:ok, %{rows: [[n]]}} -> {:cont, {:ok, Map.put(acc, table, n)}}
         {:error, _} = error -> {:halt, error}
       end

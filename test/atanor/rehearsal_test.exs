@@ -133,6 +133,26 @@ defmodule Atanor.RehearsalTest do
       assert message =~ "missing"
     end
 
+    test "a migration string holds one statement and no transaction control, as in a live cell" do
+      node = start()
+      seed(node, "notes", ["a"])
+
+      for {sql, refusal} <- [
+            {"ALTER TABLE notes ADD COLUMN tag TEXT; ALTER TABLE notes ADD COLUMN x TEXT", "multiple_statements"},
+            {"COMMIT", "not_authorized"},
+            {"BEGIN", "not_authorized"}
+          ] do
+        report = rehearse(node, candidate(node, [[2, sql]]))
+
+        assert report["state"] == "failed"
+
+        assert %{"outcome" => "failed", "error" => %{"stage" => "migration", "version" => 2, "message" => message}} =
+                 cells(report)["notes.a"]
+
+        assert message =~ refusal
+      end
+    end
+
     test "a cell newer than the candidate fails with schema_too_new" do
       node = start(cells: %{"notes" => @notes ++ [[2, "ALTER TABLE notes ADD COLUMN tag TEXT"]]})
       seed(node, "notes", ["a"])
