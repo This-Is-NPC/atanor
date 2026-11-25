@@ -155,13 +155,9 @@ defmodule Atanor.Sweeps.Undo.Cell do
   defp describe(path, stage, deadline) do
     case Sqlite.open(path, readonly: true) do
       {:ok, conn} ->
-        {:ok, watchdog} =
-          :timer.apply_after(max(deadline - System.monotonic_time(:millisecond), 0), Sqlite, :interrupt, [conn])
-
         try do
-          read(conn, stage)
+          read(conn, stage, deadline)
         after
-          :timer.cancel(watchdog)
           Sqlite.close(conn)
         end
 
@@ -170,51 +166,55 @@ defmodule Atanor.Sweeps.Undo.Cell do
     end
   end
 
-  defp read(conn, stage) do
-    with {:ok, %{rows: names}} <- Sqlite.run(conn, @tables, []),
-         {:ok, tables} <- tables(conn, List.flatten(names)),
-         {:ok, %{rows: objects}} <- Sqlite.run(conn, @schema, []) do
+  defp read(conn, stage, deadline) do
+    with {:ok, %{rows: names}} <- run(conn, @tables, [], deadline),
+         {:ok, tables} <- tables(conn, List.flatten(names), deadline),
+         {:ok, %{rows: objects}} <- run(conn, @schema, [], deadline) do
       {:ok, %{tables: tables, schema: schema_hash(objects)}}
     else
-      {:error, "interrupted"} -> {:error, error("timeout", :timeout)}
+      {:error, :statement_timeout} -> {:error, error("timeout", :timeout)}
       {:error, reason} -> {:error, error(stage, reason)}
     end
   end
 
-  defp tables(conn, names) do
+  # Rows read per statement while a table is hashed, so memory does not grow with the table.
+  @page_rows 1_000
+
+  defp tables(conn, names, deadline) do
     Enum.reduce_while(names, {:ok, %{}}, fn name, {:ok, acc} ->
-      case table(conn, name) do
+      case digest(conn, name, @page_rows, deadline) do
         {:ok, summary} -> {:cont, {:ok, Map.put(acc, name, summary)}}
         {:error, _} = error -> {:halt, error}
       end
     end)
   end
 
-  # Rows read per statement while a table is hashed, so memory does not grow with the table.
-  @page_rows 1_000
   @modulus Bitwise.bsl(1, 256)
-
-  defp table(conn, name), do: digest(conn, name, @page_rows)
 
   @doc false
   # Row count and an order-independent hash of the rows (the sum of the SHA-256 of each row, modulo 2^256),
   # read in pages of `page` rows by keyset on the rowid, or on the primary key of a WITHOUT ROWID table.
-  @spec digest(Sqlite.conn(), String.t(), pos_integer) :: {:ok, {non_neg_integer, String.t()}} | {:error, term}
-  def digest(conn, name, page) do
+  # Every statement stops at `deadline` (monotonic milliseconds) with `:statement_timeout`.
+  @spec digest(Sqlite.conn(), String.t(), pos_integer, integer) ::
+          {:ok, {non_neg_integer, String.t()}} | {:error, term}
+  def digest(conn, name, page, deadline) do
     quoted = Restore.quote_identifier(name)
 
-    with {:ok, keys} <- key_columns(conn, quoted) do
-      pages(conn, quoted, keys, page, nil, {0, 0})
+    with {:ok, keys} <- key_columns(conn, quoted, deadline) do
+      pages(conn, quoted, keys, page, nil, {0, 0}, deadline)
     end
   end
 
-  defp key_columns(conn, quoted) do
-    case Sqlite.run(conn, "SELECT rowid FROM #{quoted} LIMIT 0", []) do
+  defp key_columns(conn, quoted, deadline) do
+    case run(conn, "SELECT rowid FROM #{quoted} LIMIT 0", [], deadline) do
       {:ok, _} ->
         {:ok, ["rowid"]}
 
+      {:error, :statement_timeout} = timeout ->
+        timeout
+
       {:error, _} ->
-        with {:ok, %{rows: info}} <- Sqlite.run(conn, "PRAGMA table_info(#{quoted})", []) do
+        with {:ok, %{rows: info}} <- run(conn, "PRAGMA table_info(#{quoted})", [], deadline) do
           {:ok,
            for(
              [_, column, _, _, _, pk] <- Enum.sort_by(info, &List.last/1),
@@ -225,7 +225,7 @@ defmodule Atanor.Sweeps.Undo.Cell do
     end
   end
 
-  defp pages(conn, quoted, keys, page, after_key, {count, sum}) do
+  defp pages(conn, quoted, keys, page, after_key, {count, sum}, deadline) do
     list = Enum.join(keys, ", ")
     wanted = length(keys)
 
@@ -237,7 +237,7 @@ defmodule Atanor.Sweeps.Undo.Cell do
 
     sql = "SELECT #{list}, * FROM #{quoted}#{where} ORDER BY #{list} LIMIT #{page}"
 
-    with {:ok, %{rows: rows}} <- Sqlite.run(conn, sql, params) do
+    with {:ok, %{rows: rows}} <- run(conn, sql, params, deadline) do
       sum =
         Enum.reduce(rows, sum, fn [_ | _] = row, acc ->
           row = Enum.drop(row, wanted)
@@ -249,8 +249,16 @@ defmodule Atanor.Sweeps.Undo.Cell do
       if length(rows) < page do
         {:ok, {count, sum |> :binary.encode_unsigned() |> Base.encode16(case: :lower)}}
       else
-        pages(conn, quoted, keys, page, rows |> List.last() |> Enum.take(wanted), {count, sum})
+        pages(conn, quoted, keys, page, rows |> List.last() |> Enum.take(wanted), {count, sum}, deadline)
       end
+    end
+  end
+
+  # One statement with what is left of the time budget.
+  defp run(conn, sql, params, deadline) do
+    case deadline - System.monotonic_time(:millisecond) do
+      left when left > 0 -> Sqlite.run(conn, sql, params, timeout_ms: left)
+      _ -> {:error, :statement_timeout}
     end
   end
 
