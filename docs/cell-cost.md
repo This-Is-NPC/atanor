@@ -27,6 +27,17 @@ These costs hold for cells that are all awake together, each written once every 
 
 Local disk is the cell's SQLite file and its write-ahead log in `data_dir`.
 
+A cell that has been written and then has no call for `feed: [cleanup_after_ms:]` (1 s by default) removes the
+change-feed rows it has published in a transaction of its own (Alambique's default `feed: [cleanup:
+:idle_or_write]`). That costs the cell, once per quiet period after a write:
+
+| Store trips | Bytes to the store | TXIDs |
+| ----------- | ------------------ | ----- |
+| 1 put       | about 270 bytes    | 1     |
+
+This was measured against `feed: [cleanup: :in_write]`, which moves the removal into the next write and adds
+nothing while the cell is quiet (`mise run bench:idle-cleanup`, in-memory store).
+
 A node also has a fixed memory of about 156 to 178 MB when it is idle. It does not depend on the number of cells.
 
 ## Not measured

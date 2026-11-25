@@ -315,7 +315,10 @@ gives the cell its full cache back. `ms` must be below `idle_timeout_ms` and
 `idle_cache_kib` below `cache_kib`; the node refuses to start otherwise. The
 cost is cold pages: the first call after a shrink reads its pages again, and a
 cell called a little less often than every `ms` meets a cold cache on every
-call. The options apply to every cell of the node.
+call. The options apply to every cell of the node. Under memory pressure the
+node still hibernates the least recently used idle cells, which are the ones
+already shrunk, so the shrink delays the pressure mark more than it removes
+hibernations.
 
 **Refusing requests before the node dies.** The ingress refuses with 503
 `overloaded` and `Retry-After`, before it reads the route, the token or the
