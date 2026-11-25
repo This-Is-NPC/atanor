@@ -36,19 +36,25 @@ defmodule Atanor.Sweeps.UndoDigestTest do
 
   test "a table bigger than one page hashes like the whole table", %{conn: conn} do
     for table <- ["plain", "loose", "keyed"] do
-      assert {:ok, {2_500, hash}} = Cell.digest(conn, table, 1_000_000)
-      assert {:ok, {2_500, ^hash}} = Cell.digest(conn, table, 1_000)
-      assert {:ok, {2_500, ^hash}} = Cell.digest(conn, table, 7)
-      assert {:ok, {2_500, ^hash}} = Cell.digest(conn, table, 2_500)
+      assert {:ok, {2_500, hash}} = Cell.digest(conn, table, 1_000_000, far())
+      assert {:ok, {2_500, ^hash}} = Cell.digest(conn, table, 1_000, far())
+      assert {:ok, {2_500, ^hash}} = Cell.digest(conn, table, 7, far())
+      assert {:ok, {2_500, ^hash}} = Cell.digest(conn, table, 2_500, far())
     end
   end
 
   test "a changed row changes the hash, a reordered insert does not", %{conn: conn} do
-    {:ok, {_, before}} = Cell.digest(conn, "plain", 100)
+    {:ok, {_, before}} = Cell.digest(conn, "plain", 100, far())
     {:ok, _} = Sqlite.run(conn, "UPDATE plain SET a = 'x' WHERE id = 1234", [])
-    assert {:ok, {2_500, changed}} = Cell.digest(conn, "plain", 100)
+    assert {:ok, {2_500, changed}} = Cell.digest(conn, "plain", 100, far())
     assert changed != before
     {:ok, _} = Sqlite.run(conn, "UPDATE plain SET a = 'r1234' WHERE id = 1234", [])
-    assert {:ok, {2_500, ^before}} = Cell.digest(conn, "plain", 100)
+    assert {:ok, {2_500, ^before}} = Cell.digest(conn, "plain", 100, far())
   end
+
+  test "the digest stops at its deadline", %{conn: conn} do
+    assert {:error, :statement_timeout} = Cell.digest(conn, "plain", 7, System.monotonic_time(:millisecond) - 1)
+  end
+
+  defp far, do: System.monotonic_time(:millisecond) + 60_000
 end
