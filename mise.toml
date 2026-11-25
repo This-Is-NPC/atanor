@@ -98,6 +98,14 @@ run = "scripts/bench-auth"
 description = "Wake thousands of cells on one node through Atanor and report resource use (arguments: number of cells, idle timeout in seconds)"
 run = "scripts/bench-cells"
 
+[tasks."bench:idle-cache"]
+description = "Count pressure hibernations and wakes per minute with and without the idle cache shrink in a memory-limited systemd scope (arguments: off|on, cells, call period ms, duration s, idle timeout ms, clients, shrink ms; env LIMIT, TIMEOUT_S)"
+run = "scripts/bench-idle-cache"
+
+[tasks."bench:idle-cleanup"]
+description = "Measure store requests, bytes and TXIDs per idle cell of the idle feed cleanup (arguments: number of cells, comma-separated cleanup modes idle_or_write,in_write, idle seconds; env TIMEOUT_S)"
+run = "scripts/bench-idle-cleanup"
+
 [tasks."bench:fetch"]
 description = "Measure the latency of sequential outbound HTTP fetches to a local target (argument: number of fetches, default 500)"
 run = "scripts/bench-fetch"

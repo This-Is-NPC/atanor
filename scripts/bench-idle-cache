@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Memory pressure with and without the idle page-cache shrink, in a systemd scope whose memory limit is the
+# node's. Arguments: see bench/idle_cache.exs. Environment: LIMIT (MemoryMax, default 1200M), TIMEOUT_S (default 900).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+limit="${LIMIT:-1200M}"
+scope=(systemd-run --user --scope --quiet -p "MemoryMax=$limit" -p MemorySwapMax=0)
+"${scope[@]}" true || { echo "cannot create a systemd user scope with MemoryMax=$limit and MemorySwapMax=0" >&2; exit 1; }
+exec timeout --kill-after=10 "${TIMEOUT_S:-900}" "${scope[@]}" env MIX_ENV=test mix run bench/idle_cache.exs "$@"

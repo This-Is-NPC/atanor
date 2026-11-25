@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Store requests, bytes and TXIDs of the idle feed cleanup per idle cell. Arguments: see bench/idle_cleanup.exs.
+# Environment: TIMEOUT_S (default 600).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MIX_ENV=test exec timeout --kill-after=10 "${TIMEOUT_S:-600}" mix run bench/idle_cleanup.exs "$@"
