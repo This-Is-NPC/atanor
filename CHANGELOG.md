@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.11.0](https://github.com/This-Is-NPC/atanor/compare/v0.10.1...v0.11.0) (2026-11-26)
+
+
+### Features
+
+* **config:** accept awake track_bytes ([e773a5e](https://github.com/This-Is-NPC/atanor/commit/e773a5ee6b10fafe217c601bcca66058aed26c06))
+* **config:** accept the idle shrink and feed ops ([7f07f41](https://github.com/This-Is-NPC/atanor/commit/7f07f4119104ce4476a1e2f7434bf2e25a2d2fec))
+* **store:** show the feed breaker of a location ([6883451](https://github.com/This-Is-NPC/atanor/commit/6883451ffd4ae34bd12c9b6b6764d378fd1ced10))
+* **wasm:** name the single-statement SQL errors ([587a1bd](https://github.com/This-Is-NPC/atanor/commit/587a1bd3239a3ecadec3bb0cd2f5387e3379f1b4))
+
+
+### Bug Fixes
+
+* **rehearsal:** run migrations as a live cell does ([a1a530d](https://github.com/This-Is-NPC/atanor/commit/a1a530d3c2c04b1c98ab3e139c0aa6d9d782980d))
+* **sweeps:** stop undo reads at the deadline ([861324c](https://github.com/This-Is-NPC/atanor/commit/861324cce64834a65e37100f8f04c40c72d71c59))
+
 ## [0.10.1](https://github.com/This-Is-NPC/atanor/compare/v0.10.0...v0.10.1) (2026-11-22)
 
 

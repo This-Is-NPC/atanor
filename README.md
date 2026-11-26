@@ -11,7 +11,7 @@ and it knows no product, organization, tenant or region.
 
 Atanor ships as one daemon, from the release. Pick one:
 
-- **Container image (the default):** `docker pull ghcr.io/this-is-npc/atanor:0.10.1` <!-- x-release-please-version -->
+- **Container image (the default):** `docker pull ghcr.io/this-is-npc/atanor:0.11.0` <!-- x-release-please-version -->
   (`:latest` or a version tag), for linux/amd64 and linux/arm64. It pulls without a login. It starts
   a node with no argument and runs the `atanor` command for `deploy`, `status` and the rest.
 - **Tarball:** `atanor-<version>-linux-<arch>.tar.gz`, with its sha256, on each GitHub release. It needs
