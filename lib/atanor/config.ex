@@ -455,7 +455,8 @@ defmodule Atanor.Config do
       max_bytes: :positive_or_nil,
       idle_cache_after_ms: :positive_or_nil,
       idle_cache_kib: :non_negative,
-      idle_gc: :boolean
+      idle_gc: :boolean,
+      track_bytes: :boolean
     ],
     wal: [
       checkpoint_bytes: :positive,

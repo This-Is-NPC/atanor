@@ -380,7 +380,7 @@ defmodule Atanor do
       `{:error, :result_too_large}`; a read over the concurrent limit gets
       `{:error, :busy}`; `script_timeout_ms` bounds migrations and scripts), `awake: [max_cells: 20_000, max_wakes: 256,
       max_pending: 10_000, cache_kib: 512, max_bytes: nil, idle_cache_after_ms: nil,
-      idle_cache_kib: 64, idle_gc: true]` (`cache_kib` is the SQLite
+      idle_cache_kib: 64, idle_gc: true, track_bytes: true]` (`cache_kib` is the SQLite
       page cache of each awake cell; `max_bytes` hibernates the least used cells
       before the memory of the awake ones passes it, and is derived from `:memory`
       below unless you give it, `nil` meaning no ceiling; a call that cannot be
@@ -389,7 +389,8 @@ defmodule Atanor do
       with no call for that long to `idle_cache_kib` and, with `idle_gc`,
       collects the cell's garbage, so an idle awake cell holds less; the next
       call reads its pages again. It must be below `idle_timeout_ms`, and
-      `idle_cache_kib` below `cache_kib`; docs/configuration.md), `idle_timeout_ms: 300_000` (a positive integer), `local_cache: [max_bytes: 21_474_836_480, interval_ms:
+      `idle_cache_kib` below `cache_kib`; `track_bytes: false` stops each awake cell from measuring its memory
+      after every call, which Atanor does not read and a `max_bytes` budget measures anyway; docs/configuration.md), `idle_timeout_ms: 300_000` (a positive integer), `local_cache: [max_bytes: 21_474_836_480, interval_ms:
       60_000]` (or `false`) and `wal: [checkpoint_bytes: 67_108_864, max_bytes: nil]`. A wrong
       number of parameters is `{:error, {:bad_params, message}}`. Design §4.3.
       Two more groups are checked and passed through: `compaction: [hold_bytes:

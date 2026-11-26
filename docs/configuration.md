@@ -320,6 +320,13 @@ node still hibernates the least recently used idle cells, which are the ones
 already shrunk, so the shrink delays the pressure mark more than it removes
 hibernations.
 
+**Measuring each cell's memory.** `alambique: [awake: [track_bytes: true]]`
+(the default) makes every awake cell measure the bytes SQLite and its process
+hold after each call, which Alambique reports per cell. Each measurement costs
+the cell about 3.6 µs. Atanor does not read these values: the pressure
+hibernation picks cells by `last_used`. `false` saves the cost. The awake
+budget (`max_bytes`) measures each cell whatever this option says.
+
 **Refusing requests before the node dies.** The ingress refuses with 503
 `overloaded` and `Retry-After`, before it reads the route, the token or the
 body, when either gate is closed:
